@@ -1,0 +1,11 @@
+node_modules
+dist
+sandbox
+data
+results
+*.log
+.git
+.env
+smoke.mjs
+verify-providers.mjs
+.cache

@@ -1,0 +1,28 @@
+{
+  "name": "memory-working-agent",
+  "version": "0.0.1",
+  "private": true,
+  "description": "MWA — Memory Working Agent. A TS agent runtime built on AWM as an always-on decision/direction substrate, so a cheap model resumes, builds on prior reasoning, and runs long without re-onboarding or context rot.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "bench": "tsx src/benchmark.ts",
+    "ui": "tsx src/server.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
+    "agent-working-memory": "^0.8.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+*.db
+*.db-wal
+*.db-shm
+data/
+.cache/
+results/*.json
+sandbox/
+.awm/
