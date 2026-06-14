@@ -7,5 +7,9 @@ dist/
 data/
 .cache/
 results/*.json
+results/*.jsonl
 sandbox/
 .awm/
+mwa-workspace/
+*.log
+data/google-token.json

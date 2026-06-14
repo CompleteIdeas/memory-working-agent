@@ -1,20 +1,61 @@
 {
   "name": "memory-working-agent",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
-  "description": "MWA — Memory Working Agent. A TS agent runtime built on AWM as an always-on decision/direction substrate, so a cheap model resumes, builds on prior reasoning, and runs long without re-onboarding or context rot.",
+  "description": "MWA — Memory Working Agent. A turnkey TS agent runtime built on AWM as an always-on cognitive substrate, so a cheap model conducts, resumes, builds on prior reasoning, and runs long without re-onboarding or context rot.",
   "type": "module",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CompleteIdeas/memory-working-agent.git"
+  },
+  "homepage": "https://github.com/CompleteIdeas/memory-working-agent#readme",
+  "bugs": "https://github.com/CompleteIdeas/memory-working-agent/issues",
+  "keywords": [
+    "agent",
+    "memory",
+    "awm",
+    "agent-working-memory",
+    "llm",
+    "orchestrator",
+    "mcp",
+    "cognitive-memory"
+  ],
+  "bin": {
+    "mwa": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "workspaces": [
+    "vendor/agent-working-memory"
+  ],
+  "files": [
+    "dist",
+    "mcp-servers",
+    "README.md",
+    "results/RESULTS-V2.md"
+  ],
   "scripts": {
-    "build": "tsc",
+    "build:awm": "npm run build --workspace=agent-working-memory",
+    "build": "npm run build:awm && tsc",
     "typecheck": "tsc --noEmit",
+    "setup": "tsx src/setup.ts",
+    "wizard": "tsx src/cli.ts wizard",
+    "agent": "tsx src/cli.ts run",
+    "watch": "tsx src/cli.ts watch",
     "bench": "tsx src/benchmark.ts",
     "ui": "tsx src/server.ts",
-    "test": "vitest run"
+    "retention": "tsx src/retention.ts",
+    "repo-qa": "tsx src/repo-qa.ts",
+    "staleness": "tsx src/staleness.ts",
+    "contextswitch": "tsx src/contextswitch.ts",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",
-    "agent-working-memory": "^0.8.8"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "agent-working-memory": "*",
+    "googleapis": "^173.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -17,6 +17,7 @@
 import { EngramStore } from 'agent-working-memory/dist/storage/sqlite.js';
 import { ActivationEngine } from 'agent-working-memory/dist/engine/activation.js';
 import { ConnectionEngine } from 'agent-working-memory/dist/engine/connections.js';
+import { ConsolidationEngine } from 'agent-working-memory/dist/engine/consolidation.js';
 import { performWrite } from 'agent-working-memory/dist/core/write-pipeline.js';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -36,10 +37,26 @@ export interface WriteOpts {
 
 export interface Memory {
   readonly enabled: boolean;
-  recall(query: string, opts?: { limit?: number; workspace?: string }): Promise<RecalledMemory[]>;
+  recall(query: string, opts?: { limit?: number; workspace?: string; full?: boolean }): Promise<RecalledMemory[]>;
   write(concept: string, content: string, tags?: string[], opts?: WriteOpts): Promise<string | null>;
+  supersede(oldId: string, concept: string, content: string, tags?: string[], opts?: WriteOpts): Promise<string | null>;
   feedback(id: string, useful: boolean): Promise<void>;
+  /** Lightly links all subsequent writes from this session via a `session=` tag (entity-bridge boost). */
+  setSessionId(id: string): void;
+  /** Sleep consolidation (cluster/strengthen/decay); no-op when AWM is off. Returns cycle stats. */
+  consolidate(): Promise<Record<string, number>>;
+  /** Persist a scheduled task (due = epoch ms) in the AWM task store. */
+  addScheduledTask(instruction: string, dueMs: number, opts?: { recur?: string; notify?: string }): Promise<string | null>;
   close(): void;
+}
+
+/** A pending scheduled task read back from the store. */
+export interface ScheduledTask {
+  id: string;
+  instruction: string;
+  due: number; // epoch ms
+  recur?: string; // e.g. "every:60" (minutes) or "daily:09:00"
+  notify?: string; // where to send the result (e.g. a session id)
 }
 
 export class MwaMemory implements Memory {
@@ -47,6 +64,8 @@ export class MwaMemory implements Memory {
   private store: any;
   private activation: any;
   private connections: any;
+  private consolidationEngine: any;
+  private sessionId?: string;
 
   constructor(
     private readonly agentId: string,
@@ -58,7 +77,7 @@ export class MwaMemory implements Memory {
     this.connections = new ConnectionEngine(this.store, this.activation);
   }
 
-  async recall(query: string, opts: { limit?: number; workspace?: string } = {}): Promise<RecalledMemory[]> {
+  async recall(query: string, opts: { limit?: number; workspace?: string; full?: boolean } = {}): Promise<RecalledMemory[]> {
     try {
       const results = await this.activation.activate({
         agentId: this.agentId,
@@ -67,14 +86,16 @@ export class MwaMemory implements Memory {
         minScore: 0.05,
         useReranker: true,
         useExpansion: true,
-        granularity: 'compact',
+        // compact summaries truncate the precise value (e.g. drops "sqlite AND pglite");
+        // for fact-lookup callers pass full:true to get the complete stored fact.
+        granularity: opts.full ? 'full' : 'compact',
         workspace: opts.workspace,
         internal: true,
       });
       return results.map((r: any) => ({
         id: r.engram.id,
         concept: r.engram.concept,
-        content: r.summary ?? r.engram.content,
+        content: opts.full ? r.engram.content : (r.summary ?? r.engram.content),
         score: r.score,
       }));
     } catch (err) {
@@ -91,7 +112,7 @@ export class MwaMemory implements Memory {
           agentId: this.agentId,
           concept: concept.slice(0, 80),
           content,
-          tags: [...tags, 'proj=MWA'],
+          tags: [...tags, 'proj=MWA', ...(this.sessionId ? [`session=${this.sessionId}`] : [])],
           memoryClass: opts.canonical ? 'canonical' : 'working',
           memoryType: 'semantic',
           eventType: opts.eventType ?? 'observation',
@@ -108,6 +129,10 @@ export class MwaMemory implements Memory {
     }
   }
 
+  setSessionId(id: string): void {
+    this.sessionId = id;
+  }
+
   async feedback(id: string, useful: boolean): Promise<void> {
     try {
       const engram = this.store.getEngram(id);
@@ -119,6 +144,82 @@ export class MwaMemory implements Memory {
     } catch (err) {
       console.error('[awm] feedback error:', (err as Error).message);
     }
+  }
+
+  /**
+   * Replace a stale fact with a corrected one and MARK the old as superseded —
+   * the differentiator a notes-file/repo cannot match (files go silently stale).
+   * Writes the new fact, then store.supersedeEngram(old,new) so recall stops
+   * surfacing the old value. Returns the new engram id.
+   */
+  async supersede(oldId: string, concept: string, content: string, tags: string[] = [], opts: WriteOpts = {}): Promise<string | null> {
+    const newId = await this.write(concept, content, tags, { ...opts, canonical: true });
+    if (newId && oldId) {
+      try {
+        await this.store.supersedeEngram(oldId, newId);
+      } catch (err) {
+        console.error('[awm] supersede error:', (err as Error).message);
+      }
+    }
+    return newId;
+  }
+
+  /**
+   * Sleep consolidation — the mechanism that makes recall mature over time:
+   * cluster overlapping engrams, strengthen intra-cluster edges, bridge related
+   * topics, decay/forget noise, sweep staging. Run between sessions ("sleep").
+   * Returns the cycle stats (clustersFound, edgesStrengthened, bridgesCreated, …).
+   */
+  async consolidate(): Promise<Record<string, number>> {
+    try {
+      if (!this.consolidationEngine) this.consolidationEngine = new ConsolidationEngine(this.store, this.connections);
+      return (await this.consolidationEngine.consolidate(this.agentId)) as Record<string, number>;
+    } catch (err) {
+      console.error('[awm] consolidate error:', (err as Error).message);
+      return {};
+    }
+  }
+
+  // --- Scheduled tasks: AWM engrams tagged topic=scheduled-task + status + due=<epochMs>.
+  // The task ledger holds the WHAT; the `due` tag is the WHEN (a universal integer).
+  private parseTags(t: unknown): string[] {
+    if (Array.isArray(t)) return t as string[];
+    if (typeof t === 'string') { try { const p = JSON.parse(t); return Array.isArray(p) ? p : t.split(','); } catch { return t.split(','); } }
+    return [];
+  }
+
+  async addScheduledTask(instruction: string, dueMs: number, opts: { recur?: string; notify?: string } = {}): Promise<string | null> {
+    const tags = ['topic=scheduled-task', 'status=pending', `due=${Math.round(dueMs)}`];
+    if (opts.recur) tags.push(`recur=${opts.recur}`);
+    if (opts.notify) tags.push(`notify=${opts.notify}`);
+    return this.write(`scheduled: ${instruction.slice(0, 56)}`, instruction, tags, { canonical: true, eventType: 'decision' });
+  }
+
+  /** All pending scheduled tasks (parsed). */
+  pendingScheduled(): ScheduledTask[] {
+    try {
+      const engrams: any[] = this.store.getEngramsByAgent(this.agentId) ?? [];
+      const out: ScheduledTask[] = [];
+      for (const e of engrams) {
+        const tags = this.parseTags(e.tags);
+        if (!tags.includes('topic=scheduled-task') || !tags.includes('status=pending')) continue;
+        const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
+        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined });
+      }
+      return out.sort((a, b) => a.due - b.due);
+    } catch (err) { console.error('[awm] pendingScheduled error:', (err as Error).message); return []; }
+  }
+
+  private setScheduledTags(id: string, mutate: (tags: string[]) => string[]): void {
+    try { const e = this.store.getEngram(id); if (e) this.store.updateTags(id, mutate(this.parseTags(e.tags))); } catch { /* */ }
+  }
+  /** Mark a scheduled task complete (status=done). */
+  completeScheduled(id: string): void {
+    this.setScheduledTags(id, (tags) => tags.map((t) => (t.startsWith('status=') ? 'status=done' : t)));
+  }
+  /** Recurring task: set the next due (epoch ms), keep pending. */
+  rescheduleTask(id: string, nextDueMs: number): void {
+    this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('due=')), `due=${Math.round(nextDueMs)}`]);
   }
 
   close(): void {
@@ -138,6 +239,18 @@ export class NullMemory implements Memory {
     return [];
   }
   async write(): Promise<string | null> {
+    return null;
+  }
+  async supersede(): Promise<string | null> {
+    return null;
+  }
+  setSessionId(): void {
+    /* no-op */
+  }
+  async consolidate(): Promise<Record<string, number>> {
+    return {};
+  }
+  async addScheduledTask(): Promise<string | null> {
     return null;
   }
   async feedback(): Promise<void> {

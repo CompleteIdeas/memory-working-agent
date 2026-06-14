@@ -9,3 +9,6 @@ results
 smoke.mjs
 verify-providers.mjs
 .cache
+mwa-workspace
+*.db
+mcp.config*

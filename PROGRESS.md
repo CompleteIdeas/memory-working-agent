@@ -43,7 +43,9 @@ HONEST interpretation (no spin):
 
 Net: cost-vs-frontier win clear; AWM-accumulation mechanism proven; decisive AWM cost-win NOT yet shown (tasks too easy) — a credible, honest v1 result.
 - [x] **C9 Setup UI** — `src/server.ts`: zero-dep node:http server + single-file UI + live SSE (start/recall/dispatch/done/result), wired to runBrain (onEvent added to brain.ts). `npm run ui` → :7878. Verified end-to-end (config detects providers; stack/arm-B run streamed + passed $0.0017). Lightweight per turnkey constraint; full /front-end-designer polish = awake follow-up.
-- [~] **C10 Polish** — README done (turnkey quickstart + honest A/B/C table + Docker + config + layout). npm scripts: ui/bench/typecheck/build/test. Threaded `protect` so custom UI tasks work. REMAINING: /full-audit (or targeted lint/security self-review unattended) → fix real findings, then FINAL AM REPORT memory.
+- [x] **C10 Polish** — README done (turnkey quickstart + honest A/B/C table + Docker + config + layout). npm scripts: ui/bench/typecheck/build/test. Final verification: tsc CLEAN; security/quality self-review PASS (.env gitignored+untracked, no secrets logged, path-traversal guard + protected grader present, 1130 LOC lightweight). Used targeted self-review over /full-audit (proportionate for a tiny tsc-clean TS project unattended). git init + initial commit 54a52a2 (19 files, no secrets). Noted: worker shell-execs testCmd in sandbox = intended design; don't expose UI publicly without sandboxing.
+
+## BUILD COMPLETE — C0–C10 all PASS (2026-06-13). See README + RESULTS above. Loop stopped.
 
 ## Current state (updated each loop)
 - C0–C6 DONE + verified (tsc clean + real runs). Full pipeline works: autonomous brain→worker→AWM loop + 3 objective tasks + A/B/C benchmark harness. Smoke (stack,N=1): all 3 arms 100% pass, grader protected. Fixed 2 bugs (parseJsonLoose direct-parse-first for Sonnet's embedded fences; worker protects test.mjs).

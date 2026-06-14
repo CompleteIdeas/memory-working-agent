@@ -1,6 +1,12 @@
-# MWA benchmark image — turnkey, headless A/B/C run.
-# Keys are passed at runtime via --env-file (never baked). The HF embed/rerank
-# model cache lives on a mounted volume (HF_HOME) so it persists across runs.
+# MWA installer image — onboard-then-run autonomous agent.
+# Run it, open the localhost wizard to add your keys (stored locally on the /data
+# volume, never sent to a server), and it starts the agent. Everything persistent
+# (secrets, AWM memory, workspace) lives on /data.
+#
+#   docker build -t mwa .
+#   docker run -d -p 127.0.0.1:7788:7788 -v mwa-data:/data --name mwa mwa
+#   → open http://localhost:7788, add a provider key, then: docker restart mwa
+# (-p 127.0.0.1:… keeps the wizard reachable only from your machine.)
 FROM node:22-slim
 
 # better-sqlite3 (transitive via agent-working-memory) compiles a native addon.
@@ -10,18 +16,26 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Layer-cache deps: copy manifests first.
+# Layer-cache deps.
 COPY package.json package-lock.json* ./
 RUN npm ci
 
-# Source.
+# Source + bundled MCP servers + entrypoint.
 COPY tsconfig.json ./
 COPY src ./src
+COPY mcp-servers ./mcp-servers
+COPY docker-entrypoint.sh ./
+RUN sed -i 's/\r$//' docker-entrypoint.sh && chmod +x docker-entrypoint.sh
 
-# AWM's embed/rerank models cache here; mount a volume at /data/hf to persist.
-ENV HF_HOME=/data/hf
-ENV TRANSFORMERS_CACHE=/data/hf
-ENV NODE_ENV=production
+# Persistent state on the /data volume: secrets (.env), AWM db, workspace.
+ENV MWA_ENV_PATH=/data/.env \
+    MWA_DB=/data/agent.db \
+    MWA_WORKSPACE=/data/mwa-workspace \
+    MWA_WIZARD_HOST=0.0.0.0 \
+    HF_HOME=/data/hf \
+    TRANSFORMERS_CACHE=/data/hf \
+    NODE_ENV=production
+VOLUME ["/data"]
+EXPOSE 7788
 
-# Default: run the full A/B/C benchmark. Override BENCH_* via -e.
-CMD ["npx", "tsx", "src/benchmark.ts"]
+ENTRYPOINT ["./docker-entrypoint.sh"]

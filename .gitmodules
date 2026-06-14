@@ -1,0 +1,3 @@
+[submodule "vendor/agent-working-memory"]
+	path = vendor/agent-working-memory
+	url = https://github.com/CompleteIdeas/agent-working-memory.git

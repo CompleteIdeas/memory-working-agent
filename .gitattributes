@@ -1,0 +1,7 @@
+# Normalize line endings. Force LF on shell scripts so the Docker entrypoint
+# never breaks on a CRLF checkout (this bit AWM before).
+* text=auto
+*.sh text eol=lf
+docker-entrypoint.sh text eol=lf
+*.db binary
+*.jsonl text

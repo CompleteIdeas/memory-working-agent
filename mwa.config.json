@@ -1,0 +1,17 @@
+{
+  "models": {
+    "fetch": "gpt-5-4-mini",
+    "reason": "claude-sonnet-4-6"
+  },
+  "awm": {},
+  "tools": {
+    "builtins": [
+      "run_command",
+      "read_file",
+      "list_files"
+    ]
+  },
+  "escalation": {
+    "maxFetchFailures": 2
+  }
+}
