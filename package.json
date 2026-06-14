@@ -32,6 +32,8 @@
     "dist",
     "mcp-servers",
     "README.md",
+    "LICENSE",
+    "NOTICE",
     "results/RESULTS-V2.md"
   ],
   "scripts": {

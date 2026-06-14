@@ -1,0 +1,19 @@
+MWA — Memory Working Agent
+Copyright 2026 Robert Winter / Complete Ideas
+
+This product includes software developed by Complete Ideas.
+
+Third-Party Components
+----------------------
+
+This software uses the following third-party libraries:
+
+- agent-working-memory / AWM (Apache 2.0) — cognitive memory substrate
+  (vendored as a git submodule at vendor/agent-working-memory)
+- @anthropic-ai/sdk (MIT) — Anthropic API client (reasoning tier)
+- @modelcontextprotocol/sdk (MIT) — MCP client/server framework
+- googleapis (Apache 2.0) — Gmail / Calendar connector
+
+AWM in turn bundles its own third-party components and downloads ML models
+at runtime (sentence embeddings, cross-encoder reranker, query expansion);
+see vendor/agent-working-memory/NOTICE for the full list and their licenses.
