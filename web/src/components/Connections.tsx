@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  getConnections, toggleTool, connectGmail, connectOutlook, saveGoogle, saveMicrosoft,
-  type Connections as Conn,
+  getConnections, connectGmail, connectOutlook, saveGoogle, saveMicrosoft,
+  enableConnector, disableConnector, saveConnectorSecret,
+  type Connections as Conn, type ConnectorItem,
 } from '../api';
 
 // Turn tools & accounts on without editing files. Email uses a GUIDED bring-your-own
@@ -127,11 +128,6 @@ export function Connections() {
   const load = () => getConnections().then(setC);
   useEffect(() => { load(); }, []);
 
-  async function flip(id: string, on: boolean) {
-    setC((prev) => prev ? { ...prev, tools: prev.tools.map((t) => (t.id === id ? { ...t, on } : t)) } : prev);
-    await toggleTool(id, on);
-  }
-
   if (!c) return <div className="py-16 mono text-dim text-sm">loading…</div>;
   const row = 'flex items-center justify-between gap-3 rounded-[4px] border border-line bg-surface px-4 py-3';
 
@@ -150,16 +146,67 @@ export function Connections() {
       </div>
 
       <div>
-        <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">tools</div>
+        <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">connector library</div>
+        <p className="text-dim text-sm mb-2">Vetted connectors — turn on what you need. Each shows what it can touch.</p>
         <div className="space-y-2">
-          {c.tools.map((t) => (
-            <label key={t.id} className={row + ' cursor-pointer'}>
-              <div><div className="font-medium">{t.label}</div><div className="text-dim text-sm">{t.desc}</div></div>
-              <input type="checkbox" checked={t.on} onChange={(e) => flip(t.id, e.target.checked)} className="w-5 h-5 accent-[var(--color-signal)]" />
-            </label>
-          ))}
+          {c.connectors.map((k) => <ConnectorCard key={k.id} k={k} onChange={load} />)}
         </div>
       </div>
+    </div>
+  );
+}
+
+function ConnectorCard({ k, onChange }: { k: ConnectorItem; onChange: () => void }) {
+  const [vals, setVals] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const reqUnset = k.secrets.filter((s) => !s.optional && !s.set);
+  const [open, setOpen] = useState(false);
+
+  async function toggle() {
+    setMsg(''); setBusy(true);
+    if (k.on) { await disableConnector(k.id); setBusy(false); onChange(); return; }
+    if (reqUnset.length) { setOpen(true); setBusy(false); return; } // need secrets first
+    const r = await enableConnector(k.id); setBusy(false); setMsg(r.ok ? '' : (r.message ?? 'Could not enable.')); onChange();
+  }
+  async function saveSecretsAndEnable() {
+    setBusy(true); setMsg('Saving…');
+    for (const s of k.secrets) { const v = vals[s.env]; if (v) { const r = await saveConnectorSecret(s.env, v); if (!r.ok) { setMsg(r.message ?? 'Could not save.'); setBusy(false); return; } } }
+    const r = await enableConnector(k.id); setBusy(false);
+    if (r.ok) { setOpen(false); setMsg(''); onChange(); } else setMsg(r.message ?? 'Could not enable.');
+  }
+
+  return (
+    <div className="rounded-[4px] border border-line bg-surface">
+      <div className="flex items-center justify-between gap-3 px-4 py-3">
+        <div>
+          <div className="font-medium">{k.name} <span className="mono text-[10px] text-dim uppercase">{k.tier}</span></div>
+          <div className="text-dim text-sm">{k.description}</div>
+          <div className="text-dim text-[12px] mt-0.5">Can touch: {k.access}</div>
+        </div>
+        <button onClick={toggle} disabled={busy}
+          className={`shrink-0 rounded-[3px] px-3 py-1.5 text-sm font-medium ${k.on ? 'border border-line text-dim' : 'bg-signal text-white'} disabled:opacity-50`}>
+          {k.on ? 'On — turn off' : (reqUnset.length ? 'Set up' : 'Turn on')}
+        </button>
+      </div>
+      {open && !k.on && (
+        <div className="border-t border-line px-4 py-3 space-y-2">
+          {k.secrets.map((s) => (
+            <div key={s.env}>
+              <label className="text-sm">{s.label}{s.optional ? ' (optional)' : ''}</label>
+              {s.help && <div className="text-dim text-[12px] mb-1">{s.help}</div>}
+              <input value={vals[s.env] ?? ''} placeholder={s.set ? '•••• (already set — leave blank to keep)' : ''}
+                onChange={(e) => setVals((v) => ({ ...v, [s.env]: e.target.value }))}
+                className="w-full rounded-[3px] border border-line bg-bone px-3 py-2 text-sm outline-none focus:border-signal" />
+            </div>
+          ))}
+          <button onClick={saveSecretsAndEnable} disabled={busy} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium disabled:opacity-50">
+            {busy ? 'Working…' : 'Save & turn on'}
+          </button>
+          {k.source && <a href={k.source} target="_blank" rel="noreferrer" className="block mono text-[11px] text-dim underline">view source</a>}
+        </div>
+      )}
+      {msg && <p className="mono text-[12px] text-signal px-4 pb-2">{msg}</p>}
     </div>
   );
 }

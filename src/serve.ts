@@ -32,6 +32,7 @@ import { loadEnv } from './env.js';
 import { mailboxDirs } from './mailbox.js';
 import { googleConfigured, startGmailConnect } from './connectors/google.js';
 import { microsoftConfigured, startMicrosoftConnect } from './connectors/microsoft.js';
+import { listConnectors, enableConnector, disableConnector, enabledConnectorIds } from './connectors/registry.js';
 import { status, testAnthropic, testAzure, testTelegram, testProvider, envKeyForProvider, upsertEnv } from './wizard.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -79,11 +80,6 @@ function authed(req: IncomingMessage): boolean {
 }
 
 // Bundled MCP tools the Connections page can toggle on/off (no file editing).
-const BUNDLED_TOOLS: Record<string, { label: string; desc: string; spec: { command: string; args: string[] } }> = {
-  search: { label: 'Web search', desc: 'Search the web (keyless; Brave if BRAVE_API_KEY set)', spec: { command: 'node', args: ['mcp-servers/search.mjs'] } },
-  fetch: { label: 'Read web pages', desc: 'Open a link and read its text', spec: { command: 'node', args: ['mcp-servers/fetch.mjs'] } },
-};
-
 /** Self-learning loop: answer up to 3 open questions in the background (the agent runs
  *  non-interactively → its auto-learn writes the answers as facts), then mark them resolved. */
 async function resolveOpenQuestionsBg(): Promise<void> {
@@ -112,15 +108,6 @@ function appendNotification(entry: Record<string, unknown>): void {
     mkdirSync(dirname(p), { recursive: true });
     appendFileSync(p, JSON.stringify(entry) + '\n');
   } catch { /* best-effort */ }
-}
-
-/** Persist enabled MCP tool servers into mwa.config.json (tools.mcpServers). */
-function writeMcpServers(servers: Record<string, unknown>): void {
-  let raw: any = {};
-  try { if (existsSync(CONFIG_PATH)) raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')); } catch { /* */ }
-  raw.tools = raw.tools ?? {};
-  raw.tools.mcpServers = servers;
-  writeFileSync(CONFIG_PATH, JSON.stringify(raw, null, 2) + '\n');
 }
 
 /** Persist the chosen brain into mwa.config.json. The cheap tier (fetch) becomes the
@@ -311,25 +298,32 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
         return;
       }
       if (p === '/api/connections' && req.method === 'GET') {
-        const cfg = loadConfig();
-        const enabled = Object.keys(cfg.tools.mcpServers ?? {});
+        const enabled = new Set(enabledConnectorIds());
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
           gmail: googleConfigured(),
           outlook: microsoftConfigured(),
           telegram: !!process.env.TELEGRAM_BOT_TOKEN,
-          tools: Object.entries(BUNDLED_TOOLS).map(([id, t]) => ({ id, label: t.label, desc: t.desc, on: enabled.includes(id) })),
+          connectors: listConnectors().map((c) => ({
+            id: c.id, name: c.name, category: c.category, description: c.description, access: c.access,
+            tier: c.tier, source: c.source ?? null, on: enabled.has(c.id),
+            secrets: (c.secrets ?? []).map((s) => ({ env: s.env, label: s.label, help: s.help ?? null, optional: !!s.optional, set: !!process.env[s.env] })),
+          })),
         }));
         return;
       }
       if (p === '/api/connections' && req.method === 'POST') {
         const b = await readBody(req);
-        if (b.action === 'toggle-tool' && BUNDLED_TOOLS[b.tool]) {
-          const cfg = loadConfig();
-          const servers: Record<string, unknown> = { ...(cfg.tools.mcpServers ?? {}) };
-          if (b.on) servers[b.tool] = BUNDLED_TOOLS[b.tool].spec; else delete servers[b.tool];
-          writeMcpServers(servers);
+        if (b.action === 'enable-connector') {
+          const r = enableConnector(String(b.id ?? ''));
+          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(r));
+        } else if (b.action === 'disable-connector') {
+          disableConnector(String(b.id ?? ''));
           res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true }));
+        } else if (b.action === 'save-secret') {
+          const env = String(b.env ?? '').trim(), value = String(b.value ?? '');
+          if (!/^[A-Z0-9_]+$/.test(env) || !value) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: 'Missing or invalid field.' })); }
+          else { upsertEnv({ [env]: value }); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, message: 'Saved.' })); }
         } else if (b.action === 'connect-gmail') {
           if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
             res.writeHead(200, { 'content-type': 'application/json' });

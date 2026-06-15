@@ -26,12 +26,22 @@ export async function getStats(): Promise<{ memories: number }> {
   try { const r = await fetch('/api/stats'); return await r.json(); } catch { return { memories: 0 }; }
 }
 
-export interface Connections { gmail: boolean; outlook: boolean; telegram: boolean; tools: { id: string; label: string; desc: string; on: boolean }[]; }
+export interface ConnectorSecret { env: string; label: string; help: string | null; optional: boolean; set: boolean }
+export interface ConnectorItem { id: string; name: string; category: string; description: string; access: string; tier: string; source: string | null; on: boolean; secrets: ConnectorSecret[] }
+export interface Connections { gmail: boolean; outlook: boolean; telegram: boolean; connectors: ConnectorItem[]; }
 export async function getConnections(): Promise<Connections> {
-  try { const r = await fetch('/api/connections'); return await r.json(); } catch { return { gmail: false, outlook: false, telegram: false, tools: [] }; }
+  try { const r = await fetch('/api/connections'); return await r.json(); } catch { return { gmail: false, outlook: false, telegram: false, connectors: [] }; }
 }
-export async function toggleTool(tool: string, on: boolean): Promise<void> {
-  await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'toggle-tool', tool, on }) });
+export async function enableConnector(id: string): Promise<{ ok: boolean; message?: string }> {
+  const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'enable-connector', id }) });
+  return r.json();
+}
+export async function disableConnector(id: string): Promise<void> {
+  await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'disable-connector', id }) });
+}
+export async function saveConnectorSecret(env: string, value: string): Promise<{ ok: boolean; message?: string }> {
+  const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'save-secret', env, value }) });
+  return r.json();
 }
 export async function connectGmail(readonly = false): Promise<{ ok: boolean; message?: string; url?: string }> {
   const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'connect-gmail', readonly }) });

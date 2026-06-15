@@ -12,8 +12,14 @@
  * A server that fails to connect is logged and skipped — never aborts the run.
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { RegisteredTool } from './registry.js';
+
+/** Expand ${VAR} references (in args/env) from process.env, so secrets live in .env and
+ *  only their NAMES sit in mwa.config.json. */
+function expandRefs(s: string): string {
+  return s.replace(/\$\{([A-Z0-9_]+)\}/g, (_, k) => process.env[k] ?? '');
+}
 
 export interface McpServerSpec {
   command: string;
@@ -34,10 +40,16 @@ export async function loadMcpServers(servers: Record<string, McpServerSpec> = {}
 
   for (const [name, spec] of Object.entries(servers)) {
     try {
+      const declaredEnv = spec.env
+        ? Object.fromEntries(Object.entries(spec.env).map(([k, v]) => [k, expandRefs(String(v))]))
+        : {};
       const transport = new StdioClientTransport({
         command: spec.command,
-        args: spec.args ?? [],
-        ...(spec.env ? { env: { ...process.env as Record<string, string>, ...spec.env } } : {}),
+        args: (spec.args ?? []).map(expandRefs),
+        // Minimal env: the SDK's safe default (PATH, etc.) PLUS only the vars this connector
+        // declares. Deliberately NOT spreading process.env — MCP children must never see
+        // MWA's API keychain (Anthropic/Google/etc.). This is a core install guardrail.
+        env: { ...getDefaultEnvironment(), ...declaredEnv },
       });
       const client = new Client({ name: 'mwa', version: '0.0.1' }, { capabilities: {} });
       await client.connect(transport);
