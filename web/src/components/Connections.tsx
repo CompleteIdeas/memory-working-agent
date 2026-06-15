@@ -6,9 +6,10 @@ import {
 
 // Turn tools & accounts on without editing files. Email uses a GUIDED bring-your-own
 // sign-in: you make a free app at Google/Microsoft (one time), paste the ID, and approve —
-// the token stays on this machine, never on our servers. (A one-click managed option may
-// come later.) The sign-in opens a window on THIS computer, so connect from the machine
-// running MWA.
+// the token stays on this machine, never on our servers. No managed broker (it would mean
+// a per-user cost + third-party token custody we won't take on for an open project); a
+// homegrown `mwa connect` helper will make this near-turnkey (see docs/connect-email.md).
+// The sign-in opens a window on THIS computer, so connect from the machine running MWA.
 
 type Provider = 'google' | 'microsoft';
 

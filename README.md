@@ -144,6 +144,12 @@ stay on your machine. For developers there's also `mwa run "<instruction>"` (hea
 `mwa watch` (a drop-folder), `mwa connect telegram`, and `npm run bench` (the A/B/C
 benchmark UI).
 
+**Connecting email** (Gmail or Outlook) uses a guided **bring-your-own** sign-in — you
+make a free Google/Microsoft app once and the token stays on your machine; there's **no
+managed broker** (no per-user cost, no third-party token custody). See
+**[docs/connect-email.md](docs/connect-email.md)** for the steps and the plan to make it
+near-turnkey via a homegrown `mwa connect` helper.
+
 > Already cloned without submodules? Run `git submodule update --init` then
 > `npm install && npm run build`. AWM lives at `vendor/agent-working-memory` and is
 > built from source, so MWA always runs the exact AWM it vendors — fix it there and
