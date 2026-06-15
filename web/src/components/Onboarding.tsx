@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { saveKey, getStatus } from '../api';
+import { saveKey, getStatus, getConnections, type ExternalInstall } from '../api';
 
 // Guided onboarding: pick the AI "brain" — including a no-key LOCAL option (Ollama).
 // Keys stay on this machine; the choice is written to mwa.config.json (models.fetch).
@@ -22,15 +22,25 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
   const [msg, setMsg] = useState('');
   const [ok, setOk] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [ext, setExt] = useState<ExternalInstall | null>(null);
 
-  function pick(p: Provider) { setSel(p); setModel(p.model); setKey(''); setBaseUrl(''); setMsg(''); setOk(false); }
+  function pick(p: Provider) { setSel(p); setModel(p.model); setKey(''); setBaseUrl(''); setMsg(''); setOk(false); setExt(null); }
 
   async function connect() {
     if (!sel) return;
-    setBusy(true); setMsg('checking that it works…'); setOk(false);
+    setBusy(true); setMsg('checking that it works…'); setOk(false); setExt(null);
     const r = await saveKey({ which: 'provider', provider: sel.id, model: model.trim() || sel.model, key: key.trim(), baseUrl: baseUrl.trim() });
     setBusy(false); setMsg(r.message); setOk(r.ok);
-    if (r.ok) { const s = await getStatus(); if (s.ready) setTimeout(onReady, 600); }
+    if (r.ok) {
+      const s = await getStatus();
+      if (s.ready) {
+        // Check whether this model is strong enough to also VET + install new connectors.
+        // If yes, sail on. If not, surface a one-time heads-up before entering the app.
+        const c = await getConnections().catch(() => null);
+        if (c?.externalInstall && !c.externalInstall.enabled) setExt(c.externalInstall);
+        else setTimeout(onReady, 600);
+      }
+    }
   }
 
   const field = 'w-full rounded-[3px] border border-line bg-bone px-4 py-3 text-[15px] outline-none focus:border-signal transition-colors';
@@ -76,6 +86,20 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
             </button>
           </div>
           {msg && <p className={`mono text-[13px] ${ok ? 'text-signal' : 'text-dim'}`}>{msg}</p>}
+        </motion.div>
+      )}
+
+      {ext && !ext.enabled && (
+        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="mt-4 rounded-[4px] border border-line bg-surface p-5 space-y-2">
+          <div className="font-medium">You’re connected ✓ — one optional thing</div>
+          <p className="text-dim text-sm">
+            This model is great for chatting, but it isn’t strong enough for MWA to safely
+            <b> vet and install new connectors from the web</b>, so that stays off for now.
+            Everything in the built-in connector library still works. To turn it on later,
+            add a stronger model — an <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="text-signal underline">OpenRouter</a> key
+            (many models, one key) or an Anthropic/OpenAI key — in Connections.
+          </p>
+          <button onClick={onReady} className="rounded-[3px] bg-signal text-white px-5 py-2.5 font-medium">Got it — let’s go</button>
         </motion.div>
       )}
     </motion.div>
