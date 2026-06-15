@@ -166,7 +166,7 @@ export async function runAgent(opts: {
   const history: string[] = [];
   let dispatches = 0, toolCalls = 0, reRecalls = 0, supersedes = 0, consolidations = 0;
   let learnedFacts = 0, skillsDerived = 0, openQuestions = 0; // for the run log + self-learning loop
-  let consecNoProgress = 0, consecWorkerFails = 0, brainErrors = 0;
+  let consecNoProgress = 0, consecWorkerFails = 0, brainErrors = 0, incompleteRejections = 0;
   const MAX_FETCH_FAILS = 2;
 
   memory.setSessionId(opts.session ?? `agent-${start}`);
@@ -325,9 +325,22 @@ export async function runAgent(opts: {
     }
 
     if (action.action === 'done') {
+      const summ = action.summary ? String(action.summary) : '';
+      // Reject a "done" whose OWN summary admits unfinished work ("I didn't finish X",
+      // "the next step is to add Y") — the model stopping short of a requested deliverable.
+      // Normalize markdown first (summaries use **bold**). Cap rejections to avoid spinning.
+      const norm = summ.replace(/[*_`#>]/g, '');
+      const admitsUnfinished = /\b(did\s?n.?t (finish|complete|create|add|write|build|get to)|have\s?n.?t (finish|complet|add|creat)|still (need|have) to (finish|create|add|write|build|do)|next step is to (add|create|write|finish|build|make)|not yet (finish|complet|creat|don)|remaining (file|step|task|item)|i.?ll (add|create|finish|build) (it|that|the))\b/i.test(norm);
+      if (admitsUnfinished && incompleteRejections < 2 && now() - start < maxWallMs * 0.8) {
+        incompleteRejections++;
+        consecNoProgress = 0; // it IS progressing, just stopping short — don't trip the stuck guard
+        nudge = `Your summary admits work is still unfinished ("${norm.slice(0, 80)}…"). Do NOT call done while a requested part remains — take that next step now and actually produce it. Only call done once everything the instruction asked for truly exists.`;
+        history.push('(rejected premature done — summary admitted unfinished work)');
+        continue;
+      }
       reason = 'done';
-      finalSummary = action.summary ? String(action.summary) : 'instruction satisfied';
-      modelAnswered = Boolean(action.summary && String(action.summary).trim());
+      finalSummary = summ || 'instruction satisfied';
+      modelAnswered = Boolean(summ.trim());
       history.push(`done: ${finalSummary}`);
       break;
     }
