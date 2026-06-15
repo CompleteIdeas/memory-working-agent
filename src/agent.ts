@@ -19,7 +19,7 @@ import type { Provider } from './provider.js';
 import type { Memory, RecalledMemory } from './awm.js';
 import { BRAIN_TOOLS } from './brain.js';
 import type { ToolDef } from './provider.js';
-import { RoutedProvider, classifyIntent } from './model-router.js';
+import { RoutedProvider, classifyIntent, startTier } from './model-router.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { runWorker } from './worker.js';
 import { parseJsonLoose, runCommand } from './util.js';
@@ -169,9 +169,12 @@ export async function runAgent(opts: {
   const MAX_FETCH_FAILS = 2;
 
   memory.setSessionId(opts.session ?? `agent-${start}`);
-  // Each task starts on the cheap tier; escalate only if THIS task struggles.
+  // Cheap-first for ordinary work; complex/long tasks start the conductor on the strong
+  // tier (the cheap tier under-delivers / quits early on long-horizon work), and the
+  // worker follows its own intent classification. Escalation below still earns upgrades.
   if (worker instanceof RoutedProvider) worker.reset(classifyIntent(instruction));
-  if (brain instanceof RoutedProvider) brain.reset('fetch');
+  const brainStart = startTier(instruction);
+  if (brain instanceof RoutedProvider) brain.reset(brainStart);
 
   const PRIME_K = 10; // cap on primed memories kept in the prompt (anti-context-rot)
   const recalled: RecalledMemory[] = memory.enabled ? await memory.recall(instruction, { limit: 8, full: true, workspace: opts.workspace }) : [];
@@ -212,6 +215,7 @@ export async function runAgent(opts: {
   let gatherStreak = 0; // reads/lists/recalls since the last remember/act — forces the record cadence
   let productive = 0; // remembers/dispatches/acts — once high enough, prompt to consider done
   const doneThreshold = Math.min(5, Math.ceil(maxSteps * 0.35));
+  const LONG_TASK_STEPS = 8; // a run this many conductor-steps deep = long-horizon → escalate
   const GATHER_NUDGE = 'You have gathered information several times without recording anything. Call REMEMBER now with 1-2 specific facts from what you just read — do not read/list/recall again until you do.';
   let steps = 0;
 
@@ -221,7 +225,13 @@ export async function runAgent(opts: {
     // Escalate the BRAIN when it's struggling (looping / no progress) — the stronger
     // model breaks loops the cheap one gets stuck in (and dodges Azure's content filter).
     if (consecNoProgress >= 3 && brain instanceof RoutedProvider && brain.getTier() === 'fetch') {
-      brain.escalate(); history.push('↑ escalated brain fetch→reason (no progress)'); emit('escalate', { which: 'brain' });
+      brain.escalate(); history.push('↑ escalated brain fetch→reason (no progress)'); emit('escalate', { which: 'brain', reason: 'no-progress' });
+    }
+    // Long-running task → upgrade even when it ISN'T stuck: a run this many conductor-steps
+    // deep is long-horizon work, where the cheap tier under-delivers; give it the strong
+    // model to finish coherently (it inherits all the AWM context, so the switch is cheap).
+    else if (steps >= LONG_TASK_STEPS && brain instanceof RoutedProvider && brain.getTier() === 'fetch') {
+      brain.escalate(); history.push('↑ escalated brain fetch→reason (long task)'); emit('escalate', { which: 'brain', reason: 'long-task' });
     }
     // Hard stop on a no-progress spiral (e.g. recall↔search over and over with no new
     // info). The escalated model gets a few tries first; then we stop and answer below.

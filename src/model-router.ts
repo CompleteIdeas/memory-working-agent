@@ -30,6 +30,24 @@ export function classifyIntent(task: string): Tier {
   return 'fetch';
 }
 
+// Long-horizon / multi-deliverable work where the cheap tier tends to quit early or
+// under-deliver: a long instruction, or an explicit multi-step task that BOTH researches
+// and produces an artifact. These start the conductor strong instead of hoping it copes.
+const RESEARCH = /\b(find|search|research|look up|gather|compare|investigate|review|summari[sz]e|catch me up)\b/;
+const PRODUCE = /\b(write|create|save|build|generate|draft|produce|compile|table|report|spreadsheet|document)\b/;
+export function isComplexTask(task: string): boolean {
+  const t = task.toLowerCase();
+  if (t.length > 220) return true; // a long instruction is almost always multi-part
+  const multiStep = /\bthen\b|\band then\b|\bafter that\b|\b\d\.\s/.test(t);
+  return multiStep && RESEARCH.test(t) && PRODUCE.test(t);
+}
+
+/** Starting tier for the conductor: strong when the task reads complex/long, else cheap.
+ *  Cheap-first stays the default for ordinary work; escalation still earns upgrades below. */
+export function startTier(task: string): Tier {
+  return classifyIntent(task) === 'reason' || isComplexTask(task) ? 'reason' : 'fetch';
+}
+
 export class RoutedProvider implements Provider {
   private tier: Tier;
   escalations = 0;
