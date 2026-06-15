@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
 
 /**
  * Extract a JSON object/array from model text that may include prose or
@@ -50,7 +51,15 @@ export interface CommandResult {
 
 /** Run a shell command in cwd with a timeout; capture output. Cross-platform. */
 export function runCommand(cmd: string, cwd: string, timeoutMs = 60_000): CommandResult {
-  const r = spawnSync(cmd, { cwd, shell: true, timeout: timeoutMs, encoding: 'utf8' });
+  // Windows spawnSync throws ENOENT (naming the shell, e.g. cmd.exe) when cwd doesn't
+  // exist — and the agent's working dir is created lazily. Ensure it exists first.
+  try { mkdirSync(cwd, { recursive: true }); } catch { /* */ }
+  let r;
+  try {
+    r = spawnSync(cmd, { cwd, shell: true, timeout: timeoutMs, encoding: 'utf8' });
+  } catch (e) {
+    return { code: 1, stdout: '', stderr: `command failed to start: ${(e as Error).message}`.slice(-8000) };
+  }
   return {
     code: typeof r.status === 'number' ? r.status : 1,
     stdout: (r.stdout ?? '').slice(-8000),

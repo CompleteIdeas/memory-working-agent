@@ -92,24 +92,36 @@ Full methodology + the honest where-it-doesn't-win scorecard: **[results/RESULTS
 
 ---
 
-## Install (Docker) — onboards itself
+## Install (Docker) — one container, onboards itself
 
-The container runs a **first-run setup wizard**, then the agent. Your keys are
-entered in a localhost browser page and stored in a plain `.env` on the `/data`
-volume — **they never leave your machine** (localhost wizard = no server in the loop;
-keys only ever go to the AI provider you chose).
+The container is the whole app: open it in a browser, get **guided setup** on first run,
+then just chat. Everything persistent (secrets `.env`, AWM memory, workspace, model
+cache) lives on the `/data` volume — on your disk. Your provider key is entered in the
+setup screen and only ever goes to the AI provider you chose.
+
+Pull the published image (no local build needed):
 
 ```bash
-docker build -t mwa .
-docker run -d -p 127.0.0.1:7788:7788 -v mwa-data:/data --name mwa mwa
-# open http://localhost:7788 → add a model provider key (and optionally a Telegram
-# bot token), then:
-docker restart mwa     # now configured → the agent runs (mailbox, or Telegram if a token is set)
+docker run -d -p 127.0.0.1:7788:7788 -v mwa-data:/data --name mwa \
+  ghcr.io/completeideas/mwa:latest
+# open http://localhost:7788 → pick a model → chat. (Build locally instead with
+# `docker build -t mwa .` if you've cloned the repo with --recurse-submodules.)
 ```
 
-Everything persistent (secrets, AWM memory, the inbox/outputs workspace) lives on the
-`mwa-data` volume — on your disk. `-p 127.0.0.1:…` keeps the wizard reachable only from
-your machine.
+Or use Compose (`cp .env.example .env`, then `docker compose up -d`).
+
+**Running it on a network / NAS?** Set an access password and lock it down:
+
+```bash
+docker run -d -p 7788:7788 -v mwa-data:/data --name mwa \
+  -e MWA_ACCESS_PASSWORD='a-strong-password' \
+  ghcr.io/completeideas/mwa:latest
+```
+
+`MWA_ACCESS_PASSWORD` puts the whole UI + API behind a login (empty = no gate, the
+localhost default). For an always-on box (so scheduled tasks fire) — including a
+**Synology NAS** — see **[docs/deploy-nas.md](docs/deploy-nas.md)** (Container Manager,
+Tailscale-only access, volume mapping, RAM notes).
 
 ## Quickstart (local, turnkey)
 
@@ -120,12 +132,17 @@ Prereqs: Node 22+ (and a C toolchain for `better-sqlite3`). Either run the wizar
 ```bash
 git clone --recurse-submodules https://github.com/CompleteIdeas/memory-working-agent.git
 cd memory-working-agent
-npm install       # links the vendored AWM submodule as an npm workspace
-npm run build     # builds AWM from source (submodule) + MWA
-npm run setup     # detect providers, verify AWM, write mwa.config.json, report readiness
-npm run ui        # → http://localhost:7878  (pick a task + arm, hit Run, watch live)
-npm run bench     # → A/B/C orchestration benchmark → results/summary.json + table
+npm install       # links the vendored AWM submodule + web app as npm workspaces
+npm run build     # builds AWM (submodule) + MWA + the web app (→ dist-ui)
+npm run serve     # → opens http://localhost:7788 — guided setup, then just chat with it
 ```
+
+`mwa serve` (also the default, `mwa` with no args) is the one command for humans: it
+opens a local web app in your browser — connect a model, then talk to your assistant and
+**watch it remember, look things up, and do the work** (the live "activity spine"). Keys
+stay on your machine. For developers there's also `mwa run "<instruction>"` (headless),
+`mwa watch` (a drop-folder), `mwa connect telegram`, and `npm run bench` (the A/B/C
+benchmark UI).
 
 > Already cloned without submodules? Run `git submodule update --init` then
 > `npm install && npm run build`. AWM lives at `vendor/agent-working-memory` and is

@@ -126,11 +126,52 @@ const httpRequestTool: RegisteredTool = {
   },
 };
 
+const readDocumentTool: RegisteredTool = {
+  def: {
+    name: 'read_document',
+    description: 'Read a document as text — a LOCAL file path OR an http(s) URL. Handles PDF, Word (.docx), and plain text / markdown / CSV / JSON. Use this to ACTUALLY read a PDF (e.g. a camp Leaders Guide) — never guess its contents.',
+    parameters: { type: 'object', properties: { source: { type: 'string', description: 'a file path or http(s) URL' }, max_chars: { type: 'number', description: 'cap returned text, default 8000' } }, required: ['source'] },
+  },
+  handler: async (args) => {
+    const src = String(args.source ?? '').trim();
+    if (!src) return '(no source given)';
+    const max = Math.min(Number(args.max_chars ?? 8000), 40000);
+    try {
+      let buf: Buffer;
+      if (/^https?:\/\//i.test(src)) {
+        const res = await fetch(src, { headers: { 'user-agent': 'Mozilla/5.0 (MWA)' }, redirect: 'follow' });
+        if (!res.ok) return `(couldn't fetch ${src}: ${res.status})`;
+        buf = Buffer.from(await res.arrayBuffer());
+      } else {
+        buf = readFileSync(resolve(src));
+      }
+      const lower = src.toLowerCase();
+      if (lower.endsWith('.pdf') || buf.subarray(0, 5).toString('latin1') === '%PDF-') {
+        const { getDocumentProxy, extractText } = await import('unpdf');
+        const pdf = await getDocumentProxy(new Uint8Array(buf));
+        const { text } = await extractText(pdf, { mergePages: true });
+        const t = Array.isArray(text) ? text.join('\n') : String(text ?? '');
+        return t.trim().slice(0, max) || '(PDF has no extractable text — likely scanned images)';
+      }
+      if (lower.endsWith('.docx')) {
+        const m: any = await import('mammoth');
+        const fn = m.extractRawText ?? m.default?.extractRawText;
+        const { value } = await fn({ buffer: buf });
+        return String(value ?? '').slice(0, max);
+      }
+      return buf.toString('utf8').slice(0, max);
+    } catch (e) {
+      return `(could not read document: ${(e as Error).message.slice(0, 140)})`;
+    }
+  },
+};
+
 export const BUILTIN_TOOLS: Record<string, RegisteredTool> = {
   run_command: runCommandTool,
   list_files: listFilesTool,
   read_file: readFileTool,
   write_file: writeFileTool,
+  read_document: readDocumentTool,
   http_request: httpRequestTool,
 };
 

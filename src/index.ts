@@ -4,7 +4,7 @@
  */
 export { runBrain, type BrainGoal, type BrainResult } from './brain.js';
 export { runAgent, type AgentBudget, type AgentResult } from './agent.js';
-export { getProvider, type Provider, type ToolDef, type ToolCall, type ChatInput, type ChatResult } from './provider.js';
+export { getProvider, resolveProvider, PROVIDERS, type Provider, type ProviderRole, type ToolDef, type ToolCall, type ChatInput, type ChatResult } from './provider.js';
 export { MwaMemory, NullMemory, type Memory, type RecalledMemory } from './awm.js';
 export { RoutedProvider, classifyIntent, type Tier } from './model-router.js';
 export { ToolRegistry, type RegisteredTool, type ToolContext } from './tools/registry.js';
@@ -14,6 +14,9 @@ export { loadMcpServers, type McpServerSpec, type McpHandle } from './tools/mcp.
 export { processInbox, watchInbox, mailboxDirs, type MailboxDirs } from './mailbox.js';
 export { runTelegram, handleInstruction } from './connectors/telegram.js';
 export { runWizard } from './wizard.js';
+export { runServe } from './serve.js';
+export { runIngest } from './ingest.js';
+export { listUniqueMessages, type UniqueMessage } from './connectors/google.js';
 export { runScheduler, tickScheduler, type SchedulerDeps } from './scheduler.js';
 export { connectGmail, googleTools, googleConfigured } from './connectors/google.js';
 export { loadConfig, DEFAULT_CONFIG, CONFIG_PATH, type MwaConfig } from './config.js';

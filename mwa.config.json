@@ -8,8 +8,24 @@
     "builtins": [
       "run_command",
       "read_file",
-      "list_files"
-    ]
+      "write_file",
+      "list_files",
+      "read_document"
+    ],
+    "mcpServers": {
+      "search": {
+        "command": "node",
+        "args": [
+          "mcp-servers/search.mjs"
+        ]
+      },
+      "fetch": {
+        "command": "node",
+        "args": [
+          "mcp-servers/fetch.mjs"
+        ]
+      }
+    }
   },
   "escalation": {
     "maxFetchFailures": 2

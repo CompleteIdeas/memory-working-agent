@@ -24,11 +24,11 @@ export interface MwaConfig {
 }
 
 export const DEFAULT_CONFIG: MwaConfig = {
-  models: { fetch: 'gpt-5-4-mini', reason: 'claude-sonnet-4-6' },
+  models: { fetch: 'azure:gpt-5-4-mini', reason: 'anthropic:claude-sonnet-4-6' },
   awm: {},
   workspace: './mwa-workspace',
   tools: {
-    builtins: ['run_command', 'read_file', 'write_file', 'list_files'],
+    builtins: ['run_command', 'read_file', 'write_file', 'list_files', 'read_document'],
     mcpServers: { search: { command: 'node', args: ['mcp-servers/search.mjs'] } }, // keyless web search (Brave if BRAVE_API_KEY set)
   },
   escalation: { maxFetchFailures: 2 },

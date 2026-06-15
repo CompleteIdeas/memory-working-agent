@@ -12,11 +12,13 @@ import { createServer } from 'node:http';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
+import { OPENAI_COMPAT } from './provider.js';
+import { loadConfig } from './config.js';
 
 const ENV_PATH = process.env.MWA_ENV_PATH ?? resolve('.env');
 
 /** Upsert KEY=value lines in the .env (preserves other lines). Local file only. */
-function upsertEnv(kv: Record<string, string>): void {
+export function upsertEnv(kv: Record<string, string>): void {
   const lines = existsSync(ENV_PATH) ? readFileSync(ENV_PATH, 'utf8').split('\n') : [];
   const seen = new Set<string>();
   const out = lines.map((line) => {
@@ -35,14 +37,14 @@ function envHas(key: string): boolean {
 }
 
 // --- live validators (a key is only saved if it actually works) ---
-async function testAnthropic(key: string): Promise<{ ok: boolean; message: string }> {
+export async function testAnthropic(key: string): Promise<{ ok: boolean; message: string }> {
   try {
     const c = new Anthropic({ apiKey: key, maxRetries: 0 });
     await c.messages.create({ model: 'claude-haiku-4-5-20251001', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] });
     return { ok: true, message: 'Anthropic key works ✓' };
   } catch (e) { return { ok: false, message: `Anthropic key failed: ${(e as Error).message.slice(0, 120)}` }; }
 }
-async function testAzure(base: string, key: string, deployment: string): Promise<{ ok: boolean; message: string }> {
+export async function testAzure(base: string, key: string, deployment: string): Promise<{ ok: boolean; message: string }> {
   try {
     const res = await fetch(`${base.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST', headers: { 'api-key': key, 'content-type': 'application/json' },
@@ -51,18 +53,57 @@ async function testAzure(base: string, key: string, deployment: string): Promise
     return res.ok ? { ok: true, message: `Azure ${deployment} works ✓` } : { ok: false, message: `Azure failed: ${res.status} ${(await res.text()).slice(0, 100)}` };
   } catch (e) { return { ok: false, message: `Azure failed: ${(e as Error).message.slice(0, 120)}` }; }
 }
-async function testTelegram(token: string): Promise<{ ok: boolean; message: string }> {
+export async function testTelegram(token: string): Promise<{ ok: boolean; message: string }> {
   try {
     const r: any = await (await fetch(`https://api.telegram.org/bot${token}/getMe`)).json();
     return r.ok ? { ok: true, message: `Bot @${r.result.username} works ✓` } : { ok: false, message: `Telegram failed: ${r.description}` };
   } catch (e) { return { ok: false, message: `Telegram failed: ${(e as Error).message.slice(0, 120)}` }; }
 }
 
-function status() {
+/** Which .env var holds the key for a provider (null = keyless, e.g. Ollama). */
+export function envKeyForProvider(provider: string): string | null {
+  if (provider === 'anthropic') return 'ANTHROPIC_API_KEY';
+  if (provider === 'azure') return 'AZURE_GPT_API_KEY';
+  return OPENAI_COMPAT[provider]?.keyEnv ?? null;
+}
+
+async function testOpenAICompat(base: string, key: string | undefined, model: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (key) headers.authorization = `Bearer ${key}`;
+    const res = await fetch(`${base.replace(/\/$/, '')}/chat/completions`, { method: 'POST', headers, body: JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }) });
+    if (res.ok) return { ok: true, message: `${model} works ✓` };
+    return { ok: false, message: `failed: ${res.status} ${(await res.text()).slice(0, 120)}` };
+  } catch (e) { return { ok: false, message: `couldn't reach it: ${(e as Error).message.slice(0, 120)}` }; }
+}
+
+/** Validate any provider before saving — anthropic/azure/openai/openrouter/gemini/ollama. */
+export async function testProvider(provider: string, model: string, key?: string, baseUrl?: string): Promise<{ ok: boolean; message: string }> {
+  if (provider === 'anthropic') return testAnthropic(key ?? '');
+  if (provider === 'azure') return testAzure(baseUrl ?? '', key ?? '', model || 'gpt-5-4-mini');
+  const oc = OPENAI_COMPAT[provider];
+  if (!oc) return { ok: false, message: `unknown provider "${provider}"` };
+  if (!oc.keyless && !key) return { ok: false, message: 'a key is required for this provider' };
+  const base = baseUrl || (oc.baseEnv && process.env[oc.baseEnv]) || oc.base;
+  return testOpenAICompat(base, oc.keyless ? undefined : key, model);
+}
+
+export function status() {
   const anthropic = envHas('ANTHROPIC_API_KEY');
   const azure = envHas('AZURE_GPT_API_KEY') && envHas('AZURE_GPT_BASE_URL');
   const telegram = envHas('TELEGRAM_BOT_TOKEN');
-  return { anthropic, azure, telegram, ready: anthropic || azure };
+  // ready = whatever brain is configured (models.fetch) has what it needs — so connecting
+  // ONLY OpenAI / Ollama / etc. completes onboarding, not just Anthropic/Azure.
+  let ready = anthropic || azure;
+  try {
+    const spec = loadConfig().models.fetch;
+    const provider = spec.includes(':') ? spec.split(':')[0].toLowerCase() : (/claude/i.test(spec) ? 'anthropic' : /^gpt-/i.test(spec) ? 'azure' : '');
+    if (provider === 'ollama') ready = true;
+    else if (provider === 'anthropic') ready = anthropic;
+    else if (provider === 'azure') ready = azure;
+    else { const k = OPENAI_COMPAT[provider]?.keyEnv; if (k) ready = envHas(k); }
+  } catch { /* keep the anthropic||azure default */ }
+  return { anthropic, azure, telegram, ready };
 }
 
 const PAGE = `<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1">

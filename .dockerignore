@@ -1,14 +1,27 @@
-node_modules
-dist
+# Keep the build context lean and force a clean in-image build.
+# IMPORTANT: do NOT exclude web/ or vendor/agent-working-memory/ SOURCES — the image
+# builds the SPA + AWM submodule from source. Only their build artifacts are excluded.
+**/node_modules
+**/dist
+dist-ui
+**/.git
+.git
+
+# Local state / secrets — never bake into the image (at any depth, incl. the submodule).
+.env
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/data
+mwa-workspace
+.cache
+hf
+
+# Dev-only / scratch.
 sandbox
-data
 results
 *.log
-.git
-.env
 smoke.mjs
 verify-providers.mjs
-.cache
-mwa-workspace
-*.db
+scripts/_*
 mcp.config*

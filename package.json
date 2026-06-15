@@ -26,10 +26,12 @@
   },
   "main": "dist/index.js",
   "workspaces": [
-    "vendor/agent-working-memory"
+    "vendor/agent-working-memory",
+    "web"
   ],
   "files": [
     "dist",
+    "dist-ui",
     "mcp-servers",
     "README.md",
     "LICENSE",
@@ -38,10 +40,13 @@
   ],
   "scripts": {
     "build:awm": "npm run build --workspace=agent-working-memory",
-    "build": "npm run build:awm && tsc",
+    "build:ui": "npm run build --workspace=mwa-web",
+    "dev:ui": "npm run dev --workspace=mwa-web",
+    "build": "npm run build:awm && tsc && npm run build:ui",
     "typecheck": "tsc --noEmit",
     "setup": "tsx src/setup.ts",
     "wizard": "tsx src/cli.ts wizard",
+    "serve": "tsx src/cli.ts serve",
     "agent": "tsx src/cli.ts run",
     "watch": "tsx src/cli.ts watch",
     "bench": "tsx src/benchmark.ts",
@@ -57,7 +62,9 @@
     "@anthropic-ai/sdk": "^0.40.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "agent-working-memory": "*",
-    "googleapis": "^173.0.0"
+    "googleapis": "^173.0.0",
+    "mammoth": "^1.12.0",
+    "unpdf": "^1.6.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

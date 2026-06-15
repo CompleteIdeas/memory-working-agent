@@ -24,6 +24,8 @@ import { watchInbox, mailboxDirs } from './mailbox.js';
 import { runTelegram } from './connectors/telegram.js';
 import { connectGmail } from './connectors/google.js';
 import { runWizard } from './wizard.js';
+import { runServe } from './serve.js';
+import { runIngest } from './ingest.js';
 import { loadEnv } from './env.js';
 
 function parseFlags(args: string[]): { flags: Record<string, string>; positional: string[] } {
@@ -119,12 +121,18 @@ async function connectCommand(args: string[]): Promise<void> {
 
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
-  if (!cmd || cmd === 'setup') return runSetup();
+  if (!cmd || cmd === 'serve') { const { flags } = parseFlags(rest); return runServe(flags.port ? Number(flags.port) : undefined); }
+  if (cmd === 'setup') return runSetup();
   if (cmd === 'wizard') return runWizard();
   if (cmd === 'run') return runCommand(rest);
   if (cmd === 'watch') return watchCommand(rest);
   if (cmd === 'connect') return connectCommand(rest);
-  console.error(`unknown command: ${cmd}\nusage: mwa wizard | mwa setup | mwa run "<instruction>" | mwa watch [--once] | mwa connect telegram`);
+  if (cmd === 'ingest') {
+    const { flags } = parseFlags(rest); loadEnv();
+    await runIngest({ days: flags.days ? Number(flags.days) : undefined, max: flags.max ? Number(flags.max) : undefined, dbPath: flags.db, onLog: (m) => console.log(`  ${m}`) });
+    return;
+  }
+  console.error(`unknown command: ${cmd}\nusage: mwa serve | mwa run "<instruction>" | mwa watch [--once] | mwa connect telegram | mwa setup`);
   process.exit(1);
 }
 

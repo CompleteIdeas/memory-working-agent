@@ -47,6 +47,10 @@ export interface Memory {
   consolidate(): Promise<Record<string, number>>;
   /** Persist a scheduled task (due = epoch ms) in the AWM task store. */
   addScheduledTask(instruction: string, dueMs: number, opts?: { recur?: string; notify?: string }): Promise<string | null>;
+  /** Persist a reusable procedure ("skill") recalled on similar future tasks. */
+  saveSkill(name: string, steps: string): Promise<string | null>;
+  /** Persist an open question the agent wants answered later (self-learning loop). */
+  saveQuestion(question: string): Promise<string | null>;
   close(): void;
 }
 
@@ -222,6 +226,57 @@ export class MwaMemory implements Memory {
     this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('due=')), `due=${Math.round(nextDueMs)}`]);
   }
 
+  /** Rough count of stored memories for this agent — powers the UI "memory meter". */
+  memoryCount(): number {
+    try { return (this.store.getEngramsByAgent(this.agentId) ?? []).length; } catch { return 0; }
+  }
+
+  /** Recent memories (newest-first), for the UI "Memory" view — makes the substrate
+   *  tangible. Filters out internal bookkeeping engrams (run outcomes, session/sleep
+   *  summaries, scheduled tasks) so the user sees only genuine learned facts. */
+  recentMemories(limit = 40): { id: string; concept: string; content: string }[] {
+    try {
+      const all: any[] = this.store.getEngramsByAgent(this.agentId) ?? [];
+      const facts = all.filter((e) => !/^(agent run:|agent step:|session:|scheduled:|skill:|question:)/i.test(String(e.concept ?? '')));
+      return facts.slice(-limit).reverse().map((e) => ({ id: e.id, concept: e.concept ?? '', content: String(e.content ?? '').slice(0, 240) }));
+    } catch { return []; }
+  }
+
+  /** Persist a reusable procedure ("skill") as a canonical memory. Tagged topic=skill so
+   *  auto-prime recalls it on similar future tasks — the agent learns HOW, not just WHAT. */
+  async saveSkill(name: string, steps: string): Promise<string | null> {
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+    return this.write(`skill: ${name}`.slice(0, 80), steps, ['topic=skill', `skill=${slug}`, 'intent=procedural', 'confidence_level=observed'], { canonical: true, eventType: 'observation' });
+  }
+
+  /** Reusable procedures the agent has learned, for the UI "Skills" view. */
+  listSkills(): { name: string; content: string }[] {
+    try {
+      const all: any[] = this.store.getEngramsByAgent(this.agentId) ?? [];
+      return all.filter((e) => this.parseTags(e.tags).includes('topic=skill')).reverse()
+        .map((e) => ({ name: String(e.concept ?? '').replace(/^skill:\s*/i, ''), content: String(e.content ?? '').slice(0, 300) }));
+    } catch { return []; }
+  }
+
+  /** SELF-LEARNING: an open question the agent flagged to answer later (intent=question). */
+  async saveQuestion(question: string): Promise<string | null> {
+    return this.write(`question: ${question}`.slice(0, 80), question, ['topic=open-question', 'status=open', 'intent=question', 'confidence_level=assumed'], { canonical: true, eventType: 'observation' });
+  }
+
+  /** Open (unresolved) questions, for the UI + the resolve pass. */
+  listOpenQuestions(): { id: string; question: string }[] {
+    try {
+      const all: any[] = this.store.getEngramsByAgent(this.agentId) ?? [];
+      return all.filter((e) => { const t = this.parseTags(e.tags); return t.includes('topic=open-question') && t.includes('status=open'); })
+        .reverse().map((e) => ({ id: e.id, question: String(e.content ?? '') }));
+    } catch { return []; }
+  }
+
+  /** Mark an open question resolved (the answer is written separately as a normal fact). */
+  resolveQuestion(id: string): void {
+    try { const e = this.store.getEngram(id); if (e) this.store.updateTags(id, this.parseTags(e.tags).map((t: string) => (t.startsWith('status=') ? 'status=resolved' : t))); } catch { /* */ }
+  }
+
   close(): void {
     try {
       this.store.stopWalCheckpointTimer?.();
@@ -251,6 +306,12 @@ export class NullMemory implements Memory {
     return {};
   }
   async addScheduledTask(): Promise<string | null> {
+    return null;
+  }
+  async saveSkill(): Promise<string | null> {
+    return null;
+  }
+  async saveQuestion(): Promise<string | null> {
     return null;
   }
   async feedback(): Promise<void> {

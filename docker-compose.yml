@@ -1,0 +1,35 @@
+# MWA — freestanding web app.
+#
+# Quick start (any Docker host):
+#   1. cp .env.example .env  &&  edit .env  (set MWA_ACCESS_PASSWORD)
+#   2. docker compose up -d
+#   3. open http://localhost:7788  → unlock → pick a model → chat
+#
+# Synology (DSM 7.2+ Container Manager):
+#   - Container Manager → Project → Create → upload this file (and a .env beside it).
+#   - It maps ./data → /data; on the NAS that becomes /volume1/docker/mwa/data.
+#   - Reach it at http://<nas-ip>:7788, or (recommended) only over your Tailscale tailnet.
+#   See docs/deploy-nas.md for the full walk-through.
+services:
+  mwa:
+    image: ghcr.io/completeideas/mwa:latest
+    # To build locally instead of pulling from GHCR, comment out `image:` above and
+    # uncomment the next line (needs the repo checked out with submodules):
+    # build: .
+    container_name: mwa
+    restart: unless-stopped
+    ports:
+      - "7788:7788"
+    environment:
+      # STRONGLY recommended on a NAS / any networked host: locks the whole UI + API
+      # behind this password. Leave empty ONLY if access is already restricted to a
+      # private network (e.g. Tailscale-only). Set it in .env, not here.
+      MWA_ACCESS_PASSWORD: "${MWA_ACCESS_PASSWORD:-}"
+      TZ: "${TZ:-America/New_York}"
+    volumes:
+      # Secrets (.env), AWM memory db, workspace, and the recall model cache all live here.
+      # Back this folder up and it survives image updates.
+      - ./data:/data
+    # The in-process recall models (embedding + reranker + query expander) want ~1.5 GB.
+    # Give headroom; a 2 GB NAS is tight — 4 GB+ recommended.
+    mem_limit: 3g

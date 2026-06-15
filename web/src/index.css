@@ -1,0 +1,46 @@
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+/* "Instrument" — a precise device for thinking. Bone + graphite, ONE signal color
+   (signal-orange), a technical grotesque (Archivo) with mono numerals (Plex Mono),
+   hairline rules. No grain, no cozy serif — crisp and made. */
+@theme {
+  --color-bone: #e8e6e1;       /* warm grey ground (cooler than cream) */
+  --color-surface: #f1efeb;    /* panels sit slightly lighter */
+  --color-graphite: #1e2127;   /* ink / device-dark */
+  --color-dim: #76746d;        /* secondary text */
+  --color-line: #cfccc3;       /* hairline rules */
+  --color-signal: #ec4a18;     /* the one accent */
+  --font-sans: "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* Dark = the same instrument under low light. Toggled by `.dark` on <html>. */
+:root.dark {
+  --color-bone: #16181c;
+  --color-surface: #1f2228;
+  --color-graphite: #e8e6e1;
+  --color-dim: #8c8a82;
+  --color-line: #2b2f36;
+  --color-signal: #ff6a33;
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    margin: 0;
+    background-color: var(--color-bone);
+    color: var(--color-graphite);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "tnum" 1; /* tabular numerals — instrument-precise */
+  }
+}
+
+/* tight, technical scrollbars */
+* { scrollbar-width: thin; scrollbar-color: var(--color-line) transparent; }
+
+/* small reusable bits */
+.mono { font-family: var(--font-mono); }
+.hairline { border-color: var(--color-line); }
