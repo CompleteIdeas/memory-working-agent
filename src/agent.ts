@@ -70,6 +70,7 @@ const AGENT_SYSTEM = [
   'ACTIONS REQUIRE THE TOOL: to draft an email you MUST call draft_email (it creates a real Gmail DRAFT in the connected account; it never sends). To schedule, call schedule. NEVER say you drafted, sent, scheduled, or saved something unless that tool call returned success THIS turn — writing the email text in your reply is NOT drafting it. If you are missing the recipient or details, get them from the thread (read_email) or ask_user first, then call draft_email.',
   'The PRIOR KNOWLEDGE block is auto-recalled from YOUR memory each turn — read it FIRST and USE it. If it already answers part of the request, do NOT search or look it up again; only act on what is genuinely missing. Supersede a numbered item by ref if a result disproves it.',
   'COMPLETE EVERY PART: if the instruction asks for more than one thing (e.g. create TWO files, list AND enable a connector, find X AND draft Y), actually DO each one with its tool before calling done. Do not stop after the first part, and never call done while describing a remaining action as "the next step" — take that step.',
+  'BE CONCISE: when you call done, lead with the answer and keep the summary tight — no preamble, no restating the question, no filler. A few sentences or a short list, not an essay. Do your reasoning in your head, not on the page.',
   'VERIFY your work (run the tests/commands) before calling done. Call done ONLY when the instruction is genuinely',
   'satisfied. Never loop without making progress — if stuck, try a different concrete step.',
 ].join('\n');

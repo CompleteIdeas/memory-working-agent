@@ -57,6 +57,9 @@ export class RoutedProvider implements Provider {
     private readonly fetchP: Provider,
     private readonly reasonP: Provider,
     startTier: Tier = 'fetch',
+    // Reasoning effort per tier: the cheap tier stays fast/concise (minimal); the strong
+    // tier actually reasons (high). Providers apply it only to reasoning-capable models.
+    private readonly effort: { fetch: ChatInput['reasoningEffort']; reason: ChatInput['reasoningEffort'] } = { fetch: 'minimal', reason: 'high' },
   ) {
     this.tier = startTier;
   }
@@ -82,7 +85,9 @@ export class RoutedProvider implements Provider {
 
   async chat(input: ChatInput): Promise<ChatResult> {
     const tier = this.tier;
-    const r = await this.active().chat(input);
+    // Engage reasoning per tier (caller can override). Cheap tier = minimal, strong = high.
+    const reasoningEffort = input.reasoningEffort ?? (tier === 'fetch' ? this.effort.fetch : this.effort.reason);
+    const r = await this.active().chat({ ...input, reasoningEffort });
     const s = this.perTier[tier];
     s.in += r.usage.input;
     s.out += r.usage.output;

@@ -42,6 +42,10 @@ export interface ChatInput {
   messages: ChatMessage[];
   maxTokens?: number;
   tools?: ToolDef[];
+  /** Engage the model's reasoning (hidden thinking → concise answer). Each provider applies
+   *  it only to models that support it (gpt-5.x reasoning_effort, Claude thinking); ignored
+   *  otherwise. The router sets this per tier: strong tier = high, cheap tier = minimal. */
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
 }
 
 export interface Provider {
@@ -66,10 +70,16 @@ class AnthropicProvider implements Provider {
   ) {
     this.id = `anthropic:${model}${idSuffix}`;
   }
-  async chat({ system, messages, maxTokens = 1500, tools }: ChatInput): Promise<ChatResult> {
+  async chat({ system, messages, maxTokens = 1500, tools, reasoningEffort }: ChatInput): Promise<ChatResult> {
+    // Extended thinking on reasoning-capable Claude models (hidden thinking blocks; the
+    // visible text stays concise). budget must be < max_tokens, so add headroom.
+    const canThink = /claude-(opus|sonnet)/i.test(this.model);
+    const budget = canThink && reasoningEffort && reasoningEffort !== 'minimal'
+      ? ({ low: 1024, medium: 2000, high: 3200 } as const)[reasoningEffort] : 0;
     const r = await this.client.messages.create({
       model: this.model,
-      max_tokens: maxTokens,
+      max_tokens: budget ? maxTokens + budget : maxTokens,
+      ...(budget ? { thinking: { type: 'enabled', budget_tokens: budget } } as any : {}),
       ...(system ? { system } : {}),
       ...(tools?.length
         ? { tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters as Anthropic.Tool.InputSchema })) }
@@ -97,13 +107,17 @@ class AzureGptProvider implements Provider {
   ) {
     this.id = `azure-gpt:${model}`;
   }
-  async chat({ system, messages, maxTokens = 1500, tools }: ChatInput): Promise<ChatResult> {
+  async chat({ system, messages, maxTokens = 1500, tools, reasoningEffort }: ChatInput): Promise<ChatResult> {
     const msgs = (system ? [{ role: 'system', content: system }, ...messages] : messages).map((m) => ({ role: m.role, content: m.content }));
+    // gpt-5.x is a reasoning model: pass reasoning_effort, and give non-minimal efforts
+    // token headroom so hidden reasoning doesn't starve the visible answer.
+    const reasons = /gpt-5/i.test(this.model) && !!reasoningEffort;
     const body: Record<string, unknown> = {
       model: this.model,
       messages: msgs,
-      max_completion_tokens: maxTokens, // gpt-5.x rejects max_tokens
+      max_completion_tokens: reasons && reasoningEffort !== 'minimal' ? maxTokens + 3000 : maxTokens, // gpt-5.x rejects max_tokens
     };
+    if (reasons) body.reasoning_effort = reasoningEffort;
     if (tools?.length) {
       body.tools = tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
       body.tool_choice = 'auto';
@@ -156,9 +170,13 @@ class OpenAICompatProvider implements Provider {
   ) {
     this.id = `${label}:${model}`;
   }
-  async chat({ system, messages, maxTokens = 1500, tools }: ChatInput): Promise<ChatResult> {
+  async chat({ system, messages, maxTokens = 1500, tools, reasoningEffort }: ChatInput): Promise<ChatResult> {
     const msgs = (system ? [{ role: 'system', content: system }, ...messages] : messages).map((m) => ({ role: m.role, content: m.content }));
-    const body: Record<string, unknown> = { model: this.model, messages: msgs, max_tokens: maxTokens };
+    // Only send reasoning_effort to models known to support it (gpt-5.x, o-series) — never
+    // to local/llama/etc. (they'd 400). Headroom so reasoning doesn't starve the answer.
+    const reasons = /(^|[:/-])(o[1-9]|gpt-5)/i.test(this.model) && !!reasoningEffort;
+    const body: Record<string, unknown> = { model: this.model, messages: msgs, max_tokens: reasons && reasoningEffort !== 'minimal' ? maxTokens + 3000 : maxTokens };
+    if (reasons) body.reasoning_effort = reasoningEffort;
     if (tools?.length) {
       body.tools = tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
       body.tool_choice = 'auto';

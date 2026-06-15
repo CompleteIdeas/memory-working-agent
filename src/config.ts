@@ -30,7 +30,11 @@ export interface MwaConfig {
 }
 
 export const DEFAULT_CONFIG: MwaConfig = {
-  models: { fetch: 'azure:gpt-5-4-mini', reason: 'anthropic:claude-sonnet-4-6' },
+  // Both tiers are the gpt-5.x mini REASONING model (USEA-proven: 14/15, beat Sonnet 7/15 at
+  // ~1/40th the cost). The router runs the cheap tier at minimal reasoning_effort (fast,
+  // concise) and the strong tier at high (it actually reasons). Escalation = more effort on
+  // the same proven model, not a swap to a pricier/weaker one.
+  models: { fetch: 'azure:gpt-5-4-mini', reason: 'azure:gpt-5-4-mini' },
   awm: {},
   workspace: './mwa-workspace',
   tools: {
