@@ -22,7 +22,7 @@ import { buildRegistry } from './tools/build.js';
 import { runAgent } from './agent.js';
 import { watchInbox, mailboxDirs } from './mailbox.js';
 import { runTelegram } from './connectors/telegram.js';
-import { connectGmail } from './connectors/google.js';
+import { connectGmailGuided, connectOutlookGuided } from './connectors/setup-helper.js';
 import { runWizard } from './wizard.js';
 import { runServe } from './serve.js';
 import { runIngest } from './ingest.js';
@@ -114,8 +114,9 @@ async function connectCommand(args: string[]): Promise<void> {
   const cfg = loadConfig();
   const common = { config: cfg, dbPath: flags.db ?? process.env.MWA_DB ?? './data/agent.db', maxSteps: flags['max-steps'] ? Number(flags['max-steps']) : undefined, maxMin: flags['max-min'] ? Number(flags['max-min']) : undefined, onLog: (m: string) => console.log(`  ${m}`) };
   if (channel === 'telegram') { console.log('\n▶ mwa connect telegram'); return runTelegram(common); }
-  if (channel === 'gmail') { console.log('\n▶ mwa connect gmail'); loadEnv(); return connectGmail((m) => console.log(m)); }
-  console.error('usage: mwa connect telegram | mwa connect gmail');
+  if (channel === 'gmail' || channel === 'google') { console.log('\n▶ mwa connect gmail'); loadEnv(); return connectGmailGuided((m) => console.log(m)); }
+  if (channel === 'outlook' || channel === 'microsoft') { console.log('\n▶ mwa connect outlook'); loadEnv(); return connectOutlookGuided((m) => console.log(m)); }
+  console.error('usage: mwa connect <gmail|outlook|telegram>');
   process.exit(1);
 }
 
@@ -132,7 +133,7 @@ async function main(): Promise<void> {
     await runIngest({ days: flags.days ? Number(flags.days) : undefined, max: flags.max ? Number(flags.max) : undefined, dbPath: flags.db, onLog: (m) => console.log(`  ${m}`) });
     return;
   }
-  console.error(`unknown command: ${cmd}\nusage: mwa serve | mwa run "<instruction>" | mwa watch [--once] | mwa connect telegram | mwa setup`);
+  console.error(`unknown command: ${cmd}\nusage: mwa serve | mwa run "<instruction>" | mwa watch [--once] | mwa connect <gmail|outlook|telegram> | mwa setup`);
   process.exit(1);
 }
 

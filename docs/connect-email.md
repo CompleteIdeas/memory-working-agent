@@ -88,9 +88,11 @@ script falls back to the fully-manual guided steps (the current UI cards).
 
 ### Completion checklist
 
-- [ ] `mwa connect` CLI: provider picker → Azure path (`az`) / Google path (`gcloud` +
-      deep-links) → write creds → run the existing loopback connect.
-- [ ] Detect `az` / `gcloud`; gracefully fall back to manual guided steps when absent.
+- [x] `mwa connect <gmail|outlook>` CLI: Azure path (`az ad app create` + Graph delegated
+      perms → fully automated) / Google path (`gcloud` project + API enable, then deep-link
+      the OAuth client + capture pasted creds) → run the existing loopback connect.
+      (`src/connectors/setup-helper.ts`.)
+- [x] Detect `az` / `gcloud`; gracefully fall back to printed manual steps when absent.
 - [ ] Token import/export helper for remote installs (document "connect-then-copy" now).
 - [ ] `invalid_grant` detection → re-consent prompt (handles Google's 7-day Testing expiry).
 - [ ] (Optional) Microsoft device-code flow for headless/remote.
