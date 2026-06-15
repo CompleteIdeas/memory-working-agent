@@ -446,18 +446,22 @@ export async function runAgent(opts: {
       const refused = /^\((refused|could not read|could not write|unknown tool|tool .+ failed)/i.test(result.trimStart());
       const sig = `${action.action}:${JSON.stringify(args)}`.slice(0, 200);
       const dupCall = toolSigs.has(sig); toolSigs.add(sig);
+      const refusedAgain = refused && dupCall; // a deterministic "no" we already hit — retrying is pointless
       // A refused/failed call, an EXACT-duplicate call, a same-as-last result, or a tool
       // hammered many times is not progress — steer to a different approach or to conclude
       // rather than retrying the same thing (e.g. re-running a refused command).
       if (refused || dupCall || repeatedResult || uses >= 5) {
         consecNoProgress++;
         nudge = refused
-          ? `"${action.action}" was refused or failed: ${result.slice(0, 120).replace(/\n/g, ' ')}. Do NOT repeat that exact call — try a different approach, or tell the user you can't do it.`
+          ? `"${action.action}" was REFUSED — you did NOT get any result (${result.slice(0, 90).replace(/\n/g, ' ')}). Do NOT invent, guess, or state what the output "would be". Either do something genuinely different, or call done and tell the user plainly that you couldn't do it (and why).`
           : dupCall
           ? `You already made that exact "${action.action}" call with the same arguments — no new information. Do something different, or call done.`
           : repeatedResult
           ? `"${action.action}" returned the same result again — that's not new information. Answer with what you have, or call done (it's fine to say you couldn't find it). Do NOT repeat the same search.`
           : `You've used "${action.action}" ${uses} times. Stop and give your answer with what you found so far, or call done — including "I couldn't find it" if that's the truth.`;
+        // A refusal is permanent — retrying the same refused call won't change it. Stop after
+        // the second identical refusal and let the finalizer give an honest "I couldn't" answer.
+        if (refusedAgain) { reason = 'done'; history.push('(refused twice on the same call — concluding honestly)'); break; }
       } else {
         consecNoProgress = 0;
         if (action.action === 'read_file' || action.action === 'list_files') { if (++gatherStreak >= 3) nudge = GATHER_NUDGE; }
