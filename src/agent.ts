@@ -206,6 +206,7 @@ export async function runAgent(opts: {
   const lastToolResult = new Map<string, string>(); // tool name -> its previous result (detect no-new-info loops)
   const recalledQueries = new Set<string>(); // normalized recall queries this run — kills the re-ask-memory loop
   const rememberedConcepts = new Set<string>(); // normalized remember concepts this run — kills duplicate writes
+  const toolSigs = new Set<string>(); // exact (tool+args) calls already made — kills identical retries
   const normSig = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40);
   let gatherStreak = 0; // reads/lists/recalls since the last remember/act — forces the record cadence
   let productive = 0; // remembers/dispatches/acts — once high enough, prompt to consider done
@@ -430,12 +431,19 @@ export async function runAgent(opts: {
       emit('tool', { name: action.action, result: result.slice(0, 120) });
       const uses = (toolUses.get(action.action) ?? 0) + 1; toolUses.set(action.action, uses);
       const repeatedResult = lastToolResult.get(action.action) === result; lastToolResult.set(action.action, result);
-      // A tool that returns the same thing again, or that's been hammered many times, is
-      // not progress — push the agent to conclude rather than loop (e.g. searching email
-      // 20× for someone who never wrote). Otherwise it's a real action.
-      if (repeatedResult || uses >= 5) {
+      const refused = /^\((refused|could not read|could not write|unknown tool|tool .+ failed)/i.test(result.trimStart());
+      const sig = `${action.action}:${JSON.stringify(args)}`.slice(0, 200);
+      const dupCall = toolSigs.has(sig); toolSigs.add(sig);
+      // A refused/failed call, an EXACT-duplicate call, a same-as-last result, or a tool
+      // hammered many times is not progress — steer to a different approach or to conclude
+      // rather than retrying the same thing (e.g. re-running a refused command).
+      if (refused || dupCall || repeatedResult || uses >= 5) {
         consecNoProgress++;
-        nudge = repeatedResult
+        nudge = refused
+          ? `"${action.action}" was refused or failed: ${result.slice(0, 120).replace(/\n/g, ' ')}. Do NOT repeat that exact call — try a different approach, or tell the user you can't do it.`
+          : dupCall
+          ? `You already made that exact "${action.action}" call with the same arguments — no new information. Do something different, or call done.`
+          : repeatedResult
           ? `"${action.action}" returned the same result again — that's not new information. Answer with what you have, or call done (it's fine to say you couldn't find it). Do NOT repeat the same search.`
           : `You've used "${action.action}" ${uses} times. Stop and give your answer with what you found so far, or call done — including "I couldn't find it" if that's the truth.`;
       } else {

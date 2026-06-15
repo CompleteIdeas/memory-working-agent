@@ -23,6 +23,15 @@ function allowed(ctx: ToolContext, p: string): string | null {
   return resolveAllowed(ctx.sandboxDir, p);
 }
 
+/** Strip HTML to readable text — so read_document on a web page returns prose, not markup. */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<\/(p|div|br|tr|li|h[1-6])>/gi, '\n').replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+    .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 const runCommandTool: RegisteredTool = {
   def: {
     name: 'run_command',
@@ -164,7 +173,12 @@ const readDocumentTool: RegisteredTool = {
         const { value } = await fn({ buffer: buf });
         return String(value ?? '').slice(0, max);
       }
-      return buf.toString('utf8').slice(0, max);
+      const text = buf.toString('utf8');
+      // HTML (a web page or .html file) → strip to readable text, not raw markup.
+      if (lower.endsWith('.html') || lower.endsWith('.htm') || /<!doctype html|<html[\s>]/i.test(text.slice(0, 1024))) {
+        return htmlToText(text).slice(0, max) || '(no readable text on that page)';
+      }
+      return text.slice(0, max);
     } catch (e) {
       return `(could not read document: ${(e as Error).message.slice(0, 140)})`;
     }
