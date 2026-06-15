@@ -13,8 +13,8 @@
  *   - periodic SLEEP (consolidate) on phase boundaries so it sharpens over a long run.
  *   - pluggable tools (built-ins + MCP) are first-class, not just codegen dispatch.
  */
-import { readFileSync, statSync, appendFileSync, mkdirSync } from 'node:fs';
-import { resolve, sep, dirname } from 'node:path';
+import { readFileSync, statSync, appendFileSync, mkdirSync, existsSync } from 'node:fs';
+import { resolve, sep, dirname, join } from 'node:path';
 import type { Provider } from './provider.js';
 import type { Memory, RecalledMemory } from './awm.js';
 import { BRAIN_TOOLS } from './brain.js';
@@ -218,6 +218,17 @@ export async function runAgent(opts: {
   const doneThreshold = Math.min(5, Math.ceil(maxSteps * 0.35));
   const LONG_TASK_STEPS = 8; // a run this many conductor-steps deep = long-horizon → escalate
   const GATHER_NUDGE = 'You have gathered information several times without recording anything. Call REMEMBER now with 1-2 specific facts from what you just read — do not read/list/recall again until you do.';
+  // Named output files the instruction asked the agent to PRODUCE (write/create/save … X.ext,
+  // or "to X.ext") — verified to actually exist before we accept `done`, catching "it's ready"
+  // claims with no file. Conservative: only filenames in a produce-context.
+  const expectedOutputs = (() => {
+    const out = new Set<string>();
+    const ext = '(?:md|json|jsonl|csv|html?|txt|js|mjs|cjs|ts|tsx|py|css|ya?ml|xml|svg)';
+    const re1 = new RegExp(`\\b(?:write|writes|writing|create|creates|creating|save|saved|saving|produce|generate|generates|output|outputs|build|builds|make|makes)\\b[\\s\\S]{0,40}?\\b([\\w][\\w./-]*\\.${ext})\\b`, 'gi');
+    const re2 = new RegExp(`\\bto\\s+([\\w][\\w./-]*\\.${ext})\\b`, 'gi');
+    for (const re of [re1, re2]) { let m: RegExpExecArray | null; while ((m = re.exec(instruction))) out.add(m[1]); }
+    return [...out];
+  })();
   let steps = 0;
 
   for (; steps < maxSteps; steps++) {
@@ -331,11 +342,16 @@ export async function runAgent(opts: {
       // Normalize markdown first (summaries use **bold**). Cap rejections to avoid spinning.
       const norm = summ.replace(/[*_`#>]/g, '');
       const admitsUnfinished = /\b(did\s?n.?t (finish|complete|create|add|write|build|get to)|have\s?n.?t (finish|complet|add|creat)|still (need|have) to (finish|create|add|write|build|do)|next step is to (add|create|write|finish|build|make)|not yet (finish|complet|creat|don)|remaining (file|step|task|item)|i.?ll (add|create|finish|build) (it|that|the))\b/i.test(norm);
-      if (admitsUnfinished && incompleteRejections < 2 && now() - start < maxWallMs * 0.8) {
+      // Requested output files that don't actually exist → the agent claimed completion
+      // ("the output is ready") without producing the file. Make it really write them.
+      const missingOutputs = expectedOutputs.filter((f) => { try { return !existsSync(join(dir, f)); } catch { return false; } });
+      if ((admitsUnfinished || missingOutputs.length) && incompleteRejections < 2 && now() - start < maxWallMs * 0.8) {
         incompleteRejections++;
         consecNoProgress = 0; // it IS progressing, just stopping short — don't trip the stuck guard
-        nudge = `Your summary admits work is still unfinished ("${norm.slice(0, 80)}…"). Do NOT call done while a requested part remains — take that next step now and actually produce it. Only call done once everything the instruction asked for truly exists.`;
-        history.push('(rejected premature done — summary admitted unfinished work)');
+        nudge = missingOutputs.length
+          ? `You called done but did NOT create the file(s) asked for: ${missingOutputs.join(', ')}. STOP gathering — call write_file RIGHT NOW to write ${missingOutputs.length > 1 ? 'them' : 'it'} with what you already have (it's fine if not perfect), THEN done. A summary is not the deliverable.`
+          : `Your summary admits work is still unfinished ("${norm.slice(0, 80)}…"). Do NOT call done while a requested part remains — take that next step now and actually produce it. Only call done once everything the instruction asked for truly exists.`;
+        history.push(`(rejected premature done — ${missingOutputs.length ? 'missing output file(s): ' + missingOutputs.join(',') : 'admitted unfinished work'})`);
         continue;
       }
       reason = 'done';
