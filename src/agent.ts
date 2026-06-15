@@ -423,7 +423,7 @@ export async function runAgent(opts: {
     if (opts.tools && opts.tools.has(action.action)) {
       toolCalls++;
       const { action: _n, ...args } = action as Record<string, unknown> & { action: string };
-      const result = await opts.tools.call(action.action, args as Record<string, unknown>, { sandboxDir: dir });
+      const result = await opts.tools.call(action.action, args as Record<string, unknown>, { sandboxDir: dir, interactive: opts.interactive });
       // Keep enough of the result for the model to actually USE it — read_email/read_document
       // return long documents (a full email thread, a PDF); 400 chars hid the answer.
       history.push(`tool ${action.action} -> ${result.slice(0, 6000).replace(/\n/g, ' ')}`);

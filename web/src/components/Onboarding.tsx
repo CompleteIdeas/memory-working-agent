@@ -1,6 +1,12 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { saveKey, getStatus, getConnections, type ExternalInstall } from '../api';
+import { saveKey, getStatus, getConnections, saveAccess, type ExternalInstall, type AccessPreset } from '../api';
+
+const ACCESS_PRESETS: { id: AccessPreset; label: string; sub: string; detail: string }[] = [
+  { id: 'locked-down', label: 'Locked-down', sub: 'Most private', detail: 'Only its own workspace. Can’t run commands. Safest for sensitive machines.' },
+  { id: 'assistant', label: 'Assistant', sub: 'Recommended', detail: 'Its workspace plus folders you grant. Runs commands only while you’re watching.' },
+  { id: 'developer', label: 'Developer', sub: 'Full power', detail: 'Broad file access and can run commands freely. For coding on your own machine.' },
+];
 
 // Guided onboarding: pick the AI "brain" — including a no-key LOCAL option (Ollama).
 // Keys stay on this machine; the choice is written to mwa.config.json (models.fetch).
@@ -23,6 +29,8 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
   const [ok, setOk] = useState(false);
   const [busy, setBusy] = useState(false);
   const [ext, setExt] = useState<ExternalInstall | null>(null);
+  const [accessStep, setAccessStep] = useState(false);
+  const [preset, setPreset] = useState<AccessPreset>('assistant');
 
   function pick(p: Provider) { setSel(p); setModel(p.model); setKey(''); setBaseUrl(''); setMsg(''); setOk(false); setExt(null); }
 
@@ -34,20 +42,27 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
     if (r.ok) {
       const s = await getStatus();
       if (s.ready) {
-        // Check whether this model is strong enough to also VET + install new connectors.
-        // If yes, sail on. If not, surface a one-time heads-up before entering the app.
+        // Connected → choose the access level before entering. Also note whether this model
+        // is strong enough to vet + install new connectors (shown in the access step).
         const c = await getConnections().catch(() => null);
         if (c?.externalInstall && !c.externalInstall.enabled) setExt(c.externalInstall);
-        else setTimeout(onReady, 600);
+        setAccessStep(true);
       }
     }
+  }
+
+  async function start() {
+    setBusy(true);
+    await saveAccess(preset).catch(() => {});
+    onReady();
   }
 
   const field = 'w-full rounded-[3px] border border-line bg-bone px-4 py-3 text-[15px] outline-none focus:border-signal transition-colors';
 
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }} className="py-10 max-w-xl">
-      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-3">setup</div>
+      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-3">setup{accessStep ? ' · access' : ''}</div>
+      {!accessStep && (<>
       <h1 className="text-4xl font-semibold tracking-tight leading-[1.05] mb-2">Pick a brain to think with.</h1>
       <p className="text-dim mb-6">Choose any AI provider — or run a model <b>locally with no key</b>. Whatever you enter stays on this computer.</p>
 
@@ -88,18 +103,27 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
           {msg && <p className={`mono text-[13px] ${ok ? 'text-signal' : 'text-dim'}`}>{msg}</p>}
         </motion.div>
       )}
+      </>)}
 
-      {ext && !ext.enabled && (
-        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="mt-4 rounded-[4px] border border-line bg-surface p-5 space-y-2">
-          <div className="font-medium">You’re connected ✓ — one optional thing</div>
-          <p className="text-dim text-sm">
-            This model is great for chatting, but it isn’t strong enough for MWA to safely
-            <b> vet and install new connectors from the web</b>, so that stays off for now.
-            Everything in the built-in connector library still works. To turn it on later,
-            add a stronger model — an <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="text-signal underline">OpenRouter</a> key
-            (many models, one key) or an Anthropic/OpenAI key — in Connections.
-          </p>
-          <button onClick={onReady} className="rounded-[3px] bg-signal text-white px-5 py-2.5 font-medium">Got it — let’s go</button>
+      {accessStep && (
+        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
+          <h1 className="text-4xl font-semibold tracking-tight leading-[1.05] mb-2">How much can it touch?</h1>
+          <p className="text-dim mb-5">You’re connected ✓ — pick how much of this computer the assistant may use. You can change this anytime in Connections.</p>
+          <div className="space-y-2 mb-4">
+            {ACCESS_PRESETS.map((a) => (
+              <button key={a.id} onClick={() => setPreset(a.id)}
+                className={`w-full text-left rounded-[4px] border px-4 py-3 transition-colors ${preset === a.id ? 'border-signal bg-surface' : 'border-line bg-surface hover:border-signal/60'}`}>
+                <div className="font-medium">{a.label} <span className="mono text-[11px] text-dim">{a.sub}</span></div>
+                <div className="text-dim text-sm">{a.detail}</div>
+              </button>
+            ))}
+          </div>
+          {ext && !ext.enabled && (
+            <p className="text-dim text-[13px] mb-4">
+              Note: this model isn’t strong enough for MWA to safely vet and install new connectors from the web, so that stays off. The built-in connector library still works; add a stronger model later (an <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="text-signal underline">OpenRouter</a> or Anthropic/OpenAI key) to enable it.
+            </p>
+          )}
+          <button disabled={busy} onClick={start} className="rounded-[3px] bg-signal text-white px-6 py-3 font-medium disabled:opacity-50">{busy ? '…' : 'Start'}</button>
         </motion.div>
       )}
     </motion.div>

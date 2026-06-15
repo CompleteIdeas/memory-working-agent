@@ -7,8 +7,9 @@
  * guarded), mirroring the worker. http_request is network egress — opt-in.
  */
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
-import { resolve, join, sep, dirname } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
 import { runCommand } from '../util.js';
+import { resolveAllowed, runCommandAllowed } from './access.js';
 import type { RegisteredTool, ToolContext } from './registry.js';
 
 const CAP = 4000;
@@ -16,11 +17,10 @@ const SHELL_HINT = process.platform === 'win32'
   ? 'OS shell is cmd.exe (Windows) — avoid bash-only syntax (heredocs, multi-line, &&-chains may differ); for writing files use the write_file tool, not shell redirection'
   : 'OS shell is sh';
 
-function insideSandbox(ctx: ToolContext, rel: string): string | null {
-  const root = resolve(ctx.sandboxDir);
-  const full = resolve(root, rel);
-  if (full !== root && !full.startsWith(root + sep)) return null;
-  return full;
+// A file path is allowed if it lands inside the workspace OR a folder the user granted
+// (access preset). Relative paths resolve against the workspace.
+function allowed(ctx: ToolContext, p: string): string | null {
+  return resolveAllowed(ctx.sandboxDir, p);
 }
 
 const runCommandTool: RegisteredTool = {
@@ -30,6 +30,8 @@ const runCommandTool: RegisteredTool = {
     parameters: { type: 'object', properties: { command: { type: 'string', description: 'the shell command' } }, required: ['command'] },
   },
   handler: async (args, ctx) => {
+    const gate = runCommandAllowed(ctx.interactive);
+    if (!gate.ok) return `(refused: ${gate.reason})`;
     const command = String(args.command ?? '').trim();
     if (!command) return '(no command given)';
     const r = runCommand(command, resolve(ctx.sandboxDir), 60_000); // absolute cwd — Windows spawnSync rejects relative
@@ -45,8 +47,8 @@ const listFilesTool: RegisteredTool = {
     parameters: { type: 'object', properties: { dir: { type: 'string', description: 'optional subdirectory, default root' } }, required: [] },
   },
   handler: async (args, ctx) => {
-    const base = insideSandbox(ctx, String(args.dir ?? '.'));
-    if (!base) return '(refused: path outside sandbox)';
+    const base = allowed(ctx, String(args.dir ?? '.'));
+    if (!base) return '(refused: that folder is outside what this assistant may access — grant it in settings)';
     const out: string[] = [];
     const walk = (d: string, rel: string) => {
       let ents; try { ents = readdirSync(d, { withFileTypes: true }); } catch { return; }
@@ -69,8 +71,8 @@ const readFileTool: RegisteredTool = {
     parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
   },
   handler: async (args, ctx) => {
-    const full = insideSandbox(ctx, String(args.path ?? ''));
-    if (!full) return '(refused: path outside sandbox)';
+    const full = allowed(ctx, String(args.path ?? ''));
+    if (!full) return '(refused: that file is outside what this assistant may access — grant its folder in settings)';
     try {
       if (statSync(full).size > CAP * 6) return `(large file; first ${CAP} bytes)\n` + readFileSync(full, 'utf8').slice(0, CAP);
       return readFileSync(full, 'utf8').slice(0, CAP);
@@ -87,8 +89,8 @@ const writeFileTool: RegisteredTool = {
     parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] },
   },
   handler: async (args, ctx) => {
-    const full = insideSandbox(ctx, String(args.path ?? ''));
-    if (!full) return '(refused: path outside sandbox)';
+    const full = allowed(ctx, String(args.path ?? ''));
+    if (!full) return '(refused: that path is outside what this assistant may access — grant its folder in settings)';
     try {
       mkdirSync(dirname(full), { recursive: true });
       writeFileSync(full, String(args.content ?? ''), 'utf8');
@@ -129,10 +131,10 @@ const httpRequestTool: RegisteredTool = {
 const readDocumentTool: RegisteredTool = {
   def: {
     name: 'read_document',
-    description: 'Read a document as text — a LOCAL file path OR an http(s) URL. Handles PDF, Word (.docx), and plain text / markdown / CSV / JSON. Use this to ACTUALLY read a PDF (e.g. a camp Leaders Guide) — never guess its contents.',
+    description: 'Read a document as text — a LOCAL file path (must be inside a folder you\'re allowed to access) OR an http(s) URL. Handles PDF, Word (.docx), and plain text / markdown / CSV / JSON. Use this to ACTUALLY read a PDF (e.g. a camp Leaders Guide) — never guess its contents.',
     parameters: { type: 'object', properties: { source: { type: 'string', description: 'a file path or http(s) URL' }, max_chars: { type: 'number', description: 'cap returned text, default 8000' } }, required: ['source'] },
   },
-  handler: async (args) => {
+  handler: async (args, ctx) => {
     const src = String(args.source ?? '').trim();
     if (!src) return '(no source given)';
     const max = Math.min(Number(args.max_chars ?? 8000), 40000);
@@ -143,7 +145,10 @@ const readDocumentTool: RegisteredTool = {
         if (!res.ok) return `(couldn't fetch ${src}: ${res.status})`;
         buf = Buffer.from(await res.arrayBuffer());
       } else {
-        buf = readFileSync(resolve(src));
+        // Local file: confine to the allowed folders (workspace + granted) — not arbitrary paths.
+        const full = allowed(ctx, src);
+        if (!full) return '(refused: that file is outside what this assistant may access — grant its folder in settings)';
+        buf = readFileSync(full);
       }
       const lower = src.toLowerCase();
       if (lower.endsWith('.pdf') || buf.subarray(0, 5).toString('latin1') === '%PDF-') {

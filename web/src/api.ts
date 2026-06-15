@@ -29,9 +29,15 @@ export async function getStats(): Promise<{ memories: number }> {
 export interface ConnectorSecret { env: string; label: string; help: string | null; optional: boolean; set: boolean }
 export interface ConnectorItem { id: string; name: string; category: string; description: string; access: string; tier: string; source: string | null; on: boolean; secrets: ConnectorSecret[] }
 export interface ExternalInstall { enabled: boolean; policy: string; reason: string; model: string }
-export interface Connections { gmail: boolean; outlook: boolean; telegram: boolean; connectors: ConnectorItem[]; externalInstall: ExternalInstall; }
+export type AccessPreset = 'locked-down' | 'assistant' | 'developer';
+export interface Access { preset: AccessPreset; grantedRoots: string[] }
+export interface Connections { gmail: boolean; outlook: boolean; telegram: boolean; connectors: ConnectorItem[]; externalInstall: ExternalInstall; access: Access; }
 export async function getConnections(): Promise<Connections> {
-  try { const r = await fetch('/api/connections'); return await r.json(); } catch { return { gmail: false, outlook: false, telegram: false, connectors: [], externalInstall: { enabled: false, policy: 'review-required', reason: '', model: '' } }; }
+  try { const r = await fetch('/api/connections'); return await r.json(); } catch { return { gmail: false, outlook: false, telegram: false, connectors: [], externalInstall: { enabled: false, policy: 'review-required', reason: '', model: '' }, access: { preset: 'assistant', grantedRoots: [] } }; }
+}
+export async function saveAccess(preset: AccessPreset, grantedRoots?: string[]): Promise<{ ok: boolean; message?: string }> {
+  const r = await fetch('/api/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ which: 'access', preset, grantedRoots }) });
+  return r.json();
 }
 export interface RiskReport { source: string; verdict: 'safe' | 'caution' | 'dangerous'; summary: string; capabilities: string[]; redFlags: string[]; pinnedVersion?: string; integrity?: string; model: string; deepScan?: { ran: boolean; note?: string; integrityOk?: boolean; filesScanned?: number } }
 export async function reviewExternal(source: string): Promise<{ ok: boolean; message?: string; report?: RiskReport }> {

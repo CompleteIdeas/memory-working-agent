@@ -14,6 +14,8 @@ import type { ToolDef } from '../provider.js';
 
 export interface ToolContext {
   sandboxDir: string;
+  /** whether a human is watching this run (gates run_command in Assistant mode). */
+  interactive?: boolean;
 }
 
 export interface RegisteredTool {

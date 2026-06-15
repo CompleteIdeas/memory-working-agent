@@ -23,6 +23,8 @@ export interface MwaConfig {
     /** how connectors get installed: curated-only (library only) | review-required (library
      *  auto + external needs the installation-model review + approval) | off (no installs) */
     installPolicy?: 'curated-only' | 'review-required' | 'off';
+    /** local-machine access posture (chosen at setup) + folders the user granted. */
+    access?: { preset?: 'locked-down' | 'assistant' | 'developer'; grantedRoots?: string[] };
   };
   escalation: { maxFetchFailures: number };
 }
@@ -35,6 +37,7 @@ export const DEFAULT_CONFIG: MwaConfig = {
     builtins: ['run_command', 'read_file', 'write_file', 'list_files', 'read_document'],
     mcpServers: { search: { command: 'node', args: ['mcp-servers/search.mjs'] } }, // keyless web search (Brave if BRAVE_API_KEY set)
     installPolicy: 'review-required', // curated installs are automatic; external needs review + approval
+    access: { preset: 'assistant', grantedRoots: [] }, // least-privilege-ish default; pick at setup
   },
   escalation: { maxFetchFailures: 2 },
 };

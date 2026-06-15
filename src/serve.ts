@@ -35,6 +35,7 @@ import { microsoftConfigured, startMicrosoftConnect } from './connectors/microso
 import { listConnectors, enableConnector, disableConnector, enabledConnectorIds, enableExternalNpm } from './connectors/registry.js';
 import { externalInstallState } from './installer/policy.js';
 import { reviewConnector } from './installer/review.js';
+import { accessPolicy, setAccess, ACCESS_PRESETS, type AccessPreset } from './tools/access.js';
 import { status, testAnthropic, testAzure, testTelegram, testProvider, envKeyForProvider, upsertEnv } from './wizard.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -307,6 +308,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
           outlook: microsoftConfigured(),
           telegram: !!process.env.TELEGRAM_BOT_TOKEN,
           externalInstall: externalInstallState(loadConfig()),
+          access: accessPolicy(),
           connectors: listConnectors().map((c) => ({
             id: c.id, name: c.name, category: c.category, description: c.description, access: c.access,
             tier: c.tier, source: c.source ?? null, on: enabled.has(c.id),
@@ -413,6 +415,11 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
             if (b.MICROSOFT_TENANT) kv.MICROSOFT_TENANT = String(b.MICROSOFT_TENANT).trim();
             upsertEnv(kv); result = { ok: true, message: 'Saved. Now connect your account.' };
           }
+        }
+        else if (b.which === 'access') {
+          const preset = (ACCESS_PRESETS as readonly string[]).includes(b.preset) ? (b.preset as AccessPreset) : 'assistant';
+          const saved = setAccess(preset, Array.isArray(b.grantedRoots) ? b.grantedRoots.map(String) : undefined);
+          result = { ok: true, message: saved.dropped.length ? `Saved. Couldn't find: ${saved.dropped.join(', ')}` : 'Saved.' };
         }
         else result = { ok: false, message: 'unknown field' };
         res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(result));

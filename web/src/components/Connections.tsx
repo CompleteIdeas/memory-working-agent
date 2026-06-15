@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   getConnections, connectGmail, connectOutlook, saveGoogle, saveMicrosoft,
-  enableConnector, disableConnector, saveConnectorSecret, reviewExternal, approveExternal,
-  type Connections as Conn, type ConnectorItem, type ExternalInstall, type RiskReport,
+  enableConnector, disableConnector, saveConnectorSecret, reviewExternal, approveExternal, saveAccess,
+  type Connections as Conn, type ConnectorItem, type ExternalInstall, type RiskReport, type Access, type AccessPreset,
 } from '../api';
+
+const ACCESS_PRESETS: { id: AccessPreset; label: string; detail: string }[] = [
+  { id: 'locked-down', label: 'Locked-down', detail: 'Workspace only · never runs commands' },
+  { id: 'assistant', label: 'Assistant', detail: 'Workspace + folders you grant · runs commands only while you watch' },
+  { id: 'developer', label: 'Developer', detail: 'Broad file access · runs commands freely' },
+];
 
 // Turn tools & accounts on without editing files. Email uses a GUIDED bring-your-own
 // sign-in: you make a free app at Google/Microsoft (one time), paste the ID, and approve —
@@ -153,7 +159,56 @@ export function Connections() {
         </div>
       </div>
 
+      <AccessPanel access={c.access} onChange={load} />
       <ExternalInstaller ext={c.externalInstall} onChange={load} />
+    </div>
+  );
+}
+
+function AccessPanel({ access, onChange }: { access: Access; onChange: () => void }) {
+  const [folder, setFolder] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const roots = access?.grantedRoots ?? [];
+
+  async function setPreset(p: AccessPreset) { setBusy(true); await saveAccess(p, roots); setBusy(false); onChange(); }
+  async function addFolder() {
+    const f = folder.trim(); if (!f) return;
+    setBusy(true); setMsg('');
+    const r = await saveAccess(access.preset, [...roots, f]);
+    setBusy(false); setFolder(''); setMsg(r.message && r.message !== 'Saved.' ? r.message : ''); onChange();
+  }
+  async function removeFolder(f: string) { setBusy(true); await saveAccess(access.preset, roots.filter((x) => x !== f)); setBusy(false); onChange(); }
+
+  return (
+    <div>
+      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">what it can touch on this computer</div>
+      <div className="space-y-2">
+        {ACCESS_PRESETS.map((a) => (
+          <button key={a.id} onClick={() => setPreset(a.id)} disabled={busy}
+            className={`w-full text-left rounded-[4px] border px-4 py-3 transition-colors disabled:opacity-60 ${access?.preset === a.id ? 'border-signal bg-surface' : 'border-line bg-surface hover:border-signal/60'}`}>
+            <div className="font-medium">{a.label}{access?.preset === a.id ? ' ✓' : ''}</div>
+            <div className="text-dim text-sm">{a.detail}</div>
+          </button>
+        ))}
+      </div>
+      {access?.preset !== 'locked-down' && (
+        <div className="mt-3 rounded-[4px] border border-line bg-surface px-4 py-3">
+          <div className="text-sm font-medium mb-1">Granted folders</div>
+          {roots.length ? roots.map((f) => (
+            <div key={f} className="flex items-center justify-between gap-2 text-sm py-1">
+              <span className="mono text-[12px] break-all">{f}</span>
+              <button onClick={() => removeFolder(f)} disabled={busy} className="mono text-[11px] text-signal underline shrink-0">remove</button>
+            </div>
+          )) : <p className="text-dim text-sm">None yet — the assistant can only use its own workspace.</p>}
+          <div className="flex gap-2 mt-2">
+            <input value={folder} onChange={(e) => setFolder(e.target.value)} placeholder="C:\Users\you\Documents"
+              className="flex-1 rounded-[3px] border border-line bg-bone px-3 py-2 text-sm mono outline-none focus:border-signal" />
+            <button onClick={addFolder} disabled={busy || !folder.trim()} className="rounded-[3px] border border-line px-3 py-2 text-sm font-medium disabled:opacity-50">Grant</button>
+          </div>
+          {msg && <p className="mono text-[12px] text-signal mt-1">{msg}</p>}
+        </div>
+      )}
     </div>
   );
 }
