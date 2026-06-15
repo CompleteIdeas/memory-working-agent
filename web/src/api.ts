@@ -6,6 +6,7 @@ export interface StatusResp {
   azure: boolean;
   telegram: boolean;
   gmail: boolean;
+  outlook: boolean;
   ready: boolean;
 }
 
@@ -25,15 +26,27 @@ export async function getStats(): Promise<{ memories: number }> {
   try { const r = await fetch('/api/stats'); return await r.json(); } catch { return { memories: 0 }; }
 }
 
-export interface Connections { gmail: boolean; telegram: boolean; tools: { id: string; label: string; desc: string; on: boolean }[]; }
+export interface Connections { gmail: boolean; outlook: boolean; telegram: boolean; tools: { id: string; label: string; desc: string; on: boolean }[]; }
 export async function getConnections(): Promise<Connections> {
-  try { const r = await fetch('/api/connections'); return await r.json(); } catch { return { gmail: false, telegram: false, tools: [] }; }
+  try { const r = await fetch('/api/connections'); return await r.json(); } catch { return { gmail: false, outlook: false, telegram: false, tools: [] }; }
 }
 export async function toggleTool(tool: string, on: boolean): Promise<void> {
   await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'toggle-tool', tool, on }) });
 }
-export async function connectGmail(): Promise<{ ok: boolean; message?: string }> {
-  const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'connect-gmail' }) });
+export async function connectGmail(readonly = false): Promise<{ ok: boolean; message?: string; url?: string }> {
+  const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'connect-gmail', readonly }) });
+  return r.json();
+}
+export async function saveGoogle(clientId: string, clientSecret: string): Promise<{ ok: boolean; message?: string }> {
+  const r = await fetch('/api/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ which: 'google', GOOGLE_CLIENT_ID: clientId, GOOGLE_CLIENT_SECRET: clientSecret }) });
+  return r.json();
+}
+export async function connectOutlook(readonly = false): Promise<{ ok: boolean; message?: string; url?: string }> {
+  const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'connect-outlook', readonly }) });
+  return r.json();
+}
+export async function saveMicrosoft(clientId: string): Promise<{ ok: boolean; message?: string }> {
+  const r = await fetch('/api/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ which: 'microsoft', MICROSOFT_CLIENT_ID: clientId }) });
   return r.json();
 }
 export async function getMemories(): Promise<{ id: string; concept: string; content: string }[]> {
@@ -90,6 +103,10 @@ const TOOL_LABELS: Record<string, string> = {
   read_email: 'Reading an email',
   draft_email: 'Drafting a reply for you',
   propose_event: 'Proposing a calendar event',
+  search_outlook: 'Searching your Outlook',
+  read_outlook: 'Reading an email',
+  draft_outlook: 'Drafting a reply for you',
+  propose_outlook_event: 'Proposing a calendar event',
   search__web_search: 'Searching the web',
 };
 

@@ -30,7 +30,8 @@ import { runScheduler } from './scheduler.js';
 import { loadConfig, CONFIG_PATH } from './config.js';
 import { loadEnv } from './env.js';
 import { mailboxDirs } from './mailbox.js';
-import { googleConfigured, connectGmail } from './connectors/google.js';
+import { googleConfigured, startGmailConnect } from './connectors/google.js';
+import { microsoftConfigured, startMicrosoftConnect } from './connectors/microsoft.js';
 import { status, testAnthropic, testAzure, testTelegram, testProvider, envKeyForProvider, upsertEnv } from './wizard.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -231,7 +232,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
 
       if (p === '/api/status') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ...status(), gmail: googleConfigured() }));
+        res.end(JSON.stringify({ ...status(), gmail: googleConfigured(), outlook: microsoftConfigured() }));
         return;
       }
       if (p === '/api/suggestions') {
@@ -315,6 +316,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
           gmail: googleConfigured(),
+          outlook: microsoftConfigured(),
           telegram: !!process.env.TELEGRAM_BOT_TOKEN,
           tools: Object.entries(BUNDLED_TOOLS).map(([id, t]) => ({ id, label: t.label, desc: t.desc, on: enabled.includes(id) })),
         }));
@@ -331,11 +333,30 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
         } else if (b.action === 'connect-gmail') {
           if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
             res.writeHead(200, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ ok: false, message: "Email isn't set up on this computer yet (it needs a Google app ID/secret). One-click email is coming." }));
+            res.end(JSON.stringify({ ok: false, message: 'Add your Google app ID and secret first (the steps above), then connect.' }));
           } else {
-            connectGmail((m) => console.log(m)).catch(() => { /* */ }); // fire-and-forget loopback consent → opens Google sign-in
+            try {
+              const url = startGmailConnect(!!b.readonly); // loopback consent; UI opens this + polls status
+              res.writeHead(200, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ ok: true, url, message: 'Approve access in the Google window, then come back — I\'ll show as connected.' }));
+            } catch (e) {
+              res.writeHead(200, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, message: (e as Error).message.slice(0, 160) }));
+            }
+          }
+        } else if (b.action === 'connect-outlook') {
+          if (!process.env.MICROSOFT_CLIENT_ID) {
             res.writeHead(200, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ ok: true, message: 'A sign-in window will open. Approve access, then refresh this page.' }));
+            res.end(JSON.stringify({ ok: false, message: 'Add your Microsoft app (client) ID first (the steps above), then connect.' }));
+          } else {
+            try {
+              const url = startMicrosoftConnect(!!b.readonly);
+              res.writeHead(200, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ ok: true, url, message: 'Approve access in the Microsoft window, then come back — I\'ll show as connected.' }));
+            } catch (e) {
+              res.writeHead(200, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, message: (e as Error).message.slice(0, 160) }));
+            }
           }
         } else {
           res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: 'unknown action' }));
@@ -359,6 +380,22 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
             if (provider === 'ollama' && b.baseUrl) kv.OLLAMA_BASE_URL = String(b.baseUrl);
             if (Object.keys(kv).length) upsertEnv(kv);
             setFetchModel(provider, model); // make the picked brain actually take effect
+          }
+        }
+        else if (b.which === 'google') {
+          const id = String(b.GOOGLE_CLIENT_ID ?? '').trim(), secret = String(b.GOOGLE_CLIENT_SECRET ?? '').trim();
+          if (!id || !secret) result = { ok: false, message: 'Paste both the Client ID and the Client secret.' };
+          else if (!/\.apps\.googleusercontent\.com$/.test(id)) result = { ok: false, message: "That doesn't look like a Client ID — it should end in .apps.googleusercontent.com" };
+          else { upsertEnv({ GOOGLE_CLIENT_ID: id, GOOGLE_CLIENT_SECRET: secret }); result = { ok: true, message: 'Saved. Now connect your account.' }; }
+        }
+        else if (b.which === 'microsoft') {
+          const id = String(b.MICROSOFT_CLIENT_ID ?? '').trim();
+          if (!id) result = { ok: false, message: 'Paste the Application (client) ID from your Azure app.' };
+          else if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) result = { ok: false, message: "That doesn't look like a client ID — it should be a GUID like 11111111-2222-3333-4444-555555555555." };
+          else {
+            const kv: Record<string, string> = { MICROSOFT_CLIENT_ID: id };
+            if (b.MICROSOFT_TENANT) kv.MICROSOFT_TENANT = String(b.MICROSOFT_TENANT).trim();
+            upsertEnv(kv); result = { ok: true, message: 'Saved. Now connect your account.' };
           }
         }
         else result = { ok: false, message: 'unknown field' };

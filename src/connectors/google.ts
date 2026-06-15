@@ -47,31 +47,57 @@ async function authedClient() {
   return o;
 }
 
-/** One-time OAuth consent (loopback). Prints the URL; catches the callback locally. */
-export async function connectGmail(onLog: (m: string) => void = (m) => console.log(m)): Promise<void> {
+/** Read-only scope set (no gmail.compose): the privacy-max option. */
+const SCOPES_READONLY = [
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/calendar.events',
+];
+
+/** Build the consent URL + start the loopback catcher. Returns the URL immediately and a
+ *  promise that resolves with the connected email once the user approves. Used by both the
+ *  CLI (awaits) and the web UI (surfaces the URL to the browser, resolves in background). */
+function beginConsent(readOnly = false): { url: string; done: Promise<string> } {
   const o = oauthClient();
-  const url = o.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
-  const code: string = await new Promise((res, rej) => {
-    const srv = createServer((req, rq) => {
-      try {
-        const u = new URL(req.url ?? '', REDIRECT_URI);
-        if (u.pathname !== '/oauth') { rq.statusCode = 404; rq.end(); return; }
-        const c = u.searchParams.get('code');
-        rq.end('MWA: Gmail connected. You can close this tab and return to the terminal.');
-        srv.close();
-        if (c) res(c); else rej(new Error(u.searchParams.get('error') ?? 'no code'));
-      } catch (e) { rej(e as Error); }
+  const url = o.generateAuthUrl({ access_type: 'offline', scope: readOnly ? SCOPES_READONLY : SCOPES, prompt: 'consent' });
+  const done = (async () => {
+    const code: string = await new Promise((res, rej) => {
+      const srv = createServer((req, rq) => {
+        try {
+          const u = new URL(req.url ?? '', REDIRECT_URI);
+          if (u.pathname !== '/oauth') { rq.statusCode = 404; rq.end(); return; }
+          const c = u.searchParams.get('code');
+          rq.end('MWA: Gmail connected. You can close this tab and return to MWA.');
+          srv.close();
+          if (c) res(c); else rej(new Error(u.searchParams.get('error') ?? 'no code'));
+        } catch (e) { rej(e as Error); }
+      });
+      srv.on('error', rej);
+      srv.listen(REDIRECT_PORT, '127.0.0.1');
     });
-    srv.listen(REDIRECT_PORT, '127.0.0.1', () => {
-      onLog(`\nAuthorize MWA — open this URL in your browser (sign in as the account you want it to manage):\n\n${url}\n`);
-    });
-  });
-  const { tokens } = await o.getToken(code);
-  mkdirSync(dirname(TOKEN_PATH), { recursive: true });
-  writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2), { mode: 0o600 });
-  o.setCredentials(tokens);
-  const prof = await google.gmail({ version: 'v1', auth: o }).users.getProfile({ userId: 'me' });
-  onLog(`✅ Connected as ${prof.data.emailAddress} — token saved locally (${TOKEN_PATH}). Read + draft only; never sends.`);
+    const { tokens } = await o.getToken(code);
+    mkdirSync(dirname(TOKEN_PATH), { recursive: true });
+    writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2), { mode: 0o600 });
+    o.setCredentials(tokens);
+    const prof = await google.gmail({ version: 'v1', auth: o }).users.getProfile({ userId: 'me' });
+    return prof.data.emailAddress ?? 'your account';
+  })();
+  return { url, done };
+}
+
+/** One-time OAuth consent (loopback) for the CLI: prints the URL, waits for approval. */
+export async function connectGmail(onLog: (m: string) => void = (m) => console.log(m), readOnly = false): Promise<void> {
+  const { url, done } = beginConsent(readOnly);
+  onLog(`\nAuthorize MWA — open this URL in your browser (sign in as the account you want it to manage):\n\n${url}\n`);
+  const email = await done;
+  onLog(`✅ Connected as ${email} — token saved locally (${TOKEN_PATH}). ${readOnly ? 'Read only.' : 'Read + draft only; never sends.'}`);
+}
+
+/** Web flow: returns the consent URL for the browser to open; finishes in the background
+ *  (the UI polls /api/status to see Gmail flip to connected). */
+export function startGmailConnect(readOnly = false): string {
+  const { url, done } = beginConsent(readOnly);
+  done.then((email) => console.log(`  ✅ Gmail connected as ${email}`)).catch((e) => console.error('  Gmail connect failed:', (e as Error).message.slice(0, 120)));
+  return url;
 }
 
 function decodeBody(payload: any): string {
