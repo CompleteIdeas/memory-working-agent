@@ -32,9 +32,10 @@ export function installerTools(cfg: MwaConfig): RegisteredTool[] {
         const enabled = new Set(enabledConnectorIds());
         const rows = listConnectors(args.query ? String(args.query) : undefined).map((c) => {
           const need = (c.secrets ?? []).filter((s) => !s.optional).map((s) => s.label);
-          return `${enabled.has(c.id) ? '[on] ' : '[  ] '}${c.id} — ${c.name}: ${c.description} (can touch: ${c.access})${need.length ? ` — needs ${need.join(', ')}` : ''}`;
+          const state = enabled.has(c.id) ? 'ALREADY ON' : `OFF — to enable, call install_connector with id="${c.id}"`;
+          return `• ${c.name} (id="${c.id}") — ${state}. ${c.description} Can touch: ${c.access}.${need.length ? ` Needs: ${need.join(', ')}.` : ''}`;
         });
-        return rows.join('\n') || '(no connectors match)';
+        return `Connectors (ALREADY ON = enabled; OFF = not enabled yet):\n${rows.join('\n') || '(no connectors match)'}`;
       },
     },
     {
