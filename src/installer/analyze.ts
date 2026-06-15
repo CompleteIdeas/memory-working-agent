@@ -15,7 +15,9 @@ export interface Analysis { ok: boolean; error?: string; meta?: PackageMeta; fin
 const KNOWN = [
   '@modelcontextprotocol/server-filesystem', '@modelcontextprotocol/server-github',
   '@modelcontextprotocol/server-memory', '@modelcontextprotocol/server-sequential-thinking',
-  '@modelcontextprotocol/sdk', 'express', 'react', 'lodash', 'axios', 'puppeteer',
+  '@modelcontextprotocol/sdk', '@upstash/context7-mcp', '@playwright/mcp',
+  '@notionhq/notion-mcp-server', 'tavily-mcp', 'firecrawl-mcp', 'exa-mcp-server',
+  'express', 'react', 'lodash', 'axios', 'puppeteer',
 ];
 
 function levenshtein(a: string, b: string): number {
