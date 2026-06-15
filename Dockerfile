@@ -32,6 +32,13 @@ COPY tsconfig.json ./
 COPY mcp-servers ./mcp-servers
 RUN npm run build    # build:awm (tsc) + tsc + build:ui (vite → dist-ui)
 
+# Bake the recall models INTO the image so the first reply is fast and the agent works
+# offline. A throwaway write+recall pre-downloads them; @huggingface/transformers caches
+# under node_modules/@huggingface/transformers/.cache (an image layer, NOT the /data
+# volume — so a NAS bind mount can't mask them). ~216 MB (embedding + reranker).
+COPY scripts/prewarm.ts ./scripts/prewarm.ts
+RUN MWA_DB=/tmp/prewarm.db npx tsx scripts/prewarm.ts && rm -rf /tmp/prewarm.db*
+
 COPY docker-entrypoint.sh ./
 RUN sed -i 's/\r$//' docker-entrypoint.sh && chmod +x docker-entrypoint.sh
 
@@ -43,8 +50,6 @@ ENV MWA_ENV_PATH=/data/.env \
     MWA_WORKSPACE=/data/mwa-workspace \
     MWA_SERVE_HOST=0.0.0.0 \
     MWA_NO_OPEN=1 \
-    HF_HOME=/data/hf \
-    TRANSFORMERS_CACHE=/data/hf \
     NODE_ENV=production
 VOLUME ["/data"]
 EXPOSE 7788
