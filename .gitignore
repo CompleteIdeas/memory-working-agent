@@ -15,3 +15,6 @@ sandbox/
 mwa-workspace/
 *.log
 data/google-token.json
+
+# throwaway dogfood/diagnostic scripts
+scripts/_*
