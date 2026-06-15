@@ -28,6 +28,9 @@ export function upsertEnv(kv: Record<string, string>): void {
   });
   for (const [k, v] of Object.entries(kv)) if (!seen.has(k)) out.push(`${k}=${v}`);
   writeFileSync(ENV_PATH, out.filter((l, i) => !(l === '' && i === out.length - 1)).join('\n').replace(/\n*$/, '\n'), { mode: 0o600 });
+  // Make the new value live in THIS process immediately — loadEnv() is cached after its
+  // first call, so without this a just-onboarded key wouldn't take effect until restart.
+  for (const [k, v] of Object.entries(kv)) process.env[k] = v;
 }
 
 function envHas(key: string): boolean {

@@ -1,13 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-/** Load .env (repo root) into process.env without a dependency. Idempotent. */
+/** Load the .env into process.env without a dependency. Honors MWA_ENV_PATH (so the
+ *  Docker/NAS image, which stores secrets on the /data volume, reads the SAME file the
+ *  setup screen writes); falls back to repo-root .env in dev. Idempotent. */
 let loaded = false;
 export function loadEnv(): void {
   if (loaded) return;
   loaded = true;
   try {
-    const text = readFileSync(resolve(process.cwd(), '.env'), 'utf8');
+    const text = readFileSync(process.env.MWA_ENV_PATH ?? resolve(process.cwd(), '.env'), 'utf8');
     for (const line of text.split('\n')) {
       const t = line.trim();
       if (!t || t.startsWith('#')) continue;

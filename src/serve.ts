@@ -122,15 +122,21 @@ function writeMcpServers(servers: Record<string, unknown>): void {
   writeFileSync(CONFIG_PATH, JSON.stringify(raw, null, 2) + '\n');
 }
 
-/** Persist the chosen brain into mwa.config.json (models.fetch = "provider:model"),
- *  keeping a Sonnet reason-tier when Anthropic is available, else mirroring fetch. */
+/** Persist the chosen brain into mwa.config.json. The cheap tier (fetch) becomes the
+ *  picked model; the strong tier (reason) stays Anthropic Sonnet ONLY when an Anthropic
+ *  key is present — otherwise it mirrors the picked provider, so a single-provider setup
+ *  (e.g. keyless Ollama) doesn't leave reason pointing at a provider with no key (which
+ *  would break escalation + the scheduler with "Missing ANTHROPIC_API_KEY"). */
 function setFetchModel(provider: string, model: string): void {
   const spec = `${provider}:${model}`;
   let raw: any = {};
   try { if (existsSync(CONFIG_PATH)) raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')); } catch { /* */ }
   raw.models = raw.models ?? {};
   raw.models.fetch = spec;
-  if (!raw.models.reason) raw.models.reason = process.env.ANTHROPIC_API_KEY ? 'anthropic:claude-sonnet-4-6' : spec;
+  // Reason tier: keep/restore a Sonnet ceiling iff Anthropic is usable; else mirror fetch.
+  raw.models.reason = (provider === 'anthropic' || process.env.ANTHROPIC_API_KEY)
+    ? (provider === 'anthropic' ? spec : (raw.models.reason || 'anthropic:claude-sonnet-4-6'))
+    : spec;
   writeFileSync(CONFIG_PATH, JSON.stringify(raw, null, 2) + '\n');
 }
 

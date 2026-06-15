@@ -249,6 +249,10 @@ export function getProvider(role: ProviderRole): Provider {
     return resolveProvider(spec);
   } catch (e) {
     if (role === 'high' && process.env.ANTHROPIC_API_KEY) return anthropicFor('claude-sonnet-4-6');
+    // Strong tier unresolved (e.g. a stale config left reason pointing at a provider whose
+    // key is absent) — fall back to the cheap/fetch model so single-provider setups
+    // (keyless Ollama, OpenAI-only, etc.) still escalate instead of throwing.
+    if (role === 'high' && cfg.models.fetch !== spec) { try { return resolveProvider(cfg.models.fetch); } catch { /* fall through */ } }
     const base = process.env.AZURE_GPT_BASE_URL, key = process.env.AZURE_GPT_API_KEY;
     if (base && key) return new AzureGptProvider(process.env.AZURE_GPT_DEPLOYMENT ?? 'gpt-5-4-mini', [0.75, 4.5], base, key);
     if (process.env.ANTHROPIC_API_KEY) return anthropicFor('claude-haiku-4-5-20251001', ' (brain-fallback)');
