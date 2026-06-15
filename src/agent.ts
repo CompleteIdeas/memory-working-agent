@@ -222,11 +222,16 @@ export async function runAgent(opts: {
   // or "to X.ext") — verified to actually exist before we accept `done`, catching "it's ready"
   // claims with no file. Conservative: only filenames in a produce-context.
   const expectedOutputs = (() => {
-    const out = new Set<string>();
     const ext = '(?:md|json|jsonl|csv|html?|txt|js|mjs|cjs|ts|tsx|py|css|ya?ml|xml|svg)';
-    const re1 = new RegExp(`\\b(?:write|writes|writing|create|creates|creating|save|saved|saving|produce|generate|generates|output|outputs|build|builds|make|makes)\\b[\\s\\S]{0,40}?\\b([\\w][\\w./-]*\\.${ext})\\b`, 'gi');
-    const re2 = new RegExp(`\\bto\\s+([\\w][\\w./-]*\\.${ext})\\b`, 'gi');
-    for (const re of [re1, re2]) { let m: RegExpExecArray | null; while ((m = re.exec(instruction))) out.add(m[1]); }
+    const fileRe = new RegExp(`\\b([\\w][\\w.-]*\\.${ext})\\b`, 'gi');
+    const produce = /(write|writes|writing|creat|sav|produce|generat|output|build|make|findings to|results? to|report to|put (it|them|that) (in|into|to))/i;
+    const out = new Set<string>();
+    let m: RegExpExecArray | null;
+    while ((m = fileRe.exec(instruction))) {
+      const f = m[1];
+      if (f.includes('*')) continue; // skip globs (e.g. sales-*.csv — those are inputs)
+      if (produce.test(instruction.slice(Math.max(0, m.index - 60), m.index))) out.add(f); // a produce verb just before it
+    }
     return [...out];
   })();
   let steps = 0;
