@@ -6,7 +6,8 @@
  */
 import { resolveProvider } from '../provider.js';
 import { parseJsonLoose } from '../util.js';
-import { analyzeNpmPackage, type Analysis } from './analyze.js';
+import { analyzeNpmPackage, type Analysis, type Finding } from './analyze.js';
+import { deepScanNpm, type DeepScan } from './deepscan.js';
 import { installerSpec } from './policy.js';
 import type { MwaConfig } from '../config.js';
 
@@ -18,6 +19,8 @@ export interface RiskReport {
   capabilities: string[];
   redFlags: string[];
   analysis: Analysis;
+  deepScan?: DeepScan;
+  integrity?: string;
   pinnedVersion?: string;
   model: string;
 }
@@ -31,14 +34,19 @@ export async function reviewConnector(source: string, cfg: MwaConfig): Promise<R
     return { source, verdict: 'dangerous', summary: `Couldn't analyze "${source}": ${analysis.error}`, capabilities: [], redFlags: [analysis.error ?? 'analysis failed'], analysis, model };
   }
 
-  const sys = 'You are a skeptical security reviewer. A user wants to run this npm package as an MCP tool server — it will run as a child process with the user\'s privileges, so a malicious package is full compromise. Judge the risk from the metadata + automated findings. Respond ONLY with JSON: {"verdict":"safe|caution|dangerous","capabilities":["short phrases"],"redFlags":["short phrases"],"summary":"one short plain-language paragraph a non-expert can act on"}.';
   const m = analysis.meta!;
+  // Deep source scan: download + integrity-check + scan the ACTUAL code (Phase 3).
+  const deep = await deepScanNpm(m.tarball, m.integrity);
+  const allFindings: Finding[] = [...analysis.findings, ...deep.findings];
+
+  const sys = 'You are a skeptical security reviewer. A user wants to run this npm package as an MCP tool server — it will run as a child process with the user\'s privileges, so a malicious package is full compromise. Judge the risk from the metadata, the automated source-scan findings, and the integrity check. A tool server using the network or filesystem is normal; obfuscated payloads, secret exfiltration, remote code, or an integrity mismatch are alarming. Respond ONLY with JSON: {"verdict":"safe|caution|dangerous","capabilities":["short phrases"],"redFlags":["short phrases"],"summary":"one short plain-language paragraph a non-expert can act on"}.';
   const user = [
     `Package: ${m.name}@${m.version}`,
     `Description: ${m.description ?? '(none)'}`,
     `Direct deps: ${m.deps ?? '?'} | Age(days): ${m.ageDays ?? '?'} | Downloads/mo: ${m.downloads ?? '?'} | Maintainers: ${m.maintainers ?? '?'} | Install script: ${m.hasInstallScript}`,
-    'Automated findings:',
-    analysis.findings.map((f) => `- [${f.severity}] ${f.label}: ${f.detail}`).join('\n') || '(none)',
+    `Source scan: ${deep.ran ? `${deep.filesScanned} files scanned, integrity ${deep.integrityOk === undefined ? 'unknown' : deep.integrityOk ? 'verified' : 'MISMATCH'}` : `not run (${deep.note})`}`,
+    'Findings:',
+    allFindings.map((f) => `- [${f.severity}] ${f.label}: ${f.detail}`).join('\n') || '(none)',
   ].join('\n');
 
   let parsed: any = {};
@@ -46,17 +54,18 @@ export async function reviewConnector(source: string, cfg: MwaConfig): Promise<R
     const res = await resolveProvider(model).chat({ system: sys, messages: [{ role: 'user', content: user }], maxTokens: 700 });
     parsed = parseJsonLoose(res.text) ?? {};
   } catch (e) {
-    return { source, verdict: 'caution', summary: `The reviewing model couldn't be reached (${(e as Error).message.slice(0, 80)}) — treat with caution and review it yourself.`, capabilities: [], redFlags: analysis.findings.filter((f) => f.severity !== 'info').map((f) => f.label), analysis, pinnedVersion: m.version, model };
+    return { source, verdict: 'caution', summary: `The reviewing model couldn't be reached (${(e as Error).message.slice(0, 80)}) — treat with caution and review it yourself.`, capabilities: [], redFlags: allFindings.filter((f) => f.severity !== 'info').map((f) => f.label), analysis, deepScan: deep, integrity: m.integrity, pinnedVersion: m.version, model };
   }
 
   let verdict: Verdict = (['safe', 'caution', 'dangerous'] as const).includes(parsed.verdict) ? parsed.verdict : 'caution';
-  // Deterministic floor: any 'danger' finding (install script, typosquat) can only raise it.
-  if (analysis.findings.some((f) => f.severity === 'danger') && RANK[verdict] < RANK.caution) verdict = 'caution';
+  // Deterministic floors: automated 'danger' findings can only RAISE the verdict.
+  if (allFindings.some((f) => f.severity === 'danger') && RANK[verdict] < RANK.caution) verdict = 'caution';
+  if (deep.integrityOk === false) verdict = 'dangerous'; // checksum mismatch — never lower than dangerous
   return {
     source, verdict,
     summary: typeof parsed.summary === 'string' ? parsed.summary : 'No summary returned.',
     capabilities: Array.isArray(parsed.capabilities) ? parsed.capabilities.slice(0, 8).map(String) : [],
-    redFlags: Array.isArray(parsed.redFlags) && parsed.redFlags.length ? parsed.redFlags.slice(0, 8).map(String) : analysis.findings.filter((f) => f.severity !== 'info').map((f) => f.label),
-    analysis, pinnedVersion: m.version, model,
+    redFlags: Array.isArray(parsed.redFlags) && parsed.redFlags.length ? parsed.redFlags.slice(0, 8).map(String) : allFindings.filter((f) => f.severity !== 'info').map((f) => f.label),
+    analysis, deepScan: deep, integrity: m.integrity, pinnedVersion: m.version, model,
   };
 }

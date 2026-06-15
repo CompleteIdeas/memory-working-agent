@@ -33,13 +33,13 @@ export interface Connections { gmail: boolean; outlook: boolean; telegram: boole
 export async function getConnections(): Promise<Connections> {
   try { const r = await fetch('/api/connections'); return await r.json(); } catch { return { gmail: false, outlook: false, telegram: false, connectors: [], externalInstall: { enabled: false, policy: 'review-required', reason: '', model: '' } }; }
 }
-export interface RiskReport { source: string; verdict: 'safe' | 'caution' | 'dangerous'; summary: string; capabilities: string[]; redFlags: string[]; pinnedVersion?: string; model: string }
+export interface RiskReport { source: string; verdict: 'safe' | 'caution' | 'dangerous'; summary: string; capabilities: string[]; redFlags: string[]; pinnedVersion?: string; integrity?: string; model: string; deepScan?: { ran: boolean; note?: string; integrityOk?: boolean; filesScanned?: number } }
 export async function reviewExternal(source: string): Promise<{ ok: boolean; message?: string; report?: RiskReport }> {
   const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'review-external', source }) });
   return r.json();
 }
-export async function approveExternal(source: string, version?: string, verdict?: string): Promise<{ ok: boolean; message?: string }> {
-  const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'approve-external', source, version, verdict }) });
+export async function approveExternal(source: string, version?: string, verdict?: string, integrity?: string): Promise<{ ok: boolean; message?: string }> {
+  const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'approve-external', source, version, verdict, integrity }) });
   return r.json();
 }
 export async function enableConnector(id: string): Promise<{ ok: boolean; message?: string }> {

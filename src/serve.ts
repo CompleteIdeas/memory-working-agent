@@ -343,7 +343,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
           else if (!source) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: 'No package given.' })); }
           else {
             const r = enableExternalNpm(source, b.version ? String(b.version) : undefined);
-            try { const lp = process.env.MWA_INSTALL_LOG ?? resolve('./data/installs.jsonl'); mkdirSync(dirname(lp), { recursive: true }); appendFileSync(lp, JSON.stringify({ ts: Date.now(), id: r.id, name: source, tier: 'approved-external', version: b.version ?? null, verdict: b.verdict ?? null }) + '\n'); } catch { /* */ }
+            try { const lp = process.env.MWA_INSTALL_LOG ?? resolve('./data/installs.jsonl'); mkdirSync(dirname(lp), { recursive: true }); appendFileSync(lp, JSON.stringify({ ts: Date.now(), id: r.id, name: source, tier: 'approved-external', version: b.version ?? null, verdict: b.verdict ?? null, integrity: b.integrity ?? null }) + '\n'); } catch { /* */ }
             res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, message: `Installed ${source}${b.version ? '@' + b.version : ''} — its tools are available on your next message.` }));
           }
         } else if (b.action === 'connect-gmail') {

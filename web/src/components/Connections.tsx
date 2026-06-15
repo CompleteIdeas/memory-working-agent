@@ -176,7 +176,7 @@ function ExternalInstaller({ ext, onChange }: { ext: ExternalInstall; onChange: 
   async function approve() {
     if (!report) return;
     setBusy(true); setMsg('Installing…');
-    const r = await approveExternal(report.source, report.pinnedVersion, report.verdict);
+    const r = await approveExternal(report.source, report.pinnedVersion, report.verdict, report.integrity);
     setBusy(false); setMsg(r.message ?? '');
     if (r.ok) { setReport(null); setSource(''); onChange(); }
   }
@@ -197,6 +197,11 @@ function ExternalInstaller({ ext, onChange }: { ext: ExternalInstall; onChange: 
           {report && (
             <div className="border-t border-line pt-3 space-y-1.5">
               <div className="text-sm">Verdict: <b className={VERDICT_STYLE[report.verdict] ?? ''}>{report.verdict.toUpperCase()}</b> <span className="text-dim">· pinned {report.pinnedVersion ?? '?'}</span></div>
+              {report.deepScan && (
+                <p className="text-[12px] text-dim">{report.deepScan.ran
+                  ? `Source scan: ${report.deepScan.filesScanned} files · checksum ${report.deepScan.integrityOk === undefined ? 'unknown' : report.deepScan.integrityOk ? 'verified ✓' : 'MISMATCH ✗'}`
+                  : `Source scan skipped (${report.deepScan.note})`}</p>
+              )}
               <p className="text-sm">{report.summary}</p>
               {!!report.redFlags.length && <p className="text-[13px] text-dim">Red flags: {report.redFlags.join('; ')}</p>}
               {!!report.capabilities.length && <p className="text-[13px] text-dim">Could do: {report.capabilities.join('; ')}</p>}
