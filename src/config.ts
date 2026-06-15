@@ -10,8 +10,9 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 export interface MwaConfig {
-  /** model tiers: fetch = cheap workhorse, reason = escalation ceiling */
-  models: { fetch: string; reason: string };
+  /** model tiers: fetch = cheap workhorse, reason = escalation ceiling, installer = the
+   *  model that reviews/vets connectors from outside the curated library (defaults to reason) */
+  models: { fetch: string; reason: string; installer?: string };
   awm: { workspace?: string };
   /** root for the mailbox I/O workspace (inbox/outputs/outbox/done). Default ./mwa-workspace */
   workspace?: string;
@@ -19,6 +20,9 @@ export interface MwaConfig {
     builtins: string[];
     /** MCP servers whose tools register into the same registry (namespaced <server>__<tool>) */
     mcpServers?: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
+    /** how connectors get installed: curated-only (library only) | review-required (library
+     *  auto + external needs the installation-model review + approval) | off (no installs) */
+    installPolicy?: 'curated-only' | 'review-required' | 'off';
   };
   escalation: { maxFetchFailures: number };
 }
@@ -30,6 +34,7 @@ export const DEFAULT_CONFIG: MwaConfig = {
   tools: {
     builtins: ['run_command', 'read_file', 'write_file', 'list_files', 'read_document'],
     mcpServers: { search: { command: 'node', args: ['mcp-servers/search.mjs'] } }, // keyless web search (Brave if BRAVE_API_KEY set)
+    installPolicy: 'review-required', // curated installs are automatic; external needs review + approval
   },
   escalation: { maxFetchFailures: 2 },
 };

@@ -32,7 +32,9 @@ import { loadEnv } from './env.js';
 import { mailboxDirs } from './mailbox.js';
 import { googleConfigured, startGmailConnect } from './connectors/google.js';
 import { microsoftConfigured, startMicrosoftConnect } from './connectors/microsoft.js';
-import { listConnectors, enableConnector, disableConnector, enabledConnectorIds } from './connectors/registry.js';
+import { listConnectors, enableConnector, disableConnector, enabledConnectorIds, enableExternalNpm } from './connectors/registry.js';
+import { externalInstallState } from './installer/policy.js';
+import { reviewConnector } from './installer/review.js';
 import { status, testAnthropic, testAzure, testTelegram, testProvider, envKeyForProvider, upsertEnv } from './wizard.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -304,6 +306,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
           gmail: googleConfigured(),
           outlook: microsoftConfigured(),
           telegram: !!process.env.TELEGRAM_BOT_TOKEN,
+          externalInstall: externalInstallState(loadConfig()),
           connectors: listConnectors().map((c) => ({
             id: c.id, name: c.name, category: c.category, description: c.description, access: c.access,
             tier: c.tier, source: c.source ?? null, on: enabled.has(c.id),
@@ -324,6 +327,25 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
           const env = String(b.env ?? '').trim(), value = String(b.value ?? '');
           if (!/^[A-Z0-9_]+$/.test(env) || !value) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: 'Missing or invalid field.' })); }
           else { upsertEnv({ [env]: value }); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, message: 'Saved.' })); }
+        } else if (b.action === 'review-external') {
+          // Run the installation-model security review on an npm package (does NOT install).
+          const st = externalInstallState(loadConfig());
+          if (!st.enabled) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: st.reason })); }
+          else {
+            try { const report = await reviewConnector(String(b.source ?? '').trim(), loadConfig()); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, report })); }
+            catch (e) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: (e as Error).message.slice(0, 160) })); }
+          }
+        } else if (b.action === 'approve-external') {
+          // Human-approved install of a reviewed external package, version-pinned + audited.
+          const st = externalInstallState(loadConfig());
+          const source = String(b.source ?? '').trim();
+          if (!st.enabled) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: st.reason })); }
+          else if (!source) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: 'No package given.' })); }
+          else {
+            const r = enableExternalNpm(source, b.version ? String(b.version) : undefined);
+            try { const lp = process.env.MWA_INSTALL_LOG ?? resolve('./data/installs.jsonl'); mkdirSync(dirname(lp), { recursive: true }); appendFileSync(lp, JSON.stringify({ ts: Date.now(), id: r.id, name: source, tier: 'approved-external', version: b.version ?? null, verdict: b.verdict ?? null }) + '\n'); } catch { /* */ }
+            res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, message: `Installed ${source}${b.version ? '@' + b.version : ''} — its tools are available on your next message.` }));
+          }
         } else if (b.action === 'connect-gmail') {
           if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
             res.writeHead(200, { 'content-type': 'application/json' });

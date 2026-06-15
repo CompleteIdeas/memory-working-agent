@@ -8,6 +8,9 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import type { RegisteredTool } from './registry.js';
 import { listConnectors, getConnector, enableConnector, enabledConnectorIds, missingSecrets, type ConnectorEntry } from '../connectors/registry.js';
+import { externalInstallState } from '../installer/policy.js';
+import { reviewConnector } from '../installer/review.js';
+import type { MwaConfig } from '../config.js';
 
 function auditInstall(entry: ConnectorEntry): void {
   try {
@@ -17,7 +20,7 @@ function auditInstall(entry: ConnectorEntry): void {
   } catch { /* best-effort */ }
 }
 
-export function installerTools(): RegisteredTool[] {
+export function installerTools(cfg: MwaConfig): RegisteredTool[] {
   return [
     {
       def: {
@@ -49,6 +52,28 @@ export function installerTools(): RegisteredTool[] {
         const r = enableConnector(id);
         if (r.ok) auditInstall(entry);
         return r.message;
+      },
+    },
+    {
+      def: {
+        name: 'propose_connector',
+        description: 'Propose installing a connector from OUTSIDE the curated library (an npm package the user found). This does NOT install anything — it runs a security review and returns a risk report for the USER to approve in Connections. Use only when the user explicitly asks for something not in list_connectors.',
+        parameters: { type: 'object', properties: { source: { type: 'string', description: 'npm package name, e.g. "@scope/server-foo"' } }, required: ['source'] },
+      },
+      handler: async (args) => {
+        const st = externalInstallState(cfg);
+        if (!st.enabled) return `I can't install connectors from outside the library right now: ${st.reason}`;
+        const source = String(args.source ?? '').trim();
+        if (!source) return 'Tell me the npm package name to review.';
+        const rep = await reviewConnector(source, cfg);
+        return [
+          `Security review of "${rep.source}" — verdict: ${rep.verdict.toUpperCase()} (reviewed by ${rep.model}).`,
+          rep.summary,
+          `Red flags: ${rep.redFlags.join('; ') || 'none found'}`,
+          `What it could do: ${rep.capabilities.join('; ') || 'unclear'}`,
+          '',
+          `NOT installed yet — the user must approve it in Connections (it will be pinned to ${rep.pinnedVersion ?? 'the reviewed version'}). Running it executes third-party code on this machine.`,
+        ].join('\n');
       },
     },
   ];

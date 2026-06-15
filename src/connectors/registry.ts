@@ -119,3 +119,16 @@ export function disableConnector(id: string): void {
   const raw = readConfigRaw();
   if (raw?.tools?.mcpServers?.[id]) { delete raw.tools.mcpServers[id]; writeConfigRaw(raw); }
 }
+
+/** Install an EXTERNAL npm package as an MCP server, version-PINNED (used only after the
+ *  installation-model review + human approval). Returns the config id it was stored under. */
+export function enableExternalNpm(name: string, version?: string): { ok: boolean; id: string } {
+  const id = name.replace(/[^a-z0-9_-]/gi, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'connector';
+  const pkg = version ? `${name}@${version}` : name; // pin when we know the version
+  const raw = readConfigRaw();
+  raw.tools = raw.tools ?? {};
+  raw.tools.mcpServers = raw.tools.mcpServers ?? {};
+  raw.tools.mcpServers[id] = { command: 'npx', args: ['-y', pkg] };
+  writeConfigRaw(raw);
+  return { ok: true, id };
+}

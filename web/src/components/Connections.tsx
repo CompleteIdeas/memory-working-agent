@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   getConnections, connectGmail, connectOutlook, saveGoogle, saveMicrosoft,
-  enableConnector, disableConnector, saveConnectorSecret,
-  type Connections as Conn, type ConnectorItem,
+  enableConnector, disableConnector, saveConnectorSecret, reviewExternal, approveExternal,
+  type Connections as Conn, type ConnectorItem, type ExternalInstall, type RiskReport,
 } from '../api';
 
 // Turn tools & accounts on without editing files. Email uses a GUIDED bring-your-own
@@ -152,6 +152,62 @@ export function Connections() {
           {c.connectors.map((k) => <ConnectorCard key={k.id} k={k} onChange={load} />)}
         </div>
       </div>
+
+      <ExternalInstaller ext={c.externalInstall} onChange={load} />
+    </div>
+  );
+}
+
+const VERDICT_STYLE: Record<string, string> = { safe: 'text-green-700', caution: 'text-amber-600', dangerous: 'text-signal' };
+
+function ExternalInstaller({ ext, onChange }: { ext: ExternalInstall; onChange: () => void }) {
+  const [source, setSource] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [report, setReport] = useState<RiskReport | null>(null);
+
+  async function review() {
+    setBusy(true); setMsg(''); setReport(null);
+    const r = await reviewExternal(source.trim());
+    setBusy(false);
+    if (!r.ok || !r.report) { setMsg(r.message ?? 'Could not review.'); return; }
+    setReport(r.report);
+  }
+  async function approve() {
+    if (!report) return;
+    setBusy(true); setMsg('Installing…');
+    const r = await approveExternal(report.source, report.pinnedVersion, report.verdict);
+    setBusy(false); setMsg(r.message ?? '');
+    if (r.ok) { setReport(null); setSource(''); onChange(); }
+  }
+
+  return (
+    <div>
+      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">add from npm</div>
+      {!ext.enabled ? (
+        <p className="text-dim text-sm rounded-[4px] border border-line bg-surface px-4 py-3">{ext.reason}</p>
+      ) : (
+        <div className="rounded-[4px] border border-line bg-surface px-4 py-3 space-y-3">
+          <p className="text-dim text-sm">Install a connector that isn’t in the library. It’s reviewed by your model ({ext.model}) first — then you approve. Running it executes third-party code on this machine.</p>
+          <div className="flex gap-2">
+            <input value={source} onChange={(e) => setSource(e.target.value)} placeholder="npm package, e.g. @scope/server-name"
+              className="flex-1 rounded-[3px] border border-line bg-bone px-3 py-2 text-sm outline-none focus:border-signal" />
+            <button onClick={review} disabled={busy || !source.trim()} className="rounded-[3px] border border-line px-3 py-2 text-sm font-medium disabled:opacity-50">{busy && !report ? 'Reviewing…' : 'Review'}</button>
+          </div>
+          {report && (
+            <div className="border-t border-line pt-3 space-y-1.5">
+              <div className="text-sm">Verdict: <b className={VERDICT_STYLE[report.verdict] ?? ''}>{report.verdict.toUpperCase()}</b> <span className="text-dim">· pinned {report.pinnedVersion ?? '?'}</span></div>
+              <p className="text-sm">{report.summary}</p>
+              {!!report.redFlags.length && <p className="text-[13px] text-dim">Red flags: {report.redFlags.join('; ')}</p>}
+              {!!report.capabilities.length && <p className="text-[13px] text-dim">Could do: {report.capabilities.join('; ')}</p>}
+              <button onClick={approve} disabled={busy} className={`mt-1 rounded-[3px] px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${report.verdict === 'dangerous' ? 'bg-red-700' : 'bg-signal'}`}>
+                {report.verdict === 'dangerous' ? 'Install anyway (risky)' : `Approve & install ${report.source}`}
+              </button>
+            </div>
+          )}
+          {msg && <p className="mono text-[12px] text-dim">{msg}</p>}
+        </div>
+      )}
     </div>
   );
 }

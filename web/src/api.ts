@@ -28,9 +28,19 @@ export async function getStats(): Promise<{ memories: number }> {
 
 export interface ConnectorSecret { env: string; label: string; help: string | null; optional: boolean; set: boolean }
 export interface ConnectorItem { id: string; name: string; category: string; description: string; access: string; tier: string; source: string | null; on: boolean; secrets: ConnectorSecret[] }
-export interface Connections { gmail: boolean; outlook: boolean; telegram: boolean; connectors: ConnectorItem[]; }
+export interface ExternalInstall { enabled: boolean; policy: string; reason: string; model: string }
+export interface Connections { gmail: boolean; outlook: boolean; telegram: boolean; connectors: ConnectorItem[]; externalInstall: ExternalInstall; }
 export async function getConnections(): Promise<Connections> {
-  try { const r = await fetch('/api/connections'); return await r.json(); } catch { return { gmail: false, outlook: false, telegram: false, connectors: [] }; }
+  try { const r = await fetch('/api/connections'); return await r.json(); } catch { return { gmail: false, outlook: false, telegram: false, connectors: [], externalInstall: { enabled: false, policy: 'review-required', reason: '', model: '' } }; }
+}
+export interface RiskReport { source: string; verdict: 'safe' | 'caution' | 'dangerous'; summary: string; capabilities: string[]; redFlags: string[]; pinnedVersion?: string; model: string }
+export async function reviewExternal(source: string): Promise<{ ok: boolean; message?: string; report?: RiskReport }> {
+  const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'review-external', source }) });
+  return r.json();
+}
+export async function approveExternal(source: string, version?: string, verdict?: string): Promise<{ ok: boolean; message?: string }> {
+  const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'approve-external', source, version, verdict }) });
+  return r.json();
 }
 export async function enableConnector(id: string): Promise<{ ok: boolean; message?: string }> {
   const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'enable-connector', id }) });
