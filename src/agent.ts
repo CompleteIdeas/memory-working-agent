@@ -17,6 +17,7 @@ import { readFileSync, statSync, appendFileSync, mkdirSync, existsSync } from 'n
 import { resolve, sep, dirname, join } from 'node:path';
 import type { Provider } from './provider.js';
 import { validateSubstance } from './substance.js';
+import { loadDomainPack, buildDomainContext } from './domain-pack.js';
 import type { Memory, RecalledMemory } from './awm.js';
 import { BRAIN_TOOLS } from './brain.js';
 import type { ToolDef } from './provider.js';
@@ -164,6 +165,9 @@ export async function runAgent(opts: {
   /** cap on primed memories kept in the prompt (default 10, the anti-context-rot discipline).
    *  Raised only by the gauntlet's long-context baseline arm to let it dump the full store. */
   primeCap?: number;
+  /** path to a domain pack (folder with AGENT.md + topics/*.md) — progressive-disclosure
+   *  domain knowledge injected into the prompt. Lets a domain plug into MWA as a backend. */
+  domainPackDir?: string;
   /** wall-clock now; injected for testability (defaults to Date.now) */
   now?: () => number;
   onEvent?: (type: string, data: Record<string, unknown>) => void;
@@ -186,6 +190,11 @@ export async function runAgent(opts: {
   const maxWallMs = opts.budget?.maxWallMs ?? 10 * 60_000;
   const consolidateEvery = opts.budget?.consolidateEvery ?? 10;
   const start = now();
+
+  // DOMAIN PACK — optional progressive-disclosure domain knowledge (AGENT.md + top-N
+  // relevant topics). Loaded once; topic selection keys off the (stable) instruction.
+  const domainPack = opts.domainPackDir ? loadDomainPack(opts.domainPackDir) : null;
+  const domainContext = domainPack ? buildDomainContext(domainPack, instruction) : '';
 
   const usage = { brainIn: 0, brainOut: 0, workerIn: 0, workerOut: 0 };
   const history: string[] = [];
@@ -338,6 +347,7 @@ export async function runAgent(opts: {
       `INSTRUCTION: ${instruction}`,
       `WORKING DIR: ${dir}`,
       policies.length ? `STANDING PREFERENCES (the user's standing rules — always honor these; they override defaults):\n${policies.map((p) => `• ${p}`).join('\n')}` : '',
+      domainContext,
       render(),
       recent.length ? `RECENT STEPS (older context is in memory — recall it if needed):\n${recent.join('\n')}` : 'No steps yet.',
       steps >= maxSteps * 0.8
