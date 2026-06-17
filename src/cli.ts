@@ -27,6 +27,7 @@ import { runWizard } from './wizard.js';
 import { runServe } from './serve.js';
 import { runIngest } from './ingest.js';
 import { loadEnv } from './env.js';
+import { logger } from './logger.js';
 
 // Production safety net. A stray background rejection (scheduler tick, SSE stream,
 // MCP child) must not silently take the process down. Log unhandled rejections and
@@ -34,10 +35,10 @@ import { loadEnv } from './env.js';
 // exception the process state is unsafe — log and exit(1) so the supervisor
 // (Docker restart policy / systemd) restarts us clean.
 process.on('unhandledRejection', (reason) => {
-  console.error('[mwa] unhandledRejection:', reason instanceof Error ? (reason.stack ?? reason.message) : reason);
+  logger.error('process', 'unhandledRejection', { error: reason instanceof Error ? (reason.stack ?? reason.message) : String(reason) });
 });
 process.on('uncaughtException', (err) => {
-  console.error('[mwa] uncaughtException:', err instanceof Error ? (err.stack ?? err.message) : err);
+  logger.error('process', 'uncaughtException', { error: err instanceof Error ? (err.stack ?? err.message) : String(err) });
   process.exit(1);
 });
 

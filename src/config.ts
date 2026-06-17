@@ -51,6 +51,27 @@ export const DEFAULT_CONFIG: MwaConfig = {
 
 export const CONFIG_PATH = 'mwa.config.json';
 
+const VALID_PRESETS = ['locked-down', 'assistant', 'developer'];
+/** Structural validation of a raw config — returns human-readable warnings (does not throw;
+ *  the merge still applies safe defaults). Hand-rolled to keep MWA dependency-light. */
+export function validateConfig(raw: Partial<MwaConfig>): string[] {
+  const w: string[] = [];
+  const isModelSpec = (s: unknown) => typeof s === 'string' && /^[a-z0-9_.-]+:.+/i.test(s);
+  if (raw.models) {
+    if (raw.models.fetch !== undefined && !isModelSpec(raw.models.fetch)) w.push(`models.fetch "${raw.models.fetch}" should be "provider:model" (e.g. azure:gpt-5-4-mini)`);
+    if (raw.models.reason !== undefined && !isModelSpec(raw.models.reason)) w.push(`models.reason "${raw.models.reason}" should be "provider:model"`);
+  }
+  if (raw.tools?.builtins !== undefined && !Array.isArray(raw.tools.builtins)) w.push('tools.builtins should be an array of tool names');
+  const preset = raw.tools?.access?.preset;
+  if (preset !== undefined && !VALID_PRESETS.includes(preset)) w.push(`tools.access.preset "${preset}" is not one of ${VALID_PRESETS.join(' | ')}`);
+  if (raw.tools?.mcpServers) {
+    for (const [name, spec] of Object.entries(raw.tools.mcpServers)) {
+      if (!spec || typeof (spec as { command?: unknown }).command !== 'string') w.push(`tools.mcpServers.${name} needs a "command" string`);
+    }
+  }
+  return w;
+}
+
 /** Config file path — env-overridable (MWA_CONFIG_PATH) for tests and pointing at a
  *  mounted volume. Read dynamically so the override takes effect at call time. */
 export function configPath(): string { return process.env.MWA_CONFIG_PATH ?? CONFIG_PATH; }
@@ -65,6 +86,7 @@ export function loadConfig(path = configPath()): MwaConfig {
       // A malformed config silently falling back to defaults is a debugging trap — say so.
       console.error(`[config] ${path} is not valid JSON — ignoring it and using defaults. (${(e as Error).message.slice(0, 120)})`);
     }
+    for (const warning of validateConfig(raw)) console.error(`[config] ${warning}`);
   }
   const cfg: MwaConfig = {
     models: { ...DEFAULT_CONFIG.models, ...raw.models },

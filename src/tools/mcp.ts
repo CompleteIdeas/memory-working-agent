@@ -16,6 +16,7 @@ import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotoc
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
+import { logger } from '../logger.js';
 import type { RegisteredTool } from './registry.js';
 
 /** Expand ${VAR} references (in args/env) from process.env, so secrets live in .env and
@@ -95,9 +96,9 @@ export async function loadMcpServers(servers: Record<string, McpServerSpec> = {}
         });
       }
       clients.push(client);
-      console.error(`[mcp] ${name}: connected, ${listed.tools.length} tool(s)`);
+      logger.info('mcp', `${name}: connected, ${listed.tools.length} tool(s)`);
     } catch (e) {
-      console.error(`[mcp] ${name}: failed — ${(e as Error).message.slice(0, 160)}`);
+      logger.warn('mcp', `${name}: failed to connect — its tools are unavailable`, { error: (e as Error).message.slice(0, 160) });
     }
   }
 

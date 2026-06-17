@@ -26,6 +26,7 @@ import { RoutedProvider } from './model-router.js';
 import { MwaMemory } from './awm.js';
 import { buildRegistry } from './tools/build.js';
 import { listPendingActions, confirmPending, cancelPending } from './tools/approval.js';
+import { logger, readLogs, type LogLevel } from './logger.js';
 import { runAgent } from './agent.js';
 import { runScheduler } from './scheduler.js';
 import { loadConfig, CONFIG_PATH } from './config.js';
@@ -198,6 +199,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     s.history.push({ instruction: message, summary: r.summary });
     send('result', { reason: r.reason, summary: r.summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)) });
   } catch (e) {
+    logger.error('chat', 'agent run failed', { session: sessionId, error: (e as Error).message.slice(0, 200) });
     send('error', { message: (e as Error).message });
   } finally {
     activeRuns--;
@@ -306,6 +308,14 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
         const body = { ok: db, uptimeSec: Math.round((Date.now() - SERVER_START) / 1000), db, memoryCount, activeRuns, sessions: sessions.size, schedulerLastTickAgoSec };
         res.writeHead(db ? 200 : 503, { 'content-type': 'application/json' });
         res.end(JSON.stringify(body));
+        return;
+      }
+      // Recent structured logs (newest first) — operator visibility into why runs/scheduler/MCP failed.
+      if (p === '/api/logs') {
+        const since = Number(url.searchParams.get('since') ?? 0);
+        const level = (url.searchParams.get('level') as LogLevel) || undefined;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ logs: readLogs({ since, limit: 100, level }) }));
         return;
       }
       // Pending write-approvals — the UI half of the two-step gate ("both paths"): the agent
@@ -524,9 +534,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
           console.log(`  ⏰ fired: ${task.instruction.slice(0, 60)} → ${r.summary.slice(0, 80)}`);
         },
         onTick: () => { lastSchedulerTick = Date.now(); },
-        onLog: (m) => console.log(`  ${m}`),
+        onLog: (m) => logger.info('scheduler', m),
       });
-    } catch (e) { console.error('  scheduler not started:', (e as Error).message.slice(0, 100)); }
+    } catch (e) { logger.error('scheduler', 'not started', { error: (e as Error).message.slice(0, 100) }); }
   })();
 }
 
