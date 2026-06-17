@@ -25,6 +25,7 @@ import { getProvider } from './provider.js';
 import { RoutedProvider } from './model-router.js';
 import { MwaMemory } from './awm.js';
 import { buildRegistry } from './tools/build.js';
+import { listPendingActions, confirmPending, cancelPending } from './tools/approval.js';
 import { runAgent } from './agent.js';
 import { runScheduler } from './scheduler.js';
 import { loadConfig, CONFIG_PATH } from './config.js';
@@ -271,6 +272,26 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
         } catch { /* no log yet */ }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ runs }));
+        return;
+      }
+      // Pending write-approvals — the UI half of the two-step gate ("both paths"): the agent
+      // can previewed-then-confirm in chat, OR the user can review + approve/decline here.
+      if (p === '/api/approvals' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ pending: listPendingActions() }));
+        return;
+      }
+      if (p === '/api/approvals/confirm' && req.method === 'POST') {
+        const b = await readBody(req);
+        const out = await confirmPending(b.id ? String(b.id) : undefined, { sandboxDir: resolve('.'), interactive: true });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: !/^\(|refused|no pending|expired|ambiguous/i.test(out), message: out }));
+        return;
+      }
+      if (p === '/api/approvals/cancel' && req.method === 'POST') {
+        const b = await readBody(req);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ message: cancelPending(String(b.id ?? '')) }));
         return;
       }
       if (p === '/api/questions' && req.method === 'GET') {

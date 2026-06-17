@@ -106,6 +106,53 @@ export function requireApproval(
   };
 }
 
+export interface PendingView { id: string; tool: string; summary: string; expiresInSec: number; }
+
+/** List pending actions (for the chat tool AND the Connections UI — the "both paths" model). */
+export function listPendingActions(): PendingView[] {
+  prune();
+  const now = Date.now();
+  return [...pending.values()]
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .map((a) => ({ id: a.id, tool: a.tool, summary: a.summary, expiresInSec: Math.max(0, Math.round((a.expiresAt - now) / 1000)) }));
+}
+
+/** Confirm + execute a pending action by id (omit id → the single most recent). Shared by
+ *  the confirm_action chat tool and the UI approval endpoint. Unattended runs are gated. */
+export async function confirmPending(id: string | undefined, ctx: ToolContext): Promise<string> {
+  prune();
+  if (ctx.interactive === false && process.env.MWA_ALLOW_UNATTENDED_WRITES !== '1') {
+    return '(refused: confirming a write needs a human present — this is an unattended/scheduled run. Set MWA_ALLOW_UNATTENDED_WRITES=1 only if you intend writes without a person watching.)';
+  }
+  let key = (id ?? '').trim();
+  if (!key) {
+    const all = [...pending.values()].sort((a, b) => b.createdAt - a.createdAt);
+    if (all.length === 0) return '(nothing to confirm — no pending action)';
+    if (all.length > 1) return `(ambiguous: ${all.length} pending actions — pass an explicit confirmation_id. Use list_pending to see them.)`;
+    key = all[0].id;
+  }
+  const action = pending.get(key);
+  if (!action) return `(no pending action with id "${key}" — it may have expired or already run)`;
+  if (action.expiresAt <= Date.now()) {
+    pending.delete(key);
+    audit?.('expired', { id: action.id, tool: action.tool, summary: action.summary });
+    return `(confirmation "${key}" expired — re-run the action to get a fresh preview)`;
+  }
+  pending.delete(key); // single-use — a confirmation can never be replayed
+  audit?.('confirm', { id: action.id, tool: action.tool, summary: action.summary });
+  const result = await action.execute(ctx);
+  return `[CONFIRMED ${action.tool}]\n${result}`;
+}
+
+/** Discard a pending action without running it. */
+export function cancelPending(id: string): string {
+  const action = pending.get(id);
+  if (!action) return `(no pending action with id "${id}")`;
+  pending.delete(id);
+  audit?.('cancel', { id: action.id, tool: action.tool, summary: action.summary });
+  return `cancelled "${id}" (${action.tool}) — not executed`;
+}
+
 const confirmActionTool: RegisteredTool = {
   def: {
     name: 'confirm_action',
@@ -119,53 +166,16 @@ const confirmActionTool: RegisteredTool = {
       required: [],
     },
   },
-  handler: async (args, ctx) => {
-    prune();
-    // Unattended-write guard: a scheduled/non-interactive run must not auto-confirm a write.
-    if (ctx.interactive === false && process.env.MWA_ALLOW_UNATTENDED_WRITES !== '1') {
-      return '(refused: confirming a write needs a human present — this is an unattended/scheduled run. Set MWA_ALLOW_UNATTENDED_WRITES=1 only if you intend writes without a person watching.)';
-    }
-    let id = String(args.confirmation_id ?? '').trim();
-    if (!id) {
-      const all = [...pending.values()].sort((a, b) => b.createdAt - a.createdAt);
-      if (all.length === 0) return '(nothing to confirm — no pending action)';
-      if (all.length > 1) {
-        return `(ambiguous: ${all.length} pending actions — pass an explicit confirmation_id. Use list_pending to see them.)`;
-      }
-      id = all[0].id;
-    }
-    const action = pending.get(id);
-    if (!action) return `(no pending action with id "${id}" — it may have expired or already run)`;
-    if (action.expiresAt <= Date.now()) {
-      pending.delete(id);
-      audit?.('expired', { id: action.id, tool: action.tool, summary: action.summary });
-      return `(confirmation "${id}" expired — re-run the action to get a fresh preview)`;
-    }
-    pending.delete(id); // single-use — a confirmation can never be replayed
-    audit?.('confirm', { id: action.id, tool: action.tool, summary: action.summary });
-    const result = await action.execute(ctx);
-    return `[CONFIRMED ${action.tool}]\n${result}`;
-  },
+  handler: async (args, ctx) => confirmPending(args.confirmation_id ? String(args.confirmation_id) : undefined, ctx),
 };
 
 const cancelActionTool: RegisteredTool = {
   def: {
     name: 'cancel_action',
     description: 'Discard a pending write action without running it (e.g. the human declined). Pass its confirmation_id.',
-    parameters: {
-      type: 'object',
-      properties: { confirmation_id: { type: 'string' } },
-      required: ['confirmation_id'],
-    },
+    parameters: { type: 'object', properties: { confirmation_id: { type: 'string' } }, required: ['confirmation_id'] },
   },
-  handler: async (args) => {
-    const id = String(args.confirmation_id ?? '').trim();
-    const action = pending.get(id);
-    if (!action) return `(no pending action with id "${id}")`;
-    pending.delete(id);
-    audit?.('cancel', { id: action.id, tool: action.tool, summary: action.summary });
-    return `cancelled "${id}" (${action.tool}) — not executed`;
-  },
+  handler: async (args) => cancelPending(String(args.confirmation_id ?? '').trim()),
 };
 
 const listPendingTool: RegisteredTool = {
@@ -175,13 +185,9 @@ const listPendingTool: RegisteredTool = {
     parameters: { type: 'object', properties: {}, required: [] },
   },
   handler: async () => {
-    prune();
-    const all = [...pending.values()].sort((a, b) => b.createdAt - a.createdAt);
+    const all = listPendingActions();
     if (all.length === 0) return '(no pending actions)';
-    const now = Date.now();
-    return all
-      .map((a) => `${a.id} — ${a.tool} — expires in ${Math.max(0, Math.round((a.expiresAt - now) / 1000))}s\n  ${a.summary.slice(0, 200)}`)
-      .join('\n');
+    return all.map((a) => `${a.id} — ${a.tool} — expires in ${a.expiresInSec}s\n  ${a.summary.slice(0, 200)}`).join('\n');
   },
 };
 

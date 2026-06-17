@@ -6,6 +6,7 @@
 import { ToolRegistry } from './registry.js';
 import { builtinTools } from './builtins.js';
 import { approvalTools } from './approval.js';
+import { manageTools } from './manage.js';
 import { loadMcpServers } from './mcp.js';
 import { installerTools } from './installer.js';
 import { googleConfigured, googleTools } from '../connectors/google.js';
@@ -22,6 +23,9 @@ export async function buildRegistry(config: MwaConfig): Promise<{ registry: Tool
   // Self-install tools: browse the curated library + enable curated connectors (safe tier),
   // plus propose_connector (reviews external npm packages; install needs human approval).
   registry.registerAll(installerTools(config));
+  // Runtime tool management: list_active_tools + uninstall/remove (safe) + add_mcp_server
+  // (approval-gated). Makes the tool/MCP set hot-swappable from chat.
+  registry.registerAll(manageTools(config));
   // Gmail/Calendar tools (read + draft) appear once Gmail is connected; Outlook tools
   // (search_outlook/read_outlook/draft_outlook) once a Microsoft account is connected.
   // Distinct names → both can be connected at once with no collision.

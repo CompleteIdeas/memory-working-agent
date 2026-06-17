@@ -13,7 +13,7 @@
  *   arbitrary — a random repo/URL; deep scan + strong warnings + typed confirm (Phase 3).
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { CONFIG_PATH } from '../config.js';
+import { configPath } from '../config.js';
 import type { McpServerSpec } from '../tools/mcp.js';
 
 export type TrustTier = 'curated' | 'known' | 'arbitrary';
@@ -137,11 +137,11 @@ export function missingSecrets(entry: ConnectorEntry): SecretReq[] {
 
 // --- config mutation: enable/disable a connector in mwa.config.json tools.mcpServers ---
 function readConfigRaw(): any {
-  try { if (existsSync(CONFIG_PATH)) return JSON.parse(readFileSync(CONFIG_PATH, 'utf8')); } catch { /* */ }
+  try { const p = configPath(); if (existsSync(p)) return JSON.parse(readFileSync(p, 'utf8')); } catch { /* */ }
   return {};
 }
 function writeConfigRaw(raw: any): void {
-  writeFileSync(CONFIG_PATH, JSON.stringify(raw, null, 2) + '\n');
+  writeFileSync(configPath(), JSON.stringify(raw, null, 2) + '\n');
 }
 
 export function enabledConnectorIds(): string[] {
@@ -166,6 +166,27 @@ export function enableConnector(id: string): { ok: boolean; message: string } {
 export function disableConnector(id: string): void {
   const raw = readConfigRaw();
   if (raw?.tools?.mcpServers?.[id]) { delete raw.tools.mcpServers[id]; writeConfigRaw(raw); }
+}
+
+/** All MCP servers currently wired in config (curated, external, or hand-added). */
+export function listMcpServers(): Record<string, McpServerSpec> {
+  return (readConfigRaw()?.tools?.mcpServers ?? {}) as Record<string, McpServerSpec>;
+}
+
+/** Remove ANY MCP server (by config key) — connector id or hand-added name. */
+export function removeMcpServer(name: string): boolean {
+  const raw = readConfigRaw();
+  if (raw?.tools?.mcpServers?.[name]) { delete raw.tools.mcpServers[name]; writeConfigRaw(raw); return true; }
+  return false;
+}
+
+/** Add an arbitrary MCP server spec under `name` (used after approval). */
+export function addMcpServer(name: string, spec: McpServerSpec): void {
+  const raw = readConfigRaw();
+  raw.tools = raw.tools ?? {};
+  raw.tools.mcpServers = raw.tools.mcpServers ?? {};
+  raw.tools.mcpServers[name] = spec;
+  writeConfigRaw(raw);
 }
 
 /** Install an EXTERNAL npm package as an MCP server, version-PINNED (used only after the

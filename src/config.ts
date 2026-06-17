@@ -51,7 +51,11 @@ export const DEFAULT_CONFIG: MwaConfig = {
 
 export const CONFIG_PATH = 'mwa.config.json';
 
-export function loadConfig(path = CONFIG_PATH): MwaConfig {
+/** Config file path — env-overridable (MWA_CONFIG_PATH) for tests and pointing at a
+ *  mounted volume. Read dynamically so the override takes effect at call time. */
+export function configPath(): string { return process.env.MWA_CONFIG_PATH ?? CONFIG_PATH; }
+
+export function loadConfig(path = configPath()): MwaConfig {
   const p = resolve(path);
   let raw: Partial<MwaConfig> = {};
   if (existsSync(p)) {

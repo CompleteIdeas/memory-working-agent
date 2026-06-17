@@ -12,7 +12,7 @@
  */
 import { resolve, sep } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
-import { loadConfig, CONFIG_PATH } from '../config.js';
+import { loadConfig, configPath } from '../config.js';
 
 export type AccessPreset = 'locked-down' | 'assistant' | 'developer';
 export const ACCESS_PRESETS: AccessPreset[] = ['locked-down', 'assistant', 'developer'];
@@ -30,7 +30,7 @@ export function accessPolicy(): AccessPolicy {
  *  and are folders (so a typo can't silently widen access to a non-folder). */
 export function setAccess(preset: AccessPreset, grantedRoots?: string[]): { preset: AccessPreset; grantedRoots: string[]; dropped: string[] } {
   let raw: any = {};
-  try { if (existsSync(CONFIG_PATH)) raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')); } catch { /* */ }
+  try { if (existsSync(configPath())) raw = JSON.parse(readFileSync(configPath(), 'utf8')); } catch { /* */ }
   raw.tools = raw.tools ?? {};
   const prev = raw.tools.access?.grantedRoots ?? [];
   const requested: string[] = Array.isArray(grantedRoots) ? grantedRoots : prev;
@@ -39,7 +39,7 @@ export function setAccess(preset: AccessPreset, grantedRoots?: string[]): { pres
     try { if (existsSync(g) && statSync(g).isDirectory()) kept.push(resolve(g)); else dropped.push(g); } catch { dropped.push(g); }
   }
   raw.tools.access = { preset: ACCESS_PRESETS.includes(preset) ? preset : 'assistant', grantedRoots: [...new Set(kept)] };
-  writeFileSync(CONFIG_PATH, JSON.stringify(raw, null, 2) + '\n');
+  writeFileSync(configPath(), JSON.stringify(raw, null, 2) + '\n');
   return { preset: raw.tools.access.preset, grantedRoots: raw.tools.access.grantedRoots, dropped };
 }
 
