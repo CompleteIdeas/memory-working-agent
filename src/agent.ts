@@ -16,6 +16,7 @@
 import { readFileSync, statSync, appendFileSync, mkdirSync, existsSync } from 'node:fs';
 import { resolve, sep, dirname, join } from 'node:path';
 import type { Provider } from './provider.js';
+import { validateSubstance } from './substance.js';
 import type { Memory, RecalledMemory } from './awm.js';
 import { BRAIN_TOOLS } from './brain.js';
 import type { ToolDef } from './provider.js';
@@ -192,6 +193,7 @@ export async function runAgent(opts: {
   let learnedFacts = 0, skillsDerived = 0, openQuestions = 0, frictionsLearned = 0, policiesLearned = 0; // for the run log + self-learning loop
   let consecNoProgress = 0, consecWorkerFails = 0, brainErrors = 0, incompleteRejections = 0;
   let verifyRejections = 0, verified = false; // verify-before-done: one numeric re-check, no spinning
+  let substanceRejections = 0; // substance gate: one re-prompt on a fabricated/punted done
   const MAX_FETCH_FAILS = 2;
 
   memory.setSessionId(opts.session ?? `agent-${start}`);
@@ -277,6 +279,7 @@ export async function runAgent(opts: {
   const recalledQueries = new Set<string>(); // normalized recall queries this run — kills the re-ask-memory loop
   const rememberedConcepts = new Set<string>(); // normalized remember concepts this run — kills duplicate writes
   const toolSigs = new Set<string>(); // exact (tool+args) calls already made — kills identical retries
+  const toolsUsed = new Set<string>(); // action/tool names invoked this run — feeds the substance gate
   const normSig = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40);
   let gatherStreak = 0; // reads/lists/recalls since the last remember/act — forces the record cadence
   let productive = 0; // remembers/dispatches/acts — once high enough, prompt to consider done
@@ -379,6 +382,8 @@ export async function runAgent(opts: {
       continue;
     }
 
+    toolsUsed.add(action.action); // track what the agent actually invoked (for the substance gate)
+
     // Anti-redundancy: skip an immediate exact-repeat action (the explore-loop trap)
     // and nudge toward a NEW move. done is never skipped.
     const sig = `${action.action}|${JSON.stringify(Object.fromEntries(Object.entries(action).filter(([k]) => k !== 'action'))).slice(0, 80)}`;
@@ -458,6 +463,20 @@ export async function runAgent(opts: {
           verified = true;
           emit('verify', { ok: true });
         } catch { /* verification is best-effort — never block a done on it */ }
+      }
+      // SUBSTANCE GATE — before accepting done, reject a fabricated action (claims a
+      // write/send with zero tools) or a punt (asks the human on a doable task without
+      // acting). One re-prompt, conservative (defaults to pass), never spins.
+      if (substanceRejections < 1) {
+        const sv = validateSubstance({ instruction, summary: summ, toolsUsed: [...toolsUsed] });
+        if (!sv.ok && sv.fix) {
+          substanceRejections++;
+          consecNoProgress = 0; // it's being corrected, not stalling
+          nudge = sv.fix;
+          history.push(`(substance gate: ${sv.fix.slice(0, 90)})`);
+          emit('verify', { ok: false });
+          continue;
+        }
       }
       reason = 'done';
       finalSummary = summ || 'instruction satisfied';
