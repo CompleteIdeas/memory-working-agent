@@ -13,12 +13,33 @@
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import type { RegisteredTool } from './registry.js';
 
 /** Expand ${VAR} references (in args/env) from process.env, so secrets live in .env and
  *  only their NAMES sit in mwa.config.json. */
 function expandRefs(s: string): string {
   return s.replace(/\$\{([A-Z0-9_]+)\}/g, (_, k) => process.env[k] ?? '');
+}
+
+// Package root, derived from this module's location (dist/tools/mcp.js or src/tools/mcp.ts
+// → up two levels). Bundled MCP servers ship under <pkgRoot>/mcp-servers/ (package.json
+// `files`), so a global / npx install must resolve them here, NOT relative to the CWD.
+const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/** Resolve a bundled `mcp-servers/<x>` arg to an absolute path so it works when MWA is
+ *  installed globally (CWD-relative would miss it). Custom/absolute args pass through. */
+function resolveBundled(arg: string): string {
+  if (/^mcp-servers[\\/]/.test(arg)) {
+    const atPkg = resolve(PKG_ROOT, arg);
+    if (existsSync(atPkg)) return atPkg;
+    const atCwd = resolve(process.cwd(), arg);
+    if (existsSync(atCwd)) return atCwd; // dev/repo run
+    return atPkg; // best effort — the MCP connect will surface a clear error if absent
+  }
+  return arg;
 }
 
 export interface McpServerSpec {
@@ -45,7 +66,7 @@ export async function loadMcpServers(servers: Record<string, McpServerSpec> = {}
         : {};
       const transport = new StdioClientTransport({
         command: spec.command,
-        args: (spec.args ?? []).map(expandRefs),
+        args: (spec.args ?? []).map((a) => resolveBundled(expandRefs(a))),
         // Minimal env: the SDK's safe default (PATH, etc.) PLUS only the vars this connector
         // declares. Deliberately NOT spreading process.env — MCP children must never see
         // MWA's API keychain (Anthropic/Google/etc.). This is a core install guardrail.

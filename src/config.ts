@@ -52,20 +52,24 @@ export const DEFAULT_CONFIG: MwaConfig = {
 export const CONFIG_PATH = 'mwa.config.json';
 
 export function loadConfig(path = CONFIG_PATH): MwaConfig {
-  try {
-    const p = resolve(path);
-    const raw = existsSync(p) ? (JSON.parse(readFileSync(p, 'utf8')) as Partial<MwaConfig>) : {};
-    const cfg: MwaConfig = {
-      models: { ...DEFAULT_CONFIG.models, ...raw.models },
-      awm: { ...DEFAULT_CONFIG.awm, ...raw.awm },
-      tools: { ...DEFAULT_CONFIG.tools, ...raw.tools },
-      escalation: { ...DEFAULT_CONFIG.escalation, ...raw.escalation },
-      workspace: raw.workspace ?? DEFAULT_CONFIG.workspace,
-    };
-    // Container/env override (point everything at a mounted volume).
-    if (process.env.MWA_WORKSPACE) cfg.workspace = process.env.MWA_WORKSPACE;
-    return cfg;
-  } catch {
-    return DEFAULT_CONFIG;
+  const p = resolve(path);
+  let raw: Partial<MwaConfig> = {};
+  if (existsSync(p)) {
+    try {
+      raw = JSON.parse(readFileSync(p, 'utf8')) as Partial<MwaConfig>;
+    } catch (e) {
+      // A malformed config silently falling back to defaults is a debugging trap — say so.
+      console.error(`[config] ${path} is not valid JSON — ignoring it and using defaults. (${(e as Error).message.slice(0, 120)})`);
+    }
   }
+  const cfg: MwaConfig = {
+    models: { ...DEFAULT_CONFIG.models, ...raw.models },
+    awm: { ...DEFAULT_CONFIG.awm, ...raw.awm },
+    tools: { ...DEFAULT_CONFIG.tools, ...raw.tools },
+    escalation: { ...DEFAULT_CONFIG.escalation, ...raw.escalation },
+    workspace: raw.workspace ?? DEFAULT_CONFIG.workspace,
+  };
+  // Container/env override (point everything at a mounted volume).
+  if (process.env.MWA_WORKSPACE) cfg.workspace = process.env.MWA_WORKSPACE;
+  return cfg;
 }
