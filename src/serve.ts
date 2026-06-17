@@ -193,6 +193,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     const r = await runAgent({
       instruction, dir: s.dir, memory, brain, worker, tools: registry,
       workspace: cfg.awm.workspace, session: sessionId, interactive: true, // a human is watching → ask_user can ask them
+      domainPackDir: process.env.MWA_DOMAIN_PACK, // optional domain pack (AGENT.md + topics) for a domain agent
       budget: { maxSteps: 40, maxWallMs: 10 * 60_000, consolidateEvery: 10, maxTokens: Number(process.env.MWA_MAX_TOKENS ?? 400_000) },
       onEvent: (type, d) => send(type, d as Record<string, unknown>),
     });
