@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 (2026-06-17) — domain-pack hook for serve
+
+- `mwa serve` now honors `MWA_DOMAIN_PACK` — passes it as `domainPackDir` to `runAgent`,
+  so a domain agent (e.g. a support agent) can load its `AGENT.md` + `topics/*.md`
+  progressive-disclosure pack via env without code. Additive; no behavior change when unset.
+
 ## 0.3.0 (2026-06-17) — production-readiness hardening + modular tooling
 
 Makes MWA a solid, embeddable agent platform. No breaking API changes.
