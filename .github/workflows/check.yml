@@ -1,0 +1,25 @@
+name: check
+
+# Gate every push/PR on a green build + typecheck + tests, so a broken change
+# never reaches a release tag. Runs on Linux (where the vendored AWM pglite path
+# works; it's WASM-fragile only on some Windows/Node combos).
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive # vendor/agent-working-memory is built from source
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install
+      - run: npm run build       # build:awm (vendor dist) + tsc + vite UI — tests import vendor dist
+      - run: npm run typecheck
+      - run: npm test

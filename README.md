@@ -284,6 +284,16 @@ deterministic scoring, token + recall-latency metrics, and pass^k confidence int
 honest write-up — including where AWM *ties* a well-built RAG and where it wins by construction —
 is in [`docs/gauntlet.md`](docs/gauntlet.md).
 
+## Operations, security & embedding
+
+Running MWA as a real service or backend:
+
+- **Security:** set `MWA_ACCESS_PASSWORD` (or keep it on a private network / Tailscale); secrets live only in a local `.env` (mode `0600`) — never in API responses or the npm tarball. File/command reach is gated by the access preset (`locked-down` / `assistant` / `developer`) + a granted-roots allowlist. Adding an arbitrary MCP server requires explicit approval (`confirm_action` in chat or the Connections UI); removing tools is always allowed.
+- **Limits & lifecycle:** per-run token + wall-clock + step caps; a concurrency cap and idle-session eviction protect the box; SIGTERM drains in-flight work before exit; `/api/health` reports DB + scheduler liveness (the Docker healthcheck uses it).
+- **Observability:** structured logs at `data/mwa.log` (JSONL), surfaced via `GET /api/logs`.
+- **As a backend/library:** compose `runAgent` + `MwaMemory` + the tool registry directly — see **[docs/embedding-mwa.md](docs/embedding-mwa.md)**.
+- **HTTP API:** every `mwa serve` endpoint is documented in **[docs/api-reference.md](docs/api-reference.md)**.
+
 ## How it works
 
 The brain runs a **hybrid memory↔grep loop** (the discipline validated in V2),
