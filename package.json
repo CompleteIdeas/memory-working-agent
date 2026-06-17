@@ -1,6 +1,6 @@
 {
   "name": "memory-working-agent",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "MWA — Memory Working Agent. A turnkey TS agent runtime built on AWM as an always-on cognitive substrate, so a cheap model conducts, resumes, builds on prior reasoning, and runs long without re-onboarding or context rot.",
   "type": "module",
   "license": "Apache-2.0",
@@ -35,6 +35,7 @@
     "README.md",
     "LICENSE",
     "NOTICE",
+    "CHANGELOG.md",
     "results/RESULTS-V2.md"
   ],
   "scripts": {
