@@ -19,6 +19,7 @@ import { ActivationEngine } from 'agent-working-memory/dist/engine/activation.js
 import { ConnectionEngine } from 'agent-working-memory/dist/engine/connections.js';
 import { ConsolidationEngine } from 'agent-working-memory/dist/engine/consolidation.js';
 import { performWrite } from 'agent-working-memory/dist/core/write-pipeline.js';
+import { initCoordinationTables } from 'agent-working-memory/dist/coordination/schema.js';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -37,7 +38,7 @@ export interface WriteOpts {
 
 export interface Memory {
   readonly enabled: boolean;
-  recall(query: string, opts?: { limit?: number; workspace?: string; full?: boolean }): Promise<RecalledMemory[]>;
+  recall(query: string, opts?: { limit?: number; workspace?: string; full?: boolean; fast?: boolean; rerank?: boolean; expand?: boolean }): Promise<RecalledMemory[]>;
   write(concept: string, content: string, tags?: string[], opts?: WriteOpts): Promise<string | null>;
   supersede(oldId: string, concept: string, content: string, tags?: string[], opts?: WriteOpts): Promise<string | null>;
   feedback(id: string, useful: boolean): Promise<void>;
@@ -46,9 +47,17 @@ export interface Memory {
   /** Sleep consolidation (cluster/strengthen/decay); no-op when AWM is off. Returns cycle stats. */
   consolidate(): Promise<Record<string, number>>;
   /** Persist a scheduled task (due = epoch ms) in the AWM task store. */
-  addScheduledTask(instruction: string, dueMs: number, opts?: { recur?: string; notify?: string }): Promise<string | null>;
+  addScheduledTask(instruction: string, dueMs: number, opts?: { recur?: string; notify?: string; dir?: string; resumeAttempt?: number }): Promise<string | null>;
   /** Persist a reusable procedure ("skill") recalled on similar future tasks. */
   saveSkill(name: string, steps: string): Promise<string | null>;
+  /** Persist a verbal failure reflection ("X failed because Y; next time Z") recalled
+   *  before similar future tasks — the Reflexion learn-from-failure counterpart to saveSkill. */
+  saveFriction(topic: string, lesson: string): Promise<string | null>;
+  /** Persist a STANDING user preference/policy ("never send without review", "keep summaries
+   *  to 5 bullets") that should be honored on EVERY future task — not just relevant ones. */
+  savePolicy(rule: string): Promise<string | null>;
+  /** All standing preferences/policies (content), surfaced to the prompt every run. */
+  listPolicies(): string[];
   /** Persist an open question the agent wants answered later (self-learning loop). */
   saveQuestion(question: string): Promise<string | null>;
   close(): void;
@@ -61,6 +70,8 @@ export interface ScheduledTask {
   due: number; // epoch ms
   recur?: string; // e.g. "every:60" (minutes) or "daily:09:00"
   notify?: string; // where to send the result (e.g. a session id)
+  dir?: string; // working dir to REUSE (resume tasks reuse the original run's folder + files)
+  resumeAttempt?: number; // 1-based resume count (auto-resume of an unfinished long run); absent = not a resume
 }
 
 export class MwaMemory implements Memory {
@@ -71,29 +82,59 @@ export class MwaMemory implements Memory {
   private consolidationEngine: any;
   private sessionId?: string;
 
+  /** Workspace for cross-agent/hive recall (OPT-IN: isolated by default). When set, this agent
+   *  registers into the workspace and recall spans every agent in it — so insights/decisions
+   *  written by one agent/LLM/CLI are recallable by another sharing the workspace. */
+  private readonly workspace?: string;
+
   constructor(
     private readonly agentId: string,
     dbPath: string,
+    workspace?: string,
   ) {
     mkdirSync(dirname(dbPath), { recursive: true });
     this.store = new EngramStore(dbPath);
     this.activation = new ActivationEngine(this.store);
     this.connections = new ConnectionEngine(this.store, this.activation);
+    this.workspace = workspace || process.env.MWA_WORKSPACE_SHARE || undefined;
+    if (this.workspace) this.joinWorkspace(this.workspace);
   }
 
-  async recall(query: string, opts: { limit?: number; workspace?: string; full?: boolean } = {}): Promise<RecalledMemory[]> {
+  /** Register this agent into a shared workspace (coord_agents) so workspace-scoped recall
+   *  resolves it via getWorkspaceAgentIds. Idempotent; best-effort (never breaks construction). */
+  private joinWorkspace(workspace: string): void {
+    try {
+      const db = (this.store as unknown as { db: any }).db;
+      initCoordinationTables(db);
+      db.prepare(
+        `INSERT OR REPLACE INTO coord_agents (id, name, workspace, status, role, last_seen)
+         VALUES (?, ?, ?, 'idle', 'worker', datetime('now'))`,
+      ).run(`${workspace}:${this.agentId}`, this.agentId, workspace);
+    } catch (err) {
+      console.error('[awm] joinWorkspace error:', (err as Error).message);
+    }
+  }
+
+  async recall(query: string, opts: { limit?: number; workspace?: string; full?: boolean; fast?: boolean; rerank?: boolean; expand?: boolean } = {}): Promise<RecalledMemory[]> {
     try {
       const results = await this.activation.activate({
         agentId: this.agentId,
         context: query,
         limit: opts.limit ?? 5,
         minScore: 0.05,
-        useReranker: true,
-        useExpansion: true,
+        // Default = RERANK-ONLY (rerank on, query-expansion OFF). Measured: expansion recovers
+        // ZERO needles rerank-only misses even on heavy-paraphrase/vocab-mismatch queries (its
+        // designed strength) — semantic embeddings + rerank already handle paraphrase — while it
+        // ~doubles recall latency by inflating the rerank candidate pool. So it's off by default;
+        // opt back in with expand:true. `fast` still drops both stages. (AWM_RECALL_EXPAND=1
+        // restores expansion-by-default as an escape hatch.)
+        useReranker: opts.rerank ?? !opts.fast,
+        useExpansion: opts.expand ?? (opts.fast ? false : process.env.AWM_RECALL_EXPAND === '1'),
         // compact summaries truncate the precise value (e.g. drops "sqlite AND pglite");
         // for fact-lookup callers pass full:true to get the complete stored fact.
         granularity: opts.full ? 'full' : 'compact',
-        workspace: opts.workspace,
+        // default to this agent's configured workspace → cross-agent recall when shared.
+        workspace: opts.workspace ?? this.workspace,
         internal: true,
       });
       return results.map((r: any) => ({
@@ -192,10 +233,12 @@ export class MwaMemory implements Memory {
     return [];
   }
 
-  async addScheduledTask(instruction: string, dueMs: number, opts: { recur?: string; notify?: string } = {}): Promise<string | null> {
+  async addScheduledTask(instruction: string, dueMs: number, opts: { recur?: string; notify?: string; dir?: string; resumeAttempt?: number } = {}): Promise<string | null> {
     const tags = ['topic=scheduled-task', 'status=pending', `due=${Math.round(dueMs)}`];
     if (opts.recur) tags.push(`recur=${opts.recur}`);
     if (opts.notify) tags.push(`notify=${opts.notify}`);
+    if (opts.dir) tags.push(`dir=${opts.dir}`);
+    if (opts.resumeAttempt) tags.push(`resume=${opts.resumeAttempt}`);
     return this.write(`scheduled: ${instruction.slice(0, 56)}`, instruction, tags, { canonical: true, eventType: 'decision' });
   }
 
@@ -208,7 +251,7 @@ export class MwaMemory implements Memory {
         const tags = this.parseTags(e.tags);
         if (!tags.includes('topic=scheduled-task') || !tags.includes('status=pending')) continue;
         const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
-        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined });
+        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, resumeAttempt: Number(get('resume=')) || undefined });
       }
       return out.sort((a, b) => a.due - b.due);
     } catch (err) { console.error('[awm] pendingScheduled error:', (err as Error).message); return []; }
@@ -237,7 +280,7 @@ export class MwaMemory implements Memory {
   recentMemories(limit = 40): { id: string; concept: string; content: string }[] {
     try {
       const all: any[] = this.store.getEngramsByAgent(this.agentId) ?? [];
-      const facts = all.filter((e) => !/^(agent run:|agent step:|session:|scheduled:|skill:|question:)/i.test(String(e.concept ?? '')));
+      const facts = all.filter((e) => !/^(agent run:|agent step:|session:|scheduled:|skill:|question:|lesson:|policy:)/i.test(String(e.concept ?? '')));
       return facts.slice(-limit).reverse().map((e) => ({ id: e.id, concept: e.concept ?? '', content: String(e.content ?? '').slice(0, 240) }));
     } catch { return []; }
   }
@@ -247,6 +290,46 @@ export class MwaMemory implements Memory {
   async saveSkill(name: string, steps: string): Promise<string | null> {
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
     return this.write(`skill: ${name}`.slice(0, 80), steps, ['topic=skill', `skill=${slug}`, 'intent=procedural', 'confidence_level=observed'], { canonical: true, eventType: 'observation' });
+  }
+
+  /** REFLEXION: record a verbal failure reflection as a canonical memory tagged topic=friction
+   *  + eventType=friction, so auto-prime recalls it before similar future tasks. The failure
+   *  counterpart of saveSkill — the agent learns from what went wrong, not just what worked. */
+  async saveFriction(topic: string, lesson: string): Promise<string | null> {
+    const slug = topic.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+    return this.write(`lesson: ${topic}`.slice(0, 80), lesson, ['topic=friction', `about=${slug}`, 'intent=finding', 'confidence_level=observed'], { canonical: true, eventType: 'friction' });
+  }
+
+  /** Failure lessons the agent has recorded, for the UI "Lessons" view. */
+  listFriction(): { topic: string; content: string }[] {
+    try {
+      const all: any[] = this.store.getEngramsByAgent(this.agentId) ?? [];
+      return all.filter((e) => this.parseTags(e.tags).includes('topic=friction')).reverse()
+        .map((e) => ({ topic: String(e.concept ?? '').replace(/^lesson:\s*/i, ''), content: String(e.content ?? '').slice(0, 300) }));
+    } catch { return []; }
+  }
+
+  /** STANDING PREFERENCE/POLICY — a user rule that must apply to EVERY future task (tone,
+   *  format, approval requirements). Stored canonical + tagged topic=policy so listPolicies()
+   *  can always-prime them into the prompt, unlike relevance-pruned recall. Dedup-reinforces. */
+  async savePolicy(rule: string): Promise<string | null> {
+    const r = rule.trim();
+    return this.write(`policy: ${r}`.slice(0, 80), r, ['topic=policy', 'intent=decision', 'confidence_level=verified'], { canonical: true, eventType: 'decision' });
+  }
+
+  /** All standing preferences/policies (content), newest-first, deduped — always-primed. */
+  listPolicies(): string[] {
+    try {
+      const all: any[] = this.store.getEngramsByAgent(this.agentId) ?? [];
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const e of all.filter((x) => this.parseTags(x.tags).includes('topic=policy')).reverse()) {
+        const c = String(e.content ?? '').trim();
+        const key = c.toLowerCase();
+        if (c && !seen.has(key)) { seen.add(key); out.push(c); }
+      }
+      return out;
+    } catch { return []; }
   }
 
   /** Reusable procedures the agent has learned, for the UI "Skills" view. */
@@ -310,6 +393,15 @@ export class NullMemory implements Memory {
   }
   async saveSkill(): Promise<string | null> {
     return null;
+  }
+  async saveFriction(): Promise<string | null> {
+    return null;
+  }
+  async savePolicy(): Promise<string | null> {
+    return null;
+  }
+  listPolicies(): string[] {
+    return [];
   }
   async saveQuestion(): Promise<string | null> {
     return null;

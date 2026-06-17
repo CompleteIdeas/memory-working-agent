@@ -252,6 +252,38 @@ AZURE_GPT_DEPLOYMENT=gpt-5-4-mini
 
 If `AZURE_GPT_*` is absent, the brain falls back to Claude Haiku automatically.
 
+### Shared memory across agents/CLIs (opt-in)
+
+Set `awm.workspace` in `mwa.config.json` to a name and every MWA surface (web, CLI, Telegram,
+mailbox) joins it — so a decision made on one surface/agent is recalled by another. Unset =
+isolated per-agent (the default). This is the one thing a per-process notes file or vector index
+can't do; in the cross-agent benchmark, AWM recalls another agent's decisions **100%** where
+RAG/notes/no-memory score **0%** (per-process stores can't share). See `docs/gauntlet.md`.
+
+```json
+{ "awm": { "workspace": "home" } }
+```
+
+### Maintenance — `mwa consolidate`
+
+```
+mwa consolidate          # cluster overlapping memories, strengthen/decay edges, sweep staging,
+                         # create syntheses — matures the store. Safe anytime; good as a cron.
+```
+
+The agent also consolidates automatically during long runs; this command covers stores built
+from many short interactions. (Recall defaults to a rerank-only path — measured ~2× faster than
+adding query-expansion, with no accuracy cost even on paraphrase queries; set
+`AWM_RECALL_EXPAND=1` to restore expansion-by-default.)
+
+### Benchmark
+
+`npm run gauntlet` / `npm run gauntlet:crossagent` run a controlled, single-factor ablation
+(memory substrate as the only variable; AWM vs vector-RAG vs notes vs long-context vs none) with
+deterministic scoring, token + recall-latency metrics, and pass^k confidence intervals. The
+honest write-up — including where AWM *ties* a well-built RAG and where it wins by construction —
+is in [`docs/gauntlet.md`](docs/gauntlet.md).
+
 ## How it works
 
 The brain runs a **hybrid memory↔grep loop** (the discipline validated in V2),

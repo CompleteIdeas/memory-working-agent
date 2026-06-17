@@ -13,6 +13,9 @@ export interface MwaConfig {
   /** model tiers: fetch = cheap workhorse, reason = escalation ceiling, installer = the
    *  model that reviews/vets connectors from outside the curated library (defaults to reason) */
   models: { fetch: string; reason: string; installer?: string };
+  /** awm.workspace (OPT-IN): a shared workspace name. When set, all MWA surfaces (web, CLI,
+   *  Telegram, mailbox) register into it and recall spans every agent in it — so a decision made
+   *  on one surface/agent/CLI is recalled by another. Unset = isolated per-agent (the default). */
   awm: { workspace?: string };
   /** root for the mailbox I/O workspace (inbox/outputs/outbox/done). Default ./mwa-workspace */
   workspace?: string;

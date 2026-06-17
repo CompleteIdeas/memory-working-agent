@@ -55,7 +55,7 @@ async function runCommand(args: string[]): Promise<void> {
 
   const brain = new RoutedProvider(getProvider('brain'), getProvider('high')); // conductor: cheap → escalate on struggle/filter
   const worker = new RoutedProvider(getProvider('brain'), getProvider('high')); // coder: cheap → escalate on failure
-  const memory = new MwaMemory('mwa-agent', dbPath);
+  const memory = new MwaMemory('mwa-agent', dbPath, cfg.awm.workspace);
   const { registry, close } = await buildRegistry(cfg);
 
   console.log(`\n▶ mwa run`);
@@ -133,7 +133,24 @@ async function main(): Promise<void> {
     await runIngest({ days: flags.days ? Number(flags.days) : undefined, max: flags.max ? Number(flags.max) : undefined, dbPath: flags.db, onLog: (m) => console.log(`  ${m}`) });
     return;
   }
-  console.error(`unknown command: ${cmd}\nusage: mwa serve | mwa run "<instruction>" | mwa watch [--once] | mwa connect <gmail|outlook|telegram> | mwa setup`);
+  if (cmd === 'consolidate') {
+    // Maintenance: run AWM sleep-consolidation on demand (cluster overlapping memories, strengthen
+    // edges, decay noise, sweep staging) — matures the store even when built from many SHORT
+    // interactions that never hit the in-run consolidation. Safe to run anytime; good as a cron.
+    loadEnv();
+    const cfg = loadConfig();
+    const { flags } = parseFlags(rest);
+    const dbPath = flags.db ?? process.env.MWA_DB ?? resolve('./data/agent.db');
+    for (const agent of ['mwa-agent', 'mwa-serve']) {
+      const m = new MwaMemory(agent, dbPath, cfg.awm.workspace);
+      const before = m.memoryCount();
+      const stats = await m.consolidate();
+      console.log(`  ${agent}: ${before} memories | ${Object.entries(stats).map(([k, v]) => `${k}=${v}`).join(' ') || '(no changes)'}`);
+      m.close();
+    }
+    return;
+  }
+  console.error(`unknown command: ${cmd}\nusage: mwa serve | mwa run "<instruction>" | mwa watch [--once] | mwa connect <gmail|outlook|telegram> | mwa consolidate | mwa setup`);
   process.exit(1);
 }
 

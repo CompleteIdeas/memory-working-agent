@@ -108,7 +108,7 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
 
   const brain = new RoutedProvider(getProvider('brain'), getProvider('high')); // conductor escalates on struggle/filter
   const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
-  const memory = new MwaMemory('mwa-agent', opts.dbPath ?? './data/agent.db');
+  const memory = new MwaMemory('mwa-agent', opts.dbPath ?? './data/agent.db', opts.config.awm.workspace);
   const { registry } = await buildRegistry(opts.config);
   const deps: Deps = { memory, brain, worker, registry, maxSteps: opts.maxSteps ?? 40, maxMin: opts.maxMin ?? 10, outRoot: join(opts.config.workspace ?? './mwa-workspace', 'outputs') };
 

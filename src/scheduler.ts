@@ -46,15 +46,19 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
   const log = deps.onLog ?? (() => {});
   const due = deps.memory.pendingScheduled().filter((t) => t.due <= now());
   for (const task of due) {
-    log(`⏰ firing: ${task.instruction.slice(0, 50)}`);
-    const dir = resolve(deps.outRoot, `sched-${task.id.slice(0, 8)}-${now()}`);
+    log(`⏰ firing: ${task.instruction.slice(0, 50)}${task.resumeAttempt ? ` (resume ${task.resumeAttempt})` : ''}`);
+    // A RESUME task reuses the original run's folder (so it sees the files it already wrote);
+    // a normal task gets a fresh per-fire folder.
+    const dir = task.dir ? resolve(task.dir) : resolve(deps.outRoot, `sched-${task.id.slice(0, 8)}-${now()}`);
     mkdirSync(dir, { recursive: true });
     // Reschedule/complete BEFORE running, so a long/failed run can't re-fire next tick.
     if (task.recur) deps.memory.rescheduleTask(task.id, nextRecur(task.recur, now()));
     else deps.memory.completeScheduled(task.id);
     let r;
     try {
-      r = await runAgent({ instruction: task.instruction, dir, memory: deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, budget: { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
+      // A resume continues an unfinished run — never re-plan it (it already says "do only the
+      // remaining work"). Fresh scheduled tasks plan automatically if complex.
+      r = await runAgent({ instruction: task.instruction, dir, memory: deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt ? false : undefined, budget: { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
     } catch (e) {
       r = { summary: `failed: ${(e as Error).message.slice(0, 120)}`, reason: 'error' } as any;
     }

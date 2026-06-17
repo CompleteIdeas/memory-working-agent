@@ -88,7 +88,7 @@ function authed(req: IncomingMessage): boolean {
 async function resolveOpenQuestionsBg(): Promise<void> {
   const cfg = loadConfig();
   const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
-  const memory = new MwaMemory('mwa-serve', dbPath);
+  const memory = new MwaMemory('mwa-serve', dbPath, cfg.awm.workspace);
   const open = memory.listOpenQuestions().slice(0, 3);
   if (!open.length) { memory.close(); return; }
   const brain = new RoutedProvider(getProvider('brain'), getProvider('high'));
@@ -156,7 +156,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
   const cfg = loadConfig();
   const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
   const s = sessionFor(sessionId, cfg.workspace ?? './mwa-workspace');
-  const memory = new MwaMemory('mwa-serve', dbPath);
+  const memory = new MwaMemory('mwa-serve', dbPath, cfg.awm.workspace);
   memory.setSessionId(sessionId); // entity-bridge continuity across this conversation
   const brain = new RoutedProvider(getProvider('brain'), getProvider('high'));
   const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
@@ -295,9 +295,11 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
       if (p === '/api/skills') {
         const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
         let skills: { name: string; content: string }[] = [];
-        try { const m = new MwaMemory('mwa-serve', dbPath); skills = m.listSkills(); m.close(); } catch { /* */ }
+        let lessons: { topic: string; content: string }[] = [];
+        let policies: string[] = [];
+        try { const m = new MwaMemory('mwa-serve', dbPath); skills = m.listSkills(); lessons = m.listFriction(); policies = m.listPolicies(); m.close(); } catch { /* */ }
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ skills }));
+        res.end(JSON.stringify({ skills, lessons, policies }));
         return;
       }
       if (p === '/api/connections' && req.method === 'GET') {
@@ -445,7 +447,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
   (async () => {
     try {
       const cfg = loadConfig();
-      const memory = new MwaMemory('mwa-serve', process.env.MWA_DB ?? resolve('./data/agent.db'));
+      const memory = new MwaMemory('mwa-serve', process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
       const brain = new RoutedProvider(getProvider('brain'), getProvider('high'));
       const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
       const { registry } = await buildRegistry(cfg);

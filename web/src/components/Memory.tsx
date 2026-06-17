@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react';
-import { getMemories, getSkills, getQuestions, resolveQuestions } from '../api';
+import { getMemories, getSkills, getLessons, getPolicies, getQuestions, resolveQuestions } from '../api';
 
 // Makes the substrate tangible: open questions it wants answered (the self-learning loop),
 // reusable routines (skills), and the facts it has learned.
 export function Memory() {
   const [items, setItems] = useState<{ id: string; concept: string; content: string }[] | null>(null);
   const [skills, setSkills] = useState<{ name: string; content: string }[]>([]);
+  const [lessons, setLessons] = useState<{ topic: string; content: string }[]>([]);
+  const [policies, setPolicies] = useState<string[]>([]);
   const [questions, setQuestions] = useState<{ id: string; question: string }[]>([]);
   const [msg, setMsg] = useState('');
 
-  function load() { getMemories().then(setItems); getSkills().then(setSkills); getQuestions().then(setQuestions); }
+  function load() { getMemories().then(setItems); getSkills().then(setSkills); getLessons().then(setLessons); getPolicies().then(setPolicies); getQuestions().then(setQuestions); }
   useEffect(() => { load(); }, []);
 
   async function lookInto() {
@@ -21,6 +23,17 @@ export function Memory() {
   if (!items) return <div className="py-16 mono text-dim text-sm">loading…</div>;
   return (
     <div className="py-8 max-w-2xl space-y-8">
+      {policies.length > 0 && (
+        <div>
+          <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-3">preferences I'll always follow · {policies.length}</div>
+          <div className="space-y-1.5">
+            {policies.map((p, i) => (
+              <div key={i} className="rounded-[4px] border border-line bg-surface px-4 py-2.5 text-[14px]">{p}</div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {questions.length > 0 && (
         <div>
           <div className="flex items-center justify-between mb-3">
@@ -44,6 +57,20 @@ export function Memory() {
               <div key={i} className="rounded-[4px] border border-line bg-surface px-4 py-3">
                 <div className="font-medium text-[15px]">{s.name}</div>
                 <div className="text-dim text-[13px] leading-snug whitespace-pre-wrap">{s.content}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {lessons.length > 0 && (
+        <div>
+          <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-3">lessons from what didn't work · {lessons.length}</div>
+          <div className="space-y-2">
+            {lessons.map((l, i) => (
+              <div key={i} className="rounded-[4px] border border-line bg-surface px-4 py-3">
+                <div className="font-medium text-[15px]">{l.topic}</div>
+                <div className="text-dim text-[13px] leading-snug whitespace-pre-wrap">{l.content}</div>
               </div>
             ))}
           </div>

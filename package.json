@@ -1,7 +1,6 @@
 {
   "name": "memory-working-agent",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.0",
   "description": "MWA — Memory Working Agent. A turnkey TS agent runtime built on AWM as an always-on cognitive substrate, so a cheap model conducts, resumes, builds on prior reasoning, and runs long without re-onboarding or context rot.",
   "type": "module",
   "license": "Apache-2.0",
@@ -50,6 +49,8 @@
     "agent": "tsx src/cli.ts run",
     "watch": "tsx src/cli.ts watch",
     "bench": "tsx src/benchmark.ts",
+    "gauntlet": "tsx src/gauntlet/run.ts",
+    "gauntlet:crossagent": "tsx src/gauntlet/crossagent.ts",
     "ui": "tsx src/server.ts",
     "retention": "tsx src/retention.ts",
     "repo-qa": "tsx src/repo-qa.ts",

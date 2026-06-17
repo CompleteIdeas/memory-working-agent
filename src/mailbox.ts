@@ -62,7 +62,7 @@ export async function processInbox(opts: {
 
   const brain = new RoutedProvider(getProvider('brain'), getProvider('high')); // conductor escalates on struggle/filter
   const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
-  const memory = new MwaMemory('mwa-agent', opts.dbPath ?? './data/agent.db');
+  const memory = new MwaMemory('mwa-agent', opts.dbPath ?? './data/agent.db', opts.config.awm.workspace);
   const { registry, close } = await buildRegistry(opts.config);
 
   let processed = 0;

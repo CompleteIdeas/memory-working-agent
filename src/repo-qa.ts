@@ -50,7 +50,7 @@ export const CORPUS: RepoSpec[] = [
     root: AWM_ROOT,
     keyFiles: ['README.md', 'package.json', 'src/mcp.ts', 'src/storage/factory.ts'],
     qa: [
-      { q: 'What version is the agent-working-memory package?', expect: ['0.8.8'] },
+      { q: 'What version is the agent-working-memory package?', expect: ['0.9.0'] },
       { q: 'What is the AWM CLI binary name?', expect: ['awm'] },
       { q: 'What are the two storage backends AWM supports?', expect: ['sqlite', 'pglite'] },
       { q: 'What is the package main entry point file?', expect: ['dist/index.js'] },

@@ -81,6 +81,12 @@ export async function getMemories(): Promise<{ id: string; concept: string; cont
 export async function getSkills(): Promise<{ name: string; content: string }[]> {
   try { const r = await fetch('/api/skills'); return (await r.json()).skills ?? []; } catch { return []; }
 }
+export async function getLessons(): Promise<{ topic: string; content: string }[]> {
+  try { const r = await fetch('/api/skills'); return (await r.json()).lessons ?? []; } catch { return []; }
+}
+export async function getPolicies(): Promise<string[]> {
+  try { const r = await fetch('/api/skills'); return (await r.json()).policies ?? []; } catch { return []; }
+}
 export interface RunLog { ts: number; instruction: string; reason: string; steps: number; toolCalls: number; learned: number; skills: number; questions: number; costUsd: number; summary: string; }
 export async function getRuns(): Promise<RunLog[]> {
   try { const r = await fetch('/api/runs'); return (await r.json()).runs ?? []; } catch { return []; }
@@ -153,6 +159,9 @@ export function plainStep(type: string, data: any): { label: string; detail: str
     case 'dispatch': return { label: 'Working on it', tone: 'act', detail: (data?.files as string[])?.join(', ') ?? '' };
     case 'sleep': return { label: 'Tidying up my memory', tone: 'learn', detail: '' };
     case 'escalate': return { label: 'Thinking harder about this', tone: 'think', detail: '' };
+    case 'plan': return { label: 'Making a plan', tone: 'think', detail: Array.isArray(data?.steps) ? `${data.steps.length} steps` : '' };
+    case 'plan_step': return { label: `Step ${data?.n ?? ''} of ${data?.total ?? ''}`, tone: 'act', detail: data?.task ?? '' };
+    case 'verify': return { label: data?.ok === false ? 'Double-checking the numbers' : 'Checked my work', tone: 'think', detail: '' };
     case 'question': return { label: 'Noted a question to look into later', tone: 'learn', detail: data?.question ?? '' };
     case 'ask': return { label: 'Asking you something', tone: 'think', detail: '' };
     case 'done': return { label: 'Finishing up', tone: 'done', detail: '' };
@@ -169,7 +178,7 @@ export interface ChatHandlers {
 /** Open the SSE chat stream for one message; returns the EventSource so it can be closed. */
 export function chatStream(message: string, session: string, h: ChatHandlers): EventSource {
   const es = new EventSource(`/api/chat?session=${encodeURIComponent(session)}&message=${encodeURIComponent(message)}`);
-  const TYPES = ['start', 'recall', 'read', 'remember', 'tool', 'dispatch', 'sleep', 'escalate', 'question', 'ask', 'done'];
+  const TYPES = ['start', 'recall', 'read', 'remember', 'tool', 'dispatch', 'sleep', 'escalate', 'plan', 'plan_step', 'verify', 'question', 'ask', 'done'];
   for (const t of TYPES) {
     es.addEventListener(t, (e) => {
       let data: any = {}; try { data = JSON.parse((e as MessageEvent).data); } catch { /* */ }
