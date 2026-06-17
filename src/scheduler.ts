@@ -26,6 +26,8 @@ export interface SchedulerDeps {
   intervalMs?: number;
   onFire: (task: ScheduledTask, result: FireResult) => Promise<void>;
   onLog?: (m: string) => void;
+  /** called once per poll iteration — a liveness heartbeat for /api/health. */
+  onTick?: () => void;
   now?: () => number;
 }
 
@@ -69,10 +71,29 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
   return due.length;
 }
 
-/** Poll loop — fire due tasks every interval (default 60s). */
+/** Backoff delay after `fails` consecutive errors: base interval when healthy, doubling up to
+ *  a 30-minute ceiling so a persistent outage degrades gracefully instead of hammering. */
+export function backoffDelay(base: number, fails: number): number {
+  return fails === 0 ? base : Math.min(base * 2 ** Math.min(fails, 5), 30 * 60_000);
+}
+
+/** Poll loop — fire due tasks every interval (default 60s). On repeated failure it backs
+ *  off exponentially (to 30 min max) and stops log-spamming, so a persistent provider/DB
+ *  outage degrades gracefully instead of retrying + logging every 60s forever. */
 export async function runScheduler(deps: SchedulerDeps): Promise<void> {
+  const base = deps.intervalMs ?? 60_000;
+  const log = deps.onLog ?? (() => {});
+  let fails = 0;
   for (;;) {
-    try { await tickScheduler(deps); } catch (e) { (deps.onLog ?? (() => {}))(`scheduler error: ${(e as Error).message.slice(0, 100)}`); }
-    await new Promise((r) => setTimeout(r, deps.intervalMs ?? 60_000));
+    deps.onTick?.();
+    try {
+      await tickScheduler(deps);
+      fails = 0;
+    } catch (e) {
+      fails++;
+      // log the first failure and then only every 5th — not every tick
+      if (fails === 1 || fails % 5 === 0) log(`scheduler error (${fails} in a row): ${(e as Error).message.slice(0, 100)}`);
+    }
+    await new Promise((r) => setTimeout(r, backoffDelay(base, fails)));
   }
 }

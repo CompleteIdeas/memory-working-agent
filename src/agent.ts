@@ -41,6 +41,8 @@ export interface AgentBudget {
   maxSteps?: number;
   maxWallMs?: number;
   consolidateEvery?: number;
+  /** hard cap on total tokens (brain+worker, in+out) — stops a runaway-cost run. 0/undefined = no cap. */
+  maxTokens?: number;
 }
 
 export interface AgentResult {
@@ -189,6 +191,7 @@ export async function runAgent(opts: {
   const maxSteps = opts.budget?.maxSteps ?? 40;
   const maxWallMs = opts.budget?.maxWallMs ?? 10 * 60_000;
   const consolidateEvery = opts.budget?.consolidateEvery ?? 10;
+  const maxTokens = opts.budget?.maxTokens ?? 0; // 0 = no token cap
   const start = now();
 
   // DOMAIN PACK — optional progressive-disclosure domain knowledge (AGENT.md + top-N
@@ -315,6 +318,9 @@ export async function runAgent(opts: {
 
   for (; steps < maxSteps; steps++) {
     if (now() - start > maxWallMs) { reason = 'budget'; finalSummary = 'wall-clock budget reached'; break; }
+    if (maxTokens && usage.brainIn + usage.brainOut + usage.workerIn + usage.workerOut >= maxTokens) {
+      reason = 'budget'; finalSummary = 'token budget reached'; break;
+    }
 
     // Escalate the BRAIN when it's struggling (looping / no progress) — the stronger
     // model breaks loops the cheap one gets stuck in (and dodges Azure's content filter).

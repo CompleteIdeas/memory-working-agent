@@ -133,12 +133,30 @@ function setFetchModel(provider: string, model: string): void {
 }
 
 /** Per-session working dir + memory, so chat follow-ups build on earlier turns. */
-interface Session { dir: string; history: { instruction: string; summary: string }[]; }
+interface Session { dir: string; history: { instruction: string; summary: string }[]; lastUsed: number; }
 const sessions = new Map<string, Session>();
+const SERVER_START = Date.now();
+let activeRuns = 0;          // in-flight agent runs — capped to protect the box
+let lastSchedulerTick = 0;   // scheduler liveness heartbeat (for /api/health)
+const MAX_CONCURRENT = Number(process.env.MWA_MAX_CONCURRENT ?? 4);
+const SESSION_TTL_MS = Number(process.env.MWA_SESSION_TTL_MS ?? 30 * 60_000);
+const MAX_SESSIONS = 100;
+
+/** Drop idle/excess sessions so the map can't grow unbounded. */
+function evictSessions(): void {
+  const now = Date.now();
+  for (const [id, s] of sessions) if (now - s.lastUsed > SESSION_TTL_MS) sessions.delete(id);
+  if (sessions.size > MAX_SESSIONS) {
+    const oldest = [...sessions.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed).slice(0, sessions.size - MAX_SESSIONS);
+    for (const [id] of oldest) sessions.delete(id);
+  }
+}
 
 function sessionFor(id: string, workspaceRoot: string): Session {
+  evictSessions();
   let s = sessions.get(id);
-  if (!s) { s = { dir: resolve(workspaceRoot, 'serve', id.replace(/[^a-z0-9_-]/gi, '')), history: [] }; sessions.set(id, s); }
+  if (!s) { s = { dir: resolve(workspaceRoot, 'serve', id.replace(/[^a-z0-9_-]/gi, '')), history: [], lastUsed: Date.now() }; sessions.set(id, s); }
+  s.lastUsed = Date.now();
   return s;
 }
 
@@ -149,6 +167,8 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
   const send = (type: string, data: Record<string, unknown>) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
   if (!message) { send('error', { message: 'empty message' }); res.end(); return; }
+  // Concurrency cap — don't let a flood of chats spawn unbounded parallel agent runs.
+  if (activeRuns >= MAX_CONCURRENT) { send('error', { message: "I'm at capacity right now (too many chats running) — try again in a moment." }); res.end(); return; }
   // Heartbeat: keep the SSE stream alive during slow steps (e.g. an escalated
   // strong-model call) so proxies/browsers don't drop it mid-run.
   const hb = setInterval(() => { try { res.write(': keepalive\n\n'); } catch { /* */ } }, 15_000);
@@ -168,10 +188,11 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
   const instruction = ctx ? `Recent conversation so far:\n${ctx}\n\nNew request: ${message}` : message;
 
   try {
+    activeRuns++;
     const r = await runAgent({
       instruction, dir: s.dir, memory, brain, worker, tools: registry,
       workspace: cfg.awm.workspace, session: sessionId, interactive: true, // a human is watching → ask_user can ask them
-      budget: { maxSteps: 40, maxWallMs: 10 * 60_000, consolidateEvery: 10 },
+      budget: { maxSteps: 40, maxWallMs: 10 * 60_000, consolidateEvery: 10, maxTokens: Number(process.env.MWA_MAX_TOKENS ?? 400_000) },
       onEvent: (type, d) => send(type, d as Record<string, unknown>),
     });
     s.history.push({ instruction: message, summary: r.summary });
@@ -179,6 +200,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
   } catch (e) {
     send('error', { message: (e as Error).message });
   } finally {
+    activeRuns--;
     clearInterval(hb); await close(); memory.close(); res.end();
   }
 }
@@ -272,6 +294,18 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
         } catch { /* no log yet */ }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ runs }));
+        return;
+      }
+      // Operational health — for the Docker/NAS healthcheck and operators. 503 if the DB
+      // (the substrate) is unreachable; reports scheduler liveness + load.
+      if (p === '/api/health') {
+        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        let memoryCount = -1, db = false;
+        try { const m = new MwaMemory('mwa-serve', dbPath); memoryCount = m.memoryCount(); m.close(); db = true; } catch { /* db down */ }
+        const schedulerLastTickAgoSec = lastSchedulerTick ? Math.round((Date.now() - lastSchedulerTick) / 1000) : -1;
+        const body = { ok: db, uptimeSec: Math.round((Date.now() - SERVER_START) / 1000), db, memoryCount, activeRuns, sessions: sessions.size, schedulerLastTickAgoSec };
+        res.writeHead(db ? 200 : 503, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(body));
         return;
       }
       // Pending write-approvals — the UI half of the two-step gate ("both paths"): the agent
@@ -458,6 +492,15 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
   });
   const host = process.env.MWA_SERVE_HOST ?? '127.0.0.1';
   await new Promise<void>((r) => server.listen(port, host, r));
+  // Graceful shutdown: stop accepting connections, let in-flight requests drain, then exit
+  // (a supervisor / Docker restart policy brings us back). Hard-exit after 10s as a backstop.
+  const shutdown = (sig: string) => {
+    console.log(`\n[mwa] ${sig} received — shutting down…`);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 10_000).unref();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
   const u = `http://localhost:${port}`;
   console.log(`\n  MWA is running → ${u}`);
   console.log(ui ? '  (serving the built app)\n' : '  (no built app yet — serving the simple built-in page; run `npm run build:ui` for the full UI)\n');
@@ -480,6 +523,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
           appendNotification({ ts: Date.now(), instruction: task.instruction, summary: r.summary });
           console.log(`  ⏰ fired: ${task.instruction.slice(0, 60)} → ${r.summary.slice(0, 80)}`);
         },
+        onTick: () => { lastSchedulerTick = Date.now(); },
         onLog: (m) => console.log(`  ${m}`),
       });
     } catch (e) { console.error('  scheduler not started:', (e as Error).message.slice(0, 100)); }
