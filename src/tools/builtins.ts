@@ -128,12 +128,22 @@ const httpRequestTool: RegisteredTool = {
     const url = String(args.url ?? '');
     if (!/^https?:\/\//.test(url)) return '(refused: url must be http(s))';
     const method = String(args.method ?? 'GET').toUpperCase();
-    const res = await fetch(url, {
-      method,
-      ...(args.body ? { body: String(args.body), headers: { 'content-type': 'application/json' } } : {}),
-    });
-    const text = (await res.text()).slice(0, CAP);
-    return `status=${res.status}\n${text}`;
+    // Hard timeout so a hung endpoint can't stall the agent run indefinitely.
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), Number(process.env.MWA_HTTP_TIMEOUT_MS ?? 15_000));
+    try {
+      const res = await fetch(url, {
+        method,
+        signal: ctl.signal,
+        ...(args.body ? { body: String(args.body), headers: { 'content-type': 'application/json' } } : {}),
+      });
+      const text = (await res.text()).slice(0, CAP);
+      return `status=${res.status}\n${text}`;
+    } catch (e) {
+      return `(http_request failed: ${(e as Error).name === 'AbortError' ? 'timed out' : (e as Error).message.slice(0, 120)})`;
+    } finally {
+      clearTimeout(timer);
+    }
   },
 };
 
