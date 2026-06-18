@@ -21,7 +21,7 @@ import { readFileSync, existsSync, statSync, writeFileSync, appendFileSync, mkdi
 import { resolve, join, extname, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { getProvider } from './provider.js';
+import { getProvider, listModels, PROVIDERS } from './provider.js';
 import { RoutedProvider } from './model-router.js';
 import { MwaMemory } from './awm.js';
 import { buildRegistry } from './tools/build.js';
@@ -249,6 +249,39 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
       if (p === '/api/status') {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ...status(), gmail: googleConfigured(), outlook: microsoftConfigured() }));
+        return;
+      }
+      // List a provider's available models for the onboarding picker (B). GET ?provider=… uses the
+      // saved key; POST {provider,key,baseUrl} lists with a not-yet-saved key (so the dropdown can
+      // populate during setup; OpenRouter lists even with no key). Best-effort → [] on error.
+      if (p === '/api/models') {
+        let provider = (new URL(req.url ?? '/', 'http://localhost').searchParams.get('provider') ?? '').trim();
+        let key: string | undefined;
+        let baseUrl: string | undefined;
+        if (req.method === 'POST') {
+          const b = await readBody(req);
+          provider = String(b.provider ?? provider).trim();
+          key = b.key ? String(b.key) : undefined;
+          baseUrl = b.baseUrl ? String(b.baseUrl) : undefined;
+        }
+        const models = provider ? await listModels(provider, { key, baseUrl }) : [];
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ provider, models, providers: PROVIDERS }));
+        return;
+      }
+      // First-run setup (A): warm the local memory models. The first embed downloads the
+      // recall models (~500MB) on a fresh machine — do it here as an explicit one-time step
+      // (onboarding shows a "preparing…" screen) instead of letting the first chat hang.
+      // Returns quickly when the models are already cached. Best-effort.
+      if (p === '/api/setup/warm' && req.method === 'POST') {
+        let ready = false; let message = '';
+        try {
+          const emb = await import('agent-working-memory/dist/core/embeddings.js');
+          await emb.embed('warm up');
+          ready = true;
+        } catch (e) { message = (e as Error).message.slice(0, 160); }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ready, message }));
         return;
       }
       if (p === '/api/suggestions') {

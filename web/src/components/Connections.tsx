@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  getConnections, connectGmail, connectOutlook, saveGoogle, saveMicrosoft,
+  getConnections, connectGmail, connectOutlook, saveGoogle, saveMicrosoft, saveTelegram,
   enableConnector, disableConnector, saveConnectorSecret, reviewExternal, approveExternal, saveAccess,
   type Connections as Conn, type ConnectorItem, type ExternalInstall, type RiskReport, type Access, type AccessPreset,
 } from '../api';
@@ -129,6 +129,43 @@ function EmailConnect({ provider, connected, onDone }: { provider: Provider; con
   );
 }
 
+function TelegramConnect({ connected, onDone }: { connected: boolean; onDone: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [token, setToken] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  async function save() {
+    setBusy(true); setMsg('Checking the bot token…');
+    const r = await saveTelegram(token.trim());
+    if (r.ok) { setMsg(''); setBusy(false); setOpen(false); setToken(''); onDone(); }
+    else { setMsg(r.message ?? 'Could not connect.'); setBusy(false); }
+  }
+  return (
+    <div className="rounded-[4px] border border-line bg-surface">
+      <div className="flex items-center justify-between gap-3 px-4 py-3">
+        <div><div className="font-medium">Telegram</div><div className="text-dim text-sm">Chat with it from your phone</div></div>
+        {connected
+          ? <span className="mono text-[12px] text-signal">connected ✓</span>
+          : <button onClick={() => setOpen((o) => !o)} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium">{open ? 'Cancel' : 'Set up'}</button>}
+      </div>
+      {open && !connected && (
+        <div className="border-t border-line px-4 py-4 space-y-3">
+          <ol className="list-decimal ml-5 text-sm text-dim space-y-1">
+            <li>In Telegram, message <a className="text-signal underline" href="https://t.me/BotFather" target="_blank" rel="noreferrer">@BotFather</a> and send <span className="mono text-[12px]">/newbot</span>.</li>
+            <li>Copy the <b>bot token</b> it gives you and paste it below.</li>
+          </ol>
+          <input value={token} placeholder="123456789:ABCdef…" onChange={(e) => setToken(e.target.value)}
+            className="w-full rounded-[3px] border border-line bg-bone px-3 py-2 text-sm outline-none focus:border-signal" />
+          <button disabled={busy || !token.trim()} onClick={save} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium disabled:opacity-50">
+            {busy ? 'Working…' : 'Save & connect'}
+          </button>
+          {msg && <p className="mono text-[12px] text-dim">{msg}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Connections() {
   const [c, setC] = useState<Conn | null>(null);
   const load = () => getConnections().then(setC);
@@ -144,10 +181,7 @@ export function Connections() {
         <div className="space-y-2">
           <EmailConnect provider="google" connected={c.gmail} onDone={load} />
           <EmailConnect provider="microsoft" connected={c.outlook} onDone={load} />
-          <div className={row}>
-            <div><div className="font-medium">Telegram</div><div className="text-dim text-sm">Chat with it from your phone</div></div>
-            <span className={`mono text-[12px] ${c.telegram ? 'text-signal' : 'text-dim'}`}>{c.telegram ? 'connected ✓' : 'not set up'}</span>
-          </div>
+          <TelegramConnect connected={c.telegram} onDone={load} />
         </div>
       </div>
 

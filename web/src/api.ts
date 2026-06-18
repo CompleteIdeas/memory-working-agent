@@ -75,6 +75,26 @@ export async function saveMicrosoft(clientId: string): Promise<{ ok: boolean; me
   const r = await fetch('/api/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ which: 'microsoft', MICROSOFT_CLIENT_ID: clientId }) });
   return r.json();
 }
+export async function saveTelegram(token: string): Promise<{ ok: boolean; message?: string }> {
+  const r = await fetch('/api/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ which: 'telegram', TELEGRAM_BOT_TOKEN: token }) });
+  return r.json();
+}
+// List a provider's available models for the onboarding picker. Passes the (not-yet-saved) key so
+// the list can load during setup; OpenRouter returns its full public catalog even with no key.
+export async function getModels(provider: string, key?: string, baseUrl?: string): Promise<{ id: string; name?: string }[]> {
+  try {
+    const r = await fetch('/api/models', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider, key, baseUrl }) });
+    return (await r.json()).models ?? [];
+  } catch { return []; }
+}
+// First-run: download/warm the local memory models (~500MB on a fresh machine). Resolves fast
+// when already cached. Long timeout — the one-time download can take a few minutes.
+export async function warmModels(): Promise<{ ready: boolean; message?: string }> {
+  try {
+    const r = await fetch('/api/setup/warm', { method: 'POST', signal: AbortSignal.timeout(600000) });
+    return await r.json();
+  } catch { return { ready: false, message: 'timed out' }; }
+}
 export async function getMemories(): Promise<{ id: string; concept: string; content: string }[]> {
   try { const r = await fetch('/api/memories'); return (await r.json()).memories ?? []; } catch { return []; }
 }

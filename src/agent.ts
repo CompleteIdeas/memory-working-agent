@@ -80,6 +80,34 @@ const AGENT_SYSTEM = [
   'satisfied. Never loop without making progress — if stuck, try a different concrete step.',
 ].join('\n');
 
+// Lightweight system prompt for the conversational FAST PATH (one cheap call, no tools).
+const CHAT_SYSTEM = [
+  'You are MWA, a friendly personal AI assistant with long-term memory. The user is making',
+  'conversation or asking what you can do — answer directly, warmly, and briefly in plain',
+  'language. Do NOT use tools or claim to take actions you have not taken.',
+  'What you can genuinely do (mention only what fits the question): chat and answer questions;',
+  'remember things across sessions; read files and PDFs; search the web and use connected tools',
+  '(email, calendar, and more once connected); run tasks; and schedule things to run later.',
+  'End with 1-3 concrete example things they could ask you next.',
+].join('\n');
+
+// Conservative classifier: a conversational / capability ("meta") turn that needs no memory
+// recall, entity bridge, or tools — so it can be answered in one cheap call instead of the full
+// loop (the latency win). Greetings + questions ABOUT the agent only; anything referencing a
+// concrete action/resource stays on the full path. Off-switch: MWA_FAST_CHAT=0.
+function isConversational(s: string): boolean {
+  const t = s.trim().toLowerCase();
+  if (!t) return false;
+  if (t.split(/\s+/).length > 14) return false;
+  if (/^(hi|hello|hey|yo|sup|howdy|thanks|thank you|ty|ok|okay|cool|nice|great|gotcha|got it|good morning|good afternoon|good evening)[!. ]*$/.test(t)) return true;
+  const meta = /\b(what can you do|what do you do|what can you help|who are you|what are you|how do you work|how does this work|what is this|do you have|are you able to|what (are )?your (capabilities|features))\b/;
+  if (meta.test(t)) {
+    const actiony = /\b(file|files|email|inbox|calendar|db|database|query|run|search|find|look ?up|fetch|draft|send|summari|read|open|create|write|connect|member|ticket|area|report|schedule (a|my|the|this))\b/;
+    if (!actiony.test(t)) return true;
+  }
+  return false;
+}
+
 // Agent-only tool: deliberately persist a durable understanding to memory. This is
 // what makes a comprehension/onboarding run STICK — future sessions recall it.
 const REMEMBER_TOOL: ToolDef = {
@@ -215,6 +243,29 @@ export async function runAgent(opts: {
   if (worker instanceof RoutedProvider) worker.reset(classifyIntent(instruction));
   const brainStart = startTier(instruction);
   if (brain instanceof RoutedProvider) brain.reset(brainStart);
+
+  // FAST PATH — a conversational/meta turn ("hi", "what can you do", "do you have a scheduler")
+  // needs no recall, entity bridge, or action tools. Answer in ONE cheap model call so trivial
+  // chat is snappy instead of grinding the full recall+bridge+tool loop.
+  if (!opts.subRun && process.env.MWA_FAST_CHAT !== '0' && isConversational(instruction)) {
+    if (brain instanceof RoutedProvider) brain.reset('fetch');
+    emit('start', { instruction: instruction.slice(0, 120), recalled: 0, dir });
+    try {
+      const out = await brain.chat({ system: CHAT_SYSTEM, messages: [{ role: 'user', content: instruction }], maxTokens: 600 });
+      const text = (out.text ?? '').trim();
+      if (text) {
+        usage.brainIn += out.usage.input;
+        usage.brainOut += out.usage.output;
+        emit('done', { summary: text.slice(0, 200) });
+        return {
+          reason: 'done', summary: text, steps: 0, dispatches: 0, toolCalls: 0,
+          reRecalls: 0, supersedes: 0, consolidations: 0, durationMs: now() - start,
+          usage, costUsd: brain instanceof RoutedProvider ? brain.spentUsd() : 0,
+          history: ['fast-path: conversational reply'],
+        };
+      }
+    } catch { /* fall through to the full loop */ }
+  }
 
   const PRIME_K = opts.primeCap ?? 10; // cap on primed memories kept in the prompt (anti-context-rot)
   const recalled: RecalledMemory[] = memory.enabled ? await memory.recall(instruction, { limit: 8, full: true, workspace: opts.workspace }) : [];

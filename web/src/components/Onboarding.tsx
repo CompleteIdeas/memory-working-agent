@@ -1,6 +1,15 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { saveKey, getStatus, getConnections, saveAccess, type ExternalInstall, type AccessPreset } from '../api';
+import { saveKey, getStatus, getConnections, saveAccess, getModels, warmModels, enableConnector, disableConnector, type ExternalInstall, type AccessPreset, type ConnectorItem } from '../api';
+
+// Headline always-on capabilities shown in the feature walkthrough (informational; managed by
+// the agent itself). The toggleable connectors come live from /api/connections below.
+const CAPABILITIES: { name: string; detail: string }[] = [
+  { name: 'Long-term memory', detail: 'Remembers facts, decisions, and context across every session.' },
+  { name: 'Reads files & PDFs', detail: 'Point it at a document and it reads the real contents.' },
+  { name: 'Schedules tasks', detail: 'Ask it to do something later, daily, or on a repeat.' },
+  { name: 'Connect email & chat', detail: 'Gmail/Outlook and Telegram from the Connections page.' },
+];
 
 const ACCESS_PRESETS: { id: AccessPreset; label: string; sub: string; detail: string }[] = [
   { id: 'locked-down', label: 'Locked-down', sub: 'Most private', detail: 'Only its own workspace. Can’t run commands. Safest for sensitive machines.' },
@@ -31,8 +40,22 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
   const [ext, setExt] = useState<ExternalInstall | null>(null);
   const [accessStep, setAccessStep] = useState(false);
   const [preset, setPreset] = useState<AccessPreset>('assistant');
+  const [models, setModels] = useState<{ id: string; name?: string }[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [featuresStep, setFeaturesStep] = useState(false);
+  const [conns, setConns] = useState<ConnectorItem[]>([]);
+  const [toggling, setToggling] = useState<string | null>(null);
 
-  function pick(p: Provider) { setSel(p); setModel(p.model); setKey(''); setBaseUrl(''); setMsg(''); setOk(false); setExt(null); }
+  function pick(p: Provider) { setSel(p); setModel(p.model); setKey(''); setBaseUrl(''); setMsg(''); setOk(false); setExt(null); setModels([]); }
+
+  async function loadModels() {
+    if (!sel) return;
+    setLoadingModels(true);
+    const m = await getModels(sel.id, key.trim() || undefined, baseUrl.trim() || undefined);
+    setModels(m);
+    setLoadingModels(false);
+    if (m.length && !m.some((x) => x.id === model)) setModel(m[0].id);
+  }
 
   async function connect() {
     if (!sel) return;
@@ -51,9 +74,29 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
     }
   }
 
+  async function gotoFeatures() {
+    setBusy(true);
+    await saveAccess(preset).catch(() => {}); // lock in the access choice before the tour
+    const c = await getConnections().catch(() => null);
+    setConns(c?.connectors ?? []);
+    setBusy(false);
+    setFeaturesStep(true);
+  }
+
+  async function toggleConn(item: ConnectorItem) {
+    setToggling(item.id);
+    if (item.on) await disableConnector(item.id).catch(() => {});
+    else await enableConnector(item.id).catch(() => {});
+    const c = await getConnections().catch(() => null);
+    setConns(c?.connectors ?? []);
+    setToggling(null);
+  }
+
   async function start() {
     setBusy(true);
-    await saveAccess(preset).catch(() => {});
+    // First-run: download the local memory models now (one-time) so the first chat doesn't hang.
+    setMsg('Preparing your memory — downloading local models (one-time; this can take a few minutes)…');
+    await warmModels().catch(() => {});
     onReady();
   }
 
@@ -61,7 +104,7 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
 
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }} className="py-10 max-w-xl">
-      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-3">setup{accessStep ? ' · access' : ''}</div>
+      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-3">setup{featuresStep ? ' · features' : accessStep ? ' · access' : ''}</div>
       {!accessStep && (<>
       <h1 className="text-4xl font-semibold tracking-tight leading-[1.05] mb-2">Pick a brain to think with.</h1>
       <p className="text-dim mb-6">Choose any AI provider — or run a model <b>locally with no key</b>. Whatever you enter stays on this computer.</p>
@@ -94,18 +137,25 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
           {sel.needsBase && <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="Base URL (https://….openai/v1)" className={field} />}
           {sel.needsKey && <input value={key} onChange={(e) => setKey(e.target.value)} placeholder={`Key (${sel.keyHint})`} className={field} />}
           {sel.id === 'ollama' && <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="Ollama URL (default http://localhost:11434/v1)" className={field} />}
-          <div className="flex items-center gap-3">
-            <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="model" className={`${field} flex-1 mono text-[13px]`} />
-            <button disabled={busy || (sel.needsKey && !key.trim())} onClick={connect} className="rounded-[3px] bg-signal text-white px-5 py-3 font-medium disabled:opacity-50 whitespace-nowrap">
-              {busy ? '…' : 'Connect'}
+          <div className="flex items-center gap-2">
+            <input list="model-opts" value={model} onChange={(e) => setModel(e.target.value)} placeholder="model" className={`${field} flex-1 mono text-[13px]`} />
+            <button type="button" disabled={loadingModels || (sel.needsKey && sel.id !== 'openrouter' && !key.trim())} onClick={loadModels}
+              className="rounded-[3px] border border-line px-3 py-3 text-sm text-dim hover:border-signal whitespace-nowrap disabled:opacity-50">
+              {loadingModels ? '…' : 'Load models'}
             </button>
           </div>
+          <datalist id="model-opts">{models.map((m) => <option key={m.id} value={m.id}>{m.name && m.name !== m.id ? `${m.id} — ${m.name}` : m.id}</option>)}</datalist>
+          {models.length > 0 && <p className="mono text-[11px] text-dim">{models.length} models available — pick from the list or type one.</p>}
+          {sel.id === 'azure' && <p className="mono text-[11px] text-dim">Azure uses your deployment name as the model.</p>}
+          <button disabled={busy || (sel.needsKey && !key.trim())} onClick={connect} className="w-full rounded-[3px] bg-signal text-white px-5 py-3 font-medium disabled:opacity-50">
+            {busy ? '…' : 'Connect'}
+          </button>
           {msg && <p className={`mono text-[13px] ${ok ? 'text-signal' : 'text-dim'}`}>{msg}</p>}
         </motion.div>
       )}
       </>)}
 
-      {accessStep && (
+      {accessStep && !featuresStep && (
         <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
           <h1 className="text-4xl font-semibold tracking-tight leading-[1.05] mb-2">How much can it touch?</h1>
           <p className="text-dim mb-5">You’re connected ✓ — pick how much of this computer the assistant may use. You can change this anytime in Connections.</p>
@@ -123,7 +173,40 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
               Note: this model isn’t strong enough for MWA to safely vet and install new connectors from the web, so that stays off. The built-in connector library still works; add a stronger model later (an <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="text-signal underline">OpenRouter</a> or Anthropic/OpenAI key) to enable it.
             </p>
           )}
-          <button disabled={busy} onClick={start} className="rounded-[3px] bg-signal text-white px-6 py-3 font-medium disabled:opacity-50">{busy ? '…' : 'Start'}</button>
+          <button disabled={busy} onClick={gotoFeatures} className="rounded-[3px] bg-signal text-white px-6 py-3 font-medium disabled:opacity-50">{busy ? '…' : 'Next →'}</button>
+        </motion.div>
+      )}
+
+      {featuresStep && (
+        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
+          <h1 className="text-4xl font-semibold tracking-tight leading-[1.05] mb-2">Here’s what I can do.</h1>
+          <p className="text-dim mb-5">A quick tour. Flip on the extras you want — you can change any of this anytime in Connections.</p>
+          <div className="space-y-2 mb-4">
+            {CAPABILITIES.map((cap) => (
+              <div key={cap.name} className="rounded-[4px] border border-line bg-surface px-4 py-3">
+                <div className="font-medium">{cap.name}</div>
+                <div className="text-dim text-sm">{cap.detail}</div>
+              </div>
+            ))}
+          </div>
+          {conns.length > 0 && (
+            <>
+              <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">optional tools</div>
+              <div className="space-y-2 mb-4">
+                {conns.map((c) => (
+                  <div key={c.id} className="flex items-center justify-between gap-3 rounded-[4px] border border-line bg-surface px-4 py-3">
+                    <div><div className="font-medium">{c.name}</div><div className="text-dim text-sm">{c.description}</div></div>
+                    <button disabled={toggling === c.id} onClick={() => toggleConn(c)}
+                      className={`rounded-[3px] px-3 py-2 text-sm font-medium whitespace-nowrap disabled:opacity-50 ${c.on ? 'bg-signal text-white' : 'border border-line text-dim hover:border-signal'}`}>
+                      {toggling === c.id ? '…' : c.on ? 'On' : 'Off'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+          <button disabled={busy} onClick={start} className="rounded-[3px] bg-signal text-white px-6 py-3 font-medium disabled:opacity-50">{busy ? 'Preparing…' : 'Start'}</button>
+          {busy && msg && <p className="mono text-[13px] text-dim mt-3">{msg}</p>}
         </motion.div>
       )}
     </motion.div>

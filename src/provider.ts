@@ -254,6 +254,46 @@ export function resolveProvider(spec: string): Provider {
 export const PROVIDERS = ['anthropic', 'azure', 'openai', 'openrouter', 'gemini', 'ollama'] as const;
 
 /**
+ * List available models for a provider, for the onboarding model picker. Best-effort:
+ *  - OpenAI-compatible (openai/openrouter/gemini/ollama): GET {base}/models (Bearer key; ollama keyless).
+ *    OpenRouter's list is the richest (hundreds of models, public) — a great "easy to spin up" default.
+ *  - anthropic: GET https://api.anthropic.com/v1/models.
+ *  - azure: deployment-named, no catalog → [] (the UI lets you type the deployment).
+ * Returns [] on any error so the UI cleanly falls back to manual entry.
+ */
+export async function listModels(provider: string, opts: { key?: string; baseUrl?: string } = {}): Promise<{ id: string; name?: string }[]> {
+  loadEnv();
+  const p = provider.toLowerCase();
+  try {
+    if (p === 'anthropic') {
+      const key = opts.key || process.env.ANTHROPIC_API_KEY;
+      if (!key) return [];
+      const r = await fetch('https://api.anthropic.com/v1/models?limit=200', {
+        headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!r.ok) return [];
+      const j = (await r.json()) as { data?: { id: string; display_name?: string }[] };
+      return (j.data ?? []).map((m) => ({ id: m.id, name: m.display_name })).filter((m) => m.id);
+    }
+    if (p === 'azure') return []; // deployment-named — user types the deployment name
+    const oc = OPENAI_COMPAT[p];
+    if (!oc) return [];
+    const base = (opts.baseUrl || (oc.baseEnv && process.env[oc.baseEnv]) || oc.base).replace(/\/$/, '');
+    const key = oc.keyless ? undefined : (opts.key || process.env[oc.keyEnv!]);
+    if (!oc.keyless && !key) return [];
+    const headers: Record<string, string> = {};
+    if (key) headers['authorization'] = `Bearer ${key}`;
+    const r = await fetch(`${base}/models`, { headers, signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return [];
+    const j = (await r.json()) as { data?: { id: string; name?: string }[] };
+    return (j.data ?? []).map((m) => ({ id: m.id, name: m.name })).filter((m) => m.id);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Resolve the provider for a tier from mwa.config.json: `models.fetch` (cheap brain) and
  * `models.reason` (strong ceiling), each a "provider:model" spec — so the model is a
  * config value and any provider (incl. local Ollama, no key) works with no code change.
