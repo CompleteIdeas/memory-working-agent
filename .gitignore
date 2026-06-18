@@ -18,3 +18,6 @@ data/google-token.json
 
 # throwaway dogfood/diagnostic scripts
 scripts/_*
+
+# desktop (Tauri) build staging — the bundled runtime is reassembled by the build
+build/
