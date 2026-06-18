@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.3 (2026-06-18) — onboarding + UX: model picker, first-run setup, walkthrough, faster chat
+
+- **Dynamic model selection.** `listModels(provider)` + `GET`/`POST /api/models` list a
+  provider's available models (OpenAI-compatible `/models`, Anthropic `/v1/models`,
+  OpenRouter's public catalog). Onboarding's model field is now a type-ahead dropdown.
+- **First-run model setup.** `POST /api/setup/warm` downloads the local recall models so the
+  first chat doesn't hang; the onboarding "Start" step waits with a "Preparing your memory…" note.
+- **Feature walkthrough.** A capabilities tour during onboarding with on/off toggles for the
+  bundled connectors (reuses the existing enable/disable).
+- **Telegram connect.** The Connections page now has a real Telegram set-up control (bot-token
+  entry + live validation), not just a status label.
+- **Faster conversational replies.** A fast path answers greetings / "what can you do?" in one
+  cheap call, skipping memory recall, the entity bridge, and tools (`MWA_FAST_CHAT=0` to disable).
+
 ## 0.3.2 (2026-06-18) — domain pack reaches the whole agent (full topics + the planner)
 
 Fixes so the domain pack actually drives behavior end-to-end (found while standing up a
