@@ -85,6 +85,7 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> std::io::Result<Child> {
         for (k, v) in &data_env {
             cmd.env(k, v);
         }
+        hide_window(&mut cmd);
         let r = cmd.spawn();
         log_diag(
             app,
@@ -103,8 +104,21 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> std::io::Result<Child> {
         .arg("serve")
         .current_dir(root)
         .env("MWA_NO_OPEN", "1");
+    hide_window(&mut cmd);
     cmd.spawn()
 }
+
+/// Launch the (console-app) Node sidecar with NO console window — this GUI app has no console
+/// of its own, so Windows would otherwise pop a black command window for the child. CREATE_NO_WINDOW
+/// makes it run silently in the background. No-op off Windows.
+#[cfg(windows)]
+fn hide_window(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+#[cfg(not(windows))]
+fn hide_window(_cmd: &mut Command) {}
 
 /// True once something is accepting connections on the serve port.
 fn port_open() -> bool {
