@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.2 (2026-06-18) — domain pack reaches the whole agent (full topics + the planner)
+
+Fixes so the domain pack actually drives behavior end-to-end (found while standing up a
+support agent that kept ignoring its own documented DB tool):
+
+- **Domain context no longer truncated.** `buildDomainContext` capped the *combined*
+  AGENT.md + topics at 6000 chars, so a large AGENT.md ate the whole budget and **every
+  topic file was silently dropped**. Now AGENT.md is always included in full (≤40k) and
+  topics get their own budget (16k total, ≤8k/topic) — `topics/*.md` knowledge loads.
+- **Topic selection no longer biased toward big files.** Relevance now weights filename
+  and headings above body mentions (plus singular/plural matching, top-5), so a small
+  focused topic (e.g. `dba-member-queries.md`) beats a giant catch-all.
+- **The planner now sees the domain pack.** Plan-and-execute built its planning prompt
+  *without* the domain pack, so it decomposed data tasks into generic steps like "inspect
+  the workspace for the data source" instead of using the documented domain tool. The
+  planner now gets the same domain context as the direct loop and is told to USE documented
+  tools/methods, not hunt for them.
+- Requires `agent-working-memory ^0.9.1` (fixes `import` of exports containing associations).
+- Internal: groundwork for agent-contributed knowledge-store entries (experimental, unwired).
+
 ## 0.3.1 (2026-06-17) — domain-pack hook for serve
 
 - `mwa serve` now honors `MWA_DOMAIN_PACK` — passes it as `domainPackDir` to `runAgent`,

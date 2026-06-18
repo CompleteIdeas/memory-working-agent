@@ -19,8 +19,14 @@ import { join } from 'node:path';
 export interface DomainTopic {
   name: string;
   text: string;
-  /** indexable terms (filename + headings + content), for relevance scoring */
+  /** indexable terms (filename + headings + content union), for relevance scoring */
   terms: Set<string>;
+  /** terms from the filename — strongest relevance signal */
+  nameTerms: Set<string>;
+  /** terms from markdown headings — medium relevance signal */
+  headingTerms: Set<string>;
+  /** terms from the body — weakest relevance signal */
+  bodyTerms: Set<string>;
 }
 
 export interface DomainPack {
@@ -37,8 +43,16 @@ const STOP = new Set([
   'but', 'about', 'than', 'then', 'them', 'use', 'using', 'used', 'get', 'got', 'per', 'via',
 ]);
 
+// Tokenize, drop stopwords, and add a de-pluralized variant (members->member) so
+// query/topic terms match across singular/plural without a full stemmer.
 function termList(s: string): string[] {
-  return (s.toLowerCase().match(/[a-z][a-z0-9_-]{2,}/g) ?? []).filter((w) => !STOP.has(w));
+  const base = (s.toLowerCase().match(/[a-z][a-z0-9_-]{2,}/g) ?? []).filter((w) => !STOP.has(w));
+  const out = new Set<string>();
+  for (const w of base) {
+    out.add(w);
+    if (w.length > 3 && w.endsWith('s')) out.add(w.slice(0, -1));
+  }
+  return [...out];
 }
 
 // Cache packs by dir, invalidated by a signature over the dir + topic mtimes.
@@ -76,13 +90,11 @@ export function loadDomainPack(dir: string): DomainPack | null {
       if (text.trim().length < 10) continue;
       const name = f.replace(/\.md$/, '');
       const headings = (text.match(/^#{1,6}\s.*$/gm) ?? []).join(' ');
-      // filename + headings weighted by appearing alongside content terms
-      const terms = new Set<string>([
-        ...termList(name.replace(/[-_]/g, ' ')),
-        ...termList(headings),
-        ...termList(text),
-      ]);
-      topics.push({ name, text, terms });
+      const nameTerms = new Set<string>(termList(name.replace(/[-_]/g, ' ')));
+      const headingTerms = new Set<string>(termList(headings));
+      const bodyTerms = new Set<string>(termList(text));
+      const terms = new Set<string>([...nameTerms, ...headingTerms, ...bodyTerms]);
+      topics.push({ name, text, terms, nameTerms, headingTerms, bodyTerms });
     }
   } catch { /* no topics dir */ }
 
@@ -92,14 +104,23 @@ export function loadDomainPack(dir: string): DomainPack | null {
   return pack;
 }
 
-/** Score topics against the instruction and return the top-N most relevant. */
-export function selectTopics(pack: DomainPack, query: string, topN = 3): DomainTopic[] {
+/**
+ * Score topics against the instruction and return the top-N most relevant.
+ * Weighting: a filename match is the strongest signal (the file is literally
+ * about this), a heading match is next, a body mention is weakest. This stops a
+ * large catch-all file from outscoring a small, precisely-named skill file.
+ */
+export function selectTopics(pack: DomainPack, query: string, topN = 5): DomainTopic[] {
   const q = new Set(termList(query));
   if (q.size === 0) return [];
   const scored = pack.topics
     .map((t) => {
       let score = 0;
-      for (const term of q) if (t.terms.has(term)) score += 1;
+      for (const term of q) {
+        if (t.nameTerms.has(term)) score += 5;
+        else if (t.headingTerms.has(term)) score += 3;
+        else if (t.terms.has(term)) score += 1;
+      }
       return { t, score };
     })
     .filter((s) => s.score > 0)
@@ -114,15 +135,32 @@ export function selectTopics(pack: DomainPack, query: string, topN = 3): DomainT
 export function buildDomainContext(
   pack: DomainPack,
   query: string,
-  opts?: { topN?: number; maxChars?: number },
+  opts?: {
+    topN?: number;
+    // AGENT.md is the persona + standing rules — it is always included in full up
+    // to this (large) ceiling; truncating it mid-document breaks the agent.
+    agentMaxChars?: number;
+    // Total budget shared across the selected topic files...
+    topicMaxChars?: number;
+    // ...and a per-topic cap so one huge topic (e.g. a 24KB freshdesk.md) can't
+    // eat the whole topic budget and starve the others.
+    perTopicMaxChars?: number;
+    /** @deprecated legacy single cap; ignored when the granular caps are used */
+    maxChars?: number;
+  },
 ): string {
-  const maxChars = opts?.maxChars ?? 6000;
+  const agentMaxChars = opts?.agentMaxChars ?? 40_000;
+  const topicMaxChars = opts?.topicMaxChars ?? 16_000;
+  const perTopicMaxChars = opts?.perTopicMaxChars ?? 8_000;
   const parts: string[] = [];
-  if (pack.agentMd.trim()) parts.push(pack.agentMd.trim());
-  for (const t of selectTopics(pack, query, opts?.topN ?? 3)) {
-    parts.push(`--- topic: ${t.name} ---\n${t.text.trim()}`);
+  if (pack.agentMd.trim()) parts.push(pack.agentMd.trim().slice(0, agentMaxChars));
+  let topicBudget = topicMaxChars;
+  for (const t of selectTopics(pack, query, opts?.topN ?? 5)) {
+    if (topicBudget <= 0) break;
+    const body = t.text.trim().slice(0, Math.min(perTopicMaxChars, topicBudget));
+    parts.push(`--- topic: ${t.name} ---\n${body}`);
+    topicBudget -= body.length;
   }
   if (parts.length === 0) return '';
-  const body = parts.join('\n\n').slice(0, maxChars);
-  return `# Domain knowledge (loaded for this task — verify specifics before acting)\n\n${body}`;
+  return `# Domain knowledge (loaded for this task — verify specifics before acting)\n\n${parts.join('\n\n')}`;
 }

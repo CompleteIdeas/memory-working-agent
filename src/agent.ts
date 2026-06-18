@@ -891,11 +891,16 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
 
   // 1) PLAN (strong tier) — decompose into the fewest concrete, independently-doable steps.
   if (brain instanceof RoutedProvider) brain.reset('reason');
+  // The planner MUST see the domain pack (AGENT.md + topics), or it plans blind — e.g. it
+  // emits "inspect the workspace for the data source" when the domain pack already says the
+  // agent has a live DB tool and documents the exact query. Same context the direct loop gets.
+  const planPack = opts.domainPackDir ? loadDomainPack(opts.domainPackDir) : null;
+  const planDomain = planPack ? buildDomainContext(planPack, instruction) : '';
   let steps: { task: string; done_when?: string }[] = [];
   try {
     const known = await memory.recall(instruction, { limit: 6, full: true, workspace: opts.workspace });
     const p = await brain.chat({
-      system: 'You are the PLANNER. Break the user\'s task into the SMALLEST ordered set of concrete sub-tasks (2 to 6) that together fully complete it. Each sub-task must be self-contained — something one agent can do alone in a fresh context (it can read files, search the web, write files, draft email). Prefer FEWER steps; do not pad. Output ONLY JSON {"steps":[{"task":"imperative sub-task","done_when":"one observable success condition"}, ...]}. If the task is actually simple enough to do in one go, output {"steps":[]}.',
+      system: (planDomain ? planDomain + '\n\n' : '') + 'You are the PLANNER. Break the user\'s task into the SMALLEST ordered set of concrete sub-tasks (2 to 6) that together fully complete it. Each sub-task must be self-contained — something one agent can do alone in a fresh context (it can read files, search the web, write files, draft email, AND use the domain tools described above). Honor the domain knowledge above — do NOT plan steps to "find the data source" or "inspect the workspace" when a tool/method is already documented; plan to USE it. Prefer FEWER steps; do not pad. Output ONLY JSON {"steps":[{"task":"imperative sub-task","done_when":"one observable success condition"}, ...]}. If the task is simple enough to do in one go (e.g. a single lookup or count), output {"steps":[]}.',
       messages: [{ role: 'user', content: `TASK: ${instruction}\nWORKING DIR: ${dir}${known.length ? `\n\nWHAT YOU ALREADY KNOW (from memory):\n${known.map((k) => `- ${k.concept}: ${k.content}`).join('\n')}` : ''}` }],
       maxTokens: 700,
     });
