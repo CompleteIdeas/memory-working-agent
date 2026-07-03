@@ -28,6 +28,9 @@ export interface RepoSpec { id: string; root: string; keyFiles: string[]; qa: QA
 
 const MWA_ROOT = resolve('.');
 const AWM_ROOT = resolve('vendor', 'agent-working-memory');
+// Read the vendored AWM version at runtime so this answer key never goes stale
+// when the submodule is bumped (it previously hardcoded 0.9.0 against a 0.10.0 pin).
+const AWM_VERSION = JSON.parse(readFileSync(resolve(AWM_ROOT, 'package.json'), 'utf8')).version as string;
 
 export const CORPUS: RepoSpec[] = [
   {
@@ -50,7 +53,7 @@ export const CORPUS: RepoSpec[] = [
     root: AWM_ROOT,
     keyFiles: ['README.md', 'package.json', 'src/mcp.ts', 'src/storage/factory.ts'],
     qa: [
-      { q: 'What version is the agent-working-memory package?', expect: ['0.9.0'] },
+      { q: 'What version is the agent-working-memory package?', expect: [AWM_VERSION] },
       { q: 'What is the AWM CLI binary name?', expect: ['awm'] },
       { q: 'What are the two storage backends AWM supports?', expect: ['sqlite', 'pglite'] },
       { q: 'What is the package main entry point file?', expect: ['dist/index.js'] },

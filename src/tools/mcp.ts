@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { logger } from '../logger.js';
+import { VERSION } from '../version.js';
 import type { RegisteredTool } from './registry.js';
 
 /** Expand ${VAR} references (in args/env) from process.env, so secrets live in .env and
@@ -73,7 +74,7 @@ export async function loadMcpServers(servers: Record<string, McpServerSpec> = {}
         // MWA's API keychain (Anthropic/Google/etc.). This is a core install guardrail.
         env: { ...getDefaultEnvironment(), ...declaredEnv },
       });
-      const client = new Client({ name: 'mwa', version: '0.0.1' }, { capabilities: {} });
+      const client = new Client({ name: 'mwa', version: VERSION }, { capabilities: {} });
       await client.connect(transport);
       const listed = await client.listTools();
       for (const t of listed.tools) {
