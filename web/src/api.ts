@@ -31,9 +31,40 @@ export interface ConnectorItem { id: string; name: string; category: string; des
 export interface ExternalInstall { enabled: boolean; policy: string; reason: string; model: string }
 export type AccessPreset = 'locked-down' | 'assistant' | 'developer';
 export interface Access { preset: AccessPreset; grantedRoots: string[] }
-export interface Connections { gmail: boolean; outlook: boolean; telegram: boolean; connectors: ConnectorItem[]; externalInstall: ExternalInstall; access: Access; }
+export interface Brain { provider: string; model: string }
+export type InteractionStyle = 'guided' | 'direct';
+export interface StorageBackend { kind: 'sqlite' | 'pglite' | 'postgres'; configured: boolean; }
+export interface Connections { gmail: boolean; gmailMethod: 'oauth' | 'app-password' | null; outlook: boolean; outlookEasy: boolean; telegram: boolean; brain: Brain; imageModel: Brain; connectors: ConnectorItem[]; externalInstall: ExternalInstall; access: Access; style: InteractionStyle; ingestReady: boolean; storage: StorageBackend; }
 export async function getConnections(): Promise<Connections> {
-  try { const r = await fetch('/api/connections'); return await r.json(); } catch { return { gmail: false, outlook: false, telegram: false, connectors: [], externalInstall: { enabled: false, policy: 'review-required', reason: '', model: '' }, access: { preset: 'assistant', grantedRoots: [] } }; }
+  try { const r = await fetch('/api/connections'); return await r.json(); } catch { return { gmail: false, gmailMethod: null, outlook: false, outlookEasy: false, telegram: false, brain: { provider: '', model: '' }, imageModel: { provider: '', model: '' }, connectors: [], externalInstall: { enabled: false, policy: 'review-required', reason: '', model: '' }, access: { preset: 'assistant', grantedRoots: [] }, style: 'guided', ingestReady: false, storage: { kind: 'sqlite', configured: true } }; }
+}
+// "Learn about me from my email": stream the inbox scan. onLog = progress lines, onResult =
+// final { unique, learned } counts. Returns the EventSource so the caller can close it.
+export function scanEmail(days: number, h: { onLog: (m: string) => void; onResult: (r: { unique: number; learned: number }) => void; onError: (m: string) => void }): EventSource {
+  const es = new EventSource(`/api/ingest?days=${days}`);
+  es.addEventListener('log', (e) => { try { h.onLog(JSON.parse((e as MessageEvent).data).message); } catch { /* */ } });
+  es.addEventListener('result', (e) => { es.close(); try { h.onResult(JSON.parse((e as MessageEvent).data)); } catch { h.onResult({ unique: 0, learned: 0 }); } });
+  es.addEventListener('error', (e) => { es.close(); let m = 'The scan stopped unexpectedly. Try again?'; try { m = JSON.parse((e as MessageEvent).data).message; } catch { /* */ } h.onError(m); });
+  return es;
+}
+// Change the interaction style (how MWA talks / how proactive it is) — independent of access.
+export async function saveStyle(style: InteractionStyle): Promise<{ ok: boolean; message?: string }> {
+  const r = await fetch('/api/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ which: 'style', style }) });
+  return r.json();
+}
+// Set (or clear, when model is empty) the image-generation model.
+export async function saveImageModel(provider: string, model: string, key?: string, baseUrl?: string): Promise<{ ok: boolean; message: string }> {
+  const r = await fetch('/api/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ which: 'image-model', provider, model, key, baseUrl }) });
+  return r.json();
+}
+export async function disconnectService(which: 'gmail' | 'outlook' | 'telegram'): Promise<{ ok: boolean; message?: string }> {
+  const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: `disconnect-${which}` }) });
+  return r.json();
+}
+// Change the AI brain after onboarding: validates the model/key, then saves it as the active model.
+export async function saveBrain(provider: string, model: string, key?: string, baseUrl?: string): Promise<{ ok: boolean; message: string }> {
+  const r = await fetch('/api/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ which: 'provider', provider, model, key, baseUrl }) });
+  return r.json();
 }
 export async function saveAccess(preset: AccessPreset, grantedRoots?: string[]): Promise<{ ok: boolean; message?: string }> {
   const r = await fetch('/api/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ which: 'access', preset, grantedRoots }) });
@@ -63,6 +94,17 @@ export async function connectGmail(readonly = false): Promise<{ ok: boolean; mes
   const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'connect-gmail', readonly }) });
   return r.json();
 }
+// EASY Gmail: app password over IMAP — no Google Cloud Console. Validated server-side by
+// opening a real IMAP session before the creds are saved.
+export async function connectGmailImap(user: string, appPassword: string): Promise<{ ok: boolean; message?: string }> {
+  const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'connect-gmail-imap', user, appPassword }) });
+  return r.json();
+}
+// EASY Outlook: device code — show a short code + URL; the server polls until the user finishes.
+export async function connectOutlookDevice(readonly = false): Promise<{ ok: boolean; message?: string; user_code?: string; verification_uri?: string; expires_in?: number }> {
+  const r = await fetch('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'connect-outlook-device', readonly }) });
+  return r.json();
+}
 export async function saveGoogle(clientId: string, clientSecret: string): Promise<{ ok: boolean; message?: string }> {
   const r = await fetch('/api/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ which: 'google', GOOGLE_CLIENT_ID: clientId, GOOGLE_CLIENT_SECRET: clientSecret }) });
   return r.json();
@@ -79,11 +121,27 @@ export async function saveTelegram(token: string): Promise<{ ok: boolean; messag
   const r = await fetch('/api/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ which: 'telegram', TELEGRAM_BOT_TOKEN: token }) });
   return r.json();
 }
+
+// Join a tailnet so a cloud deploy is reachable privately (no public port). Takes a Tailscale
+// AUTH key (tskey-auth-…), not an API key; the server validates the prefix. Optional hostname.
+export async function saveTailscale(key: string, hostname?: string): Promise<{ ok: boolean; message?: string }> {
+  const r = await fetch('/api/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ which: 'tailscale', key, hostname }) });
+  return r.json();
+}
+
+// Choose where memory is stored: 'sqlite' (this computer, default) or 'postgres' (a database
+// server — pass the postgres:// URL, which the server validates by connecting). Restart to apply.
+// migrate=true copies the current memory into the new database before switching (agnostic
+// import/export), so you keep everything you've learned.
+export async function saveBackend(kind: 'sqlite' | 'postgres', url?: string, migrate?: boolean): Promise<{ ok: boolean; message?: string }> {
+  const r = await fetch('/api/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ which: 'backend', kind, url, migrate }) });
+  return r.json();
+}
 // List a provider's available models for the onboarding picker. Passes the (not-yet-saved) key so
 // the list can load during setup; OpenRouter returns its full public catalog even with no key.
-export async function getModels(provider: string, key?: string, baseUrl?: string): Promise<{ id: string; name?: string }[]> {
+export async function getModels(provider: string, key?: string, baseUrl?: string, kind: 'chat' | 'image' = 'chat'): Promise<{ id: string; name?: string }[]> {
   try {
-    const r = await fetch('/api/models', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider, key, baseUrl }) });
+    const r = await fetch('/api/models', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider, key, baseUrl, kind }) });
     return (await r.json()).models ?? [];
   } catch { return []; }
 }
@@ -95,11 +153,31 @@ export async function warmModels(): Promise<{ ready: boolean; message?: string }
     return await r.json();
   } catch { return { ready: false, message: 'timed out' }; }
 }
-export async function getMemories(): Promise<{ id: string; concept: string; content: string }[]> {
+export type Trust = 'high' | 'medium' | 'untrusted';
+export type Provenance = 'user' | 'inferred' | 'ingested' | 'tool' | 'unknown';
+export interface MemoryItem { id: string; concept: string; content: string; trust: Trust; provenance: Provenance; origin?: string }
+export interface ActionItem { id: string; verb: string; summary: string; effect: 'external' | 'local' | 'read'; tool?: string; undo?: string }
+
+export async function getMemories(): Promise<MemoryItem[]> {
   try { const r = await fetch('/api/memories'); return (await r.json()).memories ?? []; } catch { return []; }
+}
+export async function getActions(): Promise<ActionItem[]> {
+  try { const r = await fetch('/api/actions'); return (await r.json()).actions ?? []; } catch { return []; }
+}
+/** F1 Glass Box — hard-delete (forget) one memory. */
+export async function forgetMemory(id: string): Promise<{ ok: boolean }> {
+  try { const r = await fetch('/api/memory/forget', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) }); return await r.json(); } catch { return { ok: false }; }
+}
+/** F1 Glass Box — correct a fact (supersede with the user's text; becomes trusted). */
+export async function correctMemory(id: string, concept: string, content: string): Promise<{ ok: boolean }> {
+  try { const r = await fetch('/api/memory/correct', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, concept, content }) }); return await r.json(); } catch { return { ok: false }; }
 }
 export async function getSkills(): Promise<{ name: string; content: string }[]> {
   try { const r = await fetch('/api/skills'); return (await r.json()).skills ?? []; } catch { return []; }
+}
+export interface PersonRow { personId: string; notes: number; fields: string[]; missing: string[]; dossier: string | null }
+export async function getPeople(): Promise<PersonRow[]> {
+  try { const r = await fetch('/api/people'); return (await r.json()).people ?? []; } catch { return []; }
 }
 export async function getLessons(): Promise<{ topic: string; content: string }[]> {
   try { const r = await fetch('/api/skills'); return (await r.json()).lessons ?? []; } catch { return []; }
@@ -133,6 +211,12 @@ export async function getSuggestions(): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+// Ask the local backend to open a URL in the OS browser. Used inside the desktop app,
+// where the webview ignores target="_blank" (see the global link handler in main.tsx).
+export async function openExternal(url: string): Promise<void> {
+  try { await fetch('/api/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) }); } catch { /* */ }
 }
 
 export async function saveKey(body: Record<string, string>): Promise<{ ok: boolean; message: string }> {
@@ -193,6 +277,10 @@ export interface ChatHandlers {
   onStep: (s: { label: string; detail: string; tone: StepTone }) => void;
   onResult: (r: ChatResult) => void;
   onError: (message: string) => void;
+  // How this message relates to the conversation: 'continue' (built on the recent chat),
+  // 'fresh' (a new topic — earlier context set aside), or 'ask' (it's confirming with you).
+  // hadContext = there was an earlier conversation in this session that could be carried.
+  onTopic?: (t: { relation: 'continue' | 'fresh' | 'ask'; hadContext: boolean }) => void;
 }
 
 /** Open the SSE chat stream for one message; returns the EventSource so it can be closed. */
@@ -206,6 +294,10 @@ export function chatStream(message: string, session: string, h: ChatHandlers): E
       if (step) h.onStep(step);
     });
   }
+  // Topic relation — a turn-level signal (not an activity step): drives the "new topic" marker.
+  es.addEventListener('topic', (e) => {
+    try { h.onTopic?.(JSON.parse((e as MessageEvent).data)); } catch { /* */ }
+  });
   es.addEventListener('result', (e) => {
     es.close();
     try { h.onResult(JSON.parse((e as MessageEvent).data)); } catch { h.onResult({ reason: 'done', summary: 'Done.', steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0 }); }

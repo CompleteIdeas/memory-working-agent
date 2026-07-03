@@ -11,6 +11,12 @@ smarter with reuse.
 > weights. A cheap conductor + memory can match a frontier model on cost — and at
 > scale, memory does something no context window can.
 
+> **New in 0.4.0 — the memory substrate.** MWA was rebuilt from the substrate up: every memory
+> and action now carries **provenance, trust, namespace, and an action record**, and six
+> capabilities — transparency, injection safety, governance, honest confidence, topic scoping,
+> self-improving routines — sit on that spine. One smart memory doing what other harnesses need
+> many bolt-on subsystems for. **→ [Read the story: docs/the-memory-substrate.md](docs/the-memory-substrate.md)**
+
 ---
 
 ## Two results
@@ -250,7 +256,9 @@ AZURE_GPT_API_KEY=...                 # brain (gpt-5-4-mini, Azure Responses API
 AZURE_GPT_DEPLOYMENT=gpt-5-4-mini
 ```
 
-If `AZURE_GPT_*` is absent, the brain falls back to Claude Haiku automatically.
+If `AZURE_GPT_*` is absent, the brain falls back to Claude Haiku automatically. Every runtime env
+knob — memory backend (`AWM_STORE_BACKEND` = sqlite/pglite/postgres), access/security, per-person,
+scheduler, connectors — is enumerated in **[docs/configuration.md](docs/configuration.md)**.
 
 ### Shared memory across agents/CLIs (opt-in)
 
@@ -263,6 +271,23 @@ RAG/notes/no-memory score **0%** (per-process stores can't share). See `docs/gau
 ```json
 { "awm": { "workspace": "home" } }
 ```
+
+### Who it's talking to (per-person Profile)
+
+MWA adapts to the person on the other end and learns about them over time. It resolves *who's
+talking* from the channel (Telegram chat id, email sender, a web `?person=` name), keeps a
+**per-person, hard-isolated** profile (one person's notes never surface for another), and primes a
+compact "who I'm talking to" block each turn so it matches their style, depth, and how to draw the
+most useful exchange out of them — **tone/format only, never facts and never the safety gates**. It
+learns durable facts about them (so it stops re-asking) into a bounded, self-recompressing **dossier**,
+and tracks a small **intake** set (what to call you / how to reach you / role / working style).
+
+Identity is watched, not assumed: if a message **contradicts** what's on record (a different name or
+contact), MWA flags the turn, redacts the stored profile from its own prompt, and — for a
+sensitive/irreversible action — **mechanically blocks** it until a second factor is verified
+out-of-band through a validated connection (**step-up verification**). The suspicion is sticky across
+turns, so splitting the claim from the request can't slip past it. Off-switches: `MWA_PERSON_PROFILE=0`,
+`MWA_PERSON_LEARN=0`. Design + threat model: **[docs/true-agent-and-person-profile.md](docs/true-agent-and-person-profile.md)**.
 
 ### Maintenance — `mwa consolidate`
 
@@ -288,7 +313,7 @@ is in [`docs/gauntlet.md`](docs/gauntlet.md).
 
 Running MWA as a real service or backend:
 
-- **Security:** set `MWA_ACCESS_PASSWORD` (or keep it on a private network / Tailscale); secrets live only in a local `.env` (mode `0600`) — never in API responses or the npm tarball. File/command reach is gated by the access preset (`locked-down` / `assistant` / `developer`) + a granted-roots allowlist. Adding an arbitrary MCP server requires explicit approval (`confirm_action` in chat or the Connections UI); removing tools is always allowed.
+- **Security:** set `MWA_ACCESS_PASSWORD` (or keep it on a private network / Tailscale); secrets live only in a local `.env` (mode `0600`) — never in API responses or the npm tarball. File/command reach is gated by the access preset (`locked-down` / `assistant` / `developer`) + a granted-roots allowlist. State-changing endpoints require a same-origin request (CSRF). Irreversible/production writes go through a dry-run→confirm gate; if the person's identity is in doubt, that confirm additionally requires **step-up** (a 2nd factor). Adding an arbitrary MCP server requires explicit approval; removing tools is always allowed.
 - **Limits & lifecycle:** per-run token + wall-clock + step caps; a concurrency cap and idle-session eviction protect the box; SIGTERM drains in-flight work before exit; `/api/health` reports DB + scheduler liveness (the Docker healthcheck uses it).
 - **Observability:** structured logs at `data/mwa.log` (JSONL), surfaced via `GET /api/logs`.
 - **As a backend/library:** compose `runAgent` + `MwaMemory` + the tool registry directly — see **[docs/embedding-mwa.md](docs/embedding-mwa.md)**.
@@ -338,10 +363,14 @@ Dockerfile  docker-entrypoint.sh  README.md
 
 ## Status
 
-**0.1.0** (Apache-2.0). Core loop + A/B/C benchmark + Docker + UI verified; the brain
-embodies the USEA-tuned hybrid loop (recall-first, grep-on-miss, supersede-on-divergence).
-Shipping in this release: the live agent (`mwa run`), mailbox (`mwa watch`), Telegram +
-Gmail/Calendar connectors (read + draft only), a scheduler on AWM's task ledger, an MCP
-tool bridge, and AWM vendored as a built-from-source submodule. V2 measured where AWM
-decisively wins — long-horizon retention, context switching, staleness, and scale —
-with the honest scorecard in [results/RESULTS-V2.md](results/RESULTS-V2.md).
+**0.5.0** (Apache-2.0, sub-1.0 on purpose; unreleased work tracked in [CHANGELOG.md](CHANGELOG.md)).
+Core loop + A/B/C benchmark + Docker + serve UI verified; the brain embodies the USEA-tuned hybrid
+loop (recall-first, grep-on-miss, supersede-on-divergence). Shipping: the live agent (`mwa run` /
+`mwa serve`), mailbox (`mwa watch`), Telegram + Gmail/Outlook/Calendar connectors (read + draft only),
+a scheduler on AWM's task ledger (with a cheap change-detection gate), an MCP tool bridge, multi-provider
+models (Anthropic/Azure/OpenAI/OpenRouter/Ollama), a **pluggable memory backend** (SQLite · PGlite ·
+Postgres), the **per-person Profile + step-up** identity layer, and AWM vendored as a built-from-source
+submodule. Dry-run→confirm write approval + CSRF + trust-tiered provenance are in place. V2 measured
+where AWM decisively wins — long-horizon retention, context switching, staleness, and scale — with the
+honest scorecard in [results/RESULTS-V2.md](results/RESULTS-V2.md). Latest audit + fix ledger:
+[docs/gap-analysis-2026-07.md](docs/gap-analysis-2026-07.md).

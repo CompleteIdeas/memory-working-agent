@@ -14,6 +14,7 @@
  * gate the USEA→MWA migration cannot cut over without.
  */
 import type { RegisteredTool, ToolContext } from './registry.js';
+import { isStepUpSatisfied } from '../step-up.js';
 
 export interface PendingAction {
   id: string;
@@ -22,6 +23,10 @@ export interface PendingAction {
   createdAt: number;
   expiresAt: number;
   execute: (ctx: ToolContext) => Promise<string>;
+  /** S6 v2 — the identity state captured at dry-run time. The step-up gate travels WITH the action,
+   *  so it's enforced no matter which path confirms it (chat tool OR the UI /api/approvals/confirm). */
+  personId?: string;
+  identityInDoubt?: boolean;
 }
 
 /** Audit hook — wire to AWM from the agent layer so every approval is recorded. */
@@ -79,7 +84,7 @@ export function requireApproval(
         `(WRITE — does NOT run immediately: returns a confirmation_id; after the human approves, ` +
         `call confirm_action with that id to execute.)`,
     },
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       prune();
       const id = newId();
       const summary = opts?.preview
@@ -91,7 +96,9 @@ export function requireApproval(
         summary,
         createdAt: Date.now(),
         expiresAt: Date.now() + ttlMs(),
-        execute: (ctx) => tool.handler(args, ctx),
+        execute: (ctx2) => tool.handler(args, ctx2),
+        personId: ctx?.personId,
+        identityInDoubt: ctx?.identityInDoubt,
       };
       pending.set(id, action);
       audit?.('dryrun', { id, tool: action.tool, summary });
@@ -137,6 +144,14 @@ export async function confirmPending(id: string | undefined, ctx: ToolContext): 
     pending.delete(key);
     audit?.('expired', { id: action.id, tool: action.tool, summary: action.summary });
     return `(confirmation "${key}" expired — re-run the action to get a fresh preview)`;
+  }
+  // S6 v2 STEP-UP GATE: enforced from the identity state captured on the ACTION at dry-run time, so it
+  // holds on EVERY confirm path (chat tool AND the UI /api/approvals/confirm endpoint), not just when the
+  // caller happens to pass identity in ctx. Do NOT consume the pending action — they can confirm again
+  // after completing step-up.
+  if (action.identityInDoubt && action.personId && !isStepUpSatisfied(action.personId)) {
+    return `(blocked: this person's identity is unverified — running "${action.tool}" requires a second factor. ` +
+      `Complete step-up verification (a code sent to their validated connection) first, then confirm "${key}" again.)`;
   }
   pending.delete(key); // single-use — a confirmation can never be replayed
   audit?.('confirm', { id: action.id, tool: action.tool, summary: action.summary });

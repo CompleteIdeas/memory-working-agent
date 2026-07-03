@@ -12,8 +12,12 @@ FROM node:22
 
 # better-sqlite3 (via agent-working-memory) compiles a native addon at install time.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 build-essential ca-certificates \
+ && apt-get install -y --no-install-recommends python3 build-essential ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
+
+# Tailscale (optional, userspace) — lets a cloud deploy join your tailnet so the admin UI is reachable
+# privately with no public port. Only activates when TAILSCALE_AUTHKEY is provided (see entrypoint).
+RUN curl -fsSL https://tailscale.com/install.sh | sh
 
 WORKDIR /app
 
@@ -51,7 +55,9 @@ ENV MWA_ENV_PATH=/data/.env \
     MWA_SERVE_HOST=0.0.0.0 \
     MWA_NO_OPEN=1 \
     NODE_ENV=production
-VOLUME ["/data"]
+# NOTE: no `VOLUME ["/data"]` — persistence is provided by the host at run time
+# (`-v mwa-data:/data` for self-host/NAS) or by the platform's own volume (Railway
+# Volumes, Azure). Railway's builder explicitly rejects a Dockerfile VOLUME directive.
 EXPOSE 7788
 
 # Lets Synology / Docker report health and restart a wedged container.

@@ -18,7 +18,13 @@ import { loadConfig } from './config.js';
 const ENV_PATH = process.env.MWA_ENV_PATH ?? resolve('.env');
 
 /** Upsert KEY=value lines in the .env (preserves other lines). Local file only. */
-export function upsertEnv(kv: Record<string, string>): void {
+export function upsertEnv(input: Record<string, string>): void {
+  // Strip CR/LF from every value: a .env value is a single line, and an embedded
+  // newline would inject an additional, attacker-controlled KEY=value line on the
+  // next start (the values reach here from /api/save and the connections save-secret
+  // sink). Done centrally so every caller is covered.
+  const kv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input)) kv[k] = String(v ?? '').replace(/[\r\n]/g, '');
   const lines = existsSync(ENV_PATH) ? readFileSync(ENV_PATH, 'utf8').split('\n') : [];
   const seen = new Set<string>();
   const out = lines.map((line) => {
@@ -31,6 +37,20 @@ export function upsertEnv(kv: Record<string, string>): void {
   // Make the new value live in THIS process immediately — loadEnv() is cached after its
   // first call, so without this a just-onboarded key wouldn't take effect until restart.
   for (const [k, v] of Object.entries(kv)) process.env[k] = v;
+}
+
+/** Remove KEY=value lines from the .env and from this process — used to disconnect a
+ *  service (forget its credentials). Local file only. */
+export function removeEnv(keys: string[]): void {
+  const drop = new Set(keys);
+  if (existsSync(ENV_PATH)) {
+    const kept = readFileSync(ENV_PATH, 'utf8').split('\n').filter((line) => {
+      const m = line.match(/^([A-Z0-9_]+)=/);
+      return !(m && drop.has(m[1]));
+    });
+    writeFileSync(ENV_PATH, kept.join('\n').replace(/\n*$/, '\n'), { mode: 0o600 });
+  }
+  for (const k of keys) delete process.env[k];
 }
 
 function envHas(key: string): boolean {

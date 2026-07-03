@@ -56,14 +56,10 @@ export const CONNECTOR_LIBRARY: ConnectorEntry[] = [
     access: 'Fetches the specific URLs named. No account, no files.',
     spec: { command: 'node', args: ['mcp-servers/fetch.mjs'] },
   },
-  {
-    id: 'filesystem', name: 'Files in a folder you choose', category: 'Files', tier: 'curated',
-    description: 'Read and write files inside one folder you allow.',
-    access: 'Read/write ONLY inside the folder you specify — nothing else on your computer.',
-    spec: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem@2026.1.14', '${MWA_FS_ROOT}'] },
-    secrets: [{ env: 'MWA_FS_ROOT', label: 'Folder to allow', help: 'e.g. C:\\Users\\you\\Documents — the agent can only touch files here.' }],
-    source: 'https://github.com/modelcontextprotocol/servers',
-  },
+  // NOTE: file access is handled natively by "Granted folders" (the access model in
+  // Connections + the built-in read/write tools scoped to the folders you allow), so a
+  // separate filesystem MCP connector would be a second, parallel permission system for
+  // the exact same capability. Intentionally omitted to keep one clear way to grant files.
   {
     id: 'thinking', name: 'Step-by-step reasoning', category: 'Thinking', tier: 'curated',
     description: 'A scratchpad that helps the agent work through hard problems in steps.',

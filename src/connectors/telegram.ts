@@ -18,6 +18,7 @@ import { RoutedProvider } from '../model-router.js';
 import { MwaMemory } from '../awm.js';
 import { buildRegistry } from '../tools/build.js';
 import { runAgent } from '../agent.js';
+import { preparePersonTurn, learnFromTurn } from '../person-turn.js';
 import { runScheduler } from '../scheduler.js';
 import { loadEnv } from '../env.js';
 import type { ToolRegistry } from '../tools/registry.js';
@@ -71,12 +72,19 @@ export async function handleInstruction(text: string, chatId: string | number, d
     text,
     'Your working directory persists across this conversation — files from earlier messages are already here; read or modify them for follow-ups, or create new ones. If something referenced is missing, just create it fresh.',
   ].filter(Boolean).join('\n\n');
+  // Per-person Profile: this chat IS a person (tg-<chatId>) → adapt + learn. channelVerified: Telegram
+  // authenticated this chat id, so it's recorded as a validated connection for out-of-band step-up (S6 v2).
+  const prepared = await preparePersonTurn(deps.memory, { channel: 'tg', id: chatId }, text, { channelVerified: true });
   const r = await runAgent({
     instruction,
     dir, memory: deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.registry,
     session: `tg-${chatId}`, // per-chat session → conversation continuity
+    personContext: prepared.personContext, // who I'm talking to (redacted on identity mismatch)
+    personId: prepared.personId, identityInDoubt: prepared.mismatch, // S6 v2: arm the step-up gate on Telegram too
+    interactive: true, // a human is on the other end of the chat → ask_user / confirm can involve them
     budget: { maxSteps: deps.maxSteps, maxWallMs: deps.maxMin * 60_000, consolidateEvery: 10 },
   });
+  await learnFromTurn(deps.brain, deps.memory, prepared, text, r.summary); // learn about them + recompress dossier
   // deliver only files CREATED or MODIFIED this turn (the dir persists, so don't re-send old ones)
   const files = flat().filter((f) => { try { return !before.has(f) || statSync(join(dir, f)).mtimeMs > (before.get(f) ?? 0); } catch { return false; } });
   // If it produced files this turn, that's a success even if it didn't formally

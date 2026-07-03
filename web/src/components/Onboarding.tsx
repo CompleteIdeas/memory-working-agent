@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { saveKey, getStatus, getConnections, saveAccess, getModels, warmModels, enableConnector, disableConnector, type ExternalInstall, type AccessPreset, type ConnectorItem } from '../api';
+import { saveKey, getStatus, getConnections, saveAccess, saveBackend, getModels, warmModels, enableConnector, disableConnector, type ExternalInstall, type AccessPreset, type ConnectorItem } from '../api';
 
 // Headline always-on capabilities shown in the feature walkthrough (informational; managed by
 // the agent itself). The toggleable connectors come live from /api/connections below.
@@ -45,6 +45,18 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
   const [featuresStep, setFeaturesStep] = useState(false);
   const [conns, setConns] = useState<ConnectorItem[]>([]);
   const [toggling, setToggling] = useState<string | null>(null);
+  // Advanced setup (optional): point memory at a database server instead of this computer.
+  const [advanced, setAdvanced] = useState(false);
+  const [dbUrl, setDbUrl] = useState('');
+  const [dbBusy, setDbBusy] = useState(false);
+  const [dbMsg, setDbMsg] = useState('');
+  const [dbOk, setDbOk] = useState(false);
+
+  async function connectDb() {
+    setDbBusy(true); setDbMsg('Connecting to your database…'); setDbOk(false);
+    const r = await saveBackend('postgres', dbUrl.trim());
+    setDbBusy(false); setDbMsg(r.message ?? (r.ok ? 'Connected.' : 'Could not connect.')); setDbOk(!!r.ok);
+  }
 
   function pick(p: Provider) { setSel(p); setModel(p.model); setKey(''); setBaseUrl(''); setMsg(''); setOk(false); setExt(null); setModels([]); }
 
@@ -173,6 +185,35 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
               Note: this model isn’t strong enough for MWA to safely vet and install new connectors from the web, so that stays off. The built-in connector library still works; add a stronger model later (an <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="text-signal underline">OpenRouter</a> or Anthropic/OpenAI key) to enable it.
             </p>
           )}
+
+          {/* Advanced setup (optional). Quick setup keeps everything local with sensible defaults
+              (memory on this computer). Advanced lets you point memory at a database server. */}
+          <div className="rounded-[4px] border border-line bg-surface mb-4">
+            <button onClick={() => setAdvanced((a) => !a)} className="w-full flex items-center justify-between px-4 py-3 text-left">
+              <div>
+                <div className="font-medium">Advanced setup <span className="mono text-[11px] text-dim">optional</span></div>
+                <div className="text-dim text-sm">Quick setup keeps memory on this computer. Open this to use a database server instead.</div>
+              </div>
+              <span className="mono text-dim text-sm">{advanced ? '–' : '+'}</span>
+            </button>
+            {advanced && (
+              <div className="border-t border-line px-4 py-4 space-y-3">
+                <div className="mono text-[11px] text-dim uppercase tracking-[0.2em]">where memory lives</div>
+                <p className="text-dim text-sm"><b>This computer</b> (the default) is private and needs no setup. Choose a <b>database server</b> for an always-on, cloud, or multi-device install.</p>
+                <div className="rounded-[4px] border border-line px-4 py-3">
+                  <div className="font-medium">Database server <span className="mono text-[11px] text-dim">Postgres + pgvector</span></div>
+                  <div className="text-dim text-sm mb-2">Paste a connection URL — or <a className="text-signal underline" href="https://railway.com/new/template/postgres" target="_blank" rel="noreferrer">spin one up on Railway</a> and copy its DATABASE_URL.</div>
+                  <input value={dbUrl} placeholder="postgres://user:pass@host:5432/db" onChange={(e) => setDbUrl(e.target.value)}
+                    className="w-full rounded-[3px] border border-line bg-bone px-3 py-2 text-[12px] mono outline-none focus:border-signal" />
+                  <button disabled={dbBusy || !dbUrl.trim()} onClick={connectDb}
+                    className="mt-2 rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium disabled:opacity-50">{dbBusy ? 'Connecting…' : 'Connect & use'}</button>
+                  {dbMsg && <p className={`mono text-[12px] mt-2 ${dbOk ? 'text-signal' : 'text-dim'}`}>{dbMsg}</p>}
+                </div>
+                <p className="text-dim text-[12px]">Applies when the app restarts. You can also change this anytime in Connections → Memory storage.</p>
+              </div>
+            )}
+          </div>
+
           <button disabled={busy} onClick={gotoFeatures} className="rounded-[3px] bg-signal text-white px-6 py-3 font-medium disabled:opacity-50">{busy ? '…' : 'Next →'}</button>
         </motion.div>
       )}
@@ -193,15 +234,24 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
             <>
               <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">optional tools</div>
               <div className="space-y-2 mb-4">
-                {conns.map((c) => (
-                  <div key={c.id} className="flex items-center justify-between gap-3 rounded-[4px] border border-line bg-surface px-4 py-3">
-                    <div><div className="font-medium">{c.name}</div><div className="text-dim text-sm">{c.description}</div></div>
-                    <button disabled={toggling === c.id} onClick={() => toggleConn(c)}
-                      className={`rounded-[3px] px-3 py-2 text-sm font-medium whitespace-nowrap disabled:opacity-50 ${c.on ? 'bg-signal text-white' : 'border border-line text-dim hover:border-signal'}`}>
-                      {toggling === c.id ? '…' : c.on ? 'On' : 'Off'}
-                    </button>
-                  </div>
-                ))}
+                {conns.map((c) => {
+                  // Connectors needing a key/folder can't be flipped on from a bare toggle — the
+                  // secret-entry form lives in Connections. Show a "set up" hint for those; only
+                  // the ready-to-go (keyless) ones get a working On/Off here.
+                  const needsSetup = (c.secrets ?? []).some((s) => !s.optional && !s.set);
+                  return (
+                    <div key={c.id} className="flex items-center justify-between gap-3 rounded-[4px] border border-line bg-surface px-4 py-3">
+                      <div><div className="font-medium">{c.name}</div><div className="text-dim text-sm">{c.description}</div></div>
+                      {needsSetup
+                        ? <span className="mono text-[11px] text-dim whitespace-nowrap">set up in Connections</span>
+                        : <button disabled={toggling === c.id} onClick={() => toggleConn(c)}
+                            className={`rounded-[3px] px-3 py-2 text-sm font-medium whitespace-nowrap disabled:opacity-50 ${c.on ? 'bg-signal text-white' : 'border border-line text-dim hover:border-signal'}`}>
+                            {toggling === c.id ? '…' : c.on ? 'On' : 'Off'}
+                          </button>}
+                    </div>
+                  );
+                })}
+                <p className="mono text-[11px] text-dim">Tools marked "set up in Connections" need a key or folder — add those after setup.</p>
               </div>
             </>
           )}

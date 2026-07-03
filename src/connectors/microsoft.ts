@@ -9,7 +9,7 @@
  * Mail.ReadWrite (read + create drafts, cannot send) or Mail.Read (read-only), plus
  * Calendars.ReadWrite for proposing events and offline_access for refresh.
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { createServer } from 'node:http';
 import { randomBytes, createHash } from 'node:crypto';
@@ -25,12 +25,22 @@ const GRAPH = 'https://graph.microsoft.com/v1.0';
 const SCOPES_RW = ['offline_access', 'User.Read', 'Mail.ReadWrite', 'Calendars.ReadWrite'];
 const SCOPES_RO = ['offline_access', 'User.Read', 'Mail.Read'];
 
+// MWA ships its own registered Azure app (public client, "Allow public client flows" = Yes,
+// supports personal + work/school accounts) so the EASY device-code path needs zero setup
+// from the user. Override with MICROSOFT_CLIENT_ID to bring your own app registration.
+const DEFAULT_MS_CLIENT_ID = process.env.MWA_DEFAULT_MS_CLIENT_ID ?? '';
+
 interface StoredToken { access_token: string; refresh_token?: string; expires_at: number; scope: string }
 
 function clientId(): string {
-  const id = process.env.MICROSOFT_CLIENT_ID;
-  if (!id) throw new Error('Set MICROSOFT_CLIENT_ID, then connect your Outlook account.');
+  const id = process.env.MICROSOFT_CLIENT_ID || DEFAULT_MS_CLIENT_ID;
+  if (!id) throw new Error('Outlook isn\'t set up yet (no Microsoft app id).');
   return id;
+}
+/** True when SOME client id is available (shipped default or BYO) — used to decide if the
+ *  zero-setup device-code connect can be offered. */
+export function microsoftClientReady(): boolean {
+  return !!(process.env.MICROSOFT_CLIENT_ID || DEFAULT_MS_CLIENT_ID);
 }
 function loadToken(): StoredToken | null {
   if (!existsSync(TOKEN_PATH)) return null;
@@ -42,7 +52,12 @@ function saveToken(t: StoredToken): void {
 }
 
 export function microsoftConfigured(): boolean {
-  return !!process.env.MICROSOFT_CLIENT_ID && existsSync(TOKEN_PATH);
+  return microsoftClientReady() && existsSync(TOKEN_PATH);
+}
+
+/** Forget the stored Outlook token (the local sign-in). Env keys are cleared separately. */
+export function disconnectMicrosoft(): void {
+  try { rmSync(TOKEN_PATH, { force: true }); } catch { /* */ }
 }
 
 /** Valid access token, refreshing with the stored refresh_token when near expiry. */
@@ -51,7 +66,8 @@ async function accessToken(): Promise<string> {
   if (!t) throw new Error('Outlook not connected — connect your account first.');
   if (t.expires_at > Date.now() + 60_000) return t.access_token;
   if (!t.refresh_token) return t.access_token; // best effort; will 401 → user reconnects
-  const body = new URLSearchParams({ client_id: clientId(), grant_type: 'refresh_token', refresh_token: t.refresh_token, redirect_uri: REDIRECT_URI, scope: t.scope });
+  // No redirect_uri: public-client refresh (both the loopback and device-code flows) doesn't need it.
+  const body = new URLSearchParams({ client_id: clientId(), grant_type: 'refresh_token', refresh_token: t.refresh_token, scope: t.scope });
   const res = await fetch(`${AUTH_BASE}/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body });
   if (!res.ok) throw new Error(`token refresh failed: ${res.status}`);
   const j: any = await res.json();
@@ -118,6 +134,59 @@ export function startMicrosoftConnect(readOnly = false): string {
   return url;
 }
 
+// --- Device-code flow: the EASY Outlook path -------------------------------------------
+// The user goes to a short URL and types a code — no Azure portal, no app registration on
+// their side (MWA ships its own public client). This is the only "easy" option left after
+// Microsoft removed app passwords + basic auth on 2026-03-01.
+export interface DeviceCode { user_code: string; verification_uri: string; expires_in: number; message: string }
+
+/** Begin device-code auth: returns the code+URL to show the user, and polls in the
+ *  background until they approve (then saves the token locally). */
+export async function startMicrosoftDeviceCode(readOnly = false): Promise<DeviceCode> {
+  const id = clientId();
+  const scope = (readOnly ? SCOPES_RO : SCOPES_RW).join(' ');
+  const res = await fetch(`${AUTH_BASE}/devicecode`, {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: id, scope }),
+  });
+  if (!res.ok) throw new Error(`device-code request failed: ${res.status} ${(await res.text()).slice(0, 160)}`);
+  const dc: any = await res.json();
+  // Poll the token endpoint until the user finishes signing in (or it expires).
+  void pollDeviceToken(id, scope, String(dc.device_code), Number(dc.interval ?? 5), Number(dc.expires_in ?? 900));
+  return {
+    user_code: String(dc.user_code),
+    verification_uri: String(dc.verification_uri ?? 'https://microsoft.com/devicelogin'),
+    expires_in: Number(dc.expires_in ?? 900),
+    message: String(dc.message ?? ''),
+  };
+}
+
+async function pollDeviceToken(clientIdValue: string, scope: string, deviceCode: string, intervalSec: number, expiresInSec: number): Promise<void> {
+  const deadline = Date.now() + expiresInSec * 1000;
+  let interval = Math.max(intervalSec, 5);
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, interval * 1000));
+    let j: any;
+    try {
+      const res = await fetch(`${AUTH_BASE}/token`, {
+        method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:device_code', client_id: clientIdValue, device_code: deviceCode }),
+      });
+      j = await res.json();
+      if (res.ok && j.access_token) {
+        saveToken({ access_token: j.access_token, refresh_token: j.refresh_token, expires_at: Date.now() + (Number(j.expires_in ?? 3600) * 1000), scope });
+        try { const me = await graph('/me'); console.log(`  ✅ Outlook connected as ${me.userPrincipalName || me.mail || 'your account'}`); } catch { /* */ }
+        return;
+      }
+    } catch { continue; /* transient — keep polling */ }
+    if (j?.error === 'authorization_pending') continue;
+    if (j?.error === 'slow_down') { interval += 5; continue; }
+    // expired_token / authorization_declined / bad_verification_code → stop.
+    console.error('  Outlook device-code connect ended:', j?.error ?? 'unknown');
+    return;
+  }
+}
+
 // --- shared text helpers (mirrors the Gmail connector; kept local to avoid churn there) ---
 function stripQuoted(body: string): string {
   const out: string[] = [];
@@ -153,6 +222,44 @@ async function extractDoc(filename: string, buf: Buffer): Promise<string> {
     }
     return buf.toString('utf8');
   } catch { return ''; }
+}
+
+export interface ScannedMessage { id: string; from: string; subject: string; date: string; snippet: string; }
+
+/**
+ * Page the Outlook inbox over the last `days` and return UNIQUE messages (deduped by
+ * internetMessageId), newest first — the Graph equivalent of google.ts listUniqueMessages,
+ * for the "learn about me from my email" scan. bodyPreview gives a free ~255-char snippet.
+ */
+export async function listRecentOutlook(opts: { days?: number; max?: number; onProgress?: (scanned: number, unique: number) => void } = {}): Promise<ScannedMessage[]> {
+  const days = opts.days ?? 30;
+  const max = opts.max ?? 400;
+  const sinceIso = new Date(Date.now() - days * 86_400_000).toISOString();
+  const select = '$select=id,subject,from,receivedDateTime,bodyPreview,internetMessageId';
+  let path: string | null = `/me/mailFolders/inbox/messages?${select}&$top=50&$orderby=receivedDateTime desc&$filter=receivedDateTime ge ${sinceIso}`;
+  const seen = new Set<string>();
+  const out: ScannedMessage[] = [];
+  let scanned = 0;
+  while (path && out.length < max) {
+    const r: any = await graph(path);
+    for (const m of r.value ?? []) {
+      scanned++;
+      const a = m.from?.emailAddress;
+      const from = a ? (a.name ? `${a.name} <${a.address}>` : a.address) : '(unknown)';
+      const subject = m.subject ?? '(no subject)';
+      const date = m.receivedDateTime ? String(m.receivedDateTime).slice(0, 16).replace('T', ' ') : '';
+      const key = (m.internetMessageId || `${from}|${subject}|${date}`).trim().toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ id: m.id, from, subject, date, snippet: (m.bodyPreview ?? '').slice(0, 200) });
+      opts.onProgress?.(scanned, out.length);
+      if (out.length >= max) break;
+    }
+    // Graph paginates with @odata.nextLink (absolute URL); strip the base so graph() can use it.
+    const next: string | undefined = r['@odata.nextLink'];
+    path = next ? next.replace(/^https:\/\/graph\.microsoft\.com\/v1\.0/, '') : null;
+  }
+  return out;
 }
 
 export function microsoftTools(): RegisteredTool[] {

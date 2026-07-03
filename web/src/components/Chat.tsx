@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { chatStream, getSuggestions, getNotifications, type SpineStep, type ChatResult } from '../api';
 import { ActivitySpine } from './ActivitySpine';
 
-interface Turn { id: number; user: string; steps: SpineStep[]; live: boolean; result?: ChatResult; error?: string; }
+interface Turn { id: number; user: string; steps: SpineStep[]; live: boolean; result?: ChatResult; error?: string; topicReset?: boolean; }
 
 function sessionId(): string {
   let s = localStorage.getItem('mwa-session');
@@ -53,6 +53,9 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
       onStep: (s) => patch((tn) => ({ ...tn, steps: [...tn.steps, { ...s, id: stepId++ }] })),
       onResult: (r) => { patch((tn) => ({ ...tn, live: false, result: r })); onActivity?.(); },
       onError: (m) => patch((tn) => ({ ...tn, live: false, error: m })),
+      // Show a "new topic" marker only when we actually set aside an earlier conversation
+      // (not on the first message of a session) — so the user understands the reset.
+      onTopic: (tp) => { if (tp.relation === 'fresh' && tp.hadContext) patch((tn) => ({ ...tn, topicReset: true })); },
     });
   }
 
@@ -82,6 +85,15 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
           <div className="divide-y divide-line">
             {turns.map((tn) => (
               <div key={tn.id} className="py-5 first:pt-0">
+                {/* New-topic marker: MWA set aside the earlier conversation and started fresh.
+                    Tells a non-technical user why it isn't carrying the previous thread. */}
+                {tn.topicReset && (
+                  <div className="flex items-center gap-2.5 mono text-[10.5px] text-dim mb-4 uppercase tracking-[0.16em]" title="This looked like a new request, so I started fresh. If it's about the earlier chat, just say so and I'll pick it back up.">
+                    <span className="h-px flex-1 bg-line" />
+                    <span className="whitespace-nowrap">↻ new topic · earlier chat set aside</span>
+                    <span className="h-px flex-1 bg-line" />
+                  </div>
+                )}
                 <div className="flex gap-2 items-baseline mb-3">
                   <span className="mono text-[11px] text-signal mt-0.5">YOU</span>
                   <span className="text-[15.5px] leading-snug">{tn.user}</span>

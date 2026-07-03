@@ -10,7 +10,9 @@ import { manageTools } from './manage.js';
 import { loadMcpServers } from './mcp.js';
 import { installerTools } from './installer.js';
 import { googleConfigured, googleTools } from '../connectors/google.js';
+import { gmailImapConfigured, gmailImapTools } from '../connectors/gmail-imap.js';
 import { microsoftConfigured, microsoftTools } from '../connectors/microsoft.js';
+import { imageGenConfigured, imageGenTools } from '../connectors/imagegen.js';
 import type { MwaConfig } from '../config.js';
 
 export async function buildRegistry(config: MwaConfig): Promise<{ registry: ToolRegistry; close: () => Promise<void> }> {
@@ -29,8 +31,13 @@ export async function buildRegistry(config: MwaConfig): Promise<{ registry: Tool
   // Gmail/Calendar tools (read + draft) appear once Gmail is connected; Outlook tools
   // (search_outlook/read_outlook/draft_outlook) once a Microsoft account is connected.
   // Distinct names → both can be connected at once with no collision.
+  // Gmail has two connect paths that register the SAME tool names: OAuth (also gives
+  // calendar) takes precedence; otherwise the App Password / IMAP path (email only).
   if (googleConfigured()) registry.registerAll(googleTools());
+  else if (gmailImapConfigured()) registry.registerAll(gmailImapTools());
   if (microsoftConfigured()) registry.registerAll(microsoftTools());
+  // Image generation: a generate_image tool appears once an image model is chosen (Settings).
+  if (imageGenConfigured()) registry.registerAll(imageGenTools());
   const mcp = await loadMcpServers(config.tools.mcpServers ?? {});
   registry.registerAll(mcp.tools);
   return { registry, close: mcp.close };

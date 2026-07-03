@@ -16,6 +16,11 @@ export interface ToolContext {
   sandboxDir: string;
   /** whether a human is watching this run (gates run_command in Assistant mode). */
   interactive?: boolean;
+  /** the resolved person this turn is for (S6) — used to gate sensitive confirms on step-up. */
+  personId?: string;
+  /** true when this person's identity is in doubt (S6 mismatch) — a sensitive confirm then requires
+   *  a satisfied step-up (2nd factor via a validated connection). */
+  identityInDoubt?: boolean;
 }
 
 export interface RegisteredTool {

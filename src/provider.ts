@@ -172,11 +172,20 @@ class OpenAICompatProvider implements Provider {
   }
   async chat({ system, messages, maxTokens = 1500, tools, reasoningEffort }: ChatInput): Promise<ChatResult> {
     const msgs = (system ? [{ role: 'system', content: system }, ...messages] : messages).map((m) => ({ role: m.role, content: m.content }));
-    // Only send reasoning_effort to models known to support it (gpt-5.x, o-series) — never
-    // to local/llama/etc. (they'd 400). Headroom so reasoning doesn't starve the answer.
-    const reasons = /(^|[:/-])(o[1-9]|gpt-5)/i.test(this.model) && !!reasoningEffort;
-    const body: Record<string, unknown> = { model: this.model, messages: msgs, max_tokens: reasons && reasoningEffort !== 'minimal' ? maxTokens + 3000 : maxTokens };
+    // Only send reasoning_effort to OpenAI reasoners (gpt-5.x, o-series) — others 400 on it.
+    const openaiReasoner = /(^|[:/-])(o[1-9]|gpt-5)/i.test(this.model);
+    const reasons = openaiReasoner && !!reasoningEffort;
+    // Models that "think" spend OUTPUT tokens on hidden reasoning BEFORE the visible answer —
+    // give them headroom so the reply isn't starved/truncated.
+    const thinker = openaiReasoner || /gemini|deepseek-r|qwen3|:thinking|grok-[34]-mini|magistral/i.test(this.model);
+    const headroom = thinker && reasoningEffort !== 'minimal' ? 4000 : 0;
+    const body: Record<string, unknown> = { model: this.model, messages: msgs, max_tokens: maxTokens + headroom };
     if (reasons) body.reasoning_effort = reasoningEffort;
+    // Gemini Flash THINKS by default and (via OpenRouter) ignores reasoning token caps, so its
+    // dynamic thinking can devour the whole budget and truncate the answer mid-word. The agent
+    // reasons across tool-steps + AWM, not hidden CoT — so disable Gemini's hidden thinking on
+    // OpenRouter for reliable, faster, cheaper replies. (Only OpenRouter accepts `reasoning`.)
+    if (/gemini/i.test(this.model) && this.base.includes('openrouter')) body.reasoning = { enabled: false };
     if (tools?.length) {
       body.tools = tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
       body.tool_choice = 'auto';
@@ -261,11 +270,13 @@ export const PROVIDERS = ['anthropic', 'azure', 'openai', 'openrouter', 'gemini'
  *  - azure: deployment-named, no catalog → [] (the UI lets you type the deployment).
  * Returns [] on any error so the UI cleanly falls back to manual entry.
  */
-export async function listModels(provider: string, opts: { key?: string; baseUrl?: string } = {}): Promise<{ id: string; name?: string }[]> {
+export async function listModels(provider: string, opts: { key?: string; baseUrl?: string; kind?: 'chat' | 'image' } = {}): Promise<{ id: string; name?: string }[]> {
   loadEnv();
   const p = provider.toLowerCase();
+  const kind = opts.kind ?? 'chat';
   try {
     if (p === 'anthropic') {
+      if (kind === 'image') return []; // Anthropic has no image-generation models
       const key = opts.key || process.env.ANTHROPIC_API_KEY;
       if (!key) return [];
       const r = await fetch('https://api.anthropic.com/v1/models?limit=200', {
@@ -286,11 +297,50 @@ export async function listModels(provider: string, opts: { key?: string; baseUrl
     if (key) headers['authorization'] = `Bearer ${key}`;
     const r = await fetch(`${base}/models`, { headers, signal: AbortSignal.timeout(8000) });
     if (!r.ok) return [];
-    const j = (await r.json()) as { data?: { id: string; name?: string }[] };
-    return (j.data ?? []).map((m) => ({ id: m.id, name: m.name })).filter((m) => m.id);
+    const j = (await r.json()) as { data?: ModelRow[] };
+    return kind === 'image' ? filterImageModels(j.data ?? []) : filterChatModels(j.data ?? []);
   } catch {
     return [];
   }
+}
+
+interface ModelRow { id: string; name?: string; supported_parameters?: string[]; architecture?: { output_modalities?: string[] } }
+
+/** Keep only models that OUTPUT images (diffusion / image-gen) — the inverse of the chat
+ *  filter. Used to populate the image-model picker from the user's connected provider. */
+function filterImageModels(rows: ModelRow[]): { id: string; name?: string }[] {
+  const hasCaps = rows.some((m) => m.architecture?.output_modalities);
+  if (!hasCaps) return []; // can't tell → don't guess (the UI offers connecting an image service)
+  return rows
+    .filter((m) => m.id && (m.architecture?.output_modalities ?? []).includes('image'))
+    .map((m) => ({ id: m.id, name: m.name }));
+}
+
+/**
+ * Keep only models usable as a CHAT BRAIN and drop image/embedding/etc. Catalogs like
+ * OpenRouter mix in image-generation and embedding models (and list newest first, so brand-new
+ * image models sit on top) — picking one silently breaks tool use. When a catalog advertises
+ * capabilities we filter to text-output, tool-capable models and sort those first; when it
+ * doesn't (plain OpenAI/Ollama /models), we pass everything through unchanged.
+ */
+function filterChatModels(rows: ModelRow[]): { id: string; name?: string }[] {
+  const hasCaps = rows.some((m) => m.supported_parameters || m.architecture?.output_modalities);
+  if (!hasCaps) return rows.map((m) => ({ id: m.id, name: m.name })).filter((m) => m.id);
+  const scored = rows
+    .filter((m) => m.id)
+    .map((m) => {
+      const out = m.architecture?.output_modalities ?? [];
+      const textOut = out.length === 0 || out.includes('text');
+      const imageOnly = out.length > 0 && out.includes('image') && !out.includes('text');
+      const tools = (m.supported_parameters ?? []).includes('tools');
+      return { id: m.id, name: m.name, keep: textOut && !imageOnly, tools };
+    })
+    .filter((m) => m.keep);
+  // Tool-capable models are the only ones that can drive the agent — surface them first.
+  scored.sort((a, b) => (b.tools ? 1 : 0) - (a.tools ? 1 : 0));
+  const toolCapable = scored.filter((m) => m.tools);
+  const list = toolCapable.length ? toolCapable : scored; // never return empty if all lacked the flag
+  return list.map((m) => ({ id: m.id, name: m.name }));
 }
 
 /**

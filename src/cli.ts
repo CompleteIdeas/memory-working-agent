@@ -157,7 +157,7 @@ async function main(): Promise<void> {
     const dbPath = flags.db ?? process.env.MWA_DB ?? resolve('./data/agent.db');
     for (const agent of ['mwa-agent', 'mwa-serve']) {
       const m = new MwaMemory(agent, dbPath, cfg.awm.workspace);
-      const before = m.memoryCount();
+      const before = await m.memoryCount();
       const stats = await m.consolidate();
       console.log(`  ${agent}: ${before} memories | ${Object.entries(stats).map(([k, v]) => `${k}=${v}`).join(' ') || '(no changes)'}`);
       m.close();

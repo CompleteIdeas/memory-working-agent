@@ -1,7 +1,7 @@
 // MWA service worker — just enough for installability + an offline app shell.
 // NETWORK-FIRST so you always get fresh assets when online; cache is only a fallback.
 // Never intercepts /api (chat SSE, status, etc.) or cross-origin requests.
-const CACHE = 'mwa-shell-v1';
+const CACHE = 'mwa-shell-v2';
 const SHELL = ['./', './index.html'];
 
 self.addEventListener('install', (e) => {

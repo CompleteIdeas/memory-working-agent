@@ -18,7 +18,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { embed, cosineSimilarity } from 'agent-working-memory/dist/core/embeddings.js';
-import type { Memory, RecalledMemory, WriteOpts } from '../awm.js';
+import type { Memory, RecalledMemory, WriteOpts, TrustTier } from '../awm.js';
 import { MwaMemory, NullMemory } from '../awm.js';
 
 export type ArmName = 'awm' | 'off' | 'notes' | 'longctx' | 'rag';
@@ -50,7 +50,13 @@ abstract class FileMemory implements Memory {
   async supersede(_oldId: string, concept: string, content: string, tags: string[] = [], opts: WriteOpts = {}): Promise<string | null> {
     return this.write(concept, content, tags, opts);
   }
+  // SPINE methods — the flat-file arms don't model provenance/trust (that's AWM's job, not the
+  // gauntlet's variable). forget() does splice for fidelity; trust is always untrusted (fail-closed).
+  async logAction(): Promise<string | null> { return null; }
+  async forget(id: string): Promise<boolean> { const i = this.entries.findIndex((e) => e.id === id); if (i >= 0) { this.entries.splice(i, 1); this.save(); return true; } return false; }
+  trustOf(): TrustTier { return 'untrusted'; }
   setSessionId(id: string): void { this.sessionId = id; void this.sessionId; }
+  setNamespace(): void { /* arms don't model namespaces */ }
   async feedback(): Promise<void> { /* no learning signal in a flat file */ }
   async consolidate(): Promise<Record<string, number>> { return {}; }
   async addScheduledTask(): Promise<string | null> { return null; }
@@ -66,7 +72,7 @@ abstract class FileMemory implements Memory {
   // Standing policies CAN live in a flat file too — the arms differ on recall QUALITY, not on
   // whether a rule can be stored. So this is fair: policy carryover works for notes/longctx;
   // only the no-memory arm forgets.
-  listPolicies(): string[] {
+  async listPolicies(): Promise<string[]> {
     const seen = new Set<string>(); const out: string[] = [];
     for (const e of [...this.entries].reverse()) {
       if (!e.tags.includes('topic=policy')) continue;
@@ -144,14 +150,18 @@ class VectorRagMemory implements Memory {
   async supersede(_o: string, concept: string, content: string, tags: string[] = [], opts: WriteOpts = {}): Promise<string | null> {
     return this.write(concept, content, tags, opts); // append only — no real supersede (the point)
   }
+  async logAction(): Promise<string | null> { return null; }
+  async forget(id: string): Promise<boolean> { const i = this.entries.findIndex((e) => e.id === id); if (i >= 0) { this.entries.splice(i, 1); this.save(); return true; } return false; }
+  trustOf(): TrustTier { return 'untrusted'; }
   setSessionId(): void { /* */ }
+  setNamespace(): void { /* */ }
   async feedback(): Promise<void> { /* */ }
   async consolidate(): Promise<Record<string, number>> { return {}; }
   async addScheduledTask(): Promise<string | null> { return null; }
   async saveSkill(n: string, s: string): Promise<string | null> { return this.write(`skill: ${n}`.slice(0, 80), s, ['topic=skill']); }
   async saveFriction(t: string, l: string): Promise<string | null> { return this.write(`lesson: ${t}`.slice(0, 80), l, ['topic=friction']); }
   async savePolicy(r: string): Promise<string | null> { return this.write(`policy: ${r}`.slice(0, 80), r.trim(), ['topic=policy']); }
-  listPolicies(): string[] {
+  async listPolicies(): Promise<string[]> {
     const seen = new Set<string>(); const out: string[] = [];
     for (const e of [...this.entries].reverse()) { if (!e.tags.includes('topic=policy')) continue; const k = e.content.toLowerCase().trim(); if (e.content && !seen.has(k)) { seen.add(k); out.push(e.content); } }
     return out;
@@ -179,14 +189,18 @@ export class MeteredMemory implements Memory {
     this.writeMs += Date.now() - t; this.writeCalls++; return r;
   }
   async supersede(o: string, c: string, content: string, tags?: string[], opts?: WriteOpts): Promise<string | null> { return this.inner.supersede(o, c, content, tags, opts); }
+  async logAction(a: { verb: string; summary: string; effect: 'external' | 'local' | 'read'; tool?: string; namespace?: string; undo?: string }): Promise<string | null> { return this.inner.logAction(a); }
+  async forget(id: string): Promise<boolean> { return this.inner.forget(id); }
+  trustOf(engram: any): TrustTier { return this.inner.trustOf(engram); }
   setSessionId(id: string): void { this.inner.setSessionId(id); }
+  setNamespace(ns?: string): void { this.inner.setNamespace(ns); }
   async feedback(id: string, useful: boolean): Promise<void> { return this.inner.feedback(id, useful); }
   async consolidate(): Promise<Record<string, number>> { return this.inner.consolidate(); }
-  async addScheduledTask(i: string, d: number, o?: { recur?: string; notify?: string; dir?: string; resumeAttempt?: number }): Promise<string | null> { return this.inner.addScheduledTask(i, d, o); }
+  async addScheduledTask(i: string, d: number, o?: { recur?: string; notify?: string; dir?: string; resumeAttempt?: number; check?: string }): Promise<string | null> { return this.inner.addScheduledTask(i, d, o); }
   async saveSkill(n: string, s: string): Promise<string | null> { return this.inner.saveSkill(n, s); }
   async saveFriction(t: string, l: string): Promise<string | null> { return this.inner.saveFriction(t, l); }
   async savePolicy(r: string): Promise<string | null> { return this.inner.savePolicy(r); }
-  listPolicies(): string[] { return this.inner.listPolicies(); }
+  async listPolicies(): Promise<string[]> { return this.inner.listPolicies(); }
   async saveQuestion(q: string): Promise<string | null> { return this.inner.saveQuestion(q); }
   close(): void { this.inner.close(); }
   stats(): { recallCalls: number; meanRecallMs: number; meanRecallResults: number; writeCalls: number; meanWriteMs: number } {

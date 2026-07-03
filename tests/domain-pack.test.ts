@@ -45,8 +45,12 @@ describe('domain pack', () => {
     expect(ctx).toContain('# Domain knowledge');
     expect(ctx).toContain('Sign off as -CC'); // AGENT.md always
     expect(ctx).toContain('tblMemberDetails'); // selected topic
-    const capped = buildDomainContext(pack, 'query the member table', { topN: 3, maxChars: 50 });
-    expect(capped.length).toBeLessThanOrEqual('# Domain knowledge (loaded for this task — verify specifics before acting)\n\n'.length + 50);
+    // caps: agentMaxChars/topicMaxChars bound the output (the old single `maxChars` param was split);
+    // a tightly-capped build is strictly shorter than the uncapped one and still well-formed.
+    const full = buildDomainContext(pack, 'query the member table', { topN: 3 });
+    const capped = buildDomainContext(pack, 'query the member table', { topN: 3, agentMaxChars: 30, topicMaxChars: 20 });
+    expect(capped.length).toBeLessThan(full.length);
+    expect(capped).toContain('# Domain knowledge');
   });
 
   it('empty query selects nothing', () => {

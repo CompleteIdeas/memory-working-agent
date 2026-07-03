@@ -144,6 +144,9 @@ fn open_main_window(app: &tauri::AppHandle) {
     .title("MWA — Memory Working Agent")
     .inner_size(1040.0, 760.0)
     .min_inner_size(720.0, 560.0)
+    // Tell the web UI it's running inside the desktop app: the webview swallows
+    // target="_blank", so the UI routes external links through the backend instead.
+    .initialization_script("window.__MWA_DESKTOP__ = true;")
     .build();
 }
 

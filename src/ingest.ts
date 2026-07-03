@@ -10,9 +10,31 @@ import { RoutedProvider } from './model-router.js';
 import { getProvider } from './provider.js';
 import { MwaMemory } from './awm.js';
 import { listUniqueMessages, googleConfigured } from './connectors/google.js';
+import { gmailImapConfigured, listUniqueMessagesImap } from './connectors/gmail-imap.js';
+import { microsoftConfigured, listRecentOutlook } from './connectors/microsoft.js';
 import { parseJsonLoose } from './util.js';
 import { loadEnv } from './env.js';
 import { resolve } from 'node:path';
+
+interface ScannedMessage { id: string; from: string; subject: string; date: string; snippet: string; }
+
+/** True when SOME email account is connected (any of the three paths) — gates the scan. */
+export function ingestAvailable(): boolean {
+  return googleConfigured() || gmailImapConfigured() || microsoftConfigured();
+}
+
+/** Gather recent unique messages from whichever email account is connected (Gmail OAuth →
+ *  Gmail App-Password/IMAP → Outlook), so "learn about me" works regardless of how the user
+ *  connected. Returns the messages plus a friendly source label for the progress log. */
+async function gatherMessages(days: number, max: number, query: string | undefined, onProgress: (scanned: number, unique: number) => void): Promise<{ source: string; msgs: ScannedMessage[] }> {
+  if (googleConfigured()) {
+    const q = query ?? `-in:spam -in:trash -in:chats -category:promotions newer_than:${days}d`;
+    return { source: 'Gmail', msgs: await listUniqueMessages({ query: q, max, onProgress }) };
+  }
+  if (gmailImapConfigured()) return { source: 'Gmail', msgs: await listUniqueMessagesImap({ days, max, onProgress }) };
+  if (microsoftConfigured()) return { source: 'Outlook', msgs: await listRecentOutlook({ days, max, onProgress }) };
+  throw new Error('No email account is connected yet — connect Gmail or Outlook first.');
+}
 
 const EXTRACT_SYSTEM = [
   'You are building a durable knowledge base from a person\'s email.',
@@ -26,18 +48,15 @@ export interface IngestResult { unique: number; learned: number; }
 export async function runIngest(opts: { days?: number; max?: number; dbPath?: string; query?: string; onLog?: (m: string) => void } = {}): Promise<IngestResult> {
   loadEnv();
   const log = opts.onLog ?? ((m: string) => console.log(m));
-  if (!googleConfigured()) throw new Error('Gmail is not connected yet — run `mwa connect gmail` first.');
+  if (!ingestAvailable()) throw new Error('No email account is connected yet — connect Gmail or Outlook first.');
 
   const days = opts.days ?? 30;
-  const query = opts.query ?? `-in:spam -in:trash -in:chats -category:promotions newer_than:${days}d`;
   const dbPath = opts.dbPath ?? process.env.MWA_DB ?? resolve('./data/agent.db');
 
-  log(`Scanning the last ${days} days (skipping spam, trash, promotions)…`);
-  const msgs = await listUniqueMessages({
-    query, max: opts.max ?? 400,
-    onProgress: (scanned, unique) => { if (scanned % 25 === 0) log(`  scanned ${scanned} (${unique} unique so far)…`); },
-  });
-  log(`Found ${msgs.length} unique messages after collapsing duplicates. Learning from them…`);
+  log(`Reading your last ${days} days of email…`);
+  const { source, msgs } = await gatherMessages(days, opts.max ?? 400, opts.query,
+    (scanned, unique) => { if (scanned % 25 === 0) log(`  scanned ${scanned} (${unique} unique so far)…`); });
+  log(`Found ${msgs.length} unique ${source} messages after collapsing duplicates. Learning from them…`);
 
   const memory = new MwaMemory('mwa-serve', dbPath);
   memory.setSessionId('ingest');
@@ -54,7 +73,10 @@ export async function runIngest(opts: { days?: number; max?: number; dbPath?: st
       const parsed = parseJsonLoose<{ facts?: { concept?: string; content?: string }[] }>(r.text);
       for (const f of parsed?.facts ?? []) {
         if (!f?.concept || !f?.content) continue;
-        const id = await memory.write(String(f.concept).slice(0, 80), String(f.content), ['topic=world', 'intent=finding', 'confidence_level=observed', 'source=email-ingest'], { canonical: true, eventType: 'observation' });
+        // SPINE: facts mined from inbox content are UNTRUSTED — provenance:'ingested' stamps
+        // trust=untrusted so a planted instruction in an email can never drive a privileged
+        // action later (F2). canonical here only affects storage salience, not trust.
+        const id = await memory.write(String(f.concept).slice(0, 80), String(f.content), ['topic=world', 'intent=finding', 'confidence_level=observed', 'source=email-ingest'], { canonical: true, eventType: 'observation', provenance: 'ingested', origin: `email/${source}` });
         if (id) learned++;
       }
       log(`  batch ${Math.floor(i / BATCH) + 1}/${batches} → ${learned} facts learned so far`);

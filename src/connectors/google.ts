@@ -9,7 +9,7 @@
  * loopback consent flow and stores the token at data/google-token.json (local only).
  */
 import { google } from 'googleapis';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { createServer } from 'node:http';
 import type { RegisteredTool } from '../tools/registry.js';
@@ -36,6 +36,11 @@ function loadToken(): Record<string, unknown> | null {
 
 export function googleConfigured(): boolean {
   return !!process.env.GOOGLE_CLIENT_ID && existsSync(TOKEN_PATH);
+}
+
+/** Forget the stored Gmail OAuth token (the local sign-in). Env keys are cleared separately. */
+export function disconnectGoogle(): void {
+  try { rmSync(TOKEN_PATH, { force: true }); } catch { /* */ }
 }
 
 async function authedClient() {

@@ -17,28 +17,65 @@
  * Docker/Tauri can set MWA_SERVE_HOST=0.0.0.0 and map the port host-localhost-only.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { readFileSync, existsSync, statSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, writeFileSync, appendFileSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve, join, extname, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { getProvider, listModels, PROVIDERS } from './provider.js';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileP = promisify(execFile);
+const requireFromHere = createRequire(import.meta.url);
+
+/** Copy the current SQLite memory into a Postgres target before switching backends, using AWM's
+ *  backend-agnostic export/import CLI (embeddings included). Best-effort: returns ok:false (and the
+ *  caller then does NOT switch) on error, so a failed copy never strands you on an empty store. */
+async function migrateMemoryToPostgres(sqliteDbPath: string, url: string): Promise<{ ok: boolean; message: string }> {
+  let cli: string;
+  try { cli = requireFromHere.resolve('agent-working-memory/dist/cli.js'); }
+  catch { return { ok: false, message: 'the migration tool is not available in this build' }; }
+  if (!existsSync(sqliteDbPath)) return { ok: true, message: 'no existing memory to copy' };
+  const tmp = join(tmpdir(), `mwa-migrate-${randomBytes(6).toString('hex')}.json`);
+  // export the CURRENT store with a clean env so `--db` selects SQLite (not the postgres target).
+  const exportEnv = { ...process.env };
+  delete exportEnv.AWM_STORE_BACKEND; delete exportEnv.AWM_DB_PATH; delete exportEnv.AWM_DATABASE_URL;
+  try {
+    await execFileP(process.execPath, [cli, 'export', '--db', sqliteDbPath, '--agent', SERVE_AGENT, '--all-stages', '--output', tmp], { env: exportEnv, timeout: 120_000 });
+    const { stdout } = await execFileP(process.execPath, [cli, 'import', tmp, '--remap-agent', SERVE_AGENT, '--dedupe'],
+      { env: { ...process.env, AWM_STORE_BACKEND: 'postgres', AWM_DATABASE_URL: url }, timeout: 180_000 });
+    return { ok: true, message: (stdout || '').trim() || 'memory copied' };
+  } catch (e) {
+    return { ok: false, message: `couldn't copy memory: ${(e as Error).message.slice(0, 200)}` };
+  } finally { try { rmSync(tmp); } catch { /* */ } }
+}
+import { getProvider, listModels, PROVIDERS, type Provider } from './provider.js';
 import { RoutedProvider } from './model-router.js';
 import { MwaMemory } from './awm.js';
 import { buildRegistry } from './tools/build.js';
 import { listPendingActions, confirmPending, cancelPending } from './tools/approval.js';
 import { logger, readLogs, type LogLevel } from './logger.js';
 import { runAgent } from './agent.js';
+import { preparePersonTurn, learnFromTurn } from './person-turn.js';
+import { INTAKE_FIELDS } from './person-intake.js';
+import { hasVerifiedFactor } from './person-identity.js';
+import { issueStepUp, verifyStepUp } from './step-up.js';
+import { runIngest, ingestAvailable } from './ingest.js';
 import { runScheduler } from './scheduler.js';
-import { loadConfig, CONFIG_PATH } from './config.js';
+import { loadConfig, CONFIG_PATH, setStyle, INTERACTION_STYLES, type InteractionStyle } from './config.js';
 import { loadEnv } from './env.js';
 import { mailboxDirs } from './mailbox.js';
 import { googleConfigured, startGmailConnect } from './connectors/google.js';
-import { microsoftConfigured, startMicrosoftConnect } from './connectors/microsoft.js';
+import { gmailImapConfigured, verifyGmailImap } from './connectors/gmail-imap.js';
+import { microsoftConfigured, microsoftClientReady, startMicrosoftConnect, startMicrosoftDeviceCode } from './connectors/microsoft.js';
 import { listConnectors, enableConnector, disableConnector, enabledConnectorIds, enableExternalNpm } from './connectors/registry.js';
 import { externalInstallState } from './installer/policy.js';
 import { reviewConnector } from './installer/review.js';
 import { accessPolicy, setAccess, ACCESS_PRESETS, type AccessPreset } from './tools/access.js';
-import { status, testAnthropic, testAzure, testTelegram, testProvider, envKeyForProvider, upsertEnv } from './wizard.js';
+import { status, testAnthropic, testAzure, testTelegram, testProvider, envKeyForProvider, upsertEnv, removeEnv } from './wizard.js';
+import { disconnectGoogle } from './connectors/google.js';
+import { disconnectMicrosoft } from './connectors/microsoft.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 // dist-ui sits next to dist/ (built) or at repo root in dev.
@@ -54,9 +91,29 @@ const MIME: Record<string, string> = {
   '.woff': 'font/woff', '.woff2': 'font/woff2', '.webmanifest': 'application/manifest+json',
 };
 
+// The agent id serve reads/writes memory under. Override with MWA_AGENT_ID to point an instance
+// at a memory store written by a different agent (e.g. testing a ported USEA store under its own id).
+const SERVE_AGENT = process.env.MWA_AGENT_ID ?? 'mwa-serve';
+
 async function readBody(req: IncomingMessage): Promise<any> {
   let raw = ''; for await (const c of req) raw += c;
   try { return JSON.parse(raw || '{}'); } catch { return {}; }
+}
+
+/**
+ * CSRF defense for state-changing endpoints. The access cookie is SameSite=Lax, which does NOT
+ * stop a cross-origin top-level POST, and readBody parses text/plain (no preflight) — so any web
+ * page the user visits while MWA runs on localhost could otherwise POST to it. We reject unless
+ * the request is same-origin: prefer Sec-Fetch-Site (sent by modern browsers), fall back to an
+ * Origin host == Host check. Requests with NO Origin/Sec-Fetch-Site (curl, server-to-server) are
+ * allowed — those are not browser CSRF vectors.
+ */
+export function sameOriginOk(req: IncomingMessage): boolean {
+  const sfs = String(req.headers['sec-fetch-site'] ?? '');
+  if (sfs) return sfs === 'same-origin' || sfs === 'none';
+  const origin = req.headers['origin'];
+  if (!origin) return true;
+  try { return new URL(String(origin)).host === String(req.headers['host'] ?? ''); } catch { return false; }
 }
 
 // --- Access gate. When MWA_ACCESS_PASSWORD is set (recommended for any networked /
@@ -90,8 +147,8 @@ function authed(req: IncomingMessage): boolean {
 async function resolveOpenQuestionsBg(): Promise<void> {
   const cfg = loadConfig();
   const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
-  const memory = new MwaMemory('mwa-serve', dbPath, cfg.awm.workspace);
-  const open = memory.listOpenQuestions().slice(0, 3);
+  const memory = new MwaMemory(SERVE_AGENT, dbPath, cfg.awm.workspace);
+  const open = (await memory.listOpenQuestions()).slice(0, 3);
   if (!open.length) { memory.close(); return; }
   const brain = new RoutedProvider(getProvider('brain'), getProvider('high'));
   const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
@@ -99,8 +156,8 @@ async function resolveOpenQuestionsBg(): Promise<void> {
   const dir = resolve(cfg.workspace ?? './mwa-workspace', 'serve', 'resolve');
   for (const q of open) {
     try {
-      await runAgent({ instruction: `Answer this open question and report what you found: ${q.question}`, dir, memory, brain, worker, tools: registry, workspace: cfg.awm.workspace, session: 'resolve', interactive: false, budget: { maxSteps: 20, maxWallMs: 5 * 60_000, consolidateEvery: 10 } });
-      memory.resolveQuestion(q.id);
+      await runAgent({ instruction: `Answer this open question and report what you found: ${q.question}`, dir, memory, brain, worker, tools: registry, workspace: cfg.awm.workspace, session: 'resolve', interactive: false, style: cfg.style, budget: { maxSteps: 20, maxWallMs: 5 * 60_000, consolidateEvery: 10 } });
+      await memory.resolveQuestion(q.id);
     } catch { /* best-effort */ }
   }
   await close(); memory.close();
@@ -133,8 +190,19 @@ function setFetchModel(provider: string, model: string): void {
   writeFileSync(CONFIG_PATH, JSON.stringify(raw, null, 2) + '\n');
 }
 
-/** Per-session working dir + memory, so chat follow-ups build on earlier turns. */
-interface Session { dir: string; history: { instruction: string; summary: string }[]; lastUsed: number; }
+/** Set (or clear, when model is empty) the image-generation model in mwa.config.json. */
+function setImageModel(provider: string, model: string): void {
+  let raw: any = {};
+  try { if (existsSync(CONFIG_PATH)) raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')); } catch { /* */ }
+  raw.models = raw.models ?? {};
+  if (model) raw.models.image = `${provider}:${model}`; else delete raw.models.image;
+  writeFileSync(CONFIG_PATH, JSON.stringify(raw, null, 2) + '\n');
+}
+
+/** Per-session working dir + memory, so chat follow-ups build on earlier turns.
+ *  topicStart = index into history where the CURRENT topic began; only turns from there
+ *  forward are threaded as context, so a new task doesn't drag stale context with it. */
+interface Session { dir: string; history: { instruction: string; summary: string }[]; lastUsed: number; topicStart: number; }
 const sessions = new Map<string, Session>();
 const SERVER_START = Date.now();
 let activeRuns = 0;          // in-flight agent runs — capped to protect the box
@@ -156,9 +224,89 @@ function evictSessions(): void {
 function sessionFor(id: string, workspaceRoot: string): Session {
   evictSessions();
   let s = sessions.get(id);
-  if (!s) { s = { dir: resolve(workspaceRoot, 'serve', id.replace(/[^a-z0-9_-]/gi, '')), history: [], lastUsed: Date.now() }; sessions.set(id, s); }
+  if (!s) { s = { dir: resolve(workspaceRoot, 'serve', id.replace(/[^a-z0-9_-]/gi, '')), history: [], lastUsed: Date.now(), topicStart: 0 }; sessions.set(id, s); }
   s.lastUsed = Date.now();
   return s;
+}
+
+// A gap this long since the last turn means it's almost certainly a new task/session, so we
+// stop threading the earlier conversation. Tunable; MWA_TOPIC_BOUNDARY=0 disables the whole check.
+const FRESH_IDLE_MS = Number(process.env.MWA_FRESH_IDLE_MS ?? 45 * 60_000);
+
+/**
+ * Decide how a new chat message relates to the current topic, so we auto-CHAIN follow-ups but
+ * don't drag stale context into a genuinely new task:
+ *   'continue' → thread the recent turns as context (a follow-up, a reference back, an answer).
+ *   'fresh'    → a clearly different task → drop the earlier context (start a new topic).
+ *   'ask'      → genuinely ambiguous → let the agent confirm with the user before assuming.
+ * Heuristics settle the clear cases for free (idle gap, leading connectives/anaphora, short
+ * confirmations); only a true tie costs one cheap model call. Errs toward 'continue' (a few
+ * extra context lines the agent can ignore) over 'fresh' (dropping context it actually needed).
+ */
+async function classifyContinuity(brain: Provider, recent: { instruction: string; summary: string }[], message: string, idleMs: number): Promise<'continue' | 'fresh' | 'ask'> {
+  if (process.env.MWA_TOPIC_BOUNDARY === '0') return 'continue';
+  if (recent.length === 0) return 'fresh';        // nothing to chain onto yet
+  if (idleMs > FRESH_IDLE_MS) return 'fresh';     // long silence ⇒ new task/session
+  const t = message.trim().toLowerCase();
+  // Clear continuations: a leading connective ("and/also/then/now…"), an opening anaphor
+  // ("it/that/them/he/she…" — refers back), or a short answer to a prior turn/offer.
+  const cont = /^(and\b|also\b|then\b|next\b|now\b|plus\b|but\b|so\b|ok(ay)?,?\s+(now|then|do|go|and|next)|what about|how about|same\b|continue|keep going|go on|go ahead|do it|yes\b|yep|yeah|sure\b|please do|sounds good|that works|the (first|second|third|last|same|other|one)\b|option\s*\d|that one|this one|it\b|that\b|they\b|them\b|those\b|these\b|he\b|she\b|his\b|her\b|their\b)/.test(t);
+  if (cont) return 'continue';
+  // Ambiguous → one cheap call comparing the message to the last couple of turns.
+  try {
+    if (brain instanceof RoutedProvider) brain.reset('fetch');
+    const last = recent.slice(-2).map((h, i) => `(${i + 1}) ${h.instruction} → ${h.summary}`).join('\n').slice(0, 800);
+    const out = await brain.chat({
+      system: 'Decide if the NEW MESSAGE continues the RECENT CONVERSATION or starts a different, unrelated task. Reply with ONE word only: CONTINUE (it follows on or refers back), NEW (a clearly different topic/task), or UNCLEAR (could be either). No other text.',
+      messages: [{ role: 'user', content: `RECENT CONVERSATION:\n${last}\n\nNEW MESSAGE: ${message.slice(0, 400)}` }],
+      maxTokens: 4,
+    });
+    const v = (out.text ?? '').trim().toUpperCase();
+    if (v.startsWith('CONTINUE')) return 'continue';
+    if (v.startsWith('NEW')) return 'fresh';
+    return 'ask';
+  } catch { return 'continue'; }   // never block a chat on the classifier
+}
+
+/** "Learn about me from my email" — stream the inbox scan over SSE. Pages whichever email
+ *  account is connected (Gmail OAuth / app-password / Outlook), extracts durable facts about
+ *  the user's world into memory. Reads only; nothing leaves the machine. */
+async function ingestScan(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  const days = Math.min(Math.max(Number(url.searchParams.get('days') ?? 30), 1), 730);
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+  const send = (type: string, data: Record<string, unknown>) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+  if (!ingestAvailable()) { send('error', { message: 'Connect Gmail or Outlook first, then I can learn from your email.' }); res.end(); return; }
+  if (activeRuns >= MAX_CONCURRENT) { send('error', { message: "I'm busy right now — try again in a moment." }); res.end(); return; }
+  const hb = setInterval(() => { try { res.write(': keepalive\n\n'); } catch { /* */ } }, 15_000);
+  req.on('close', () => clearInterval(hb));
+  const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+  try {
+    activeRuns++;
+    const r = await runIngest({ days, dbPath, onLog: (m) => send('log', { message: m }) });
+    send('result', { unique: r.unique, learned: r.learned });
+  } catch (e) {
+    logger.error('ingest', 'scan failed', { error: (e as Error).message.slice(0, 200) });
+    send('error', { message: (e as Error).message.slice(0, 200) });
+  } finally {
+    activeRuns--; clearInterval(hb); res.end();
+  }
+}
+
+/** Deliver a step-up code OUT-OF-BAND to a person's validated connection. Today only Telegram-
+ *  authenticated persons (personId `tg-<chatId>`) have a reachable OOB channel; returns false otherwise
+ *  so the sensitive action stays blocked. Cross-channel linking (web↔telegram) is the follow-on. */
+async function deliverStepUpCode(personId: string, code: string): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (token && personId.startsWith('tg-')) {
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ chat_id: personId.slice(3), text: `MWA verification code: ${code}\nSomeone is trying to take a sensitive action as you — if that wasn't you, ignore this.` }),
+      });
+      return r.ok;
+    } catch { return false; }
+  }
+  return false;
 }
 
 /** Stream one runAgent over SSE: every onEvent becomes an SSE event for the spine. */
@@ -168,43 +316,81 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
   const send = (type: string, data: Record<string, unknown>) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
   if (!message) { send('error', { message: 'empty message' }); res.end(); return; }
-  // Concurrency cap — don't let a flood of chats spawn unbounded parallel agent runs.
+  // Concurrency cap — reserve the slot ATOMICALLY (before any await) so a burst of near-simultaneous
+  // chats can't all pass the gate during the classifyContinuity / preparePersonTurn round-trips.
   if (activeRuns >= MAX_CONCURRENT) { send('error', { message: "I'm at capacity right now (too many chats running) — try again in a moment." }); res.end(); return; }
-  // Heartbeat: keep the SSE stream alive during slow steps (e.g. an escalated
-  // strong-model call) so proxies/browsers don't drop it mid-run.
+  activeRuns++;
+  // Heartbeat: keep the SSE stream alive during slow steps so proxies/browsers don't drop it mid-run.
   const hb = setInterval(() => { try { res.write(': keepalive\n\n'); } catch { /* */ } }, 15_000);
   req.on('close', () => clearInterval(hb));
 
-  const cfg = loadConfig();
-  const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
-  const s = sessionFor(sessionId, cfg.workspace ?? './mwa-workspace');
-  const memory = new MwaMemory('mwa-serve', dbPath, cfg.awm.workspace);
-  memory.setSessionId(sessionId); // entity-bridge continuity across this conversation
-  const brain = new RoutedProvider(getProvider('brain'), getProvider('high'));
-  const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
-  const { registry, close } = await buildRegistry(cfg);
-
-  // Carry brief recent-turn context so follow-ups ("now do X to it") make sense.
-  const ctx = s.history.slice(-3).map((h, i) => `(${i + 1}) ${h.instruction} → ${h.summary}`).join('\n');
-  const instruction = ctx ? `Recent conversation so far:\n${ctx}\n\nNew request: ${message}` : message;
-
+  // Hoisted so the finally can always release them even if setup (buildRegistry etc.) throws.
+  let memory: MwaMemory | undefined;
+  let close: (() => Promise<void>) | undefined;
   try {
-    activeRuns++;
+    const cfg = loadConfig();
+    const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+    // Idle gap BEFORE sessionFor() bumps lastUsed — a long gap signals a new task.
+    const idleMs = sessions.has(sessionId) ? Date.now() - (sessions.get(sessionId)!.lastUsed) : Infinity;
+    const s = sessionFor(sessionId, cfg.workspace ?? './mwa-workspace');
+    memory = new MwaMemory(SERVE_AGENT, dbPath, cfg.awm.workspace);
+    memory.setSessionId(sessionId); // entity-bridge continuity across this conversation
+    const brain = new RoutedProvider(getProvider('brain'), getProvider('high'));
+    const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
+    const reg = await buildRegistry(cfg); close = reg.close; const registry = reg.registry;
+
+    // AUTO-CHAIN, but know when to stop: continue the current topic, start a new one, or ask.
+    const topicTurns = s.history.slice(s.topicStart);
+    const relation = await classifyContinuity(brain, topicTurns, message, idleMs);
+    const hadContext = topicTurns.length > 0;
+    if (relation === 'fresh') s.topicStart = s.history.length;
+    // F5: topic-scoped memory is OPT-IN (MWA_TOPIC_NAMESPACE=1). Default OFF preserves cross-session continuity.
+    if (process.env.MWA_TOPIC_NAMESPACE === '1') memory.setNamespace(`${sessionId}-t${s.topicStart}`);
+    send('topic', { relation, hadContext });
+    const ctx = relation === 'continue'
+      ? s.history.slice(Math.max(s.topicStart, s.history.length - 3)).map((h, i) => `(${i + 1}) ${h.instruction} → ${h.summary}`).join('\n')
+      : '';
+    const askNote = relation === 'ask' && topicTurns.length
+      ? `\n\nNOTE: It's unclear whether this continues the recent conversation (about "${topicTurns[topicTurns.length - 1].instruction.slice(0, 60)}…") or is a new request. If that distinction affects your answer, ask the user ONE short yes/no question to confirm before proceeding; otherwise treat it as a new request.`
+      : '';
+    const instruction = (ctx ? `Recent conversation so far:\n${ctx}\n\nNew request: ${message}` : message) + askNote;
+
+    // Per-person Profile (S1–S6): resolve who's talking, build their prompt context (identity guard +
+    // primer + intake hint, with PII redacted on an identity mismatch). Off-switch MWA_PERSON_PROFILE=0.
+    const personName = (url.searchParams.get('person') ?? '').trim() || undefined;
+    const prepared = await preparePersonTurn(memory, { channel: 'web', name: personName }, message);
+    const personContext = prepared.personContext;
+    send('person', { id: prepared.personId, notes: prepared.notes }); // Glass-Box: who + how much we know
+    // Surface the DOUBT to the UI, but NOT the reasons — they contain the real stored name/contact, and
+    // this stream goes to the very client we're flagging as a possible impersonator (S6 redaction).
+    if (prepared.mismatch) send('identity', { level: 'mismatch' });
+
     const r = await runAgent({
       instruction, dir: s.dir, memory, brain, worker, tools: registry,
       workspace: cfg.awm.workspace, session: sessionId, interactive: true, // a human is watching → ask_user can ask them
+      style: cfg.style, // guided (proactive/plain) vs direct (concise) — independent of access preset
+      personContext, // S2: per-person adaptation block (empty for the shared/unknown profile)
+      personId: prepared.personId, identityInDoubt: prepared.mismatch, // S6 v2: gate sensitive confirms on step-up
       domainPackDir: process.env.MWA_DOMAIN_PACK, // optional domain pack (AGENT.md + topics) for a domain agent
       budget: { maxSteps: 40, maxWallMs: 10 * 60_000, consolidateEvery: 10, maxTokens: Number(process.env.MWA_MAX_TOKENS ?? 400_000) },
       onEvent: (type, d) => send(type, d as Record<string, unknown>),
     });
     s.history.push({ instruction: message, summary: r.summary });
     send('result', { reason: r.reason, summary: r.summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)) });
+
+    // S3/S5 — LEARN durable facts about this person + recompress their dossier (suppressed for the
+    // shared 'unknown' profile and on an identity mismatch). Runs after the reply is sent.
+    const learned = await learnFromTurn(brain, memory, prepared, message, r.summary);
+    if (learned) send('learned', { about: prepared.personId, count: learned });
   } catch (e) {
     logger.error('chat', 'agent run failed', { session: sessionId, error: (e as Error).message.slice(0, 200) });
     send('error', { message: (e as Error).message });
   } finally {
     activeRuns--;
-    clearInterval(hb); await close(); memory.close(); res.end();
+    clearInterval(hb);
+    if (close) await close();
+    memory?.close();
+    res.end();
   }
 }
 
@@ -220,7 +406,10 @@ function serveStatic(res: ServerResponse, dir: string, pathname: string): void {
   res.end(readFileSync(file));
 }
 
-export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)): Promise<void> {
+// Port precedence: MWA_SERVE_PORT (explicit) → PORT (injected by PaaS like Railway/Render/Fly so
+// the platform's router and the app agree) → 7788 (local/Docker default). Honoring PORT means a
+// cloud deploy binds the platform's expected port automatically — no manual port var needed.
+export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? process.env.PORT ?? 7788)): Promise<void> {
   loadEnv();
   const ui = uiDir();
   const server = createServer(async (req, res) => {
@@ -248,23 +437,37 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
 
       if (p === '/api/status') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ...status(), gmail: googleConfigured(), outlook: microsoftConfigured() }));
+        res.end(JSON.stringify({ ...status(), gmail: googleConfigured() || gmailImapConfigured(), outlook: microsoftConfigured() }));
+        return;
+      }
+      // Open an external link in the OS browser. The desktop (Tauri) webview swallows
+      // target="_blank", so the UI routes external links here when running in the app.
+      if (p === '/api/open' && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        const u = String(b.url ?? '');
+        const ok = /^https?:\/\//i.test(u);
+        if (ok) openBrowser(u);
+        res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok }));
         return;
       }
       // List a provider's available models for the onboarding picker (B). GET ?provider=… uses the
       // saved key; POST {provider,key,baseUrl} lists with a not-yet-saved key (so the dropdown can
       // populate during setup; OpenRouter lists even with no key). Best-effort → [] on error.
       if (p === '/api/models') {
-        let provider = (new URL(req.url ?? '/', 'http://localhost').searchParams.get('provider') ?? '').trim();
+        const urlq = new URL(req.url ?? '/', 'http://localhost').searchParams;
+        let provider = (urlq.get('provider') ?? '').trim();
+        let kind: 'chat' | 'image' = urlq.get('kind') === 'image' ? 'image' : 'chat';
         let key: string | undefined;
         let baseUrl: string | undefined;
         if (req.method === 'POST') {
           const b = await readBody(req);
           provider = String(b.provider ?? provider).trim();
+          if (b.kind === 'image') kind = 'image';
           key = b.key ? String(b.key) : undefined;
           baseUrl = b.baseUrl ? String(b.baseUrl) : undefined;
         }
-        const models = provider ? await listModels(provider, { key, baseUrl }) : [];
+        const models = provider ? await listModels(provider, { key, baseUrl, kind }) : [];
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ provider, models, providers: PROVIDERS }));
         return;
@@ -292,23 +495,69 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
       if (p === '/api/stats') {
         const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
         let memories = 0;
-        try { const m = new MwaMemory('mwa-serve', dbPath); memories = m.memoryCount(); m.close(); } catch { /* */ }
+        try { const m = new MwaMemory(SERVE_AGENT, dbPath); memories = await m.memoryCount(); m.close(); } catch { /* */ }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ memories }));
         return;
       }
       if (p === '/api/memories') {
         const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
-        let memories: { id: string; concept: string; content: string }[] = [];
-        try { const m = new MwaMemory('mwa-serve', dbPath); memories = m.recentMemories(40); m.close(); } catch { /* */ }
+        let memories: Awaited<ReturnType<MwaMemory['recentMemories']>> = [];
+        try { const m = new MwaMemory(SERVE_AGENT, dbPath); memories = await m.recentMemories(40); m.close(); } catch { /* */ }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ memories }));
+        return;
+      }
+      // F1 Glass Box — "what I did" history (the side-effecting action log).
+      if (p === '/api/actions') {
+        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        let actions: Awaited<ReturnType<MwaMemory['recentActions']>> = [];
+        try { const m = new MwaMemory(SERVE_AGENT, dbPath); actions = await m.recentActions(40); m.close(); } catch { /* */ }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ actions }));
+        return;
+      }
+      // F1 Glass Box — export everything MWA knows as portable Markdown ("it's yours").
+      if (p === '/api/memory/export') {
+        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        let md = '# What MWA knows about you\n';
+        try { const m = new MwaMemory(SERVE_AGENT, dbPath); md = await m.exportMarkdown(); m.close(); } catch { /* */ }
+        res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8', 'content-disposition': 'attachment; filename="mwa-memory.md"' });
+        res.end(md);
+        return;
+      }
+      // F1 Glass Box — PRIVACY: forget (hard-delete) a single memory.
+      if (p === '/api/memory/forget' && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        let ok = false;
+        try { const m = new MwaMemory(SERVE_AGENT, dbPath); ok = await m.forget(String(b.id ?? '')); m.close(); } catch { /* */ }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok }));
+        return;
+      }
+      // F1 Glass Box — correct a fact: supersede with the user's text (provenance=user → trusted).
+      if (p === '/api/memory/correct' && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        let ok = false; let id: string | null = null;
+        try {
+          const m = new MwaMemory(SERVE_AGENT, dbPath);
+          const concept = String(b.concept ?? '').slice(0, 80);
+          const content = String(b.content ?? '').trim();
+          if (b.id && content) { id = await m.correctFact(String(b.id), concept, content); ok = !!id; }
+          m.close();
+        } catch { /* */ }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok, id }));
         return;
       }
       if (p === '/api/schedule') {
         const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
         let scheduled: { instruction: string; due: number; recur: string | null }[] = [];
-        try { const m = new MwaMemory('mwa-serve', dbPath); scheduled = m.pendingScheduled().map((t) => ({ instruction: t.instruction, due: t.due, recur: t.recur ?? null })); m.close(); } catch { /* */ }
+        try { const m = new MwaMemory(SERVE_AGENT, dbPath); scheduled = (await m.pendingScheduled()).map((t) => ({ instruction: t.instruction, due: t.due, recur: t.recur ?? null })); m.close(); } catch { /* */ }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ scheduled }));
         return;
@@ -337,7 +586,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
       if (p === '/api/health') {
         const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
         let memoryCount = -1, db = false;
-        try { const m = new MwaMemory('mwa-serve', dbPath); memoryCount = m.memoryCount(); m.close(); db = true; } catch { /* db down */ }
+        try { const m = new MwaMemory(SERVE_AGENT, dbPath); memoryCount = await m.memoryCount(); m.close(); db = true; } catch { /* db down */ }
         const schedulerLastTickAgoSec = lastSchedulerTick ? Math.round((Date.now() - lastSchedulerTick) / 1000) : -1;
         const body = { ok: db, uptimeSec: Math.round((Date.now() - SERVER_START) / 1000), db, memoryCount, activeRuns, sessions: sessions.size, schedulerLastTickAgoSec };
         res.writeHead(db ? 200 : 503, { 'content-type': 'application/json' });
@@ -360,6 +609,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
         return;
       }
       if (p === '/api/approvals/confirm' && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
         const out = await confirmPending(b.id ? String(b.id) : undefined, { sandboxDir: resolve('.'), interactive: true });
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -367,6 +617,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
         return;
       }
       if (p === '/api/approvals/cancel' && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ message: cancelPending(String(b.id ?? '')) }));
@@ -375,12 +626,50 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
       if (p === '/api/questions' && req.method === 'GET') {
         const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
         let questions: { id: string; question: string }[] = [];
-        try { const m = new MwaMemory('mwa-serve', dbPath); questions = m.listOpenQuestions(); m.close(); } catch { /* */ }
+        try { const m = new MwaMemory(SERVE_AGENT, dbPath); questions = await m.listOpenQuestions(); m.close(); } catch { /* */ }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ questions }));
         return;
       }
+      if (p === '/api/stepup/issue' && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        // S6 v2: issue a step-up challenge for a flagged person, delivering the code OUT-OF-BAND to
+        // their validated connection (currently: their authenticated Telegram chat).
+        const b = await readBody(req);
+        const personId = String(b.personId ?? '');
+        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        let out: unknown = { ok: false, reason: 'no-factor' };
+        try {
+          const m = new MwaMemory(SERVE_AGENT, dbPath);
+          const profile = await m.recallPersonProfile(personId); m.close();
+          if (hasVerifiedFactor(profile)) {
+            out = await issueStepUp({ personId, purpose: String(b.purpose ?? 'sensitive-action'), deliver: (code) => deliverStepUpCode(personId, code) });
+          }
+        } catch { /* */ }
+        res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(out));
+        return;
+      }
+      if (p === '/api/stepup/verify' && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(verifyStepUp(String(b.challengeId ?? ''), String(b.code ?? ''))));
+        return;
+      }
+      if (p === '/api/people' && req.method === 'GET') {
+        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        let people: unknown[] = [];
+        try {
+          const m = new MwaMemory(SERVE_AGENT, dbPath);
+          const rows = await m.listPeople(); m.close();
+          people = rows.map((r) => ({ ...r, missing: INTAKE_FIELDS.filter((f) => !r.fields.includes(f.key)).map((f) => f.key) }));
+        } catch { /* */ }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ people }));
+        return;
+      }
       if (p === '/api/questions' && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
         if (b.action === 'resolve') {
           resolveOpenQuestionsBg().catch(() => { /* */ }); // background: agent answers them, marks resolved, learns the answers
@@ -396,7 +685,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
         let skills: { name: string; content: string }[] = [];
         let lessons: { topic: string; content: string }[] = [];
         let policies: string[] = [];
-        try { const m = new MwaMemory('mwa-serve', dbPath); skills = m.listSkills(); lessons = m.listFriction(); policies = m.listPolicies(); m.close(); } catch { /* */ }
+        try { const m = new MwaMemory(SERVE_AGENT, dbPath); skills = await m.listSkills(); lessons = await m.listFriction(); policies = await m.listPolicies(); m.close(); } catch { /* */ }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ skills, lessons, policies }));
         return;
@@ -405,11 +694,21 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
         const enabled = new Set(enabledConnectorIds());
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
-          gmail: googleConfigured(),
+          gmail: googleConfigured() || gmailImapConfigured(),
+          gmailMethod: googleConfigured() ? 'oauth' : (gmailImapConfigured() ? 'app-password' : null),
           outlook: microsoftConfigured(),
+          outlookEasy: microsoftClientReady(), // device-code (zero-setup) available
           telegram: !!process.env.TELEGRAM_BOT_TOKEN,
+          brain: ((spec) => { const i = spec.indexOf(':'); return { provider: i > 0 ? spec.slice(0, i) : '', model: i > 0 ? spec.slice(i + 1) : spec }; })(loadConfig().models.fetch || ''),
+          imageModel: ((spec) => { const i = spec.indexOf(':'); return { provider: i > 0 ? spec.slice(0, i) : '', model: i > 0 ? spec.slice(i + 1) : spec }; })(loadConfig().models.image || ''),
           externalInstall: externalInstallState(loadConfig()),
           access: accessPolicy(),
+          style: loadConfig().style ?? 'guided', // interaction style (independent of access)
+          ingestReady: ingestAvailable(), // an email account is connected → "learn about me" can run
+          storage: ((b) => ({
+            kind: b === 'postgres' ? 'postgres' : b === 'pglite' ? 'pglite' : 'sqlite',
+            configured: b === 'postgres' ? !!process.env.AWM_DATABASE_URL : true,
+          }))((process.env.AWM_STORE_BACKEND ?? '').toLowerCase()),
           connectors: listConnectors().map((c) => ({
             id: c.id, name: c.name, category: c.category, description: c.description, access: c.access,
             tier: c.tier, source: c.source ?? null, on: enabled.has(c.id),
@@ -419,6 +718,8 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
         return;
       }
       if (p === '/api/connections' && req.method === 'POST') {
+        // CSRF: this POST mutates config (connect/disconnect, save-secret writes arbitrary env).
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
         if (b.action === 'enable-connector') {
           const r = enableConnector(String(b.id ?? ''));
@@ -463,6 +764,41 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
               res.end(JSON.stringify({ ok: false, message: (e as Error).message.slice(0, 160) }));
             }
           }
+        } else if (b.action === 'disconnect-gmail') {
+          disconnectGoogle();
+          removeEnv(['MWA_GMAIL_USER', 'MWA_GMAIL_APP_PASSWORD', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET']);
+          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, message: 'Gmail disconnected — its sign-in was removed from this computer.' }));
+        } else if (b.action === 'disconnect-outlook') {
+          disconnectMicrosoft();
+          removeEnv(['MICROSOFT_CLIENT_ID', 'MICROSOFT_TENANT']);
+          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, message: 'Outlook disconnected — its sign-in was removed from this computer.' }));
+        } else if (b.action === 'disconnect-telegram') {
+          removeEnv(['TELEGRAM_BOT_TOKEN']);
+          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, message: 'Telegram disconnected.' }));
+        } else if (b.action === 'connect-gmail-imap') {
+          // EASY Gmail path: validate the address + app password by opening a real IMAP
+          // session, then save the creds locally (no OAuth, no Cloud Console).
+          const user = String(b.user ?? '').trim();
+          const pass = String(b.appPassword ?? '').replace(/\s+/g, '');
+          const v = await verifyGmailImap(user, pass);
+          if (v.ok) upsertEnv({ MWA_GMAIL_USER: user, MWA_GMAIL_APP_PASSWORD: pass });
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: v.ok, message: v.message }));
+        } else if (b.action === 'connect-outlook-device') {
+          // EASY Outlook path: device-code — show a short code + URL; we poll in the background.
+          if (!microsoftClientReady()) {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, message: 'Outlook isn\'t set up on this build yet — use the advanced (app ID) option below for now.' }));
+          } else {
+            try {
+              const dc = await startMicrosoftDeviceCode(!!b.readonly);
+              res.writeHead(200, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ ok: true, ...dc, message: `Go to ${dc.verification_uri} and enter the code ${dc.user_code}. I'll show as connected once you finish.` }));
+            } catch (e) {
+              res.writeHead(200, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, message: (e as Error).message.slice(0, 160) }));
+            }
+          }
         } else if (b.action === 'connect-outlook') {
           if (!process.env.MICROSOFT_CLIENT_ID) {
             res.writeHead(200, { 'content-type': 'application/json' });
@@ -483,6 +819,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
         return;
       }
       if (p === '/api/save' && req.method === 'POST') {
+        // CSRF: this POST writes secrets to .env (API keys, Tailscale auth key, bot tokens).
+        // A cross-origin page must not be able to swap the model API key (prompt exfil) or
+        // join the instance to an attacker's tailnet. Same-origin SPA/Tauri + CLI(no Origin) pass.
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
         let result: { ok: boolean; message: string };
         if (b.which === 'anthropic') { result = await testAnthropic(b.ANTHROPIC_API_KEY); if (result.ok) upsertEnv({ ANTHROPIC_API_KEY: b.ANTHROPIC_API_KEY }); }
@@ -499,6 +839,21 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
             if (provider === 'ollama' && b.baseUrl) kv.OLLAMA_BASE_URL = String(b.baseUrl);
             if (Object.keys(kv).length) upsertEnv(kv);
             setFetchModel(provider, model); // make the picked brain actually take effect
+          }
+        }
+        else if (b.which === 'image-model') {
+          // Set (or clear) the image-generation model. Save the provider key if given; we don't
+          // run a live image gen to validate (costly) — the first generate_image surfaces errors.
+          const provider = String(b.provider ?? '').trim(), model = String(b.model ?? '').trim();
+          if (!model) { setImageModel(provider, ''); result = { ok: true, message: 'Image generation turned off.' }; }
+          else {
+            const envKey = envKeyForProvider(provider);
+            const kv: Record<string, string> = {};
+            if (envKey && b.key) kv[envKey] = String(b.key);
+            if (provider === 'ollama' && b.baseUrl) kv.OLLAMA_BASE_URL = String(b.baseUrl);
+            if (Object.keys(kv).length) upsertEnv(kv);
+            setImageModel(provider, model);
+            result = { ok: true, message: `Image model set to ${provider}:${model}.` };
           }
         }
         else if (b.which === 'google') {
@@ -522,11 +877,83 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
           const saved = setAccess(preset, Array.isArray(b.grantedRoots) ? b.grantedRoots.map(String) : undefined);
           result = { ok: true, message: saved.dropped.length ? `Saved. Couldn't find: ${saved.dropped.join(', ')}` : 'Saved.' };
         }
+        else if (b.which === 'style') {
+          const style = (INTERACTION_STYLES as readonly string[]).includes(b.style) ? (b.style as InteractionStyle) : 'guided';
+          setStyle(style);
+          result = { ok: true, message: style === 'direct' ? 'Switched to Direct — concise replies.' : 'Switched to Guided — I\'ll explain and suggest next steps.' };
+        }
+        else if (b.which === 'tailscale') {
+          // Store a Tailscale AUTH key (tskey-auth-…), used by the container entrypoint to join the
+          // tailnet so the admin UI is reachable privately with no public port. (Not the mgmt API key.)
+          const key = String(b.TAILSCALE_AUTHKEY ?? b.key ?? '').trim();
+          if (!key.startsWith('tskey-')) {
+            result = { ok: false, message: 'That doesn\'t look like a Tailscale auth key — it should start with "tskey-auth-". Use an auth key (Settings → Keys → Generate auth key), not the management API key.' };
+          } else {
+            upsertEnv({ TAILSCALE_AUTHKEY: key, ...(b.hostname ? { TAILSCALE_HOSTNAME: String(b.hostname).replace(/[^a-z0-9-]/gi, '').slice(0, 40) } : {}) });
+            result = { ok: true, message: 'Tailscale auth key saved. On the next restart the app joins your tailnet and is reachable at its tailnet name — no public port needed.' };
+          }
+        }
+        else if (b.which === 'backend') {
+          // Choose where memory lives: "this computer" (SQLite, the default) or a Postgres
+          // server (cloud / multi-instance / always-on). Postgres is validated by actually
+          // connecting (which also provisions the schema). Takes effect on the next restart.
+          const kind = String(b.kind ?? 'sqlite').toLowerCase();
+          if (kind === 'sqlite') {
+            removeEnv(['AWM_STORE_BACKEND', 'AWM_DATABASE_URL']);
+            result = { ok: true, message: 'Memory will be stored privately on this computer (SQLite) after the next restart.' };
+          } else if (kind === 'postgres') {
+            const url = String(b.url ?? '').trim();
+            if (!/^postgres(ql)?:\/\//i.test(url)) {
+              result = { ok: false, message: 'Enter a Postgres connection URL (postgres://user:pass@host:5432/db).' };
+            } else {
+              try {
+                // Connect for real — this validates creds + that pgvector is available, and
+                // provisions the AWM schema on the target.
+                const mod = 'agent-working-memory/dist/storage/postgres.js';
+                const { PostgresEngramStore } = await import(/* @vite-ignore */ mod);
+                const s: any = new PostgresEngramStore(url);
+                await s.ready();
+                await s.close();
+                // Optionally copy the current memory over FIRST (so a failed copy doesn't strand
+                // you on an empty store). If the copy fails, do NOT switch.
+                const lead = 'Connected ✓ — your database server becomes the memory store on the next restart.';
+                if (b.migrate) {
+                  const sqlitePath = process.env.MWA_DB ?? resolve('./data/agent.db');
+                  const m = await migrateMemoryToPostgres(sqlitePath, url);
+                  if (!m.ok) {
+                    result = { ok: false, message: `Connected, but ${m.message} — staying on this computer so nothing is lost.` };
+                  } else {
+                    upsertEnv({ AWM_STORE_BACKEND: 'postgres', AWM_DATABASE_URL: url });
+                    result = { ok: true, message: `${lead} Copied your memory over (${m.message}).` };
+                  }
+                } else {
+                  upsertEnv({ AWM_STORE_BACKEND: 'postgres', AWM_DATABASE_URL: url });
+                  result = { ok: true, message: `${lead} Your current on-computer memory stays put — turn on "bring my memory" to copy it.` };
+                }
+              } catch (e) {
+                result = { ok: false, message: `Couldn't connect to that database: ${(e as Error).message}. Check the URL/credentials and that the pgvector extension is available.` };
+              }
+            }
+          } else {
+            result = { ok: false, message: 'Unknown storage option.' };
+          }
+        }
         else result = { ok: false, message: 'unknown field' };
         res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(result));
         return;
       }
-      if (p === '/api/chat') { await chat(req, res, url); return; }
+      if (p === '/api/chat') {
+        // CSRF: /api/chat drives the agent (tools, files, network). Block cross-origin EventSource/GET
+        // so a page the user visits can't silently run the agent on the no-password localhost default.
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'cross-origin request blocked' })); return; }
+        await chat(req, res, url); return;
+      }
+      if (p === '/api/ingest') {
+        // CSRF: like /api/chat, this GET/EventSource endpoint has side effects (scans the inbox, writes
+        // durable memories), so block cross-origin so a visited page can't trigger it on localhost.
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'cross-origin request blocked' })); return; }
+        await ingestScan(req, res, url); return;
+      }
       // static SPA, or the dev fallback page
       if (ui) { serveStatic(res, ui, p); return; }
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(FALLBACK_HTML);
@@ -555,7 +982,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? 7788)
   (async () => {
     try {
       const cfg = loadConfig();
-      const memory = new MwaMemory('mwa-serve', process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
+      const memory = new MwaMemory(SERVE_AGENT, process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
       const brain = new RoutedProvider(getProvider('brain'), getProvider('high'));
       const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
       const { registry } = await buildRegistry(cfg);

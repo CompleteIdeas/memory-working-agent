@@ -1,9 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  getConnections, connectGmail, connectOutlook, saveGoogle, saveMicrosoft, saveTelegram,
+  getConnections, connectGmail, connectOutlook, connectGmailImap, connectOutlookDevice, saveGoogle, saveMicrosoft, saveTelegram, saveTailscale, saveBackend,
   enableConnector, disableConnector, saveConnectorSecret, reviewExternal, approveExternal, saveAccess,
-  type Connections as Conn, type ConnectorItem, type ExternalInstall, type RiskReport, type Access, type AccessPreset,
+  disconnectService, saveBrain, saveImageModel, getModels, saveStyle, scanEmail,
+  type Connections as Conn, type ConnectorItem, type ExternalInstall, type RiskReport, type Access, type AccessPreset, type Brain, type InteractionStyle, type StorageBackend,
 } from '../api';
+
+const STYLE_OPTIONS: { id: InteractionStyle; label: string; detail: string }[] = [
+  { id: 'guided', label: 'Guided', detail: 'Explains in plain language, suggests next steps, takes initiative, learns about you' },
+  { id: 'direct', label: 'Direct', detail: 'Concise and technical · leads with the answer · no extra suggestions' },
+];
+
+const PROVIDER_OPTIONS: { id: string; label: string; keyless?: boolean }[] = [
+  { id: 'openrouter', label: 'OpenRouter (many models, one key)' },
+  { id: 'anthropic', label: 'Anthropic (Claude)' },
+  { id: 'openai', label: 'OpenAI' },
+  { id: 'gemini', label: 'Google Gemini' },
+  { id: 'ollama', label: 'Local (Ollama) — no key', keyless: true },
+];
 
 const ACCESS_PRESETS: { id: AccessPreset; label: string; detail: string }[] = [
   { id: 'locked-down', label: 'Locked-down', detail: 'Workspace only · never runs commands' },
@@ -66,15 +80,50 @@ const PROVIDERS: Record<Provider, ProviderUI> = {
   },
 };
 
-function EmailConnect({ provider, connected, onDone }: { provider: Provider; connected: boolean; onDone: () => void }) {
+/** Poll the connections endpoint until the given account flips to connected (used by the
+ *  OAuth + device-code flows that finish out-of-band). */
+function usePoll() {
+  const poll = useRef<number | null>(null);
+  useEffect(() => () => { if (poll.current) clearInterval(poll.current); }, []);
+  return {
+    start(check: (c: Conn) => boolean, onHit: () => void, onTimeout: () => void, tries = 120) {
+      let n = 0;
+      poll.current = window.setInterval(async () => {
+        n++;
+        const c = await getConnections();
+        if (check(c)) { if (poll.current) clearInterval(poll.current); onHit(); }
+        else if (n > tries) { if (poll.current) clearInterval(poll.current); onTimeout(); }
+      }, 2500);
+    },
+    stop() { if (poll.current) clearInterval(poll.current); },
+  };
+}
+
+const cardCls = 'rounded-[4px] border border-line bg-surface';
+const inputCls = 'w-full rounded-[3px] border border-line bg-bone px-3 py-2 text-sm outline-none focus:border-signal';
+const btnCls = 'rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium disabled:opacity-50';
+
+/** Connected-state badge + a disconnect link (forgets the credentials on this machine). */
+function Connected({ note, onDisconnect }: { note?: string; onDisconnect: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="flex items-center gap-3 shrink-0">
+      <span className="mono text-[12px] text-signal">connected ✓{note ?? ''}</span>
+      <button disabled={busy} onClick={async () => { setBusy(true); await onDisconnect(); setBusy(false); }}
+        className="mono text-[11px] text-dim underline disabled:opacity-50">{busy ? '…' : 'disconnect'}</button>
+    </div>
+  );
+}
+
+/** The advanced bring-your-own OAuth flow (Cloud Console / Azure app-id) — the original path,
+ *  now tucked behind an "Advanced" expander under the easy options. */
+function AdvancedOAuth({ provider, connected, onDone }: { provider: Provider; connected: boolean; onDone: () => void }) {
   const ui = PROVIDERS[provider];
-  const [open, setOpen] = useState(false);
   const [vals, setVals] = useState<Record<string, string>>({});
   const [readonly, setReadonly] = useState(false);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
-  const poll = useRef<number | null>(null);
-  useEffect(() => () => { if (poll.current) clearInterval(poll.current); }, []);
+  const poll = usePoll();
 
   async function saveAndConnect() {
     setBusy(true); setMsg('Saving…');
@@ -87,42 +136,132 @@ function EmailConnect({ provider, connected, onDone }: { provider: Provider; con
     if (!r.ok || !r.url) { setMsg(r.message ?? 'Could not start sign-in.'); setBusy(false); return; }
     window.open(r.url, '_blank', 'noopener');
     setMsg('Approve access in the window that opened, then come back here…');
-    let tries = 0;
-    poll.current = window.setInterval(async () => {
-      tries++;
-      const c = await getConnections();
-      if (c[ui.key]) { if (poll.current) clearInterval(poll.current); setMsg(''); setBusy(false); setOpen(false); onDone(); }
-      else if (tries > 48) { if (poll.current) clearInterval(poll.current); setMsg('Still not connected — finish the sign-in, or try again.'); setBusy(false); }
-    }, 2500);
+    poll.start((c) => !!c[ui.key], () => { setMsg(''); setBusy(false); onDone(); },
+      () => { setMsg('Still not connected — finish the sign-in, or try again.'); setBusy(false); });
   }
 
   return (
-    <div className="rounded-[4px] border border-line bg-surface">
+    <div className="space-y-3">
+      {ui.steps}
+      <div className="space-y-2 pt-1">
+        {ui.fields.map((f) => (
+          <input key={f.id} value={vals[f.id] ?? ''} placeholder={f.placeholder}
+            onChange={(e) => setVals((v) => ({ ...v, [f.id]: e.target.value }))} className={inputCls} />
+        ))}
+      </div>
+      <label className="flex items-center gap-2 text-sm text-dim">
+        <input type="checkbox" checked={readonly} onChange={(e) => setReadonly(e.target.checked)} className="w-4 h-4 accent-[var(--color-signal)]" />
+        Read-only (don’t let it draft replies)
+      </label>
+      <button disabled={busy || connected} onClick={saveAndConnect} className={btnCls}>{busy ? 'Working…' : 'Save & connect'}</button>
+      <p className="mono text-[11px] text-dim">The sign-in opens on this computer — connect from the machine running MWA.</p>
+      {msg && <p className="mono text-[12px] text-dim">{msg}</p>}
+    </div>
+  );
+}
+
+/** Gmail — the EASY default is an app password (no Google Cloud Console); the OAuth flow is
+ *  tucked under "Advanced" for people who want scoped tokens + calendar. */
+function GmailConnect({ connected, method, onDone }: { connected: boolean; method: 'oauth' | 'app-password' | null; onDone: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [adv, setAdv] = useState(false);
+  const [user, setUser] = useState('');
+  const [pass, setPass] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  async function connect() {
+    setBusy(true); setMsg('Checking your sign-in…');
+    const r = await connectGmailImap(user.trim(), pass);
+    setBusy(false);
+    if (r.ok) { setMsg(''); setOpen(false); setUser(''); setPass(''); onDone(); }
+    else setMsg(r.message ?? 'Could not connect.');
+  }
+
+  return (
+    <div className={cardCls}>
       <div className="flex items-center justify-between gap-3 px-4 py-3">
-        <div><div className="font-medium">{ui.name}</div><div className="text-dim text-sm">{ui.sub}</div></div>
+        <div><div className="font-medium">Google (Gmail)</div><div className="text-dim text-sm">Read & draft — never sends</div></div>
         {connected
-          ? <span className="mono text-[12px] text-signal">connected ✓</span>
-          : <button onClick={() => setOpen((o) => !o)} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium">{open ? 'Cancel' : 'Set up'}</button>}
+          ? <Connected note={method === 'app-password' ? ' · app password' : method === 'oauth' ? ' · Google sign-in' : ''} onDisconnect={async () => { await disconnectService('gmail'); onDone(); }} />
+          : <button onClick={() => setOpen((o) => !o)} className={btnCls}>{open ? 'Cancel' : 'Set up'}</button>}
       </div>
       {open && !connected && (
         <div className="border-t border-line px-4 py-4 space-y-3">
-          {ui.steps}
-          <div className="space-y-2 pt-1">
-            {ui.fields.map((f) => (
-              <input key={f.id} value={vals[f.id] ?? ''} placeholder={f.placeholder}
-                onChange={(e) => setVals((v) => ({ ...v, [f.id]: e.target.value }))}
-                className="w-full rounded-[3px] border border-line bg-bone px-3 py-2 text-sm outline-none focus:border-signal" />
-            ))}
-          </div>
-          <label className="flex items-center gap-2 text-sm text-dim">
-            <input type="checkbox" checked={readonly} onChange={(e) => setReadonly(e.target.checked)} className="w-4 h-4 accent-[var(--color-signal)]" />
-            Read-only (don’t let it draft replies)
-          </label>
-          <button disabled={busy} onClick={saveAndConnect} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium disabled:opacity-50">
-            {busy ? 'Working…' : 'Save & connect'}
-          </button>
-          <p className="mono text-[11px] text-dim">The sign-in opens on this computer — connect from the machine running MWA.</p>
+          <ol className="list-decimal ml-4 space-y-1.5 text-sm text-dim">
+            <li>Turn on <a className="text-signal underline" href="https://myaccount.google.com/signinoptions/two-step-verification" target="_blank" rel="noreferrer">2-Step Verification</a> for your Google account (required).</li>
+            <li>Create an <a className="text-signal underline" href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">App Password</a> — name it “MWA” and copy the 16-letter password.</li>
+            <li>Paste your Gmail address and that password below.</li>
+          </ol>
+          <input value={user} placeholder="you@gmail.com" onChange={(e) => setUser(e.target.value)} className={inputCls} />
+          <input value={pass} type="password" placeholder="16-letter app password" onChange={(e) => setPass(e.target.value)} className={inputCls} />
+          <button disabled={busy || !user.trim() || !pass.trim()} onClick={connect} className={btnCls}>{busy ? 'Working…' : 'Connect'}</button>
           {msg && <p className="mono text-[12px] text-dim">{msg}</p>}
+          <p className="mono text-[11px] text-dim">Stays on this computer. Works for personal Gmail (not accounts on Advanced Protection). Calendar needs the Google sign-in option below.</p>
+          <button onClick={() => setAdv((a) => !a)} className="mono text-[11px] text-signal underline">{adv ? 'Hide' : 'Prefer Google sign-in (OAuth)? Advanced setup ▸'}</button>
+          {adv && <div className="border-t border-line pt-3"><AdvancedOAuth provider="google" connected={connected} onDone={onDone} /></div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Outlook — the EASY default is device-code (enter a short code at microsoft.com/devicelogin);
+ *  the bring-your-own Azure app-id flow is under "Advanced". */
+function OutlookConnect({ connected, easy, onDone }: { connected: boolean; easy: boolean; onDone: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [adv, setAdv] = useState(!easy); // no one-click yet → show the Microsoft sign-in straight away
+  const [readonly, setReadonly] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [code, setCode] = useState<{ user_code: string; verification_uri: string } | null>(null);
+  const poll = usePoll();
+
+  async function connect() {
+    setBusy(true); setMsg('Getting your code…'); setCode(null);
+    const r = await connectOutlookDevice(readonly);
+    if (!r.ok || !r.user_code) { setMsg(r.message ?? 'Could not start.'); setBusy(false); return; }
+    setCode({ user_code: r.user_code, verification_uri: r.verification_uri ?? 'https://microsoft.com/devicelogin' });
+    setMsg('Waiting for you to finish signing in…');
+    poll.start((c) => c.outlook, () => { setMsg(''); setBusy(false); setOpen(false); setCode(null); onDone(); },
+      () => { setMsg('Didn’t finish in time — try again.'); setBusy(false); setCode(null); });
+  }
+
+  return (
+    <div className={cardCls}>
+      <div className="flex items-center justify-between gap-3 px-4 py-3">
+        <div><div className="font-medium">Microsoft (Outlook)</div><div className="text-dim text-sm">Read & draft — never sends</div></div>
+        {connected
+          ? <Connected onDisconnect={async () => { await disconnectService('outlook'); onDone(); }} />
+          : <button onClick={() => setOpen((o) => !o)} className={btnCls}>{open ? 'Cancel' : 'Set up'}</button>}
+      </div>
+      {open && !connected && (
+        <div className="border-t border-line px-4 py-4 space-y-3">
+          {easy ? (
+            <>
+              {!code ? (
+                <>
+                  <p className="text-sm text-dim">Click connect, then sign in to Microsoft and type the code we show you. No setup needed.</p>
+                  <label className="flex items-center gap-2 text-sm text-dim">
+                    <input type="checkbox" checked={readonly} onChange={(e) => setReadonly(e.target.checked)} className="w-4 h-4 accent-[var(--color-signal)]" />
+                    Read-only (don’t let it draft replies)
+                  </label>
+                  <button disabled={busy} onClick={connect} className={btnCls}>{busy ? 'Working…' : 'Connect'}</button>
+                </>
+              ) : (
+                <div className="rounded-[4px] border border-line bg-bone px-4 py-3 space-y-2">
+                  <p className="text-sm">Go to <a className="text-signal underline" href={code.verification_uri} target="_blank" rel="noreferrer">{code.verification_uri.replace('https://', '')}</a> and enter:</p>
+                  <div className="mono text-2xl tracking-[0.2em] select-all text-ink">{code.user_code}</div>
+                  <p className="mono text-[11px] text-dim">Keep this window open — I’ll show as connected when you’re done.</p>
+                </div>
+              )}
+              {msg && <p className="mono text-[12px] text-dim">{msg}</p>}
+            </>
+          ) : (
+            <p className="text-sm text-dim">Connect with your own Microsoft app — sign in below. (Microsoft now requires this for Outlook.)</p>
+          )}
+          {easy && <button onClick={() => setAdv((a) => !a)} className="mono text-[11px] text-signal underline">{adv ? 'Hide' : 'Use your own Microsoft app (advanced) ▸'}</button>}
+          {adv && <div className={easy ? 'border-t border-line pt-3' : ''}><AdvancedOAuth provider="microsoft" connected={connected} onDone={onDone} /></div>}
         </div>
       )}
     </div>
@@ -145,7 +284,7 @@ function TelegramConnect({ connected, onDone }: { connected: boolean; onDone: ()
       <div className="flex items-center justify-between gap-3 px-4 py-3">
         <div><div className="font-medium">Telegram</div><div className="text-dim text-sm">Chat with it from your phone</div></div>
         {connected
-          ? <span className="mono text-[12px] text-signal">connected ✓</span>
+          ? <Connected onDisconnect={async () => { await disconnectService('telegram'); onDone(); }} />
           : <button onClick={() => setOpen((o) => !o)} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium">{open ? 'Cancel' : 'Set up'}</button>}
       </div>
       {open && !connected && (
@@ -166,24 +305,311 @@ function TelegramConnect({ connected, onDone }: { connected: boolean; onDone: ()
   );
 }
 
+/** Tailscale — join a tailnet so a cloud (or NAS) deployment is reachable privately at its
+ *  tailnet name with NO public port. Takes a Tailscale AUTH key (tskey-auth-…), saved to the
+ *  /data .env; the container entrypoint brings up userspace networking on the next restart.
+ *  There's no "connected" signal from the server (it activates at boot), so this is a save card. */
+function TailscaleConnect({ onDone }: { onDone: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [key, setKey] = useState('');
+  const [hostname, setHostname] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  async function save() {
+    setBusy(true); setMsg('Saving the auth key…');
+    const r = await saveTailscale(key.trim(), hostname.trim() || undefined);
+    setBusy(false);
+    if (r.ok) { setMsg(r.message ?? 'Saved.'); setKey(''); onDone(); }
+    else { setMsg(r.message ?? 'Could not save the key.'); }
+  }
+  return (
+    <div className="rounded-[4px] border border-line bg-surface">
+      <div className="flex items-center justify-between gap-3 px-4 py-3">
+        <div><div className="font-medium">Tailscale</div><div className="text-dim text-sm">Reach a cloud deploy privately — no public port</div></div>
+        <button onClick={() => { setMsg(''); setOpen((o) => !o); }} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium">{open ? 'Cancel' : 'Set up'}</button>
+      </div>
+      {open && (
+        <div className="border-t border-line px-4 py-4 space-y-3">
+          <ol className="list-decimal ml-5 text-sm text-dim space-y-1">
+            <li>In the <a className="text-signal underline" href="https://login.tailscale.com/admin/settings/keys" target="_blank" rel="noreferrer">Tailscale admin → Settings → Keys</a>, <b>Generate auth key</b> (not the management API key).</li>
+            <li>Paste the <span className="mono text-[12px]">tskey-auth-…</span> key below. It takes effect on the next restart.</li>
+          </ol>
+          <input value={key} placeholder="tskey-auth-…" onChange={(e) => setKey(e.target.value)}
+            className="w-full rounded-[3px] border border-line bg-bone px-3 py-2 text-sm outline-none focus:border-signal" />
+          <input value={hostname} placeholder="hostname (optional, e.g. mwa)" onChange={(e) => setHostname(e.target.value)}
+            className="w-full rounded-[3px] border border-line bg-bone px-3 py-2 text-sm outline-none focus:border-signal" />
+          <button disabled={busy || !key.trim()} onClick={save} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium disabled:opacity-50">
+            {busy ? 'Working…' : 'Save key'}
+          </button>
+          {msg && <p className="mono text-[12px] text-dim">{msg}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Memory storage — where AWM keeps memory. Default is SQLite on this computer (private,
+ *  zero-setup). A Postgres server is the "larger install" for always-on / cloud / multi-device;
+ *  the server validates the URL by connecting. Takes effect on the next restart. PGlite is not
+ *  surfaced (env-var power-user option only — single-process + a known Windows/Node22 crash). */
+function MemoryStorageCard({ storage, onDone }: { storage: StorageBackend; onDone: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [url, setUrl] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [bringMemory, setBringMemory] = useState(true); // default: copy existing memory across
+  const isPg = storage.kind === 'postgres';
+  async function save(kind: 'sqlite' | 'postgres') {
+    setBusy(true); setMsg(kind === 'postgres' ? (bringMemory ? 'Connecting + copying your memory…' : 'Connecting to your database…') : 'Saving…');
+    const r = await saveBackend(kind, kind === 'postgres' ? url.trim() : undefined, kind === 'postgres' ? bringMemory : undefined);
+    setBusy(false); setMsg(r.message ?? (r.ok ? 'Saved.' : 'Could not save.'));
+    if (r.ok) onDone();
+  }
+  return (
+    <div className="rounded-[4px] border border-line bg-surface">
+      <div className="flex items-center justify-between gap-3 px-4 py-3">
+        <div><div className="font-medium">Memory storage</div><div className="text-dim text-sm">{isPg ? 'Database server (Postgres)' : 'This computer · private'}</div></div>
+        <button onClick={() => { setMsg(''); setOpen((o) => !o); }} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium">{open ? 'Cancel' : 'Change'}</button>
+      </div>
+      {open && (
+        <div className="border-t border-line px-4 py-4 space-y-3">
+          <p className="text-dim text-sm">Most people should keep memory <b>on this computer</b> — it's private and needs no setup. Choose a <b>database server</b> only for an always-on, cloud, or multi-device install.</p>
+          <button disabled={busy} onClick={() => save('sqlite')}
+            className={`w-full text-left rounded-[4px] border px-4 py-3 transition-colors ${!isPg ? 'border-signal bg-surface' : 'border-line bg-surface hover:border-signal/60'}`}>
+            <div className="font-medium">This computer <span className="mono text-[11px] text-dim">recommended</span></div>
+            <div className="text-dim text-sm">Private, zero-setup. The default.</div>
+          </button>
+          <div className={`rounded-[4px] border px-4 py-3 ${isPg ? 'border-signal' : 'border-line'}`}>
+            <div className="font-medium">Database server <span className="mono text-[11px] text-dim">Postgres + pgvector</span></div>
+            <div className="text-dim text-sm mb-2">For cloud / always-on / multiple devices. Paste a connection URL — or <a className="text-signal underline" href="https://railway.com/new/template/postgres" target="_blank" rel="noreferrer">spin one up on Railway</a> and copy its DATABASE_URL.</div>
+            <input value={url} placeholder="postgres://user:pass@host:5432/db" onChange={(e) => setUrl(e.target.value)}
+              className="w-full rounded-[3px] border border-line bg-bone px-3 py-2 text-[12px] mono outline-none focus:border-signal" />
+            <label className="flex items-center gap-2 mt-2 text-sm text-dim cursor-pointer">
+              <input type="checkbox" checked={bringMemory} onChange={(e) => setBringMemory(e.target.checked)} className="accent-[var(--signal,#000)]" />
+              Bring my existing memory over (copied before switching — nothing lost if it fails)
+            </label>
+            <button disabled={busy || !url.trim()} onClick={() => save('postgres')}
+              className="mt-2 rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium disabled:opacity-50">{busy ? (bringMemory ? 'Connecting + copying…' : 'Connecting…') : 'Connect & use'}</button>
+          </div>
+          <p className="text-dim text-[12px]">Changes apply on the next restart. With "bring my memory" on, your current memory is copied into the database first (embeddings included), so you keep everything.</p>
+          {msg && <p className="mono text-[12px] text-dim">{msg}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Change the AI brain (provider, model, key) after onboarding — the setting the user
+ *  couldn't find. The model list is filtered server-side to tool-capable chat models so an
+ *  image/embedding model can't be picked again. */
+function BrainSettings({ brain, onChange }: { brain: Brain; onChange: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [provider, setProvider] = useState(brain.provider || 'openrouter');
+  const [key, setKey] = useState('');
+  const [model, setModel] = useState(brain.model || '');
+  const [models, setModels] = useState<{ id: string; name?: string }[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const keyless = PROVIDER_OPTIONS.find((p) => p.id === provider)?.keyless;
+
+  async function loadModels() {
+    setLoading(true); setMsg('');
+    const m = await getModels(provider, key || undefined);
+    setModels(m); setLoading(false);
+    if (!m.length) setMsg(keyless ? 'No local models found — is Ollama running?' : 'Enter your key first, then load models.');
+    else if (!model || !m.find((x) => x.id === model)) setModel(m[0].id);
+  }
+  async function save() {
+    setBusy(true); setMsg('Checking the model…');
+    const r = await saveBrain(provider, model.trim(), key || undefined);
+    setBusy(false); setMsg(r.message ?? '');
+    if (r.ok) { setOpen(false); setKey(''); onChange(); }
+  }
+
+  return (
+    <div>
+      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">ai brain</div>
+      <div className={cardCls}>
+        <div className="flex items-center justify-between gap-3 px-4 py-3">
+          <div><div className="font-medium">Model</div><div className="text-dim mono text-[12px]">{brain.provider ? `${brain.provider}:${brain.model}` : 'not set'}</div></div>
+          <button onClick={() => setOpen((o) => !o)} className={open ? 'rounded-[3px] border border-line px-4 py-2 text-sm font-medium' : btnCls}>{open ? 'Cancel' : 'Change'}</button>
+        </div>
+        {open && (
+          <div className="border-t border-line px-4 py-4 space-y-3">
+            <select value={provider} onChange={(e) => { setProvider(e.target.value); setModels([]); }} className={inputCls}>
+              {PROVIDER_OPTIONS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+            {!keyless && <input value={key} type="password" placeholder="API key (leave blank to keep current)" onChange={(e) => setKey(e.target.value)} className={inputCls} />}
+            <div className="flex gap-2">
+              <select value={model} onChange={(e) => setModel(e.target.value)} className={`${inputCls} flex-1`}>
+                {models.length ? models.map((m) => <option key={m.id} value={m.id}>{m.name || m.id}</option>) : <option value={model}>{model || '(load models)'}</option>}
+              </select>
+              <button onClick={loadModels} disabled={loading} className="shrink-0 rounded-[3px] border border-line px-3 py-2 text-sm font-medium disabled:opacity-50">{loading ? '…' : 'Load models'}</button>
+            </div>
+            <p className="text-dim text-[12px]">Only models that can run the assistant (tool-capable chat models) are listed — image and embedding models are hidden.</p>
+            <button onClick={save} disabled={busy || !model.trim()} className={btnCls}>{busy ? 'Saving…' : 'Save model'}</button>
+            {msg && <p className="mono text-[12px] text-dim">{msg}</p>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Image generation — pick a diffusion/image model from a connected provider (mirrors the
+ *  brain picker). If the provider has no image model, the user is told to try another. */
+function ImageModelSettings({ image, onChange }: { image: Brain; onChange: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [provider, setProvider] = useState(image.provider || 'openrouter');
+  const [key, setKey] = useState('');
+  const [model, setModel] = useState(image.model || '');
+  const [models, setModels] = useState<{ id: string; name?: string }[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const keyless = PROVIDER_OPTIONS.find((p) => p.id === provider)?.keyless;
+  const on = !!image.model;
+
+  async function loadModels() {
+    setLoading(true); setMsg('');
+    const m = await getModels(provider, key || undefined, undefined, 'image');
+    setModels(m); setLoaded(true); setLoading(false);
+    if (!m.length) setMsg(`${provider} doesn’t offer image models with this key — try another provider (e.g. OpenRouter), or connect an image service.`);
+    else if (!model || !m.find((x) => x.id === model)) setModel(m[0].id);
+  }
+  async function save() {
+    setBusy(true); setMsg('Saving…');
+    const r = await saveImageModel(provider, model.trim(), key || undefined);
+    setBusy(false); setMsg(r.message ?? '');
+    if (r.ok) { setOpen(false); setKey(''); onChange(); }
+  }
+  async function turnOff() { setBusy(true); await saveImageModel(provider, ''); setBusy(false); onChange(); }
+
+  return (
+    <div>
+      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">image generation</div>
+      <div className={cardCls}>
+        <div className="flex items-center justify-between gap-3 px-4 py-3">
+          <div><div className="font-medium">Image model</div><div className="text-dim mono text-[12px]">{on ? `${image.provider}:${image.model}` : 'off — pick a model to let it draw'}</div></div>
+          <div className="flex items-center gap-3 shrink-0">
+            {on && <button disabled={busy} onClick={turnOff} className="mono text-[11px] text-dim underline disabled:opacity-50">turn off</button>}
+            <button onClick={() => setOpen((o) => !o)} className={open ? 'rounded-[3px] border border-line px-4 py-2 text-sm font-medium' : btnCls}>{open ? 'Cancel' : (on ? 'Change' : 'Set up')}</button>
+          </div>
+        </div>
+        {open && (
+          <div className="border-t border-line px-4 py-4 space-y-3">
+            <p className="text-dim text-sm">Pick an image model from a provider you use. With it on, you can say “draw me…” / “generate an image of…”.</p>
+            <select value={provider} onChange={(e) => { setProvider(e.target.value); setModels([]); setLoaded(false); }} className={inputCls}>
+              {PROVIDER_OPTIONS.filter((p) => p.id !== 'anthropic').map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+            {!keyless && <input value={key} type="password" placeholder="API key (leave blank to keep current)" onChange={(e) => setKey(e.target.value)} className={inputCls} />}
+            <div className="flex gap-2">
+              <select value={model} onChange={(e) => setModel(e.target.value)} className={`${inputCls} flex-1`} disabled={!models.length}>
+                {models.length ? models.map((m) => <option key={m.id} value={m.id}>{m.name || m.id}</option>) : <option value={model}>{model || '(load image models)'}</option>}
+              </select>
+              <button onClick={loadModels} disabled={loading} className="shrink-0 rounded-[3px] border border-line px-3 py-2 text-sm font-medium disabled:opacity-50">{loading ? '…' : 'Load models'}</button>
+            </div>
+            {loaded && !models.length
+              ? <p className="text-dim text-[12px]">No image models from this provider. OpenRouter has several (e.g. Gemini image, FLUX). Switch the provider above and load again.</p>
+              : <p className="text-dim text-[12px]">Images are saved to your first granted folder (or the workspace).</p>}
+            <button onClick={save} disabled={busy || !model.trim()} className={btnCls}>{busy ? 'Saving…' : 'Save image model'}</button>
+            {msg && <p className="mono text-[12px] text-dim">{msg}</p>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Offered right after an email account is connected: read recent email to seed memory about
+// the user (people, projects, dates). Streams progress; everything stays on the machine.
+function EmailLearn({ ready, onDone }: { ready: boolean; onDone: () => void }) {
+  const [days, setDays] = useState(30);
+  const [busy, setBusy] = useState(false);
+  const [lines, setLines] = useState<string[]>([]);
+  const [done, setDone] = useState<{ unique: number; learned: number } | null>(null);
+  const [err, setErr] = useState('');
+  if (!ready) return null;
+  function start() {
+    setBusy(true); setLines([]); setDone(null); setErr('');
+    scanEmail(days, {
+      onLog: (m) => setLines((p) => [...p.slice(-6), m]),
+      onResult: (r) => { setBusy(false); setDone(r); onDone(); },
+      onError: (m) => { setBusy(false); setErr(m); },
+    });
+  }
+  return (
+    <div>
+      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">get to know me</div>
+      <div className={cardCls}>
+        <div className="px-4 py-3">
+          <div className="font-medium">Learn about me from my email</div>
+          <div className="text-dim text-[12.5px] mt-0.5">I’ll read your recent email and remember the people, projects, and dates that matter — so I’m useful from day one. It stays on your machine; nothing is sent or stored anywhere else.</div>
+        </div>
+        <div className="border-t border-line px-4 py-3 space-y-3">
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-dim">Look back</span>
+            <select value={days} onChange={(e) => setDays(Number(e.target.value))} disabled={busy}
+              className="rounded-[3px] border border-line bg-bone px-2 py-1.5 text-sm outline-none focus:border-signal">
+              <option value={30}>30 days</option><option value={90}>3 months</option><option value={365}>1 year</option>
+            </select>
+            <button onClick={start} disabled={busy} className={`${btnCls} ml-auto`}>{busy ? 'Reading…' : (done ? 'Scan again' : 'Start')}</button>
+          </div>
+          {busy && lines.length > 0 && <div className="mono text-[12px] text-dim space-y-0.5">{lines.map((l, i) => <div key={i}>{l}</div>)}</div>}
+          {done && <p className="text-sm text-signal">Learned {done.learned} thing{done.learned === 1 ? '' : 's'} about you from {done.unique} message{done.unique === 1 ? '' : 's'}. Ask me “what do you know about me?”</p>}
+          {err && <p className="mono text-[12px] text-signal">{err}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StyleSettings({ style, onChange }: { style: InteractionStyle; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
+  async function pick(s: InteractionStyle) { if (s === style) return; setBusy(true); await saveStyle(s); setBusy(false); onChange(); }
+  return (
+    <div>
+      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">how I work with you</div>
+      <div className="space-y-2">
+        {STYLE_OPTIONS.map((o) => (
+          <button key={o.id} onClick={() => pick(o.id)} disabled={busy}
+            className={`w-full text-left rounded-[4px] border px-4 py-3 transition-colors disabled:opacity-60 ${style === o.id ? 'border-signal bg-surface' : 'border-line bg-surface hover:border-signal/60'}`}>
+            <div className="font-medium">{o.label}{style === o.id ? ' ✓' : ''}</div>
+            <div className="text-dim text-sm">{o.detail}</div>
+          </button>
+        ))}
+      </div>
+      <p className="text-dim text-[12px] mt-2">Separate from access — this only changes how I talk and how proactive I am.</p>
+    </div>
+  );
+}
+
 export function Connections() {
   const [c, setC] = useState<Conn | null>(null);
   const load = () => getConnections().then(setC);
   useEffect(() => { load(); }, []);
 
   if (!c) return <div className="py-16 mono text-dim text-sm">loading…</div>;
-  const row = 'flex items-center justify-between gap-3 rounded-[4px] border border-line bg-surface px-4 py-3';
 
   return (
     <div className="py-8 max-w-xl space-y-6">
+      <StyleSettings style={c.style} onChange={load} />
+      <BrainSettings brain={c.brain} onChange={load} />
+      <ImageModelSettings image={c.imageModel} onChange={load} />
       <div>
         <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">email & calendar</div>
         <div className="space-y-2">
-          <EmailConnect provider="google" connected={c.gmail} onDone={load} />
-          <EmailConnect provider="microsoft" connected={c.outlook} onDone={load} />
+          <GmailConnect connected={c.gmail} method={c.gmailMethod} onDone={load} />
+          <OutlookConnect connected={c.outlook} easy={c.outlookEasy} onDone={load} />
           <TelegramConnect connected={c.telegram} onDone={load} />
+          <TailscaleConnect onDone={load} />
+          <MemoryStorageCard storage={c.storage} onDone={load} />
         </div>
       </div>
+
+      <EmailLearn ready={c.ingestReady} onDone={load} />
 
       <div>
         <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">connector library</div>
