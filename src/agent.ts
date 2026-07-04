@@ -18,6 +18,7 @@ import { resolve, sep, dirname, join } from 'node:path';
 import type { Provider } from './provider.js';
 import { validateSubstance } from './substance.js';
 import { loadDomainPack, buildDomainContext } from './domain-pack.js';
+import { ONBOARD_PROTOCOL } from './onboard.js';
 import type { Memory, RecalledMemory, TrustTier } from './awm.js';
 import { effectOf, isSensitive, buildDoneReport, checkTripwires, readsUntrustedContent } from './tools/governance.js';
 import { answerConfidence, type Confidence } from './tools/honesty.js';
@@ -103,6 +104,7 @@ const AGENT_SYSTEM = [
   'supersede (correct a recalled fact a result disproved), done (instruction satisfied AND verified), plus any extra tools.',
   'For a LEARN/UNDERSTAND instruction follow this loop: read ONE file you have NOT read yet, then IMMEDIATELY call remember with 1-2 specific facts about it (its role, key exports, how it connects). Repeat file by file. Do NOT re-list files you already listed, and do NOT recall facts you have not written yet. Calling remember is the deliverable. Finish once you have remembered the purpose plus each key module.',
   'Call exactly ONE tool per turn. Decompose big instructions into concrete steps; do one at a time.',
+  ONBOARD_PROTOCOL,
   'If the request is genuinely AMBIGUOUS or needs information only the user has (which item, a date, a preference, the scope), call ask_user ONCE with a specific question BEFORE guessing. If you can proceed reasonably, do the work instead of asking. Do not ask more than necessary.',
   'For a CODING / programming task: write files with write_file, run and test them with run_command (node, python, npm, build, etc.), or dispatch a concrete coding step to the coder. ALWAYS run it and check the actual output before calling done — never claim code works without running it.',
   'To read a document or PDF (a file path or a URL), use read_document — it extracts the real text. HONESTY: never claim you read a file/PDF, state a document\'s contents, or claim a capability unless you actually used the tool this turn. Do not invent file contents.',

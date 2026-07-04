@@ -1002,6 +1002,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
 }
 
 const SUGGESTIONS = [
+  'Warm up your memory — learn about my project from a folder of docs',
   'Summarize what came into my inbox today',
   'Catch me up on a topic I care about',
   'Draft a reply to the most important email',

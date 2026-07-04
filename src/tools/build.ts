@@ -9,6 +9,7 @@ import { approvalTools } from './approval.js';
 import { manageTools } from './manage.js';
 import { loadMcpServers } from './mcp.js';
 import { installerTools } from './installer.js';
+import { onboardTools } from './onboard.js';
 import { googleConfigured, googleTools } from '../connectors/google.js';
 import { gmailImapConfigured, gmailImapTools } from '../connectors/gmail-imap.js';
 import { microsoftConfigured, microsoftTools } from '../connectors/microsoft.js';
@@ -22,6 +23,9 @@ export async function buildRegistry(config: MwaConfig): Promise<{ registry: Tool
   // write tool wrapped in requireApproval(). Always available so a previewed
   // write can be confirmed or discarded.
   registry.registerAll(approvalTools());
+  // Warm-start tools: scan the user's folders/files into candidate memories +
+  // the onboarding interview. The agent refines + verifies before writing.
+  registry.registerAll(onboardTools());
   // Self-install tools: browse the curated library + enable curated connectors (safe tier),
   // plus propose_connector (reviews external npm packages; install needs human approval).
   registry.registerAll(installerTools(config));
