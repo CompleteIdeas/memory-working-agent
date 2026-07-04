@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { scanSources } from '../src/onboard.js';
 import { onboardTools } from '../src/tools/onboard.js';
 import type { ToolContext } from '../src/tools/registry.js';
+import { effectOf, isSensitive, readsUntrustedContent } from '../src/tools/governance.js';
 
 let box: string; // sandbox dir the "user" granted
 
@@ -61,6 +62,14 @@ describe('MWA onboard — tools', () => {
     expect(out).toContain('CANDIDATE memories');
     expect(out).toContain('not saved');
     expect(out).toContain('tblMemberDetails'); // real content, from the scan
+  });
+
+  it('onboard_scan is governed as a LOCAL read (not egress) and keeps seed memories trusted', () => {
+    // Reads the owner's own granted-folder docs — a local read, not "reaching outside your machine".
+    expect(effectOf('onboard_scan')).toBe('read');
+    expect(isSensitive('onboard_scan')).toBe(false);
+    // Deliberately NOT an untrusted-content source (unlike inbox/web), so seed writes stay canonical.
+    expect(readsUntrustedContent('onboard_scan')).toBe(false);
   });
 
   it('onboard_questions returns the interview, anchored on the goal', async () => {

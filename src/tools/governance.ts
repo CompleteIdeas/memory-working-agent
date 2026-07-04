@@ -11,6 +11,9 @@ export type ActionCategory = 'read' | 'write-local' | 'execute' | 'external' | '
 // Map the real MWA tool names (builtins + connectors) to a semantic category.
 const TOOL_CATEGORY: Record<string, ActionCategory> = {
   list_files: 'read', read_file: 'read', read_document: 'read', read_email: 'read', search_email: 'read', web_search: 'read',
+  // Warm-start: reads the owner's OWN granted-folder docs (trusted, like read_file) — a local read,
+  // NOT egress, and deliberately absent from UNTRUSTED_CONTENT_TOOLS so seed memories stay canonical.
+  onboard_scan: 'read', onboard_questions: 'read',
   write_file: 'write-local',
   run_command: 'execute',
   http_request: 'external', draft_email: 'external', send_email: 'external',
