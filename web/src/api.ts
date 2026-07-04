@@ -66,6 +66,19 @@ export async function saveBrain(provider: string, model: string, key?: string, b
   const r = await fetch('/api/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ which: 'provider', provider, model, key, baseUrl }) });
   return r.json();
 }
+// --- Onboarding wizard (warm-start memory from folders/files) ---
+export interface OnboardCandidate { concept: string; content: string; source: string }
+/** Scan the folders/files the user points at → candidate memories to review. Nothing is saved. */
+export async function onboardScan(paths: string[]): Promise<{ ok: boolean; candidates: OnboardCandidate[]; filesScanned: number; truncated: boolean }> {
+  const r = bounceIfLocked(await fetch('/api/onboard/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ paths }) }));
+  try { return await r.json(); } catch { return { ok: false, candidates: [], filesScanned: 0, truncated: false }; }
+}
+/** Save the memories the user confirmed (owner-provided → trusted + canonical). */
+export async function onboardSave(memories: { concept: string; content: string; tags?: string[] }[]): Promise<{ ok: boolean; saved: number }> {
+  const r = bounceIfLocked(await fetch('/api/onboard/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ memories }) }));
+  try { return await r.json(); } catch { return { ok: false, saved: 0 }; }
+}
+
 export async function saveAccess(preset: AccessPreset, grantedRoots?: string[]): Promise<{ ok: boolean; message?: string }> {
   const r = await fetch('/api/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ which: 'access', preset, grantedRoots }) });
   return r.json();

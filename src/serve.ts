@@ -53,6 +53,7 @@ async function migrateMemoryToPostgres(sqliteDbPath: string, url: string): Promi
 import { getProvider, listModels, PROVIDERS, type Provider } from './provider.js';
 import { RoutedProvider } from './model-router.js';
 import { MwaMemory } from './awm.js';
+import { scanSources } from './onboard.js';
 import { buildRegistry } from './tools/build.js';
 import { listPendingActions, confirmPending, cancelPending } from './tools/approval.js';
 import { logger, readLogs, type LogLevel } from './logger.js';
@@ -552,6 +553,47 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         } catch { /* */ }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok, id }));
+        return;
+      }
+      // Onboarding wizard — scan the folders/files the user points at into candidate memories.
+      // Pointing MWA at a folder in the setup wizard is explicit consent to read it, so we grant
+      // read access to those folders first (same-origin only). Nothing is saved here.
+      if (p === '/api/onboard/scan' && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        const paths: string[] = Array.isArray(b.paths) ? b.paths.map(String).filter(Boolean) : [];
+        try {
+          const pol = accessPolicy();
+          const dirs = paths.map((p2) => { const abs = resolve(p2); try { return statSync(abs).isDirectory() ? abs : dirname(abs); } catch { return null; } }).filter((x): x is string => !!x);
+          if (dirs.length) setAccess(pol.preset, [...new Set([...pol.grantedRoots, ...dirs])]);
+        } catch { /* grant is best-effort */ }
+        let result: { candidates: unknown[]; filesScanned: number; truncated: boolean } = { candidates: [], filesScanned: 0, truncated: false };
+        try { result = await scanSources(resolve('.'), paths); } catch (e) { logger.error('onboard', 'scan failed', { error: (e as Error).message.slice(0, 200) }); }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...result }));
+        return;
+      }
+      // Onboarding wizard — save the memories the user confirmed. Owner-provided → trusted + canonical.
+      if (p === '/api/onboard/save' && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        const items: { concept?: string; content?: string; tags?: string[] }[] = Array.isArray(b.memories) ? b.memories : [];
+        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        let saved = 0;
+        try {
+          const m = new MwaMemory(SERVE_AGENT, dbPath);
+          for (const it of items) {
+            const concept = String(it.concept ?? '').trim().slice(0, 120);
+            const content = String(it.content ?? '').trim();
+            if (!concept || content.length < 4) continue;
+            const tags = Array.isArray(it.tags) ? it.tags.map(String) : [];
+            const id = await m.write(concept, content, [...tags, 'src=onboarding', 'intent=context'], { provenance: 'user', canonical: true, origin: 'onboarding' });
+            if (id) saved++;
+          }
+          m.close();
+        } catch (e) { logger.error('onboard', 'save failed', { error: (e as Error).message.slice(0, 200) }); }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, saved }));
         return;
       }
       if (p === '/api/schedule') {

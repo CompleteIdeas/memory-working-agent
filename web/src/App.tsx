@@ -5,6 +5,7 @@ import { Onboarding } from './components/Onboarding';
 import { Connections } from './components/Connections';
 import { Memory } from './components/Memory';
 import { Log } from './components/Log';
+import { OnboardWizard } from './components/OnboardWizard';
 
 type View = 'chat' | 'connections' | 'memory' | 'log';
 
@@ -26,7 +27,7 @@ function MemoryMeter({ n }: { n: number }) {
   );
 }
 
-function Header({ dark, setDark, memN, view, setView, showNav }: { dark: boolean; setDark: (v: boolean) => void; memN: number; view: View; setView: (v: View) => void; showNav: boolean }) {
+function Header({ dark, setDark, memN, view, setView, showNav, onWizard }: { dark: boolean; setDark: (v: boolean) => void; memN: number; view: View; setView: (v: View) => void; showNav: boolean; onWizard: () => void }) {
   const tab = (v: View, label: string) => (
     <button
       onClick={() => setView(v)}
@@ -46,6 +47,7 @@ function Header({ dark, setDark, memN, view, setView, showNav }: { dark: boolean
               {tab('connections', 'connect')}
               {tab('memory', 'memory')}
               {tab('log', 'log')}
+              <button onClick={onWizard} className="mono text-[12px] uppercase tracking-[0.12em] px-1 py-0.5 border-b-2 border-transparent text-dim hover:text-signal transition-colors">warm‑start</button>
             </nav>
           )}
         </div>
@@ -68,6 +70,7 @@ export default function App() {
   const [ready, setReady] = useState<boolean | null>(null);
   const [memN, setMemN] = useState(0);
   const [view, setView] = useState<View>('chat');
+  const [wizard, setWizard] = useState(false);
   const [dark, setDark] = useState(() => localStorage.getItem('mwa-dark') === '1');
 
   const refreshStats = () => getStats().then((d) => setMemN(d.memories)).catch(() => {});
@@ -84,12 +87,22 @@ export default function App() {
 
   return (
     <div className="min-h-full flex flex-col">
-      <Header dark={dark} setDark={setDark} memN={memN} view={view} setView={setView} showNav={ready === true} />
+      <Header dark={dark} setDark={setDark} memN={memN} view={view} setView={setView} showNav={ready === true && !wizard} onWizard={() => setWizard(true)} />
       <main className="flex-1 w-full max-w-3xl mx-auto px-4 sm:px-6">
         {ready === null ? (
           <div className="py-20 text-center mono text-dim text-sm">connecting…</div>
         ) : !ready ? (
-          <Onboarding onReady={() => { setReady(true); refreshStats(); }} />
+          <Onboarding onReady={() => {
+            setReady(true);
+            // Cold store, fresh setup → offer to warm-start the memory before first use.
+            getStats().then((d) => { setMemN(d.memories); if (d.memories === 0) setWizard(true); }).catch(() => {});
+          }} />
+        ) : wizard ? (
+          <OnboardWizard
+            onDone={() => { setWizard(false); setView('chat'); refreshStats(); }}
+            onSkip={() => { setWizard(false); setView('chat'); }}
+            onConnectService={() => { setWizard(false); setView('connections'); }}
+          />
         ) : (
           <>
             {/* Chat stays mounted (hidden) so the conversation survives tab switches. */}
