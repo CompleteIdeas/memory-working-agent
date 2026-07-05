@@ -96,8 +96,13 @@ const MIME: Record<string, string> = {
 // at a memory store written by a different agent (e.g. testing a ported USEA store under its own id).
 const SERVE_AGENT = process.env.MWA_AGENT_ID ?? 'mwa-serve';
 
-async function readBody(req: IncomingMessage): Promise<any> {
-  let raw = ''; for await (const c of req) raw += c;
+export async function readBody(req: AsyncIterable<Buffer | string>): Promise<any> {
+  // Collect raw bytes, then decode UTF-8 ONCE. Decoding per-chunk (raw += c) corrupts a
+  // multi-byte char split across a chunk boundary — real for large bodies (e.g. an
+  // onboarding save with em-dashes/accents/emoji in the content).
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(typeof c === 'string' ? Buffer.from(c, 'utf8') : c);
+  const raw = Buffer.concat(chunks).toString('utf8');
   try { return JSON.parse(raw || '{}'); } catch { return {}; }
 }
 

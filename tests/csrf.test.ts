@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { IncomingMessage } from 'node:http';
-import { sameOriginOk } from '../src/serve.js';
+import { sameOriginOk, readBody } from '../src/serve.js';
 
 const req = (headers: Record<string, string>) => ({ headers } as unknown as IncomingMessage);
 
@@ -29,5 +29,25 @@ describe('sameOriginOk (CSRF guard)', () => {
   });
   it('allows non-browser requests with no Origin/Sec-Fetch-Site (curl/server)', () => {
     expect(sameOriginOk(req({ host: '127.0.0.1:7788' }))).toBe(true);
+  });
+});
+
+describe('readBody — UTF-8 integrity across chunk boundaries', () => {
+  async function* chunked(buf: Buffer, at: number): AsyncGenerator<Buffer> {
+    yield buf.subarray(0, at); yield buf.subarray(at);
+  }
+  it('decodes a multi-byte char split across two chunks (e.g. a big onboarding save)', async () => {
+    // Content with an em-dash, smart quotes, accent, and emoji — the kind of thing in real docs.
+    const body = Buffer.from(JSON.stringify({ memories: [{ concept: 'Rule — pay', content: 'Verify “amount” at café 🚀 — always.' }] }), 'utf8');
+    const emDashStart = body.indexOf(0xe2); // first byte of the em-dash (E2 80 94)
+    const out = await readBody(chunked(body, emDashStart + 1)); // split INSIDE the em-dash
+    expect(out.memories[0].concept).toBe('Rule — pay');
+    expect(out.memories[0].content).toBe('Verify “amount” at café 🚀 — always.');
+    expect(JSON.stringify(out)).not.toContain('�'); // no replacement char
+  });
+  it('handles an empty/invalid body gracefully', async () => {
+    async function* one(b: Buffer) { yield b; }
+    expect(await readBody(one(Buffer.from('')))).toEqual({});
+    expect(await readBody(one(Buffer.from('not json')))).toEqual({});
   });
 });
