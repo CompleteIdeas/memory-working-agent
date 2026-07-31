@@ -1,0 +1,591 @@
+{
+  "arms": [
+    "awm"
+  ],
+  "k": 3,
+  "bytes": 6000,
+  "results": {
+    "awm": {
+      "s1-people": [
+        {
+          "pass": true,
+          "steps": 5,
+          "cost": 0.029165,
+          "inTok": 37465,
+          "outTok": 237,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 4,
+          "cost": 0.024148,
+          "inTok": 31177,
+          "outTok": 170,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.015046,
+          "inTok": 18904,
+          "outTok": 193,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "s2-owners": [
+        {
+          "pass": true,
+          "steps": 3,
+          "cost": 0.02175,
+          "inTok": 27194,
+          "outTok": 301,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.014971,
+          "inTok": 19043,
+          "outTok": 153,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 0,
+          "cost": 0.004937,
+          "inTok": 6343,
+          "outTok": 40,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "s3-codenames": [
+        {
+          "pass": false,
+          "steps": 8,
+          "cost": 0.044254,
+          "inTok": 53293,
+          "outTok": 952,
+          "reason": "budget",
+          "note": "budget"
+        },
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.016486,
+          "inTok": 20002,
+          "outTok": 330,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.015505,
+          "inTok": 19737,
+          "outTok": 156,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "s4-budgets": [
+        {
+          "pass": true,
+          "steps": 0,
+          "cost": 0.005308,
+          "inTok": 6706,
+          "outTok": 62,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.016252,
+          "inTok": 20788,
+          "outTok": 147,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 6,
+          "cost": 0.037739,
+          "inTok": 47511,
+          "outTok": 468,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "s5-skill": [
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.020703,
+          "inTok": 21418,
+          "outTok": 1031,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.019454,
+          "inTok": 21091,
+          "outTok": 808,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.020361,
+          "inTok": 20992,
+          "outTok": 1026,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "s6-glossary": [
+        {
+          "pass": true,
+          "steps": 6,
+          "cost": 0.038543,
+          "inTok": 49740,
+          "outTok": 275,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.016476,
+          "inTok": 21074,
+          "outTok": 149,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 7,
+          "cost": 0.047291,
+          "inTok": 56418,
+          "outTok": 1106,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "s7-policy": [
+        {
+          "pass": false,
+          "steps": 8,
+          "cost": 0.046328,
+          "inTok": 56389,
+          "outTok": 897,
+          "reason": "budget",
+          "note": "budget"
+        },
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.016082,
+          "inTok": 20543,
+          "outTok": 150,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 4,
+          "cost": 0.030131,
+          "inTok": 35446,
+          "outTok": 788,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "s8-update1": [
+        {
+          "pass": true,
+          "steps": 7,
+          "cost": 0.065568,
+          "inTok": 58870,
+          "outTok": 4759,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 3,
+          "cost": 0.022072,
+          "inTok": 28175,
+          "outTok": 209,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.016583,
+          "inTok": 21198,
+          "outTok": 152,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "s9-filler": [
+        {
+          "pass": true,
+          "steps": 1,
+          "cost": 0.011692,
+          "inTok": 15169,
+          "outTok": 70,
+          "reason": "done",
+          "note": "391"
+        },
+        {
+          "pass": true,
+          "steps": 0,
+          "cost": 0.005973,
+          "inTok": 7382,
+          "outTok": 97,
+          "reason": "done",
+          "note": "391"
+        },
+        {
+          "pass": true,
+          "steps": 5,
+          "cost": 0.035213,
+          "inTok": 41935,
+          "outTok": 836,
+          "reason": "done",
+          "note": "391"
+        }
+      ],
+      "s10-update2": [
+        {
+          "pass": false,
+          "steps": 8,
+          "cost": 0.06284,
+          "inTok": 59853,
+          "outTok": 3989,
+          "reason": "budget",
+          "note": "budget"
+        },
+        {
+          "pass": true,
+          "steps": 3,
+          "cost": 0.021543,
+          "inTok": 27266,
+          "outTok": 243,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.01691,
+          "inTok": 21478,
+          "outTok": 178,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "recall-person": [
+        {
+          "pass": true,
+          "steps": 3,
+          "cost": 0.021896,
+          "inTok": 28624,
+          "outTok": 95,
+          "reason": "done",
+          "note": "priya rao leads design."
+        },
+        {
+          "pass": false,
+          "steps": 4,
+          "cost": 0.027044,
+          "inTok": 35033,
+          "outTok": 171,
+          "reason": "done",
+          "note": "i don't have a verified design lead in memory."
+        },
+        {
+          "pass": true,
+          "steps": 1,
+          "cost": 0.010991,
+          "inTok": 14306,
+          "outTok": 58,
+          "reason": "done",
+          "note": "priya rao leads design."
+        }
+      ],
+      "multihop": [
+        {
+          "pass": false,
+          "steps": 3,
+          "cost": 0.021785,
+          "inTok": 28135,
+          "outTok": 152,
+          "reason": "done",
+          "note": "cygnus"
+        },
+        {
+          "pass": true,
+          "steps": 4,
+          "cost": 0.026896,
+          "inTok": 34560,
+          "outTok": 217,
+          "reason": "done",
+          "note": "falcon"
+        },
+        {
+          "pass": false,
+          "steps": 1,
+          "cost": 0.011049,
+          "inTok": 14264,
+          "outTok": 78,
+          "reason": "done",
+          "note": "magpie"
+        }
+      ],
+      "supersede-due": [
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.01672,
+          "inTok": 21454,
+          "outTok": 140,
+          "reason": "done",
+          "note": "august 15"
+        },
+        {
+          "pass": true,
+          "steps": 0,
+          "cost": 0.005657,
+          "inTok": 7374,
+          "outTok": 28,
+          "reason": "done",
+          "note": "august 15"
+        },
+        {
+          "pass": true,
+          "steps": 0,
+          "cost": 0.006079,
+          "inTok": 7410,
+          "outTok": 116,
+          "reason": "done",
+          "note": "august 15"
+        }
+      ],
+      "distractor-codename": [
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.016723,
+          "inTok": 21854,
+          "outTok": 74,
+          "reason": "done",
+          "note": "heron"
+        },
+        {
+          "pass": true,
+          "steps": 1,
+          "cost": 0.010805,
+          "inTok": 13999,
+          "outTok": 68,
+          "reason": "done",
+          "note": "heron"
+        },
+        {
+          "pass": true,
+          "steps": 3,
+          "cost": 0.021349,
+          "inTok": 27709,
+          "outTok": 126,
+          "reason": "done",
+          "note": "heron"
+        }
+      ],
+      "distractor-budget": [
+        {
+          "pass": true,
+          "steps": 1,
+          "cost": 0.011357,
+          "inTok": 14668,
+          "outTok": 79,
+          "reason": "done",
+          "note": "73000"
+        },
+        {
+          "pass": true,
+          "steps": 6,
+          "cost": 0.046139,
+          "inTok": 50238,
+          "outTok": 1880,
+          "reason": "done",
+          "note": "73000"
+        },
+        {
+          "pass": true,
+          "steps": 7,
+          "cost": 0.055462,
+          "inTok": 57528,
+          "outTok": 2737,
+          "reason": "done",
+          "note": "73000"
+        }
+      ],
+      "sparse-cue": [
+        {
+          "pass": false,
+          "steps": 2,
+          "cost": 0.016561,
+          "inTok": 21260,
+          "outTok": 137,
+          "reason": "done",
+          "note": "atlas"
+        },
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.01631,
+          "inTok": 20954,
+          "outTok": 132,
+          "reason": "done",
+          "note": "magpie"
+        },
+        {
+          "pass": true,
+          "steps": 5,
+          "cost": 0.03421,
+          "inTok": 42092,
+          "outTok": 587,
+          "reason": "done",
+          "note": "magpie"
+        }
+      ],
+      "skill-apply": [
+        {
+          "pass": true,
+          "steps": 1,
+          "cost": 0.01125,
+          "inTok": 14286,
+          "outTok": 119,
+          "reason": "done",
+          "note": "rel-heron"
+        },
+        {
+          "pass": true,
+          "steps": 0,
+          "cost": 0.005689,
+          "inTok": 7375,
+          "outTok": 35,
+          "reason": "done",
+          "note": "rel-heron"
+        },
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.016348,
+          "inTok": 21335,
+          "outTok": 77,
+          "reason": "done",
+          "note": "rel-heron"
+        }
+      ],
+      "composite": [
+        {
+          "pass": false,
+          "steps": 8,
+          "cost": 0.058636,
+          "inTok": 57313,
+          "outTok": 3478,
+          "reason": "budget",
+          "note": "0/3 terms"
+        },
+        {
+          "pass": false,
+          "steps": 8,
+          "cost": 0.047272,
+          "inTok": 58350,
+          "outTok": 780,
+          "reason": "budget",
+          "note": "0/3 terms"
+        },
+        {
+          "pass": false,
+          "steps": 6,
+          "cost": 0.042534,
+          "inTok": 51342,
+          "outTok": 895,
+          "reason": "done",
+          "note": "0/3 terms"
+        }
+      ],
+      "policy-signoff": [
+        {
+          "pass": false,
+          "steps": 3,
+          "cost": 0.024757,
+          "inTok": 30537,
+          "outTok": 412,
+          "reason": "done",
+          "note": "no file"
+        },
+        {
+          "pass": true,
+          "steps": 6,
+          "cost": 0.042339,
+          "inTok": 52228,
+          "outTok": 704,
+          "reason": "done",
+          "note": "signed"
+        },
+        {
+          "pass": true,
+          "steps": 6,
+          "cost": 0.055333,
+          "inTok": 52009,
+          "outTok": 3628,
+          "reason": "done",
+          "note": "signed"
+        }
+      ],
+      "abstain": [
+        {
+          "pass": true,
+          "steps": 7,
+          "cost": 0.047619,
+          "inTok": 56058,
+          "outTok": 1239,
+          "reason": "done",
+          "note": "i couldn't find any memory that identifies your sp"
+        },
+        {
+          "pass": true,
+          "steps": 8,
+          "cost": 0.052077,
+          "inTok": 58090,
+          "outTok": 1891,
+          "reason": "budget",
+          "note": "i don't have your spouse's name in what i found—if"
+        },
+        {
+          "pass": true,
+          "steps": 7,
+          "cost": 0.051398,
+          "inTok": 57269,
+          "outTok": 1877,
+          "reason": "done",
+          "note": "i don't have your spouse's name in memory."
+        }
+      ]
+    }
+  }
+}

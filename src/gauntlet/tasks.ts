@@ -165,7 +165,7 @@ export const TASKS: GauntletTask[] = [
     instruction: "What is my spouse's name? Reply in one short line.",
     score: (c) => {
       const a = ans(c);
-      const abstained = /(don'?t|do not|haven'?t|never|no record|not (sure|told|aware|mentioned|provided)|isn'?t something|unknown|you haven'?t|could ?n'?t (find|locate)|could not (find|locate)|no (info|information)|wasn'?t (told|given|provided)|i don'?t have)/.test(a);
+      const abstained = /(don'?t|do not|haven'?t|never|no record|not (sure|told|aware|mentioned|provided)|isn'?t something|unknown|you haven'?t|could ?n'?t (find|locate|verify|confirm|determine)|could not (find|locate|verify|confirm|determine)|can'?t (verify|confirm|determine)|cannot (verify|confirm|determine)|unable to (find|locate|verify|confirm|determine)|no (info|information|verified|confirmed)|wasn'?t (told|given|provided)|i don'?t have)/.test(a);
       return { pass: abstained, note: a.slice(0, 50) };
     },
   },

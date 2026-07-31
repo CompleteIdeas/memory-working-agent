@@ -872,6 +872,23 @@ export async function runAgent(opts: {
   // be obeyed as instruction) and DON'T force it canonical (no source-of-truth / hive-shared status for
   // model-laundered untrusted text). Also skip the whole learn suite on a security-PAUSED run.
   if (memory.enabled && toolCalls > 0 && !askedUser && reason !== 'paused') {
+    // DETERMINISTIC TEACH capture — the user EXPLICITLY handed over facts ("remember ...: A; B; C").
+    // Store the full taught clause VERBATIM as one engram before the LLM extraction runs: the
+    // extractor's "fewer is better" bias is right for normal runs but lossy for enumerated
+    // teaching (measured, gauntlet 2026-07-30: a 3-term glossary seed kept only 1 term — the
+    // other 2 existed NOWHERE in the store, so no retrieval feature could ever recall them).
+    // The LLM pass still runs and may add refined per-fact splits; novelty/reinforce dedupes.
+    try {
+      const teach = instruction.match(/^(.{0,80}?\b(?:remember|note)\b[^:]{0,40}):\s*([^]{12,600})/i);
+      if (teach) {
+        const content = teach[2].replace(/\s*\bconfirm\b[^]*$/i, '').trim().replace(/\s+/g, ' ');
+        if (content.length >= 12) {
+          const concept = teach[1].trim().replace(/^please\s+/i, '').slice(0, 80);
+          const id = await memory.write(concept, content, ['topic=world', 'intent=finding', 'confidence_level=observed'], { canonical: !sawUntrustedRead, eventType: 'observation', provenance: sawUntrustedRead ? 'ingested' : 'user' });
+          if (id) { learnedFacts++; emit('remember', { concept }); history.push(`captured taught facts verbatim ("${concept.slice(0, 40)}")`); }
+        }
+      }
+    } catch { /* best-effort */ }
     try {
       const learn = await brain.chat({
         system: 'Extract ONLY durable facts about the USER\'S WORLD that will help answer FUTURE requests: people and their role/relationship, organizations or groups, recurring topics/projects, commitments, dates/deadlines, stated preferences and decisions. STRICT EXCLUSIONS — never store: anything about your own tools, workspace, files, or search process; transient status ("couldn\'t find X", "workspace empty", "snippet cut off"); or one-off trivia. If a fact would not matter next week, skip it. Output ONLY JSON: {"facts":[{"concept":"short title (3-8 words)","content":"the fact, lead with it; include names/dates/specifics"}]}. Return 0 to 6 facts — fewer is better; return [] if nothing meets the bar.',
@@ -887,7 +904,7 @@ export async function runAgent(opts: {
         if (id) { learned++; emit('remember', { concept: String(f.concept).slice(0, 80) }); }
         if (learned >= 6) break;
       }
-      learnedFacts = learned;
+      learnedFacts += learned;
       if (learned) history.push(`auto-learned ${learned} durable fact(s)`);
     } catch { /* learning is best-effort */ }
   }
@@ -964,26 +981,38 @@ export async function runAgent(opts: {
   // call then decides if anything is truly STANDING. Harness-owned, run-end — no loop change.
   const directiveLike = /\b(always|never|from now on|going forward|in future|each time|every time|whenever|by default|make sure (to|you)|be sure to|remember to|please (always|never)|don'?t ever|prefer|i (like|want|need) (you|it|them) to|keep (it|them|the|your|things|responses|summaries|replies)|sign off|cc |bcc |my (name|signature)|tone|do not send|don'?t send|without (my|me) (review|approval|ok|sign))\b/i;
   if (memory.enabled && opts.interactive && !askedUser && directiveLike.test(instruction)) {
-    try {
-      const pol = await brain.chat({
-        system: 'Decide if the user stated any STANDING preference or rule meant to apply to FUTURE tasks too — not a detail of just this one task. Examples that ARE standing: "always CC my assistant", "never send email without my review", "keep summaries to 5 bullets", "sign off as Rob", a tone/format rule. NOT standing: one-off task parameters ("email Sarah about Tuesday"), facts, or anything specific to only this request. Output ONLY JSON {"policies":["imperative standing rule", ...]} with 0 to 3 items; output {"policies":[]} if none. Write each rule as a short imperative the agent can follow ("Never send an email without showing me a draft first").',
-        messages: [{ role: 'user', content: `USER REQUEST: ${instruction}` }],
-        maxTokens: 250,
-      });
-      usage.brainIn += pol.usage.input; usage.brainOut += pol.usage.output;
-      const known = new Set(policies.map((p) => p.toLowerCase().trim()));
-      for (const rule of (parseJsonLoose<{ policies?: string[] }>(pol.text)?.policies ?? []).slice(0, 3)) {
-        const r = typeof rule === 'string' ? rule.trim() : '';
-        if (r.length < 8 || known.has(r.toLowerCase())) continue;
-        const id = await memory.savePolicy(r);
-        if (id) { policiesLearned++; known.add(r.toLowerCase()); emit('remember', { concept: `preference: ${r}`.slice(0, 80) }); history.push(`saved a standing preference ("${r.slice(0, 50)}")`); }
-      }
-    } catch { /* best-effort */ }
+    const known = new Set(policies.map((p) => p.toLowerCase().trim()));
+    const capture = async (r: string): Promise<void> => {
+      if (r.length < 8 || known.has(r.toLowerCase())) return;
+      const id = await memory.savePolicy(r);
+      if (id) { policiesLearned++; known.add(r.toLowerCase()); emit('remember', { concept: `preference: ${r}`.slice(0, 80) }); history.push(`saved a standing preference ("${r.slice(0, 50)}")`); }
+    };
+    // DETERMINISTIC fast-path — the user LITERALLY declared a standing rule ("remember a
+    // standing preference: <rule>"). Capture the stated rule verbatim, no LLM judgment call.
+    // Measured (gauntlet 2026-07-30): the focused extractor below skipped an EXPLICIT
+    // "standing preference" declaration in ~2/3 of reps, making downstream policy adherence
+    // recall-luck. An explicit declaration is not a judgment call; only implicit directives are.
+    const explicit = instruction.match(/\b(?:standing|persistent|permanent)\s+(?:preference|rule|policy)\b[:,]?\s+(.{8,240}?)(?=\s*(?:\bconfirm\b|$))/is);
+    if (explicit) {
+      try { await capture(explicit[1].trim().replace(/\s+/g, ' ').replace(/[.\s]+$/, '')); } catch { /* best-effort */ }
+    } else {
+      try {
+        const pol = await brain.chat({
+          system: 'Decide if the user stated any STANDING preference or rule meant to apply to FUTURE tasks too — not a detail of just this one task. Examples that ARE standing: "always CC my assistant", "never send email without my review", "keep summaries to 5 bullets", "sign off as Rob", a tone/format rule. NOT standing: one-off task parameters ("email Sarah about Tuesday"), facts, or anything specific to only this request. Output ONLY JSON {"policies":["imperative standing rule", ...]} with 0 to 3 items; output {"policies":[]} if none. Write each rule as a short imperative the agent can follow ("Never send an email without showing me a draft first").',
+          messages: [{ role: 'user', content: `USER REQUEST: ${instruction}` }],
+          maxTokens: 250,
+        });
+        usage.brainIn += pol.usage.input; usage.brainOut += pol.usage.output;
+        for (const rule of (parseJsonLoose<{ policies?: string[] }>(pol.text)?.policies ?? []).slice(0, 3)) {
+          await capture(typeof rule === 'string' ? rule.trim() : '');
+        }
+      } catch { /* best-effort */ }
+    }
   }
 
   // record the run outcome
   if (memory.enabled) {
-    await memory.write(`agent run: ${instruction.slice(0, 56)}`, `Instruction "${instruction.slice(0, 80)}" ended: ${reason} after ${steps} steps, ${dispatches} dispatches. ${finalSummary}`, ['topic=agent', 'kind=run-outcome', 'intent=decision', 'confidence_level=verified'], { eventType: 'decision', canonical: reason === 'done' });
+    await memory.write(`agent run: ${instruction.slice(0, 56)}`, `Instruction "${instruction.slice(0, 240)}" ended: ${reason} after ${steps} steps, ${dispatches} dispatches. ${finalSummary}`, ['topic=agent', 'kind=run-outcome', 'intent=decision', 'confidence_level=verified'], { eventType: 'decision', canonical: reason === 'done' });
   }
 
   // SCHEDULER-DRIVEN RESUME — a long task that ran out of budget (or got stuck) AFTER doing

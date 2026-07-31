@@ -1,0 +1,454 @@
+{
+  "arms": [
+    "awm",
+    "off"
+  ],
+  "k": 1,
+  "bytes": 6000,
+  "results": {
+    "awm": {
+      "s1-people": [
+        {
+          "pass": true,
+          "steps": 5,
+          "cost": 0.026782,
+          "inTok": 33987,
+          "outTok": 287,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "s2-owners": [
+        {
+          "pass": true,
+          "steps": 3,
+          "cost": 0.019034,
+          "inTok": 24082,
+          "outTok": 216,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "s3-codenames": [
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.014636,
+          "inTok": 18290,
+          "outTok": 204,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "s4-budgets": [
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.016109,
+          "inTok": 19151,
+          "outTok": 388,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "s5-skill": [
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.01855,
+          "inTok": 19213,
+          "outTok": 920,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "s6-glossary": [
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.015325,
+          "inTok": 19521,
+          "outTok": 152,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "s7-policy": [
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.015571,
+          "inTok": 19694,
+          "outTok": 178,
+          "reason": "done",
+          "note": "done"
+        }
+      ],
+      "s8-update1": [
+        {
+          "pass": false,
+          "steps": 8,
+          "cost": 0.041629,
+          "inTok": 51624,
+          "outTok": 647,
+          "reason": "budget",
+          "note": "budget"
+        }
+      ],
+      "s9-filler": [
+        {
+          "pass": true,
+          "steps": 5,
+          "cost": 0.035719,
+          "inTok": 38835,
+          "outTok": 1465,
+          "reason": "done",
+          "note": "391\n\nwhat i did:\n· reached out"
+        }
+      ],
+      "s10-update2": [
+        {
+          "pass": false,
+          "steps": 8,
+          "cost": 0.059607,
+          "inTok": 53028,
+          "outTok": 4408,
+          "reason": "budget",
+          "note": "budget"
+        }
+      ],
+      "recall-person": [
+        {
+          "pass": true,
+          "steps": 7,
+          "cost": 0.043066,
+          "inTok": 50300,
+          "outTok": 1187,
+          "reason": "done",
+          "note": "priya rao leads design."
+        }
+      ],
+      "multihop": [
+        {
+          "pass": false,
+          "steps": 5,
+          "cost": 0.028997,
+          "inTok": 37402,
+          "outTok": 210,
+          "reason": "done",
+          "note": "atlas"
+        }
+      ],
+      "supersede-due": [
+        {
+          "pass": true,
+          "steps": 0,
+          "cost": 0.00593,
+          "inTok": 7073,
+          "outTok": 139,
+          "reason": "done",
+          "note": "august 15"
+        }
+      ],
+      "distractor-codename": [
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.015154,
+          "inTok": 19491,
+          "outTok": 119,
+          "reason": "done",
+          "note": "heron"
+        }
+      ],
+      "distractor-budget": [
+        {
+          "pass": true,
+          "steps": 7,
+          "cost": 0.04633,
+          "inTok": 50722,
+          "outTok": 1842,
+          "reason": "done",
+          "note": "73000"
+        }
+      ],
+      "sparse-cue": [
+        {
+          "pass": false,
+          "steps": 4,
+          "cost": 0.025099,
+          "inTok": 31887,
+          "outTok": 263,
+          "reason": "done",
+          "note": "magp"
+        }
+      ],
+      "skill-apply": [
+        {
+          "pass": true,
+          "steps": 0,
+          "cost": 0.005107,
+          "inTok": 6599,
+          "outTok": 35,
+          "reason": "done",
+          "note": "rel-heron"
+        }
+      ],
+      "composite": [
+        {
+          "pass": false,
+          "steps": 2,
+          "cost": 0.016501,
+          "inTok": 19524,
+          "outTok": 413,
+          "reason": "done",
+          "note": "0/3 terms"
+        }
+      ],
+      "policy-signoff": [
+        {
+          "pass": true,
+          "steps": 4,
+          "cost": 0.027454,
+          "inTok": 33719,
+          "outTok": 481,
+          "reason": "done",
+          "note": "signed"
+        }
+      ],
+      "abstain": [
+        {
+          "pass": true,
+          "steps": 8,
+          "cost": 0.042527,
+          "inTok": 48507,
+          "outTok": 1366,
+          "reason": "budget",
+          "note": "i couldn't find your spouse's name—tell me it, and"
+        }
+      ]
+    },
+    "off": {
+      "s1-people": [
+        {
+          "pass": false,
+          "steps": 3,
+          "cost": 0.02068,
+          "inTok": 22798,
+          "outTok": 796,
+          "reason": "stuck",
+          "note": "stuck"
+        }
+      ],
+      "s2-owners": [
+        {
+          "pass": false,
+          "steps": 3,
+          "cost": 0.021575,
+          "inTok": 22785,
+          "outTok": 997,
+          "reason": "stuck",
+          "note": "stuck"
+        }
+      ],
+      "s3-codenames": [
+        {
+          "pass": false,
+          "steps": 3,
+          "cost": 0.021334,
+          "inTok": 22788,
+          "outTok": 943,
+          "reason": "stuck",
+          "note": "stuck"
+        }
+      ],
+      "s4-budgets": [
+        {
+          "pass": false,
+          "steps": 4,
+          "cost": 0.028096,
+          "inTok": 28444,
+          "outTok": 1503,
+          "reason": "stuck",
+          "note": "stuck"
+        }
+      ],
+      "s5-skill": [
+        {
+          "pass": false,
+          "steps": 3,
+          "cost": 0.021164,
+          "inTok": 22861,
+          "outTok": 893,
+          "reason": "stuck",
+          "note": "stuck"
+        }
+      ],
+      "s6-glossary": [
+        {
+          "pass": false,
+          "steps": 3,
+          "cost": 0.021699,
+          "inTok": 22788,
+          "outTok": 1024,
+          "reason": "stuck",
+          "note": "stuck"
+        }
+      ],
+      "s7-policy": [
+        {
+          "pass": false,
+          "steps": 3,
+          "cost": 0.018752,
+          "inTok": 22531,
+          "outTok": 412,
+          "reason": "stuck",
+          "note": "stuck"
+        }
+      ],
+      "s8-update1": [
+        {
+          "pass": false,
+          "steps": 3,
+          "cost": 0.019411,
+          "inTok": 22713,
+          "outTok": 528,
+          "reason": "stuck",
+          "note": "stuck"
+        }
+      ],
+      "s9-filler": [
+        {
+          "pass": true,
+          "steps": 0,
+          "cost": 0.004275,
+          "inTok": 5598,
+          "outTok": 17,
+          "reason": "done",
+          "note": "391"
+        }
+      ],
+      "s10-update2": [
+        {
+          "pass": false,
+          "steps": 3,
+          "cost": 0.019863,
+          "inTok": 22728,
+          "outTok": 626,
+          "reason": "stuck",
+          "note": "stuck"
+        }
+      ],
+      "recall-person": [
+        {
+          "pass": false,
+          "steps": 4,
+          "cost": 0.024379,
+          "inTok": 28294,
+          "outTok": 702,
+          "reason": "stuck",
+          "note": "i couldn't find who leads design from the info her"
+        }
+      ],
+      "multihop": [
+        {
+          "pass": false,
+          "steps": 8,
+          "cost": 0.041103,
+          "inTok": 47808,
+          "outTok": 1166,
+          "reason": "budget",
+          "note": "i couldn't find the codename from the available in"
+        }
+      ],
+      "supersede-due": [
+        {
+          "pass": false,
+          "steps": 1,
+          "cost": 0.008662,
+          "inTok": 11201,
+          "outTok": 58,
+          "reason": "done",
+          "note": "who or what is “atlas” in your context, and which "
+        }
+      ],
+      "distractor-codename": [
+        {
+          "pass": false,
+          "steps": 4,
+          "cost": 0.023801,
+          "inTok": 28339,
+          "outTok": 566,
+          "reason": "stuck",
+          "note": "i couldn't find borealis's codename from the avail"
+        }
+      ],
+      "distractor-budget": [
+        {
+          "pass": false,
+          "steps": 0,
+          "cost": 0.004407,
+          "inTok": 5594,
+          "outTok": 47,
+          "reason": "done",
+          "note": "which cygnus do you mean? please share the full na"
+        }
+      ],
+      "sparse-cue": [
+        {
+          "pass": false,
+          "steps": 7,
+          "cost": 0.038999,
+          "inTok": 45782,
+          "outTok": 1036,
+          "reason": "stuck",
+          "note": "i couldn't find it; if you want, point me to the p"
+        }
+      ],
+      "skill-apply": [
+        {
+          "pass": false,
+          "steps": 7,
+          "cost": 0.041673,
+          "inTok": 45538,
+          "outTok": 1671,
+          "reason": "stuck",
+          "note": "i couldn't determine the borealis release tag from"
+        }
+      ],
+      "composite": [
+        {
+          "pass": false,
+          "steps": 7,
+          "cost": 0.041047,
+          "inTok": 45357,
+          "outTok": 1562,
+          "reason": "done",
+          "note": "0/3 terms"
+        }
+      ],
+      "policy-signoff": [
+        {
+          "pass": false,
+          "steps": 3,
+          "cost": 0.017776,
+          "inTok": 22591,
+          "outTok": 185,
+          "reason": "done",
+          "note": "no signoff"
+        }
+      ],
+      "abstain": [
+        {
+          "pass": true,
+          "steps": 3,
+          "cost": 0.018688,
+          "inTok": 22685,
+          "outTok": 372,
+          "reason": "stuck",
+          "note": "i couldn't find your spouse's name here—if you wan"
+        }
+      ]
+    }
+  }
+}
