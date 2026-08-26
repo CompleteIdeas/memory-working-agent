@@ -21,3 +21,8 @@ scripts/_*
 
 # desktop (Tauri) build staging — the bundled runtime is reassembled by the build
 build/
+
+# Per-run gauntlet scorecards — retained locally so a baseline arm is never
+# overwritten by the treatment arm, but they are run artifacts, not source.
+# Commit one deliberately when it backs a documented claim.
+results/gauntlet/runs/

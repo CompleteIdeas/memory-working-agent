@@ -9,28 +9,28 @@
       "s1-people": [
         {
           "pass": true,
-          "steps": 3,
-          "cost": 0.019404,
-          "inTok": 24930,
-          "outTok": 157,
+          "steps": 4,
+          "cost": 0.02419,
+          "inTok": 31239,
+          "outTok": 169,
           "reason": "done",
           "note": "done"
         },
         {
           "pass": true,
           "steps": 3,
-          "cost": 0.019325,
-          "inTok": 24914,
-          "outTok": 142,
+          "cost": 0.019578,
+          "inTok": 24976,
+          "outTok": 188,
           "reason": "done",
           "note": "done"
         },
         {
           "pass": true,
-          "steps": 5,
-          "cost": 0.029438,
-          "inTok": 37517,
-          "outTok": 289,
+          "steps": 2,
+          "cost": 0.014687,
+          "inTok": 18719,
+          "outTok": 144,
           "reason": "done",
           "note": "done"
         }
@@ -38,28 +38,28 @@
       "s2-owners": [
         {
           "pass": true,
-          "steps": 0,
-          "cost": 0.004967,
-          "inTok": 6335,
-          "outTok": 48,
-          "reason": "done",
-          "note": "done"
-        },
-        {
-          "pass": true,
-          "steps": 0,
-          "cost": 0.004993,
-          "inTok": 6352,
-          "outTok": 51,
+          "steps": 3,
+          "cost": 0.020678,
+          "inTok": 25999,
+          "outTok": 262,
           "reason": "done",
           "note": "done"
         },
         {
           "pass": true,
           "steps": 4,
-          "cost": 0.026005,
-          "inTok": 32885,
-          "outTok": 298,
+          "cost": 0.02578,
+          "inTok": 32657,
+          "outTok": 286,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 4,
+          "cost": 0.025651,
+          "inTok": 32617,
+          "outTok": 264,
           "reason": "done",
           "note": "done"
         }
@@ -68,27 +68,27 @@
         {
           "pass": true,
           "steps": 2,
-          "cost": 0.015917,
-          "inTok": 19794,
-          "outTok": 238,
+          "cost": 0.016331,
+          "inTok": 20274,
+          "outTok": 250,
           "reason": "done",
           "note": "done"
         },
         {
           "pass": true,
           "steps": 2,
-          "cost": 0.015822,
-          "inTok": 19878,
-          "outTok": 203,
+          "cost": 0.016535,
+          "inTok": 20474,
+          "outTok": 262,
           "reason": "done",
           "note": "done"
         },
         {
           "pass": true,
           "steps": 2,
-          "cost": 0.017075,
-          "inTok": 20618,
-          "outTok": 358,
+          "cost": 0.016009,
+          "inTok": 19906,
+          "outTok": 240,
           "reason": "done",
           "note": "done"
         }
@@ -96,28 +96,28 @@
       "s4-budgets": [
         {
           "pass": true,
+          "steps": 2,
+          "cost": 0.016331,
+          "inTok": 20839,
+          "outTok": 156,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 5,
+          "cost": 0.033272,
+          "inTok": 41993,
+          "outTok": 395,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
           "steps": 3,
-          "cost": 0.021745,
-          "inTok": 27637,
-          "outTok": 226,
-          "reason": "done",
-          "note": "done"
-        },
-        {
-          "pass": true,
-          "steps": 2,
-          "cost": 0.016281,
-          "inTok": 20670,
-          "outTok": 173,
-          "reason": "done",
-          "note": "done"
-        },
-        {
-          "pass": true,
-          "steps": 2,
-          "cost": 0.017178,
-          "inTok": 21410,
-          "outTok": 249,
+          "cost": 0.022332,
+          "inTok": 27754,
+          "outTok": 337,
           "reason": "done",
           "note": "done"
         }
@@ -126,27 +126,27 @@
         {
           "pass": true,
           "steps": 2,
-          "cost": 0.019828,
-          "inTok": 21247,
-          "outTok": 865,
+          "cost": 0.019716,
+          "inTok": 21044,
+          "outTok": 874,
           "reason": "done",
           "note": "done"
         },
         {
           "pass": true,
           "steps": 2,
-          "cost": 0.020413,
-          "inTok": 20857,
-          "outTok": 1060,
+          "cost": 0.020042,
+          "inTok": 20759,
+          "outTok": 994,
           "reason": "done",
           "note": "done"
         },
         {
           "pass": true,
           "steps": 2,
-          "cost": 0.020425,
-          "inTok": 21402,
-          "outTok": 972,
+          "cost": 0.019974,
+          "inTok": 21364,
+          "outTok": 878,
           "reason": "done",
           "note": "done"
         }
@@ -155,56 +155,56 @@
         {
           "pass": true,
           "steps": 3,
-          "cost": 0.022111,
-          "inTok": 28030,
-          "outTok": 242,
+          "cost": 0.022039,
+          "inTok": 28251,
+          "outTok": 189,
           "reason": "done",
           "note": "done"
         },
         {
           "pass": true,
-          "steps": 2,
-          "cost": 0.016387,
-          "inTok": 21112,
-          "outTok": 123,
+          "steps": 4,
+          "cost": 0.027349,
+          "inTok": 35307,
+          "outTok": 193,
           "reason": "done",
           "note": "done"
         },
         {
           "pass": true,
-          "steps": 6,
-          "cost": 0.040765,
-          "inTok": 49211,
-          "outTok": 857,
+          "steps": 3,
+          "cost": 0.022638,
+          "inTok": 28696,
+          "outTok": 248,
           "reason": "done",
           "note": "done"
         }
       ],
       "s7-policy": [
         {
-          "pass": false,
-          "steps": 2,
-          "cost": 0,
-          "inTok": 0,
-          "outTok": 0,
-          "reason": "error",
-          "note": "error"
-        },
-        {
           "pass": true,
           "steps": 3,
-          "cost": 0.021982,
-          "inTok": 28073,
-          "outTok": 206,
+          "cost": 0.022266,
+          "inTok": 28386,
+          "outTok": 217,
           "reason": "done",
           "note": "done"
         },
         {
           "pass": true,
-          "steps": 2,
-          "cost": 0.016737,
-          "inTok": 21452,
-          "outTok": 144,
+          "steps": 3,
+          "cost": 0.022154,
+          "inTok": 28315,
+          "outTok": 204,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 7,
+          "cost": 0.049815,
+          "inTok": 57762,
+          "outTok": 1443,
           "reason": "done",
           "note": "done"
         }
@@ -212,57 +212,57 @@
       "s8-update1": [
         {
           "pass": true,
-          "steps": 7,
-          "cost": 0.048034,
-          "inTok": 55579,
-          "outTok": 1411,
+          "steps": 2,
+          "cost": 0.016556,
+          "inTok": 21156,
+          "outTok": 153,
           "reason": "done",
           "note": "done"
         },
         {
           "pass": true,
-          "steps": 6,
-          "cost": 0.03834,
-          "inTok": 49242,
-          "outTok": 313,
+          "steps": 2,
+          "cost": 0.016781,
+          "inTok": 21361,
+          "outTok": 169,
           "reason": "done",
           "note": "done"
         },
         {
-          "pass": false,
-          "steps": 8,
-          "cost": 0.058857,
-          "inTok": 57536,
-          "outTok": 3490,
-          "reason": "budget",
-          "note": "budget"
+          "pass": true,
+          "steps": 7,
+          "cost": 0.051678,
+          "inTok": 56046,
+          "outTok": 2143,
+          "reason": "done",
+          "note": "done"
         }
       ],
       "s9-filler": [
         {
           "pass": true,
-          "steps": 5,
-          "cost": 0.032395,
-          "inTok": 42281,
-          "outTok": 152,
+          "steps": 6,
+          "cost": 0.049477,
+          "inTok": 50015,
+          "outTok": 2659,
           "reason": "done",
           "note": "391\n\nwhat i did:\n· changed thi"
         },
         {
           "pass": true,
-          "steps": 5,
-          "cost": 0.036353,
-          "inTok": 42099,
-          "outTok": 1062,
+          "steps": 0,
+          "cost": 0.005907,
+          "inTok": 7684,
+          "outTok": 32,
           "reason": "done",
-          "note": "391\n\nwhat i did:\n· reached out"
+          "note": "391"
         },
         {
           "pass": true,
-          "steps": 5,
-          "cost": 0.036044,
-          "inTok": 42575,
-          "outTok": 914,
+          "steps": 2,
+          "cost": 0.016681,
+          "inTok": 21641,
+          "outTok": 100,
           "reason": "done",
           "note": "391"
         }
@@ -270,57 +270,57 @@
       "s10-update2": [
         {
           "pass": true,
-          "steps": 4,
-          "cost": 0.02678,
-          "inTok": 34104,
-          "outTok": 267,
-          "reason": "done",
-          "note": "done"
-        },
-        {
-          "pass": true,
           "steps": 3,
-          "cost": 0.021607,
-          "inTok": 27639,
-          "outTok": 195,
+          "cost": 0.021829,
+          "inTok": 27989,
+          "outTok": 186,
           "reason": "done",
           "note": "done"
         },
         {
           "pass": true,
           "steps": 4,
-          "cost": 0.02824,
-          "inTok": 36291,
-          "outTok": 227,
+          "cost": 0.027419,
+          "inTok": 35184,
+          "outTok": 229,
+          "reason": "done",
+          "note": "done"
+        },
+        {
+          "pass": true,
+          "steps": 4,
+          "cost": 0.026614,
+          "inTok": 34106,
+          "outTok": 230,
           "reason": "done",
           "note": "done"
         }
       ],
       "recall-person": [
         {
-          "pass": false,
-          "steps": 1,
-          "cost": 0.010432,
-          "inTok": 13538,
-          "outTok": 62,
+          "pass": true,
+          "steps": 3,
+          "cost": 0.022094,
+          "inTok": 28409,
+          "outTok": 175,
           "reason": "done",
-          "note": "which project or team do you mean by “design”?"
+          "note": "design is led by priya rao."
         },
         {
-          "pass": false,
+          "pass": true,
           "steps": 2,
-          "cost": 0.016173,
-          "inTok": 20820,
-          "outTok": 124,
+          "cost": 0.015839,
+          "inTok": 20644,
+          "outTok": 79,
           "reason": "done",
-          "note": "i don't have any verified information about who le"
+          "note": "priya rao leads design."
         },
         {
           "pass": true,
           "steps": 3,
-          "cost": 0.021831,
-          "inTok": 28640,
-          "outTok": 78,
+          "cost": 0.021884,
+          "inTok": 28429,
+          "outTok": 125,
           "reason": "done",
           "note": "priya rao leads design."
         }
@@ -328,57 +328,57 @@
       "multihop": [
         {
           "pass": false,
-          "steps": 6,
-          "cost": 0.048059,
-          "inTok": 48982,
-          "outTok": 2516,
+          "steps": 2,
+          "cost": 0.016322,
+          "inTok": 21205,
+          "outTok": 93,
           "reason": "done",
-          "note": "magpie"
+          "note": "atlas"
         },
         {
           "pass": false,
-          "steps": 7,
-          "cost": 0.042809,
-          "inTok": 55387,
-          "outTok": 282,
+          "steps": 1,
+          "cost": 0.011137,
+          "inTok": 14351,
+          "outTok": 83,
           "reason": "done",
           "note": "magpie"
         },
         {
           "pass": false,
           "steps": 1,
-          "cost": 0.010878,
-          "inTok": 13856,
-          "outTok": 108,
+          "cost": 0.011316,
+          "inTok": 14608,
+          "outTok": 80,
           "reason": "done",
-          "note": "magpie"
+          "note": "heron"
         }
       ],
       "supersede-due": [
         {
           "pass": true,
           "steps": 1,
-          "cost": 0.011317,
-          "inTok": 14406,
-          "outTok": 114,
+          "cost": 0.011128,
+          "inTok": 14291,
+          "outTok": 91,
           "reason": "done",
           "note": "august 15"
         },
         {
           "pass": true,
           "steps": 1,
-          "cost": 0.010698,
-          "inTok": 13940,
-          "outTok": 54,
+          "cost": 0.011014,
+          "inTok": 14338,
+          "outTok": 58,
           "reason": "done",
           "note": "august 15"
         },
         {
           "pass": true,
-          "steps": 1,
-          "cost": 0.011719,
-          "inTok": 14677,
-          "outTok": 158,
+          "steps": 2,
+          "cost": 0.016895,
+          "inTok": 21465,
+          "outTok": 177,
           "reason": "done",
           "note": "august 15"
         }
@@ -386,28 +386,28 @@
       "distractor-codename": [
         {
           "pass": true,
-          "steps": 5,
-          "cost": 0.034232,
-          "inTok": 41839,
-          "outTok": 634,
+          "steps": 4,
+          "cost": 0.028271,
+          "inTok": 35481,
+          "outTok": 369,
           "reason": "done",
           "note": "heron"
         },
         {
           "pass": true,
-          "steps": 3,
-          "cost": 0.026626,
-          "inTok": 27767,
-          "outTok": 1289,
+          "steps": 2,
+          "cost": 0.016325,
+          "inTok": 21059,
+          "outTok": 118,
           "reason": "done",
           "note": "heron"
         },
         {
           "pass": true,
-          "steps": 1,
-          "cost": 0.011138,
-          "inTok": 14425,
-          "outTok": 71,
+          "steps": 0,
+          "cost": 0.005905,
+          "inTok": 7525,
+          "outTok": 58,
           "reason": "done",
           "note": "heron"
         }
@@ -415,57 +415,57 @@
       "distractor-budget": [
         {
           "pass": true,
-          "steps": 6,
-          "cost": 0.038055,
-          "inTok": 49198,
-          "outTok": 257,
-          "reason": "done",
-          "note": "73000"
-        },
-        {
-          "pass": true,
-          "steps": 5,
-          "cost": 0.032224,
-          "inTok": 41603,
-          "outTok": 227,
+          "steps": 0,
+          "cost": 0.006053,
+          "inTok": 7608,
+          "outTok": 77,
           "reason": "done",
           "note": "73000"
         },
         {
           "pass": true,
           "steps": 7,
-          "cost": 0.056727,
-          "inTok": 57342,
-          "outTok": 3049,
+          "cost": 0.054063,
+          "inTok": 56880,
+          "outTok": 2534,
           "reason": "done",
-          "note": "cygnus budget: 73000"
+          "note": "73000"
+        },
+        {
+          "pass": true,
+          "steps": 0,
+          "cost": 0.005791,
+          "inTok": 7427,
+          "outTok": 49,
+          "reason": "done",
+          "note": "73,000"
         }
       ],
       "sparse-cue": [
         {
           "pass": true,
           "steps": 2,
-          "cost": 0.016494,
-          "inTok": 21164,
-          "outTok": 138,
-          "reason": "done",
-          "note": "magpie"
-        },
-        {
-          "pass": true,
-          "steps": 1,
-          "cost": 0.011295,
-          "inTok": 14610,
-          "outTok": 75,
+          "cost": 0.016591,
+          "inTok": 21443,
+          "outTok": 113,
           "reason": "done",
           "note": "magpie"
         },
         {
           "pass": true,
           "steps": 2,
-          "cost": 0.016913,
-          "inTok": 21902,
-          "outTok": 108,
+          "cost": 0.016674,
+          "inTok": 21350,
+          "outTok": 147,
+          "reason": "done",
+          "note": "magpie"
+        },
+        {
+          "pass": true,
+          "steps": 2,
+          "cost": 0.016619,
+          "inTok": 21277,
+          "outTok": 147,
           "reason": "done",
           "note": "magpie"
         }
@@ -473,28 +473,28 @@
       "skill-apply": [
         {
           "pass": true,
-          "steps": 2,
-          "cost": 0.016474,
-          "inTok": 21101,
+          "steps": 3,
+          "cost": 0.021914,
+          "inTok": 28355,
           "outTok": 144,
           "reason": "done",
           "note": "rel-heron"
         },
         {
-          "pass": true,
+          "pass": false,
           "steps": 0,
-          "cost": 0.005842,
-          "inTok": 7615,
-          "outTok": 29,
+          "cost": 0.005896,
+          "inTok": 7681,
+          "outTok": 30,
           "reason": "done",
-          "note": "rel-heron"
+          "note": "rel-borealis"
         },
         {
           "pass": true,
-          "steps": 1,
-          "cost": 0.011293,
-          "inTok": 14200,
-          "outTok": 143,
+          "steps": 0,
+          "cost": 0.005682,
+          "inTok": 7366,
+          "outTok": 35,
           "reason": "done",
           "note": "rel-heron"
         }
@@ -502,28 +502,28 @@
       "composite": [
         {
           "pass": true,
-          "steps": 3,
-          "cost": 0.024189,
-          "inTok": 29480,
-          "outTok": 462,
+          "steps": 4,
+          "cost": 0.031265,
+          "inTok": 37187,
+          "outTok": 750,
+          "reason": "done",
+          "note": "3/3 terms"
+        },
+        {
+          "pass": true,
+          "steps": 7,
+          "cost": 0.048274,
+          "inTok": 59421,
+          "outTok": 824,
           "reason": "done",
           "note": "3/3 terms"
         },
         {
           "pass": false,
           "steps": 4,
-          "cost": 0.032034,
-          "inTok": 37792,
-          "outTok": 820,
-          "reason": "done",
-          "note": "0/3 terms"
-        },
-        {
-          "pass": false,
-          "steps": 7,
-          "cost": 0.064749,
-          "inTok": 60016,
-          "outTok": 4386,
+          "cost": 0.030486,
+          "inTok": 36172,
+          "outTok": 746,
           "reason": "done",
           "note": "0/3 terms"
         }
@@ -531,28 +531,28 @@
       "policy-signoff": [
         {
           "pass": true,
-          "steps": 8,
-          "cost": 0.047261,
-          "inTok": 59145,
-          "outTok": 645,
-          "reason": "budget",
+          "steps": 3,
+          "cost": 0.023945,
+          "inTok": 29377,
+          "outTok": 425,
+          "reason": "done",
           "note": "signed"
         },
         {
           "pass": true,
-          "steps": 3,
-          "cost": 0.022574,
-          "inTok": 28359,
-          "outTok": 290,
+          "steps": 4,
+          "cost": 0.030862,
+          "inTok": 37549,
+          "outTok": 600,
           "reason": "done",
           "note": "signed"
         },
         {
           "pass": true,
           "steps": 3,
-          "cost": 0.024624,
-          "inTok": 29664,
-          "outTok": 528,
+          "cost": 0.023519,
+          "inTok": 29355,
+          "outTok": 334,
           "reason": "done",
           "note": "signed"
         }
@@ -560,30 +560,30 @@
       "abstain": [
         {
           "pass": true,
-          "steps": 8,
-          "cost": 0.053792,
-          "inTok": 57515,
-          "outTok": 2368,
-          "reason": "budget",
-          "note": "i couldn't find your spouse's name in what i have—"
-        },
-        {
-          "pass": true,
-          "steps": 2,
-          "cost": 0.016646,
-          "inTok": 21481,
-          "outTok": 119,
+          "steps": 5,
+          "cost": 0.032867,
+          "inTok": 40691,
+          "outTok": 522,
           "reason": "done",
-          "note": "i don't have your spouse's name in the verified me"
+          "note": "i don't have your spouse's name stored — what name"
         },
         {
           "pass": false,
-          "steps": 3,
-          "cost": 0.022012,
-          "inTok": 28683,
-          "outTok": 111,
+          "steps": 5,
+          "cost": 0.03466,
+          "inTok": 42115,
+          "outTok": 683,
           "reason": "done",
-          "note": "sarah chen"
+          "note": "what is your spouse's name?"
+        },
+        {
+          "pass": true,
+          "steps": 5,
+          "cost": 0.034673,
+          "inTok": 41370,
+          "outTok": 810,
+          "reason": "done",
+          "note": "i don't have the spouse's name in the available me"
         }
       ]
     }

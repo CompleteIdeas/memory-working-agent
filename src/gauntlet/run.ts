@@ -174,7 +174,31 @@ async function main() {
     console.log(`  difficulty band: awm memory-ON at ${pct(on)} — ${band ? 'IN the 30–85% target' : 'OUT of band, retune task difficulty'}`);
   }
 
-  writeFileSync(resolve(root, 'scorecard.json'), JSON.stringify({ arms, k, bytes, results }, null, 2));
-  console.log(`\n  wrote ${resolve(root, 'scorecard.json')}\n`);
+  // The AWM recall flags that were actually in effect. A scorecard that does not record
+  // its own configuration cannot be compared against another one — the 0.13.5 deployment
+  // failure was exactly this shape at the server level.
+  const recallCfg = [
+    process.env.AWM_RERANK2 === '1' ? 'rerank2' : '',
+    process.env.AWM_RERANK_WINDOW === 'query' ? 'window' : '',
+    process.env.AWM_RERANK_TAGS === '1' ? 'tags' : '',
+    process.env.AWM_ENTITY_INDEX_FETCH === '1' ? 'entityidx' : '',
+    process.env.AWM_AUTOTAG === '1' ? 'autotag' : '',
+  ].filter(Boolean).join('+') || 'defaults';
+
+  const payload = JSON.stringify({ arms, k, bytes, recallCfg, ranAt: new Date().toISOString(), results }, null, 2);
+
+  // Latest-run pointer, unchanged — convenient, and what existing tooling reads.
+  writeFileSync(resolve(root, 'scorecard.json'), payload);
+  console.log(`\n  wrote ${resolve(root, 'scorecard.json')}`);
+
+  // RETAINED per-run copy. Without this, running a baseline arm and then a treatment arm
+  // overwrites the control and the comparison becomes unreproducible — which has already
+  // put unsupported numbers into AWM's docs once.
+  const runsDir = resolve(root, 'runs');
+  mkdirSync(runsDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('Z', '');
+  const archived = resolve(runsDir, `scorecard-${arms.join('_')}-k${k}-${recallCfg}-${stamp}.json`);
+  writeFileSync(archived, payload);
+  console.log(`  retained ${archived}\n`);
 }
 main().catch((e) => { console.error(e); process.exit(1); });
