@@ -124,7 +124,10 @@ async function main() {
         arms, k, bytes, partial: true, repsCompleted: r + 1,
         recallCfg: recallCfgOf(), ranAt: new Date().toISOString(), results,
       }, null, 2);
-      const cpDir = resolve(root, 'runs');
+      // OUTSIDE `root` — run.ts:56 rmSync(root) at startup would delete the
+      // previous run's checkpoint before this one is written, destroying the
+      // control arm exactly as the pre-218f41e overwrite did.
+      const cpDir = resolve('./gauntlet-runs');
       mkdirSync(cpDir, { recursive: true });
       writeFileSync(resolve(cpDir, `checkpoint-${arms.join('_')}-k${k}-${recallCfgOf()}.json`), partial);
     } catch { /* a failed checkpoint must never abort the run it is protecting */ }
@@ -216,7 +219,8 @@ async function main() {
   // RETAINED per-run copy. Without this, running a baseline arm and then a treatment arm
   // overwrites the control and the comparison becomes unreproducible — which has already
   // put unsupported numbers into AWM's docs once.
-  const runsDir = resolve(root, 'runs');
+  // OUTSIDE `root`, for the same reason as the per-rep checkpoint above.
+  const runsDir = resolve('./gauntlet-runs');
   mkdirSync(runsDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('Z', '');
   const archived = resolve(runsDir, `scorecard-${arms.join('_')}-k${k}-${recallCfg}-${stamp}.json`);
