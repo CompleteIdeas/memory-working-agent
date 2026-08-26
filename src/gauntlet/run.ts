@@ -22,6 +22,18 @@ import { runAgent } from '../agent.js';
 import { makeArm, type ArmName } from './arms.js';
 import { SUITES, padNote, type GauntletTask } from './tasks.js';
 
+/** AWM recall flags in effect, as a stable slug. Used by both the per-rep checkpoint
+ *  and the final scorecard, so a partial and a complete file are directly comparable. */
+function recallCfgOf(): string {
+  return [
+    process.env.AWM_RERANK2 === '1' ? 'rerank2' : '',
+    process.env.AWM_RERANK_WINDOW === 'query' ? 'window' : '',
+    process.env.AWM_RERANK_TAGS === '1' ? 'tags' : '',
+    process.env.AWM_ENTITY_INDEX_FETCH === '1' ? 'entityidx' : '',
+    process.env.AWM_AUTOTAG === '1' ? 'autotag' : '',
+  ].filter(Boolean).join('+') || 'defaults';
+}
+
 const ALL_ARMS: ArmName[] = ['awm', 'rag', 'notes', 'longctx', 'off'];
 
 function arg(name: string, def: string): string {
@@ -100,6 +112,22 @@ async function main() {
       m.writeCalls += s.writeCalls; m.writeMs += s.writeMs;
       arm.memory.close();
     }
+
+    // ---- PER-REP CHECKPOINT ----
+    // Reps are independent (fresh store + wiped work dir each time), so a run stopped
+    // at rep 3 of 10 still holds three valid reps. Writing only at the end meant a
+    // timeout threw away completed, already-paid-for work — which is exactly what
+    // happened on the first k=10 attempt. `repsCompleted` records how many are real,
+    // so a partial file can never be mistaken for a full run.
+    try {
+      const partial = JSON.stringify({
+        arms, k, bytes, partial: true, repsCompleted: r + 1,
+        recallCfg: recallCfgOf(), ranAt: new Date().toISOString(), results,
+      }, null, 2);
+      const cpDir = resolve(root, 'runs');
+      mkdirSync(cpDir, { recursive: true });
+      writeFileSync(resolve(cpDir, `checkpoint-${arms.join('_')}-k${k}-${recallCfgOf()}.json`), partial);
+    } catch { /* a failed checkpoint must never abort the run it is protecting */ }
   }
   close();
 
@@ -177,13 +205,7 @@ async function main() {
   // The AWM recall flags that were actually in effect. A scorecard that does not record
   // its own configuration cannot be compared against another one — the 0.13.5 deployment
   // failure was exactly this shape at the server level.
-  const recallCfg = [
-    process.env.AWM_RERANK2 === '1' ? 'rerank2' : '',
-    process.env.AWM_RERANK_WINDOW === 'query' ? 'window' : '',
-    process.env.AWM_RERANK_TAGS === '1' ? 'tags' : '',
-    process.env.AWM_ENTITY_INDEX_FETCH === '1' ? 'entityidx' : '',
-    process.env.AWM_AUTOTAG === '1' ? 'autotag' : '',
-  ].filter(Boolean).join('+') || 'defaults';
+  const recallCfg = recallCfgOf();
 
   const payload = JSON.stringify({ arms, k, bytes, recallCfg, ranAt: new Date().toISOString(), results }, null, 2);
 
