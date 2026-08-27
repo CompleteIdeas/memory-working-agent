@@ -27,3 +27,8 @@ build/
 # Ignored by default as run artifacts; commit one deliberately when it backs a
 # documented claim.
 gauntlet-runs/*.json
+
+# results/ is the gauntlet's SCRATCH AREA — run.ts:56 rmSync()s it at startup, so
+# anything committed here is deleted by the next run. Retained evidence belongs in
+# gauntlet-runs/ instead.
+results/
