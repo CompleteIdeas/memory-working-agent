@@ -13,7 +13,11 @@ This directory is a sibling the harness never touches.
 |---|---|
 | `scorecard-awm-k3-2026-08-25.json` | k=3, `awm` arm. 24/30 memory probes (80.0%). |
 | `checkpoint-awm-k10-rerank2+window+tags.json` | k=10 treatment arm, 3 of 10 reps before a task timeout. 23/30 (76.7%). `partial: true`. |
-| `baseline-k10-defaults-2026-08-26.md` | k=10 baseline, 7 of 10 reps, 52/70 (74.3%). **Transcript-sourced** — its JSON was destroyed by the next run's startup wipe before it could be copied out. Weaker evidence than the JSON beside it; re-run before quoting the delta. |
+| `scorecard-awm-k10-defaults-2026-08-27T14-03-10-999.json` | k=10 baseline, **complete** (10/10 reps, `partial: false`). 74/100 memory probes (74.0%), per-rep 6/8/8/8/8/4/9/7/8/8, $4.69. Supersedes the transcript-sourced 7-rep note, which said 74.3% — close, but not an artifact. |
+
+**All 10 probes flip between identical runs** at k=10 — the 7-rep sample suggested 6 of 10,
+which understated it. Even `distractor-codename` and `policy-signoff` land 9/10. That is the
+ceiling on what any gauntlet delta can currently resolve.
 
 `*.json` here is gitignored by default — these are run artifacts. Commit one deliberately
 when it backs a documented claim, as the three above do.
