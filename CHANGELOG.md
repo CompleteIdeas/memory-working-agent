@@ -1,6 +1,69 @@
 # Changelog
 
-## Unreleased - running autonomously in Docker
+## 0.6.0 (2026-10-15) — approval only a person can give, fenced tool output, job contracts, autonomous Docker
+
+Built by a self-referential build loop: one item at a time, each through typecheck, the full suite on a
+clean checkout at the pinned AWM, `npm audit`, an isolated reviewer who attacked the diff, and for loop
+and scheduler changes a rebuilt Docker image with both end-to-end harnesses. The queue and every
+decision are in `docs/build-queue.md`; the merge summary is `docs/merge-summary-2026-10-15.md`. The
+AWM pin is unchanged (`8070751`, AWM 0.13.6).
+
+Measured on the final image: planted instructions in tool output were followed in 0 of 8 runs (4 of 9
+before BL-01), scheduled tasks delivered 6 of 6, and the suite passes 392 of 392.
+
+### Breaking
+
+- **The model can no longer approve anything.** `approvalTools()` now returns `cancel_action` and
+  `list_pending` only; `confirm_action` is gone from the model's tools. A person approves a staged
+  action in the web app's approvals panel, with the Telegram Approve button, or through
+  `POST /api/approvals/confirm`, which now requires an explicit `id`. An embedding app with its own
+  human channel can wire `humanConfirmTool`; never register it into an agent's tools. An integration
+  whose chat flow relied on the model confirming after the person said "yes" needs a human path.
+- **Assistant mode asks before running most commands.** `run_command` runs only parsed read-only
+  commands (`ls`, `cat`, `grep`, `find`, `head`, `tail`, `wc`, `sort` …, with no shell features and
+  every path inside the allowed folders). Anything else is staged for approval and the model does not
+  see its output that turn. The model's shell gets a scrubbed environment: no API keys, access
+  password or bot token. Developer mode is unchanged: ungated, and now documented as no security
+  boundary.
+- **Fetch tools can't reach this machine.** Outside Developer mode, `http_request` and
+  `read_document` refuse loopback, private, link-local and unspecified addresses, after DNS lookup and
+  on every redirect.
+- **Standing preferences captured from a conversation are proposed, not saved.** Each becomes an
+  approval card for 24 hours.
+- **Approval ids are random** (`act_<16 hex>`), and a gated tool's reply no longer tells the model to
+  call `confirm_action`.
+- **The general agent has its own `done`**, which takes an `outcome`, instead of the coding brain's
+  ("only after passing tests").
+- **Higher dependency minimums:** `mailparser ^3.9.39`, `imapflow ^1.7.8`,
+  `@modelcontextprotocol/sdk ^1.32.1`.
+
+### Safety and autonomy
+
+- **Tool output is fenced in the model's context (BL-01).** Tool, web, inbox and file results arrive
+  inside a fence carrying a per-run random code, so content can't forge a close and speak as the
+  agent. Lookalike brackets are defanged; MWA's own refusals are flagged by the registry, not by
+  their wording.
+- **Taint follows outside text into everything that lasts (BL-17).** A run that read external content
+  writes its lessons and skills as untrusted (never auto-primed), cannot overwrite a trusted memory,
+  cannot learn person notes, and passes the taint to the scheduled tasks it creates, to the next
+  step of a plan and to the next chat turn. Trust is read fail-closed: the lowest `trust=` tag wins.
+- **Scheduled jobs have a contract, and every run says what it achieved (BL-02).** `schedule` takes
+  `until` (finished for good when …), `limits` (hard limits for every fire, kept in resumes) and
+  `deliver` (`always`, the default; `changed`; `never`). Each run records an outcome separate from
+  `reason`: changed, no-change, could-not, blocked or complete. Runtime evidence beats the model's
+  claim. A job stops only when two fires in a row report complete. Failures, completions and
+  waiting approvals always reach the person.
+- **Approval only a person can give (BL-03, with BL-04).** A web approvals panel above the chat input
+  and Telegram Approve / Cancel buttons, bound to the card they were sent on. A confirm from the run
+  that staged the action is refused, one id spanning a planned run's steps. An approved action runs
+  in the context it was staged in. A run that leaves an action waiting reports `blocked` and hands
+  the ids back (`staged`). Unattended requests wait a day. Fixed on the way: approving after a turn
+  wrote through a closed memory handle; `MwaMemory` now reopens after `close()`.
+- **Dependency advisories (BL-15).** `npm audit --omit=dev` went from 29 (2 critical, 16 high) to 8
+  (0 critical, 2 high). The two highs are `sharp` under AWM's `@huggingface/transformers`, whose fix
+  is a major version for AWM to take; AWM never sends it an image.
+
+### Running autonomously in Docker
 
 Found by actually running it: `docs/docker-autonomy-test-2026-10-14.md`. The image boots, the
 scheduler fires, a task survives a restart and an interrupted run resumes itself - but fourteen
@@ -113,7 +176,7 @@ refused tool calls across the final round.
   `harness-evaluation-2026-10-13.md` that the approval preview is a boundary has been amended there.
   Separately, `serve` never starts `watchInbox`, so file-drop intake does not run in Docker.
 
-## Unreleased - prompt-cache boundary, and the agent's reach into its own memory and work
+### Prompt-cache boundary, and the agent's reach into its own memory and work
 
 Full write-up: `docs/harness-evaluation-2026-10-13.md` (Part 6).
 
