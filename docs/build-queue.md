@@ -50,8 +50,8 @@ merged or published by the loop.
 **Delivery convergence.** At most **5 unmerged items** on the branch. At the cap, the next tick
 writes a ready-to-merge summary for Robert and stops building.
 
-**Cost cap.** **$10** of model spend (Azure e2e runs + coworker calls) for the loop, tracked
-below. Stop and report at the cap.
+**Cost cap.** **$20** of model spend (Azure e2e runs + coworker calls) for the loop, tracked
+below. Stop and report at the cap. (Raised from $10 by Robert on 2026-10-15.)
 
 **Stop when:** an item BLOCKs with nothing else ready; the stack cap or the cost cap is reached;
 two consecutive items REVISE; or Robert says stop.
@@ -112,6 +112,7 @@ publish 0.6.0, redeploy the dogfood. Calls 6 and 7 stay "not now".
 | 2026-10-15 | BL-03 | **BL-04 folded into BL-03.** The isolated review proved the model could still approve itself: a chat backgrounded `curl` through `run_command` to MWA's own `/api/approvals/confirm` (no password: no check at all; with one: the shell inherited it). Approval can't hold while the model's shell or fetch tools can reach this machine, and BL-04's staging needed approval to hold — so they ship together: a parsed read-only allowlist runs, everything else is staged; fetch tools refuse loopback and private addresses; the model's shell gets no secrets. Developer mode stays ungated and now says plainly it is no boundary. | **Coworker (asked):** fold in now, not ship-then-fix; treat it as capability gating, not just the shell. **Taken:** both, plus network egress and env scrubbing. **Not taken now:** a durable approval store and per-user Telegram checks (queued as BL-18), DNS-rebinding pinning (BL-16). |
 | 2026-10-15 | BL-15 | Upgrade within the declared ranges only (lockfile, no package.json change), in a clean worktree at the pinned AWM; leave the two majors (AWM's `@huggingface/transformers` 4.x, a `mammoth` downgrade) as documented, unreachable residuals, the first filed as an AWM task. | Not put to the coworker: no fork in design — every fix that stays in range was taken, and the two that don't are another project's call (AWM) or a downgrade. `npm audit fix` crashes on the workspace (`edgesOut` of null), so packages were updated by name. |
 | 2026-10-15 | — | **Robert's answers** in "MWA after the merge: your calls": (1) release 0.6.0 — the loop writes the changelog, Robert publishes and redeploys; (2) look at a cheaper test model before raising the cap; (3) **cancel Gallop on MWA** for now — Gallop Support stays a Claude Code agent; (4) yes to BL-06; (5) Developer mode stays ungated; (6) BL-05, BL-18, BL-14. "Proceed, I do not object" to the rest of the order. | Robert's decisions; not challenged. |
+| 2026-10-15 | gates | **Robert raised the cost cap to $20** ("Raise it to 20"), answering the $15 question in the decision review. | Robert's decision; not challenged. |
 | 2026-10-15 | gates | Cheaper testing: only gpt-5.4-mini is deployed on the Azure resource (nano and seven others: DeploymentNotFound); the local GPU (4 GB) fits only 4B models. So: harnesses once per item on the final revision, nano for non-blocking smoke if Robert deploys it, mini stays the gate; proposed cap $15. | **Coworker:** nano in between and mini as the gate, with A's once-per-item rule; local models only as an "is it obviously broken" smoke. **Taken.** |
 | 2026-10-15 | BL-07 | Reworded to quiet hours only. The queue's old wording ("recurring tasks default to notifying only when something changed") contradicted BL-02's decision. | Follows BL-02's coworker challenge (the read-only report trap). |
 | 2026-10-15 | BL-05 | Structural fan-out budget (depth ≤ 2, ≤ 2 pending follow-ups per job, ≤ 3 per run, ≤ 5 per goal, no unattended/tainted scheduling at ≥ 50 of a person's pending jobs); goals as tagged AWM engrams mirrored to native task fields; only attended, clean chats create or change goals; only explicit "done" stops a job. | **Taken** from the coworker: per-parent child cap, goals only from attended clean chats, budget for tainted runs, blocked-goal backoff, structural not textual limits. **Not taken:** limits on attended chats (one owner scheduling their own jobs; each run schedules once) and daily spend budgets (with BL-13). |
@@ -141,7 +142,7 @@ publish 0.6.0, redeploy the dogfood. Calls 6 and 7 stay "not now".
 | 2026-10-15 | BL-13 | One gate round ($0.27 from the run log), the Telegram proof (two local jobs, ~$0.03), plus coworker | ≤ ~$0.32 |
 | 2026-10-15 | BL-08 | One gate round plus a scheduled-harness re-run ($0.49 from the run log), two live proofs ($0.28 for one that failed on its own setup, $0.05 for the pass), plus coworker | ≤ ~$0.85 |
 
-**Running total: ≤ ~$9.17 of $10.00.** Room for at most one more modest item before the cap. An upper bound: `runs.jsonl` logs a planned chat's sub-runs as separate entries whose cost the parent entry already includes, so summing it double-counts. All-time raw sum $4.81, of which ~$0.6 predates the loop.
+**Running total: ≤ ~$9.17 of $20.00.** An upper bound: `runs.jsonl` logs a planned chat's sub-runs as separate entries whose cost the parent entry already includes, so summing it double-counts. All-time raw sum $4.81, of which ~$0.6 predates the loop.
 
 ## Decision log
 
