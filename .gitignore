@@ -18,6 +18,18 @@ data/google-token.json
 
 # throwaway dogfood/diagnostic scripts
 scripts/_*
+# ...except the proof scripts tests/proofs.test.ts runs as CI-promoted checks. They were ignored
+# with the rest, so a fresh clone failed 10 tests (found 2026-10-14 checking a clean worktree).
+!scripts/_import-stage-retract.ts
+!scripts/_merge-fidelity.ts
+!scripts/_novelty-exact-concept.ts
+!scripts/_person-intake-identity.ts
+!scripts/_person-learn.ts
+!scripts/_person-prime.ts
+!scripts/_person-scope.ts
+!scripts/_person-suspicion.ts
+!scripts/_scheduler-gate.ts
+!scripts/_stepup.ts
 
 # desktop (Tauri) build staging — the bundled runtime is reassembled by the build
 build/
