@@ -121,6 +121,7 @@ const CLEAR_MS = 24 * 60 * 60_000;
 
 /** Point the store at a file (tests, or an embedding app). Closes any open store first. */
 export function setApprovalStorePath(path: string | null): void {
+  if (db && path !== null && dbPath !== null && resolve(path) === resolve(dbPath)) return; // already there
   try { db?.close(); } catch { /* */ }
   db = null; dbPath = path;
 }

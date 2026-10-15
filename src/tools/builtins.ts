@@ -10,6 +10,7 @@ import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'n
 import { resolve, join, dirname, basename, sep } from 'node:path';
 import { runCommand, runCommandAsync } from '../util.js';
 import { resolveAllowed, runCommandAllowed, allowedRoots, accessPolicy } from './access.js';
+import { loadConfig } from '../config.js';
 import type { RegisteredTool, ToolContext } from './registry.js';
 import { classifyCommand, scrubbedEnv, writeRefusal, realPathOf } from './shell-gate.js';
 import { guardedFetch } from './net-guard.js';
@@ -69,6 +70,15 @@ function realAllowed(ctx: ToolContext, full: string): boolean {
   const target = real(full);
   const roots = [ctx.sandboxDir, ...(ctx.extraRoots ?? []), ...allowedRoots(ctx.sandboxDir)].map(real);
   return roots.some((r) => target === r || target.startsWith(r.endsWith(sep) ? r : r + sep));
+}
+
+/** The mailbox folders (<workspace>/inbox, outbox, done), compared by real path. */
+function inMailbox(full: string): boolean {
+  const ws = process.env.MWA_WORKSPACE ?? loadConfig().workspace ?? './mwa-workspace';
+  const norm = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  const real = (p: string) => { try { return norm(realPathOf(resolve(p))); } catch { return norm(resolve(p)); } };
+  const target = real(full);
+  return ['inbox', 'outbox', 'done'].map((d) => real(join(ws, d))).some((r) => target === r || target.startsWith(r + sep));
 }
 
 /** Strip HTML to readable text — so read_document on a web page returns prose, not markup. */
@@ -195,6 +205,10 @@ const writeFileTool: RegisteredTool = {
     // A link inside an allowed folder must not carry the write outside it (BL-14a review): the REAL
     // path has to be allowed too.
     if (!realAllowed(ctx, full)) return outsideRefusal(ctx, String(args.path ?? ''), 'path');
+    // Never into the inbox, outbox or done: a file in the inbox COMMANDS a fresh unattended run, so an
+    // agent that could write one could launder a tainted run into a clean one and dodge BL-05's job
+    // limits, whatever folders are granted (BL-06 review).
+    if (inMailbox(full)) return '(refused: the agent never writes into the inbox, outbox or done folders — a file in the inbox is an instruction, and only the person gives those.)';
     try {
       mkdirSync(dirname(full), { recursive: true });
       writeFileSync(full, String(args.content ?? ''), 'utf8');

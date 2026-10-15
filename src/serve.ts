@@ -70,7 +70,7 @@ import { runScheduler } from './scheduler.js';
 // /data/mwa.config.json — the model picker looked like it silently did nothing.
 import { loadConfig, configPath, setStyle, INTERACTION_STYLES, type InteractionStyle } from './config.js';
 import { loadEnv } from './env.js';
-import { mailboxDirs } from './mailbox.js';
+import { mailboxDirs, watchInbox } from './mailbox.js';
 import { googleConfigured, startGmailConnect } from './connectors/google.js';
 import { gmailImapConfigured, verifyGmailImap } from './connectors/gmail-imap.js';
 import { microsoftConfigured, microsoftClientReady, startMicrosoftConnect, startMicrosoftDeviceCode } from './connectors/microsoft.js';
@@ -434,7 +434,29 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       for (const r of done) appendNotification({ ts: Date.now(), instruction: `Approved in Telegram: ${r.tool}`, summary: r.result.slice(0, 2000), reason: 'done', outcome: r.ok ? 'changed' : 'could-not' });
     }).catch(() => { /* best-effort */ });
   }, 15_000).unref();
+
   loadEnv();
+
+  // THE INBOX (BL-06): drop an instruction file (*.md / *.txt) into <workspace>/inbox and MWA works it
+  // unattended — in Docker, /data/mwa-workspace/inbox — writes outbox/<id>.md, and posts the result to
+  // the chat. It runs as this app (its memory, its approvals panel), unattended, so every hard gate
+  // applies. On by default; MWA_INBOX=0 turns it off (read after loadEnv, so /data/.env works too).
+  if (process.env.MWA_INBOX !== '0') {
+    try {
+      const icfg = loadConfig();
+      const inboxDir = mailboxDirs(icfg.workspace ?? './mwa-workspace').inbox;
+      console.log(`  📥 inbox on — drop instruction files (.md / .txt) in ${inboxDir}`);
+      void watchInbox({
+        config: icfg, dbPath: process.env.MWA_DB ?? resolve('./data/agent.db'), agentId: SERVE_AGENT,
+        intervalMs: Number(process.env.MWA_INBOX_POLL_MS ?? 5_000),
+        onLog: (m) => logger.info('inbox', m),
+        onDone: (r) => appendNotification({
+          ts: Date.now(), instruction: `📥 Inbox · ${r.instruction.slice(0, 120)}`, summary: r.summary, reason: r.reason, outcome: r.outcome,
+          steps: r.steps, toolCalls: r.toolCalls, costUsd: r.costUsd, durationMs: r.durationMs, files: r.files, dir: r.dir,
+        }),
+      });
+    } catch (e) { logger.error('inbox', 'not started', { error: (e as Error).message.slice(0, 100) }); }
+  }
   const ui = uiDir();
   const server = createServer(async (req, res) => {
     try {

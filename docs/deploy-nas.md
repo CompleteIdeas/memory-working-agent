@@ -91,6 +91,27 @@ The Telegram connector still works on the NAS — connect a bot token in setup a
 message the agent (and get scheduled summaries) from your phone with no UI open. Useful
 when the NAS is Tailscale-only.
 
+Or drop a file. Put an instruction in a `.md` or `.txt` file in `mwa-workspace/inbox/` inside
+your data folder (in the container: `/data/mwa-workspace/inbox/`). MWA picks it up once the
+file has stopped changing for a couple of seconds, so a slow copy isn't read half-written. Tasks
+run one at a time and unattended, so anything that needs approval waits in the app's approvals
+panel. Each run gets its own id, so dropping the same name twice runs it twice:
+
+- the report goes to `mwa-workspace/outbox/<name>-<id>.md`;
+- any files it made go to `mwa-workspace/outputs/<name>-<id>/`;
+- your file moves to `mwa-workspace/done/`;
+- the result is posted in the chat.
+
+If MWA stops in the middle of a task, it reports that task as interrupted within a few minutes of
+starting again, rather than running it a second time. Without a mounted data folder, copy a file in with
+`docker cp task.md <container>:/data/mwa-workspace/inbox/`. Set `MWA_INBOX=0`, in the container's
+environment or in `/data/.env`, to turn it off.
+
+Anyone who can write to that inbox folder can give MWA instructions, even without the app's
+password, so share it as carefully as the password. MWA's own file writing never touches the inbox,
+the outbox or `done/`, whatever folders you grant it. A command you approve, or Developer mode,
+still can.
+
 ## Updating
 
 ```
