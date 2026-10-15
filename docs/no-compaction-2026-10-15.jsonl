@@ -1,0 +1,9 @@
+{"arm":"window=60 memory=on","trial":1,"steps":18,"reason":"done","summaryWritten":true,"codeFirstLine":true,"namesClient":false,"briefReads":1,"remembered":true,"attribution":"window","costUsd":0.15284}
+{"arm":"window=60 memory=on","trial":2,"steps":24,"reason":"done","summaryWritten":true,"codeFirstLine":true,"namesClient":false,"briefReads":1,"remembered":true,"attribution":"window","costUsd":0.188186}
+{"arm":"window=60 memory=on","trial":3,"steps":27,"reason":"done","summaryWritten":false,"codeFirstLine":false,"namesClient":false,"briefReads":2,"remembered":true,"attribution":"reread","costUsd":0.214105}
+{"arm":"window=12 memory=on","trial":1,"steps":107,"reason":"done","summaryWritten":true,"codeFirstLine":true,"namesClient":false,"briefReads":10,"remembered":true,"attribution":"memory","costUsd":0.859559}
+{"arm":"window=12 memory=on","trial":2,"steps":85,"reason":"done","summaryWritten":true,"codeFirstLine":true,"namesClient":false,"briefReads":9,"remembered":true,"attribution":"reread","costUsd":0.693058}
+{"arm":"window=12 memory=on","trial":3,"steps":27,"reason":"done","summaryWritten":true,"codeFirstLine":true,"namesClient":false,"briefReads":2,"remembered":true,"attribution":"reread","costUsd":0.22502}
+{"arm":"window=12 memory=off","trial":1,"steps":120,"reason":"budget","summaryWritten":false,"codeFirstLine":false,"namesClient":false,"briefReads":10,"remembered":false,"attribution":"reread","costUsd":0.746921}
+{"arm":"window=12 memory=off","trial":2,"steps":120,"reason":"budget","summaryWritten":false,"codeFirstLine":false,"namesClient":false,"briefReads":9,"remembered":false,"attribution":"reread","costUsd":0.748333}
+{"arm":"window=12 memory=off","trial":3,"steps":17,"reason":"done","summaryWritten":false,"codeFirstLine":false,"namesClient":false,"briefReads":2,"remembered":false,"attribution":"reread","costUsd":0.11645}
