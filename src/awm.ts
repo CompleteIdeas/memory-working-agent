@@ -171,6 +171,8 @@ export interface ScheduleOpts {
   resumeOf?: string;
   /** the person was told, once, that a follow-up this job wanted was refused by the fan-out budget. */
   budgetNotified?: boolean;
+  /** skips quiet hours (BL-07) — set only from an attended, untainted conversation. */
+  urgent?: boolean;
 }
 
 /** A goal (BL-05): an AWM task that owns scheduled jobs. Its status is the source of truth for
@@ -214,6 +216,7 @@ export interface ScheduledTask {
   byRun?: string;
   resumeOf?: string;
   budgetNotified?: boolean;
+  urgent?: boolean;
 }
 
 export class MwaMemory implements Memory {
@@ -588,6 +591,7 @@ export class MwaMemory implements Memory {
     if (opts.goal) tags.push(`goal=${opts.goal}`);
     if (opts.byRun) tags.push(`byrun=${opts.byRun.slice(0, 8)}`);
     if (opts.resumeOf) tags.push(`resumeof=${opts.resumeOf.slice(0, 8)}`);
+    if (opts.urgent) tags.push('urgent=1');
     // Base64 the check command so an arbitrary shell string (spaces, commas, pipes, '=') survives
     // both tag serializations (JSON array or comma-split). No commas in base64 → comma-split is safe.
     if (opts.check) tags.push(`check64=${Buffer.from(opts.check, 'utf8').toString('base64')}`);
@@ -636,7 +640,7 @@ export class MwaMemory implements Memory {
         if (!tags.includes('topic=scheduled-task') || !tags.includes('status=pending')) continue;
         const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
         const check64 = get('check64=');
-        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, origin: get('origin=') || undefined, tainted: tags.includes('tainted=1') || undefined, until: get('until64=') ? Buffer.from(get('until64='), 'base64').toString('utf8') : undefined, limits: get('limits64=') ? Buffer.from(get('limits64='), 'base64').toString('utf8') : undefined, deliver: (get('deliver=') || undefined) as ScheduledTask['deliver'], pendingComplete: tags.includes('pendingcomplete=1') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined, person: get('person=') || undefined, depth: Number(get('depth=')) || undefined, parent: get('parent=') || undefined, goal: get('goal=') || undefined, byRun: get('byrun=') || undefined, resumeOf: get('resumeof=') || undefined, budgetNotified: tags.includes('budgetnotified=1') || undefined });
+        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, origin: get('origin=') || undefined, tainted: tags.includes('tainted=1') || undefined, until: get('until64=') ? Buffer.from(get('until64='), 'base64').toString('utf8') : undefined, limits: get('limits64=') ? Buffer.from(get('limits64='), 'base64').toString('utf8') : undefined, deliver: (get('deliver=') || undefined) as ScheduledTask['deliver'], pendingComplete: tags.includes('pendingcomplete=1') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined, person: get('person=') || undefined, depth: Number(get('depth=')) || undefined, parent: get('parent=') || undefined, goal: get('goal=') || undefined, byRun: get('byrun=') || undefined, resumeOf: get('resumeof=') || undefined, budgetNotified: tags.includes('budgetnotified=1') || undefined, urgent: tags.includes('urgent=1') || undefined });
       }
       return out.sort((a, b) => a.due - b.due);
     } catch (err) { console.error('[awm] pendingScheduled error:', (err as Error).message); return []; }

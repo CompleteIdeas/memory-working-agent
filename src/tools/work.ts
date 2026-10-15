@@ -41,6 +41,7 @@ import type { MwaMemory, ScheduledTask, Goal, GoalStatus, GoalPriority } from '.
 import { normalizePersonId } from '../person.js';
 import { scanPolicy } from './routines.js';
 import { requireApproval } from './approval.js';
+import { quietWindow, setQuietHours, quietEnvInvalid, timeZoneName } from '../quiet.js';
 
 /** Hard caps so a tool call can never flood the context window. */
 const MAX_LIST = 20;
@@ -379,5 +380,34 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
     },
   };
 
-  return [scheduleList, scheduleCancel, policySave, policyForget, routinePropose, goalAdd, goalList, goalUpdate];
+  // ── Quiet hours (BL-07) ───────────────────────────────────────────────────────────────────────
+  // When the agent may buzz the person's phone. Changing it is the person's call: attended and clean,
+  // like goals (a pasted email must not be able to switch quiet hours off).
+  const quietHours: RegisteredTool = {
+    def: {
+      name: 'quiet_hours',
+      description:
+        'See or set the person\'s quiet hours: a daily window when scheduled results and approval cards are held, ' +
+        'not pushed to their phone, and delivered together when it ends. Jobs still run on time. Pass `set` as ' +
+        '"HH:MM-HH:MM" (for example "22:00-07:00") or "off"; omit it to see the current window. Set it only when ' +
+        'the person asks.',
+      parameters: { type: 'object', properties: { set: { type: 'string', description: '"HH:MM-HH:MM" or "off"' } }, additionalProperties: false },
+    },
+    handler: async (args, ctx) => {
+      const fixed = (process.env.MWA_QUIET_HOURS ?? '').trim() !== '';
+      if (args.set === undefined || args.set === null || String(args.set).trim() === '') {
+        if (quietEnvInvalid()) return `the deployment's MWA_QUIET_HOURS is set but isn't a valid window, so quiet hours are OFF until it is fixed`;
+        const w = quietWindow();
+        return w ? `quiet hours: ${w.label} (${timeZoneName()}; ${fixed ? 'set by the deployment' : 'set in settings'})` : 'no quiet hours set';
+      }
+      const gate = goalGate(ctx); if (gate) return gate.replace('goals', 'quiet hours');
+      if (fixed) return '(quiet hours are fixed by this deployment (MWA_QUIET_HOURS) and can\'t be changed from a chat)';
+      try {
+        const w = setQuietHours(String(args.set));
+        return w ? `quiet hours set to ${w.label} (${timeZoneName()}) — Telegram messages and approval cards are held in that window and delivered when it ends; jobs still run on time` : 'quiet hours off';
+      } catch (e) { return `(${(e as Error).message})`; }
+    },
+  };
+
+  return [scheduleList, scheduleCancel, policySave, policyForget, routinePropose, goalAdd, goalList, goalUpdate, quietHours];
 }

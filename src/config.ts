@@ -29,6 +29,8 @@ export interface MwaConfig {
   awm: { workspace?: string };
   /** root for the mailbox I/O workspace (inbox/outputs/outbox/done). Default ./mwa-workspace */
   workspace?: string;
+  /** delivery (BL-07): quietHours "22:00-07:00" holds pushes (Telegram) until the window ends. */
+  notify?: { quietHours?: string };
   tools: {
     builtins: string[];
     /** MCP servers whose tools register into the same registry (namespaced <server>__<tool>) */
@@ -117,6 +119,7 @@ export function loadConfig(path = configPath()): MwaConfig {
     tools: { ...DEFAULT_CONFIG.tools, ...raw.tools },
     escalation: { ...DEFAULT_CONFIG.escalation, ...raw.escalation },
     workspace: raw.workspace ?? DEFAULT_CONFIG.workspace,
+    ...(raw.notify ? { notify: { ...raw.notify } } : {}),
   };
   // Container/env override (point everything at a mounted volume).
   if (process.env.MWA_WORKSPACE) cfg.workspace = process.env.MWA_WORKSPACE;

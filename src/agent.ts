@@ -202,6 +202,7 @@ export const SCHEDULE_TOOL: ToolDef = {
     every_minutes: { type: 'number', description: 'recurring every N minutes' },
     until: { type: 'string', description: 'OPTIONAL, for recurring jobs: when this job is finished for good, in plain words ("the package shows Delivered", "the ticket is closed"). A fire that finds it true finishes with outcome complete; once the next fire confirms, the job stops.' },
     limits: { type: 'string', description: 'OPTIONAL hard limits every fire must respect, in plain words ("only draft replies, never send", "do not spend money").' },
+    urgent: { type: 'boolean', description: 'OPTIONAL: deliver this job\'s results even during the person\'s quiet hours. Only when they asked to be told at once ("wake me if…", "tell me the moment…").' },
     goal: { type: 'string', description: 'OPTIONAL: the short id of the goal this job serves (goal_list shows them). A job created by a scheduled run belongs to that run\'s goal automatically. A goal marked done stops its jobs; a blocked goal pauses them.' },
     deliver: { type: 'string', enum: ['always', 'changed', 'never'], description: 'When to message the person. always (default): every fire. changed: only when something changed or was produced — use for monitors ("tell me when…"). never: only if it fails. A failure is always delivered.' },
     check: { type: 'string', description: 'OPTIONAL cost-saver for recurring polls: a small shell command that prints a value reflecting the watched state (e.g. a row count, a max timestamp, an API hash). If its output is unchanged since the last run, the scheduled run is skipped with no model call. Only the full instruction runs when the value changes.' },
@@ -349,6 +350,8 @@ export async function runAgent(opts: {
   jobGoal?: string;
   /** the job this run continues: a scheduled fire's own id, or for a resume the original job's. */
   jobLineage?: string;
+  /** the job skips quiet hours (BL-07) — carried into its resumes. */
+  jobUrgent?: boolean;
   /** extra folders the file tools may touch for THIS run only, on top of the sandbox + granted
    *  roots. The scheduler passes the folder the task was created in, so an instruction that baked an
    *  absolute path in at schedule time still resolves when it fires in a fresh per-fire folder. */
@@ -964,7 +967,10 @@ export async function runAgent(opts: {
         until: typeof action.until === 'string' && action.until.trim() ? action.until.trim().slice(0, 400) : undefined,
         limits: typeof action.limits === 'string' && action.limits.trim() ? action.limits.trim().slice(0, 600) : undefined,
         deliver: action.deliver === 'changed' || action.deliver === 'never' ? action.deliver : undefined,
-        depth, parent: isFire ? lineage : undefined, goal: goal?.id, byRun: runId });
+        depth, parent: isFire ? lineage : undefined, goal: goal?.id, byRun: runId,
+        // Skipping quiet hours is the person's call: honored only from an attended conversation that
+        // hasn't read outside content, so injected text can't make jobs buzz a phone at night (BL-07).
+        urgent: action.urgent === true && opts.interactive === true && !sawUntrustedRead && !sawLocalRead ? true : undefined });
       declaredOutcome = 'changed';
       productive++;
       const when = new Date(dueMs).toISOString().slice(0, 16).replace('T', ' ');
@@ -1381,7 +1387,7 @@ export async function runAgent(opts: {
     // the shared `unknown` profile, and anything IT schedules becomes visible to every
     // shared-profile session — the leak the person tag exists to close.
     // The resume reuses this run's folder: whatever a tainted run saved there must not come back clean.
-    const id = await memory.addScheduledTask(cont, dueMs, { notify: opts.session, dir, resumeAttempt: attempt + 1, person: opts.personId, depth: opts.jobDepth, goal: opts.jobGoal, resumeOf: opts.jobLineage ?? opts.jobId, byRun: runId, limits: opts.jobLimits, until: opts.jobUntil, deliver: opts.jobDeliver, tainted: sawUntrustedRead || sawLocalRead });
+    const id = await memory.addScheduledTask(cont, dueMs, { notify: opts.session, dir, resumeAttempt: attempt + 1, person: opts.personId, depth: opts.jobDepth, goal: opts.jobGoal, resumeOf: opts.jobLineage ?? opts.jobId, byRun: runId, urgent: opts.jobUrgent, limits: opts.jobLimits, until: opts.jobUntil, deliver: opts.jobDeliver, tainted: sawUntrustedRead || sawLocalRead });
     if (id) {
       history.push(`(unfinished — queued a resume for ~1 min from now, attempt ${attempt + 1}/${MAX_RESUMES})`);
       emit('schedule', { instruction: `resume: ${instruction.slice(0, 50)}`, due: dueMs, resume: attempt + 1 });

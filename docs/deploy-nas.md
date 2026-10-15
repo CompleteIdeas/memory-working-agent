@@ -87,9 +87,20 @@ Do **not** port-forward 7788 from your router. If you need remote access, use Ta
 
 ## Talk to it without the browser
 
-The Telegram connector still works on the NAS — connect a bot token in setup and you can
-message the agent (and get scheduled summaries) from your phone with no UI open. Useful
+The Telegram connector works with a NAS setup too, but the container doesn't start it: run
+`mwa connect telegram` alongside, with a bot token from setup, and you can message the agent (and
+get scheduled summaries) from your phone with no UI open. Useful
 when the NAS is Tailscale-only.
+
+Quiet hours apply to the Telegram connector, which sends pushes. The container itself runs only
+the web app, whose chat pushes nothing, so on its own it has nothing to hold. If you run the
+connector (`mwa connect telegram`), say "set my quiet hours to 22:00-07:00" in a chat, or set
+`MWA_QUIET_HOURS=22:00-07:00`, which a chat can't change. A window can be at most 16 hours, and
+times follow the machine's `TZ` (a plain `docker run` is UTC). Scheduled jobs still run on time. Their Telegram
+messages and approval cards wait until the window ends, then arrive in order. Each job sends only
+its latest result, with a count of how many it had, so a monitor's 03:00 "down" followed by 03:05
+"back up" arrives as "back up", marked as one of 2 results. A job you asked to be told about "the moment" something happens can be marked
+urgent and skip the window.
 
 Or drop a file. Put an instruction in a `.md` or `.txt` file in `mwa-workspace/inbox/` inside
 your data folder (in the container: `/data/mwa-workspace/inbox/`). MWA picks it up once the

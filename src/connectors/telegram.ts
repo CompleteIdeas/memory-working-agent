@@ -24,6 +24,7 @@ import { loadEnv } from '../env.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { pendingMeta, confirmPending, cancelPending, claimOffer, setOfferMessage, releaseOffer, offerOf, unofferedFor, approvalStatus, setApprovalOwner, setApprovalStorePath, runApproved } from '../tools/approval.js';
 import { dirname } from 'node:path';
+import { isQuietNow, holdPush, flushHeld } from '../quiet.js';
 
 async function tg(token: string, method: string, body?: Record<string, unknown>): Promise<any> {
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {});
@@ -196,6 +197,12 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
       }
     } catch (e) { log(`offer sweep failed: ${(e as Error).message.slice(0, 80)}`); }
   };
+  /** Send a result: the message, up to 5 files under 10 MB, then any approval cards. */
+  const deliverPush = async (chatId: string, text: string, files: string[], approvals: string[]): Promise<void> => {
+    await tg(token, 'sendMessage', { chat_id: chatId, text }).catch(() => {});
+    for (const p of files) { try { if (statSync(p).isFile() && statSync(p).size < 10_000_000) await sendDocument(token, chatId, p); } catch { /* */ } }
+    await offerApprovals(chatId, approvals);
+  };
   const convo = new Map<string, { u: string; a: string; t?: boolean }[]>(); // per-chat recent exchanges (multi-turn); t = that turn read external content
   const sessionStats = { tasks: 0, started: Date.now() };
   const statusText = () => [
@@ -214,25 +221,70 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
       const chatId = (task.notify ?? '').startsWith('tg-') ? task.notify!.slice(3) : null;
       if (!chatId) return;
       const text = `⏰ Scheduled: ${task.instruction.slice(0, 80)}\n\n${res.summary}`.slice(0, 3900);
-      await tg(token, 'sendMessage', { chat_id: chatId, text }).catch(() => {});
-      for (const f of res.files.slice(0, 5)) { try { const p = join(res.dir, f); if (statSync(p).isFile() && statSync(p).size < 10_000_000) await sendDocument(token, chatId, p); } catch { /* */ } }
-      await offerApprovals(chatId, res.staged ?? []);
+      const files = res.files.slice(0, 5).map((f) => join(res.dir, f));
+      // Quiet hours (BL-07): the job ran on time; its message waits for the morning unless urgent.
+      if (isQuietNow() && !task.urgent) {
+        // One held item per job: a later result replaces it and is counted, so a frequent monitor
+        // doesn't queue a hundred messages overnight.
+        holdPush({ chat: chatId, text, files, approvals: res.staged ?? [], key: task.resumeOf ?? task.id });
+        log(`· held for quiet hours: ${task.instruction.slice(0, 40)}`);
+        return;
+      }
+      await deliverPush(chatId, text, files, res.staged ?? []);
     },
   });
 
   let offset = 0;
+  let flushNotBefore = 0; // after a Telegram rate limit, held messages wait this long
   for (;;) {
     let updates: any[];
     try { updates = await tg(token, 'getUpdates', { offset, timeout: 30, allowed_updates: ['message', 'callback_query'] }); }
     catch (e) { log(`poll error: ${(e as Error).message.slice(0, 100)}`); await new Promise((r) => setTimeout(r, 3000)); continue; }
-    await offerWaiting();
+    // Quiet hours (BL-07): no cards or held results during the window; when it ends, what was held goes
+    // out, oldest first, with one "while it was quiet" line for a chat that has more than three.
+    const quiet = isQuietNow();
+    if (!quiet) {
+      if (Date.now() >= flushNotBefore) try {
+        // The text must be ACCEPTED (tg throws otherwise), or the item stays for the next poll — a rate
+        // limit can't make a held message vanish. Paced at about one a second per chat, Telegram's
+        // guidance; files and cards are best-effort (cards are re-offered from the store anyway).
+        const flushed = await flushHeld(
+          async (i) => {
+            const n = (i.count ?? 1) > 1 ? `\n\n(${i.count} results from this job while it was quiet — this is the latest)` : '';
+            await tg(token, 'sendMessage', { chat_id: i.chat, text: `${i.text}${n}`.slice(0, 3900) });
+            for (const p of i.files ?? []) { try { if (statSync(p).isFile() && statSync(p).size < 10_000_000) await sendDocument(token, i.chat, p); } catch { /* */ } }
+            await offerApprovals(i.chat, i.approvals ?? []);
+            await new Promise((r) => setTimeout(r, 1100));
+          },
+          async (chat, n) => { await tg(token, 'sendMessage', { chat_id: chat, text: `🌅 ${n} messages arrived while it was quiet:` }); },
+          (chat) => allowed.has(chat),
+          // Telegram's own answer decides: a rate limit pauses the whole flush for its retry_after; a
+          // chat that is gone or blocked the bot can never receive it, so the item is dropped.
+          (err) => {
+            const msg = String((err as Error)?.message ?? err);
+            const ra = /retry after (\d+)/i.exec(msg);
+            if (ra || /too many requests/i.test(msg)) return { action: 'stop', retryAfterMs: (ra ? Number(ra[1]) : 30) * 1000 };
+            if (/chat not found|bot was blocked|forbidden|kicked|deactivated/i.test(msg)) return { action: 'drop' };
+            return { action: 'skip' };
+          },
+          20, // per poll: the person's own messages interleave with a long morning queue
+          log,
+        );
+        if (flushed.retryAfterMs) flushNotBefore = Date.now() + flushed.retryAfterMs;
+      } catch (e) { log(`held-message flush failed: ${(e as Error).message.slice(0, 80)}`); }
+      await offerWaiting();
+    }
     // Actions this process owns that a person approved elsewhere (the web app): run them here,
     // against this process's memory, and report back in the chat that asked.
     try {
       for (const r of await runApproved()) {
         const chat = (r.session ?? '').startsWith('tg-') ? r.session!.slice(3) : null;
         log(`approved elsewhere, ran here: ${r.tool} → ${r.ok ? 'done' : 'failed'}`);
-        if (chat && allowed.has(chat)) await tg(token, 'sendMessage', { chat_id: chat, text: `${r.ok ? '✅' : '⚠'} Approved in the app: ${r.tool}\n\n${r.result}`.slice(0, 3900) }).catch(() => {});
+        const msg = `${r.ok ? '✅' : '⚠'} Approved in the app: ${r.tool}\n\n${r.result}`.slice(0, 3900);
+        if (chat && allowed.has(chat)) {
+          if (quiet) holdPush({ chat, text: msg });
+          else await tg(token, 'sendMessage', { chat_id: chat, text: msg }).catch(() => {});
+        }
       }
     } catch (e) { log(`approved-actions sweep failed: ${(e as Error).message.slice(0, 80)}`); }
     for (const u of updates) {

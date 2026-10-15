@@ -35,6 +35,7 @@ const TOOL_CATEGORY: Record<string, ActionCategory> = {
   // written — so it reads as outside content (not in LOCAL_CONTENT_TOOLS or the own list): fenced
   // as external and it taints the run (BL-14a).
   approval_results: 'read',
+  quiet_hours: 'schedule', // a local setting (BL-07)
   // policy_* are local, not outward — but they stay in a SENSITIVE category on purpose: a standing
   // preference is primed into every future run, so it belongs in the "what I did" log and under the
   // tripwires. ('memory', like remember/supersede, is NOT sensitive and would hide them.)
@@ -98,7 +99,7 @@ export function isSensitive(name: string): boolean { return SENSITIVE.has(classi
 // echo no third-party text — a review found these were wrongly tainting runs as external).
 const OWN_OUTPUT_TOOLS = new Set([
   'write_file', 'knowledge_write', 'schedule_cancel', 'policy_save', 'policy_forget', 'routine_propose',
-  'memory_learn_person', 'memory_feedback', 'goal_add', 'goal_update', 'goal_list', 'confirm_action', 'cancel_action', 'list_pending',
+  'memory_learn_person', 'memory_feedback', 'goal_add', 'goal_update', 'goal_list', 'quiet_hours', 'confirm_action', 'cancel_action', 'list_pending',
   'onboard_questions', 'draft_email', 'draft_outlook', 'propose_event', 'propose_outlook_event',
   'generate_image', 'install_connector', 'uninstall_connector', 'remove_mcp_server',
 ]);
