@@ -31,6 +31,10 @@ const TOOL_CATEGORY: Record<string, ActionCategory> = {
   schedule_cancel: 'schedule',
   // goals (BL-05): local writes; goal_list echoes stored text, so its output is local content.
   goal_list: 'read', goal_add: 'schedule', goal_update: 'schedule',
+  // approval_results echoes what an approved command printed — output of code the model may have
+  // written — so it reads as outside content (not in LOCAL_CONTENT_TOOLS or the own list): fenced
+  // as external and it taints the run (BL-14a).
+  approval_results: 'read',
   // policy_* are local, not outward — but they stay in a SENSITIVE category on purpose: a standing
   // preference is primed into every future run, so it belongs in the "what I did" log and under the
   // tripwires. ('memory', like remember/supersede, is NOT sensitive and would hide them.)

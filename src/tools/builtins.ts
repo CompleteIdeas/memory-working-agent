@@ -7,22 +7,27 @@
  * guarded), mirroring the worker. http_request is network egress — opt-in.
  */
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
-import { resolve, join, dirname, basename } from 'node:path';
-import { runCommand } from '../util.js';
+import { resolve, join, dirname, basename, sep } from 'node:path';
+import { runCommand, runCommandAsync } from '../util.js';
 import { resolveAllowed, runCommandAllowed, allowedRoots, accessPolicy } from './access.js';
 import type { RegisteredTool, ToolContext } from './registry.js';
-import { classifyCommand, scrubbedEnv } from './shell-gate.js';
+import { classifyCommand, scrubbedEnv, writeRefusal, realPathOf } from './shell-gate.js';
 import { guardedFetch } from './net-guard.js';
-import { stageAction, registerExecutor } from './approval.js';
+import { stageAction, registerExecutor, pendingStagedBy } from './approval.js';
 
 /** A staged command, approved by a person, runs here — in whichever process confirms it (BL-18). */
 registerExecutor('run_command_staged', async (args, ctx) => {
   // The access policy at RUN time wins: a switch after staging (Locked-down) still blocks it.
   const gate = runCommandAllowed(true);
   if (!gate.ok) throw new Error(gate.reason);
-  const r = runCommand(String(args.command ?? ''), resolve(ctx.sandboxDir), 60_000, scrubbedEnv());
+  // A person approved it, so it may take as long as a test suite does — without freezing this process.
+  const r = await runCommandAsync(String(args.command ?? ''), resolve(ctx.sandboxDir), Number(process.env.MWA_APPROVED_COMMAND_TIMEOUT_MS ?? 15 * 60_000), scrubbedEnv());
   const out = `${r.stdout ?? ''}${r.stderr ? `\n[stderr] ${r.stderr}` : ''}`.trim();
-  return `exit=${r.code}\n${out.slice(0, CAP) || '(no output)'}`;
+  // The TAIL: a test runner's failure summary is at the end (BL-14a review).
+  const text = `exit=${r.code}\n${out.length > CAP ? `…${out.slice(-CAP)}` : out || '(no output)'}`;
+  // A non-zero exit is a FAILED run, so a later run's approval_results says "failed", not "done".
+  if (r.code !== 0) throw new Error(text);
+  return text;
 });
 
 const CAP = 4000;
@@ -56,6 +61,16 @@ function allowed(ctx: ToolContext, p: string): string | null {
   return resolveAllowed(ctx.sandboxDir, p, [...allowedRoots(ctx.sandboxDir), ...extra]);
 }
 
+/** The REAL path (short names expanded, links followed) lands inside an allowed folder's REAL path —
+ *  both sides resolved, so a short-name temp folder (C:\Users\ROBERT~1) doesn't refuse ordinary writes. */
+function realAllowed(ctx: ToolContext, full: string): boolean {
+  const norm = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  const real = (p: string) => { try { return norm(realPathOf(resolve(p))); } catch { return norm(resolve(p)); } };
+  const target = real(full);
+  const roots = [ctx.sandboxDir, ...(ctx.extraRoots ?? []), ...allowedRoots(ctx.sandboxDir)].map(real);
+  return roots.some((r) => target === r || target.startsWith(r.endsWith(sep) ? r : r + sep));
+}
+
 /** Strip HTML to readable text — so read_document on a web page returns prose, not markup. */
 function htmlToText(html: string): string {
   return html
@@ -72,8 +87,11 @@ const runCommandTool: RegisteredTool = {
     parameters: { type: 'object', properties: { command: { type: 'string', description: 'the shell command' } }, required: ['command'] },
   },
   handler: async (args, ctx) => {
+    // Unattended in Assistant mode: nothing RUNS, but a command can still be STAGED for the person to
+    // approve — otherwise a scheduled job could never ask for its checks to be run (BL-14a review).
+    const stageOnly = ctx.interactive === false && accessPolicy().preset === 'assistant';
     const gate = runCommandAllowed(ctx.interactive);
-    if (!gate.ok) return `(refused: ${gate.reason})`;
+    if (!gate.ok && !stageOnly) return `(refused: ${gate.reason})`;
     const command = String(args.command ?? '').trim();
     if (!command) return '(no command given)';
     const run = (dir: string, env?: NodeJS.ProcessEnv): string => {
@@ -86,8 +104,11 @@ const runCommandTool: RegisteredTool = {
     // Assistant mode (BL-04, folded into BL-03): a person watching a chat is not a person approving
     // each command. Read-only commands run; anything else is staged for approval — otherwise a
     // backgrounded `curl` to MWA's own approvals endpoint approves whatever the model just staged.
-    const verdict = classifyCommand(command, (p) => allowed(ctx, p) !== null);
-    if (verdict.kind === 'read-only') return run(ctx.sandboxDir, scrubbedEnv());
+    const verdict0 = classifyCommand(command, (p) => allowed(ctx, p) !== null);
+    if (verdict0.kind === 'read-only' && !stageOnly) return run(ctx.sandboxDir, scrubbedEnv());
+    const verdict = verdict0.kind === 'read-only' ? { kind: 'needs-approval' as const, reason: 'nobody is watching this run, so nothing runs without your approval' } : verdict0;
+    // A run nobody watches may stage only a few: a tainted job must not flood the approvals list.
+    if (stageOnly && ctx.runId && pendingStagedBy(ctx.runId, 'tool').length >= 3) return '(refused: this run has already asked for 3 approvals — wait for the person, and say in your summary what is waiting)';
     const id = stageAction({
       tool: 'run_command', ctx,
       // The card is now the last defense for anything not read-only (second BL-03 review): show the
@@ -97,8 +118,12 @@ const runCommandTool: RegisteredTool = {
         /\b(curl|wget|fetch|https?|nc|ncat|telnet|ssh|scp|ftp|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|bitsadmin|certutil)\b/i.test(command) ? '⚠ It reaches the network.' : '',
         /localhost|127\.|0\.0\.0\.0|\[::|::1|0x7f|2130706433|\/api\/approvals/i.test(command) ? '⚠ It targets this machine, possibly MWA\'s own controls (including approvals). Do not approve it unless you wrote it.' : '',
         `Run this command in ${ctx.sandboxDir}:`, `  ${command}`, `(Needs approval because ${verdict.reason}.)`,
+        // Say plainly what approving means (BL-14a review): it runs as the person, and a test or build
+        // command runs whatever code is in that folder — including code MWA wrote.
+        'Approving runs it as you, with your files and network. If it runs tests or a build, it runs the code in that folder, including any MWA wrote: look at the change first.',
       ].filter(Boolean).join('\n'),
       executor: 'run_command_staged', args: { command },
+      ...(ctx.interactive === false ? { ttlMs: 24 * 60 * 60_000 } : {}),
     });
     return (
       `[APPROVAL REQUIRED] This command needs the person's approval because ${verdict.reason}. It has NOT run.\n` +
@@ -165,6 +190,11 @@ const writeFileTool: RegisteredTool = {
   handler: async (args, ctx) => {
     const full = allowed(ctx, String(args.path ?? ''));
     if (!full) return outsideRefusal(ctx, String(args.path ?? ''), 'path');
+    const unsafe = writeRefusal(full);
+    if (unsafe) return `(refused: ${unsafe}. Change the project files instead.)`;
+    // A link inside an allowed folder must not carry the write outside it (BL-14a review): the REAL
+    // path has to be allowed too.
+    if (!realAllowed(ctx, full)) return outsideRefusal(ctx, String(args.path ?? ''), 'path');
     try {
       mkdirSync(dirname(full), { recursive: true });
       writeFileSync(full, String(args.content ?? ''), 'utf8');

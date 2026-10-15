@@ -16,6 +16,9 @@
  * interpreter (node, python, sh), package managers, and network tools.
  */
 
+import { existsSync, realpathSync } from 'node:fs';
+import { dirname, basename, sep } from 'node:path';
+
 export type ShellVerdict = { kind: 'read-only' } | { kind: 'needs-approval'; reason: string };
 
 /** Shell metacharacters: banned everywhere, inside quotes too — on Windows cmd.exe single quotes
@@ -86,6 +89,51 @@ export function classifyCommand(cmd: string, pathAllowed: (p: string) => boolean
     }
   }
   return { kind: 'read-only' };
+}
+
+/** True when a path lands inside a git folder or a hook folder. Anything written there runs as code on
+ *  the person's next git command — a hook — so the agent never writes there (BL-14a: working on a real
+ *  repo, a model-written `.git/hooks/post-checkout` would run the moment a person approves a gate). */
+export function inGitControlPath(p: string): boolean {
+  // .vscode too: a task set to run on folder open runs when the person opens the folder (BL-14a review).
+  return /(^|[\\/])(\.git|\.husky|\.githooks|\.vscode)([\\/]|$)/i.test(p);
+}
+
+/**
+ * Whether the agent may write to `full` (an absolute path already inside an allowed root). Text
+ * checks alone are bypassable on Windows (BL-14a review, verified): an 8.3 short name (`GIT~1`), an
+ * NTFS stream (`.git::$INDEX_ALLOCATION`), a trailing dot or space, or a symlink all reach `.git`
+ * without spelling it. So: refuse `:` after the drive, refuse segments ending in a dot or space, and
+ * check the REAL path of the deepest part that already exists (realpath expands short names and
+ * follows links). Returns a refusal reason, or null when the write may go ahead.
+ */
+/** The real path of the deepest part of `full` that already exists (short names expanded, links
+ *  followed), with the not-yet-existing remainder appended. */
+export function realPathOf(full: string): string {
+  let probe = full; const rest: string[] = [];
+  for (;;) {
+    if (existsSync(probe)) return [realpathSync.native(probe), ...rest.reverse()].join(sep);
+    const up = dirname(probe);
+    if (up === probe) return full;
+    rest.push(basename(probe)); probe = up;
+  }
+}
+
+export function writeRefusal(full: string): string | null {
+  const rest = /^[A-Za-z]:/.test(full) ? full.slice(2) : full;
+  if (rest.includes(':')) return 'that path names a file stream, not a file';
+  if (full.split(/[\\/]/).some((seg) => seg.length > 0 && /[. ]$/.test(seg) && seg !== '.' && seg !== '..')) return 'a path segment ends in a dot or a space';
+  if (inGitControlPath(full)) return 'never write inside a .git or git-hooks folder — files there run as code on the next git command';
+  try {
+    let probe = full;
+    for (;;) {
+      if (existsSync(probe)) { if (inGitControlPath(realpathSync.native(probe))) return 'that path leads into a .git or git-hooks folder — files there run as code on the next git command'; break; }
+      const up = dirname(probe);
+      if (up === probe) break;
+      probe = up;
+    }
+  } catch { return 'that path could not be checked'; }
+  return null;
 }
 
 /** The environment a model-run command gets: enough to find programs and a temp folder, none of

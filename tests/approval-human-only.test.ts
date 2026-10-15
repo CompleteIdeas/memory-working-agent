@@ -60,7 +60,7 @@ afterAll(() => { if (prev === undefined) delete process.env.MWA_FAST_CHAT; else 
 
 describe('the model cannot approve', () => {
   it('its approval tools are decline and look, nothing that approves', () => {
-    expect(approvalTools().map((t) => t.def.name).sort()).toEqual(['cancel_action', 'list_pending']);
+    expect(approvalTools().map((t) => t.def.name).sort()).toEqual(['approval_results', 'cancel_action', 'list_pending']); // look, decline, read outcomes — never approve
   });
 
   it('the measured self-approval (stage, then confirm in the same turn) runs nothing, and the run is blocked', async () => {

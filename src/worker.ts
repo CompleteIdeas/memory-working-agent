@@ -10,6 +10,7 @@ import { mkdirSync, writeFileSync, readdirSync, readFileSync, statSync } from 'n
 import { resolve, join, dirname } from 'node:path';
 import type { Provider } from './provider.js';
 import { parseJsonLoose, runCommand } from './util.js';
+import { writeRefusal } from './tools/shell-gate.js';
 import { markToolOutput, newFenceCode } from './tools/governance.js';
 
 export interface CodegenInstruction {
@@ -113,6 +114,7 @@ export async function runWorker(
     // path-traversal guard
     const target = resolve(sandboxDir, f.path);
     if (!target.startsWith(resolve(sandboxDir))) continue;
+    if (writeRefusal(target)) continue; // .git / hooks, streams, short names (BL-14a)
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, f.content, 'utf8');
     written.push(f.path);

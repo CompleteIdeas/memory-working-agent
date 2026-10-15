@@ -356,6 +356,13 @@ export async function confirmPending(id: string | undefined, ctx: ToolContext): 
   return r.ok ? `[CONFIRMED ${action.tool}]\n${r.result}` : `[CONFIRMED ${action.tool}] but it failed: ${r.result.slice(0, 300)}`;
 }
 
+/** Keep the head line (e.g. `exit=1`) and the TAIL — a test runner's failure summary comes last. */
+function tail(s: string, n = 2000): string {
+  if (s.length <= n) return s;
+  const head = s.split('\n', 1)[0].slice(0, 120);
+  return `${head}\n…\n${s.slice(-(n - head.length - 3))}`;
+}
+
 /** Run a row this process has claimed (status executing), in the context it was STAGED in — not the
  *  approver's — as interactive and untainted, since a person approved it. */
 async function runClaimed(row: Row): Promise<{ ok: boolean; result: string }> {
@@ -367,11 +374,11 @@ async function runClaimed(row: Row): Promise<{ ok: boolean; result: string }> {
   try {
     if (!closure && !exec) throw new Error(`this app has no way to run "${row.tool}"`);
     const result = String(closure ? await closure(stagedCtx) : await exec!(parse<Record<string, unknown>>(row.args, {}), stagedCtx));
-    s.prepare(`UPDATE approvals SET status = 'done', result = ?, args = '{}', updated_at = ? WHERE id = ?`).run(result.slice(0, 2000), Date.now(), row.id);
+    s.prepare(`UPDATE approvals SET status = 'done', result = ?, args = '{}', updated_at = ? WHERE id = ?`).run(tail(result), Date.now(), row.id);
     return { ok: true, result };
   } catch (e) {
     const msg = (e as Error).message ?? String(e);
-    s.prepare(`UPDATE approvals SET status = 'failed', result = ?, args = '{}', updated_at = ? WHERE id = ?`).run(msg.slice(0, 2000), Date.now(), row.id);
+    s.prepare(`UPDATE approvals SET status = 'failed', result = ?, args = '{}', updated_at = ? WHERE id = ?`).run(tail(msg), Date.now(), row.id);
     return { ok: false, result: msg };
   }
 }
@@ -482,7 +489,38 @@ const listPendingTool: RegisteredTool = {
   },
 };
 
+/** What happened to actions this conversation staged, newest first (BL-14a): a recurring job that
+ *  staged "run the tests" can read the outcome on its next fire and fix what failed. Same scope as
+ *  list_pending. The output can carry what the approved command printed — text the model's own code
+ *  produced — so it is classed as outside content (governance.ts) and fenced like any tool output. */
+export function approvalOutcomes(scope: { session?: string; personId?: string }, limit = 10): { id: string; tool: string; status: ApprovalStatus; result?: string; at: number }[] {
+  prune();
+  if (!scope.session && !scope.personId) return [];
+  // Filter by scope IN SQL, so a busy store can't push this conversation's results out of a window.
+  const rows = (scope.session
+    ? store().prepare(`SELECT * FROM approvals WHERE status <> 'pending' AND json_extract(ctx, '$.session') = ? ORDER BY updated_at DESC LIMIT ?`).all(scope.session, limit)
+    : store().prepare(`SELECT * FROM approvals WHERE status <> 'pending' AND json_extract(ctx, '$.personId') = ? ORDER BY updated_at DESC LIMIT ?`).all(scope.personId, limit)) as Row[];
+  return rows.map((r) => ({ r, a: toAction(r) })).filter(({ a }) => inScope(a, scope))
+    .map(({ r }) => ({ id: r.id, tool: r.tool, status: r.status as ApprovalStatus, ...(r.result ? { result: r.result } : {}), at: r.updated_at }));
+}
+
+const approvalResultsTool: RegisteredTool = {
+  def: {
+    name: 'approval_results',
+    description:
+      'See what happened to actions this conversation or job staged for approval: approved and done (with what it printed), ' +
+      'failed (with the error), declined, or expired. Use it on a later run to learn whether the tests or command you asked ' +
+      'the person to approve passed, and fix what failed.',
+    parameters: { type: 'object', properties: {}, required: [] },
+  },
+  handler: async (_args, ctx) => {
+    const done = approvalOutcomes(scopeOf(ctx));
+    if (!done.length) return '(nothing staged from this conversation has finished yet)';
+    return done.map((d) => `${d.id} — ${d.tool} — ${d.status} at ${new Date(d.at).toISOString().slice(0, 16).replace('T', ' ')}${d.result ? `\n  ${tail(d.result, 1500)}` : ''}`).join('\n');
+  },
+};
+
 /** The approval tools the MODEL gets: decline and look — never approve (BL-03). */
 export function approvalTools(): RegisteredTool[] {
-  return [cancelActionTool, listPendingTool];
+  return [cancelActionTool, listPendingTool, approvalResultsTool];
 }
