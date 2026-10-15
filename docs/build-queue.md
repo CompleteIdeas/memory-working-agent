@@ -36,6 +36,10 @@ merged or published by the loop.
 - Items touching the agent loop, tools, scheduler or prompt also get: an image rebuild and
   `scripts/e2e-scheduled.mjs` (6 trials) — a hit means the file exists with the right content.
   Baseline to hold: **8/8 and 6/6 delivered** (2026-10-14).
+- **Run the end-to-end harnesses once per item, on its final revision** (from Robert's call 2,
+  2026-10-15). Unit tests and the isolated reviewer gate the in-between revisions; re-running the
+  harnesses every review round is where most of the spend went. If a gpt-5.4-nano deployment
+  appears, it may run non-blocking smoke rounds in between; gpt-5.4-mini stays the gate.
 - **Build the image from the clean worktree, never the main checkout** (from BL-15). The Dockerfile copies
   `vendor/agent-working-memory` from the build context, and the main checkout's `vendor/` is a newer AWM
   with uncommitted changes — so the images for BL-01 to BL-03 tested that AWM, not the pinned one. The
@@ -70,7 +74,7 @@ two consecutive items REVISE; or Robert says stop.
 
 ## Queue
 
-**Merged 2026-10-15:** Robert said "merge"; `master` was fast-forwarded to `b030c9f` (BL-01, BL-17, BL-02, BL-03 + BL-04, BL-15 and the docker-autonomy branch beneath them). The stack is back to 0 unmerged. Still with Robert, from Call 1: publish 0.6.0 and redeploy the Railway dogfood — the loop never does either. **Next up:** BL-05 (goals own work; fan-out budget), then BL-18 (one shared, durable approval store).
+**Merged 2026-10-15** (`master` = `b030c9f`). Release prep for 0.6.0 is on build-loop (`6ac2090`): Robert rotates the npm token, publishes and redeploys. **Next up, in order (Robert, 2026-10-15):** BL-05, BL-18, BL-14, then BL-06, BL-07, BL-08, BL-13, BL-16, BL-09 to BL-12.
 
 Status: `ready` · `in progress` · `blocked` · `done` · `revise`.
 "Waits on" names an item or a person.
@@ -83,7 +87,7 @@ Status: `ready` · `in progress` · `blocked` · `done` · `revise`.
 | BL-04 | **Gate shell commands** (H-4). A parsed allowlist of read-only commands runs directly; anything else is staged for approval. Developer mode unchanged. | In the default mode a chat can run any shell command unconfirmed. | — | **done in BL-03** | (BL-03's commit) | Folded into BL-03 on 2026-10-15: BL-03's isolated review proved approval can't hold without it. See BL-03. |
 | BL-05 | **Goals own work; fan-out budget** (H-8). A goal is an AWM task (status, priority, `blocked_by`) that owns its scheduled tasks. Caps on tasks per run and per goal. | A scheduled run can create unbounded scheduled tasks. | BL-02 | ready | | |
 | BL-06 | **Inbox watcher in `serve`** (call 5). Start the file-drop watcher in the container. | The only autonomous intake in Docker today is a timed task. | — | ready | | |
-| BL-07 | **Quiet hours and notify-on-change.** A delivery window; recurring tasks default to notifying only when something changed. | An always-on agent would message at any hour, every interval. | BL-02 | ready | | |
+| BL-07 | **Quiet hours.** A delivery window for non-urgent results. The delivery default stays `always` (BL-02's decision: a daily report changes nothing and would otherwise never be sent); `changed` remains opt-in. | An always-on agent would message at any hour. | BL-02 | ready | | |
 | BL-08 | **Detector dry run.** The `check` command gets a dry run and starts disabled. | It can't be tested before it is armed. | — | ready | | |
 | BL-09 | **Measure the no-compaction bet** (H-1). Plant a constraint at step 1, require it at step 25+, vary the window. | MWA's most distinctive claim is unmeasured. | — | ready | | |
 | BL-10 | **Replayable run transcript** (H-5). Log every action and result so a crashed run can resume. | A crashed long run is unrecoverable. | — | ready | | |
@@ -104,6 +108,9 @@ publish 0.6.0, redeploy the dogfood. Calls 6 and 7 stay "not now".
 | 2026-10-15 | BL-03 | Approval only via the app panel and a Telegram button the connector handles; the model keeps decline and look. Same-run guard in `confirmPending`. A run that leaves a staged action is `blocked` (always delivered). Captured standing preferences are staged for approval (24h), never saved silently, including the verbatim "standing preference:" path. Approved actions run in the context they were staged in. | **Taken** from the coworker: unguessable ids, buttons only (no typed "yes"), previews as plain text with a warning when a run that read outside content proposed it, approval bound to the chat it was offered in. **Rejected:** a durable approval store (a pending item lost on restart approves nothing; noted for later) and payload hashes (each id is already bound to its exact arguments and is single-use). |
 | 2026-10-15 | BL-03 | **BL-04 folded into BL-03.** The isolated review proved the model could still approve itself: a chat backgrounded `curl` through `run_command` to MWA's own `/api/approvals/confirm` (no password: no check at all; with one: the shell inherited it). Approval can't hold while the model's shell or fetch tools can reach this machine, and BL-04's staging needed approval to hold — so they ship together: a parsed read-only allowlist runs, everything else is staged; fetch tools refuse loopback and private addresses; the model's shell gets no secrets. Developer mode stays ungated and now says plainly it is no boundary. | **Coworker (asked):** fold in now, not ship-then-fix; treat it as capability gating, not just the shell. **Taken:** both, plus network egress and env scrubbing. **Not taken now:** a durable approval store and per-user Telegram checks (queued as BL-18), DNS-rebinding pinning (BL-16). |
 | 2026-10-15 | BL-15 | Upgrade within the declared ranges only (lockfile, no package.json change), in a clean worktree at the pinned AWM; leave the two majors (AWM's `@huggingface/transformers` 4.x, a `mammoth` downgrade) as documented, unreachable residuals, the first filed as an AWM task. | Not put to the coworker: no fork in design — every fix that stays in range was taken, and the two that don't are another project's call (AWM) or a downgrade. `npm audit fix` crashes on the workspace (`edgesOut` of null), so packages were updated by name. |
+| 2026-10-15 | — | **Robert's answers** in "MWA after the merge: your calls": (1) release 0.6.0 — the loop writes the changelog, Robert publishes and redeploys; (2) look at a cheaper test model before raising the cap; (3) **cancel Gallop on MWA** for now — Gallop Support stays a Claude Code agent; (4) yes to BL-06; (5) Developer mode stays ungated; (6) BL-05, BL-18, BL-14. "Proceed, I do not object" to the rest of the order. | Robert's decisions; not challenged. |
+| 2026-10-15 | gates | Cheaper testing: only gpt-5.4-mini is deployed on the Azure resource (nano and seven others: DeploymentNotFound); the local GPU (4 GB) fits only 4B models. So: harnesses once per item on the final revision, nano for non-blocking smoke if Robert deploys it, mini stays the gate; proposed cap $15. | **Coworker:** nano in between and mini as the gate, with A's once-per-item rule; local models only as an "is it obviously broken" smoke. **Taken.** |
+| 2026-10-15 | BL-07 | Reworded to quiet hours only. The queue's old wording ("recurring tasks default to notifying only when something changed") contradicted BL-02's decision. | Follows BL-02's coworker challenge (the read-only report trap). |
 
 ## Cost ledger
 
