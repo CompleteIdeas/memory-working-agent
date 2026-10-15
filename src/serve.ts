@@ -54,6 +54,7 @@ import { getProvider, listModels, PROVIDERS, type Provider } from './provider.js
 import { RoutedProvider } from './model-router.js';
 import { MwaMemory } from './awm.js';
 import { recordReceipt, readReceipts, setReceiptProducer } from './receipts.js';
+import { setTranscriptProducer, stopHeartbeat } from './transcript.js';
 import { scanSources } from './onboard.js';
 import { buildRegistry } from './tools/build.js';
 import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, runApproved, recentApprovalOutcomes } from './tools/approval.js';
@@ -385,7 +386,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     if (prepared.mismatch) send('identity', { level: 'mismatch' });
 
     const r = await runAgent({
-      instruction, userMessage: message, dir: s.dir, memory, brain, worker, tools: registry,
+      instruction, userMessage: message, dir: s.dir, memory, brain, worker, tools: registry, transcript: true, // BL-10
       ...(ctx && ctxTainted ? { carried: `Recent conversation so far:\n${ctx}`, startTainted: true } : {}),
       workspace: cfg.awm.workspace, session: sessionId, interactive: true, // a human is watching → ask_user can ask them
       style: cfg.style, // guided (proactive/plain) vs direct (concise) — independent of access preset
@@ -432,6 +433,7 @@ function serveStatic(res: ServerResponse, dir: string, pathname: string): void {
 // cloud deploy binds the platform's expected port automatically — no manual port var needed.
 export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? process.env.PORT ?? 7788)): Promise<void> {
   setReceiptProducer('serve'); // BL-13: this process's own delivery receipts file
+  setTranscriptProducer('serve'); // BL-10: and its own run transcripts
   // What this process stages, it owns: its memory identity (BL-18). Approvals for it made in Telegram
   // run here — swept independently of the scheduler, so it works with no model configured too.
   setApprovalOwner(SERVE_AGENT);
@@ -1080,6 +1082,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   // (a supervisor / Docker restart policy brings us back). Hard-exit after 10s as a backstop.
   const shutdown = (sig: string) => {
     console.log(`\n[mwa] ${sig} received — shutting down…`);
+    stopHeartbeat(); // BL-10: the next process picks up whatever this one was running, at once
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 10_000).unref();
   };
@@ -1123,6 +1126,8 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           if (r.job && r.fire) recordReceipt({ job: r.job, fire: r.fire, channel: 'app', status: saved ? 'stored' : 'failed', ...(saved ? {} : { detail: 'could not write the app feed' }) });
           console.log(`  ⏰ fired: ${task.instruction.slice(0, 60)} → ${r.summary.slice(0, 80)}`);
         },
+        // BL-10: a chat or job cut off by a restart and not resumed — say so in the app's feed.
+        onInterrupted: (x) => { appendNotification({ ts: Date.now(), instruction: `Interrupted by a restart: ${x.instruction}`, summary: x.jobId ? `This scheduled job was cut off ${x.steps ? `after ${x.steps} step(s)` : 'before it did anything'}. ${x.recurring ? 'Its next scheduled run will pick the work up.' : 'It has used its resumes, so it was not started again.'}` : `This request was cut off ${x.steps ? `after ${x.steps} step(s)` : 'before it did anything'} by a restart. It was not started again — ask again if you still want it.${x.unfinished ? ` ${x.unfinished} step(s) had started without a recorded result: check whether they happened.` : ''}`, reason: 'interrupted', outcome: 'could-not' }); },
         onTick: () => { lastSchedulerTick = Date.now(); },
         onLog: (m) => logger.info('scheduler', m),
       });

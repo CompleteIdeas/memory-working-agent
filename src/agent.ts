@@ -51,6 +51,7 @@ import type { InteractionStyle } from './config.js';
 // `primeable` lives in prime.ts so the coding brain applies it too (BL-16); re-exported for callers.
 export { primeable } from './prime.js';
 import { primeable } from './prime.js';
+import { openTranscript, type Transcript } from './transcript.js';
 
 export function buildKnowledgeBlock(recalled: { concept: string; content: string; trust?: TrustTier }[]): string {
   if (!recalled.length) return 'No prior memory yet for this request.';
@@ -339,9 +340,16 @@ export async function runAgent(opts: {
   /** one id for a whole planned run: every step and retry shares it, so the approval gate's
    *  same-run guard covers the plan, not just one step (BL-03 review). */
   rootRunId?: string;
+  /** Keep a replayable transcript of this run (BL-10): `true` opens one for a top-level run — the
+   *  scheduler, the inbox and the chat channels ask for it; an open Transcript is passed down to a
+   *  planned run's steps so they log into their parent's. */
+  transcript?: boolean | Transcript;
   /** the job this scheduled fire belongs to (BL-02): its id, completion condition and hard limits. */
   jobId?: string;
   jobUntil?: string;
+  /** the job's own task without resume framing, and its schedule — for its transcript (BL-10) */
+  jobTask?: string;
+  jobRecur?: string;
   jobLimits?: string;
   jobDeliver?: 'always' | 'changed' | 'never';
   /** the job was created by a run that had read outside content (the TASK's taint, not this run's). */
@@ -396,6 +404,24 @@ export async function runAgent(opts: {
   // context; it never touches the direct loop's dynamics (simple tasks skip it entirely, and
   // a step is "done" only when its real sub-run returns — so planning can't be mistaken for
   // progress, the failure mode of the earlier naive self-checklist). MWA_PLAN=off disables it.
+  // BL-10: a top-level run that asked for a transcript gets one — opened here, before the plan branch,
+  // so a planned run is one transcript; ended whatever happens, so only a crash leaves it open.
+  if (opts.transcript === true && !opts.subRun) {
+    const tx = openTranscript(opts.rootRunId ?? randomUUID(), {
+      instruction, task: opts.jobTask ?? instruction, jobRecur: opts.jobRecur, origin: opts.extraRoots?.[0],
+      dir: opts.dir, interactive: opts.interactive, session: opts.session, personId: opts.personId,
+      jobId: opts.jobId, jobLineage: opts.jobLineage, jobUntil: opts.jobUntil, jobLimits: opts.jobLimits, jobDeliver: opts.jobDeliver,
+      jobDepth: opts.jobDepth, jobGoal: opts.jobGoal, jobUrgent: opts.jobUrgent, tainted: opts.startTainted === true || opts.jobSettingsTainted === true,
+      resumeAttempt: opts.resumeAttempt,
+    });
+    try {
+      const r = await runAgent({ ...opts, transcript: tx, rootRunId: tx.runId });
+      tx.end(r.reason, r.outcome);
+      return r;
+    } catch (e) { tx.end('error'); throw e; }
+  }
+  const tx: Transcript | undefined = typeof opts.transcript === 'object' ? opts.transcript : undefined;
+
   if (!opts.subRun && memory.enabled && process.env.MWA_PLAN !== 'off' && (opts.plan ?? isComplexTask(instruction))) {
     return runPlanned(opts);
   }
@@ -887,6 +913,7 @@ export async function runAgent(opts: {
       consecNoProgress = 0;
       const content = readFileInDir(dir, action.path);
       sawLocalRead = true;
+      tx?.markTainted(); // BL-10: the moment it happens, not at the next step
       // Flattened like tool results: injected lines must not start at column 0 looking like history.
       history.push(`read(${action.path}): ${markToolOutput('read', content.slice(0, 1000).replace(/\n/g, ' '), fence)}`);
       emit('read', { path: action.path });
@@ -976,6 +1003,7 @@ export async function runAgent(opts: {
       // this an instruction that named an absolute path here is unreachable there and the task can
       // never succeed. Deliberately NOT `dir`, which means "run IN this folder" (the resume path) —
       // a scheduled task still gets its own per-fire folder; origin only widens what it may touch.
+      const txSched = tx?.intent('schedule', {}, sawUntrustedRead || sawLocalRead); // creates a job: a resume must not create it twice (BL-10)
       await memory.addScheduledTask(String(action.instruction), dueMs, { recur, notify: opts.session, check, person: opts.personId, origin: dir, tainted: sawUntrustedRead || sawLocalRead,
         until: typeof action.until === 'string' && action.until.trim() ? action.until.trim().slice(0, 400) : undefined,
         limits: typeof action.limits === 'string' && action.limits.trim() ? action.limits.trim().slice(0, 600) : undefined,
@@ -984,6 +1012,7 @@ export async function runAgent(opts: {
         // Skipping quiet hours is the person's call: honored only from an attended conversation that
         // hasn't read outside content, so injected text can't make jobs buzz a phone at night (BL-07).
         urgent: action.urgent === true && opts.interactive === true && !sawUntrustedRead && !sawLocalRead ? true : undefined });
+      if (txSched !== undefined) tx?.result(txSched, true);
       declaredOutcome = 'changed';
       productive++;
       const when = new Date(dueMs).toISOString().slice(0, 16).replace('T', ' ');
@@ -1029,10 +1058,14 @@ export async function runAgent(opts: {
       toolCalls++;
       const { action: _n, ...args } = action as Record<string, unknown> & { action: string };
       const callCtx = { sandboxDir: dir, interactive: opts.interactive, personId: opts.personId, identityInDoubt: opts.identityInDoubt, extraRoots: opts.extraRoots, tainted: sawUntrustedRead, readLocal: sawLocalRead, runId, session: opts.session };
+      // BL-10: intent BEFORE the step, result after — a crash in between leaves an intent with no result.
+      const txSeq = tx?.intent(action.action, args as Record<string, unknown>, sawUntrustedRead || sawLocalRead);
       const called = typeof opts.tools.callDetailed === 'function'
         ? await opts.tools.callDetailed(action.action, args as Record<string, unknown>, callCtx)
         : { text: await opts.tools.call(action.action, args as Record<string, unknown>, callCtx), failed: false };
       const result = called.text;
+      // A gated tool that only STAGED its action returns success text, but nothing ran (BL-10 live proof).
+      if (txSeq !== undefined) tx?.result(txSeq, !called.failed, !called.failed && /^\[APPROVAL REQUIRED\]/.test(result.trimStart()));
       // Keep enough of the result for the model to actually USE it — read_email/read_document
       // return long documents (a full email thread, a PDF); 400 chars hid the answer.
       // Fenced and labeled by source (H-3): the result is DATA, and its text can't forge the fence.
@@ -1057,6 +1090,7 @@ export async function runAgent(opts: {
       // Taint on any external call, refused or not — fail-closed.
       if (readsUntrustedContent(action.action)) sawUntrustedRead = true;
       else if (!refused && outputSource(action.action) === 'local') sawLocalRead = true;
+      if (sawUntrustedRead || sawLocalRead) tx?.markTainted(); // BL-10: before anything else can happen
       // F3: record a successful SIDE-EFFECTING action to the action log (Glass Box "what I did",
       // Undo, and the trajectory tripwire). Reads/control calls are skipped — they aren't actions.
       if (!refused && isSensitive(action.action)) {
@@ -1106,12 +1140,15 @@ export async function runAgent(opts: {
     if (action.action === 'dispatch' && action.instruction) {
       dispatches++; productive++; consecNoProgress = 0;
       let wres;
+      const txSeq = tx?.intent('dispatch', {}, sawUntrustedRead || sawLocalRead); // the worker writes files (BL-10)
       try {
         wres = await runWorker(worker, { instruction: action.instruction, testCmd: 'true', protect: [] }, dir);
       } catch (e) {
+        if (txSeq !== undefined) tx?.result(txSeq, false);
         history.push(`dispatch#${dispatches}: WORKER ERROR ${(e as Error).message.slice(0, 120)}`);
         continue;
       }
+      if (txSeq !== undefined) tx?.result(txSeq, wres.pass !== false);
       usage.workerIn += wres.usage.input; usage.workerOut += wres.usage.output;
       const tier = worker instanceof RoutedProvider ? ` [${worker.getTier()}]` : '';
       history.push(`dispatch#${dispatches}${tier}: ${action.instruction.slice(0, 110)} -> ${wres.filesWritten.join(', ') || '(no files)'} | ${markToolOutput('dispatch', wres.output.slice(0, 160), fence)}`);
@@ -1405,7 +1442,7 @@ export async function runAgent(opts: {
     // the shared `unknown` profile, and anything IT schedules becomes visible to every
     // shared-profile session — the leak the person tag exists to close.
     // The resume reuses this run's folder: whatever a tainted run saved there must not come back clean.
-    const id = await memory.addScheduledTask(cont, dueMs, { notify: opts.session, dir, resumeAttempt: attempt + 1, person: opts.personId, depth: opts.jobDepth, goal: opts.jobGoal, resumeOf: opts.jobLineage ?? opts.jobId, byRun: runId, urgent: opts.jobUrgent, limits: opts.jobLimits, until: opts.jobUntil, deliver: opts.jobDeliver, tainted: sawUntrustedRead || sawLocalRead });
+    const id = await memory.addScheduledTask(cont, dueMs, { notify: opts.session, dir, resumeAttempt: attempt + 1, person: opts.personId, depth: opts.jobDepth, goal: opts.jobGoal, resumeOf: opts.jobLineage ?? opts.jobId, byRun: runId, urgent: opts.jobUrgent, limits: opts.jobLimits, until: opts.jobUntil, deliver: opts.jobDeliver, tainted: sawUntrustedRead || sawLocalRead, task: opts.jobTask ?? instruction });
     if (id) {
       history.push(`(unfinished — queued a resume for ~1 min from now, attempt ${attempt + 1}/${MAX_RESUMES})`);
       emit('schedule', { instruction: `resume: ${instruction.slice(0, 50)}`, due: dueMs, resume: attempt + 1 });

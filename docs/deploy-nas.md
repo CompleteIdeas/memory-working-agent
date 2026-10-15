@@ -111,6 +111,26 @@ because the job only reports changes. A job whose last three results reached no 
 (and, without an access password, any client on your network could have). It doesn't prove anyone
 read it.
 
+A restart doesn't lose a scheduled job in progress. Every scheduled run and chat keeps a transcript
+in `/data/transcripts`. It holds the request itself (up to 4,000 characters), then each step's tool
+name and plain file path, recorded before the step runs, and whether the step succeeded, recorded
+after. What the steps read or returned, and command text, are not stored.
+
+When the container comes back:
+
+- After a clean `docker stop` or redeploy of the web app, a one-shot scheduled job that was cut off is
+  resumed at once. After a crash or an out-of-memory kill, and for the Telegram connector, it is
+  resumed within about four minutes, once the old process's heartbeat has gone stale. A job is
+  resumed at most twice in all.
+- The resumed run is told which steps were done and which started with no recorded result, so it can
+  check those before repeating them.
+- A recurring job is not resumed; its next scheduled run picks the work up.
+- A chat that was cut off is not re-run; the app or Telegram says it was interrupted.
+- Inbox files are handled by the inbox's own recovery, not by transcripts.
+
+Finished transcripts are deleted after 7 days. One that is still open is kept until it has been
+recovered.
+
 Or drop a file. Put an instruction in a `.md` or `.txt` file in `mwa-workspace/inbox/` inside
 your data folder (in the container: `/data/mwa-workspace/inbox/`). MWA picks it up once the
 file has stopped changing for a couple of seconds, so a slow copy isn't read half-written. Tasks

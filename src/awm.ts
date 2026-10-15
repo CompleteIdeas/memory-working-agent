@@ -155,6 +155,8 @@ export interface LearnOpts { canonical?: boolean; untrusted?: boolean }
 export interface ScheduleOpts {
   recur?: string; notify?: string; dir?: string; origin?: string; resumeAttempt?: number; check?: string; person?: string; tainted?: boolean;
   /** completion condition in plain words; a confirmed `complete` outcome stops a recurring job. */
+  /** the job's own task, without resume framing (BL-10) */
+  task?: string;
   until?: string;
   /** hard limits shown to every fire. */
   limits?: string;
@@ -199,6 +201,8 @@ export interface ScheduledTask {
   /** created by a run that had read external content — the fired run starts tainted (BL-17). */
   tainted?: boolean;
   /** the job contract (BL-02) */
+  /** the job's own task, without resume framing (BL-10) */
+  task?: string;
   until?: string;
   limits?: string;
   deliver?: 'always' | 'changed' | 'never';
@@ -592,6 +596,8 @@ export class MwaMemory implements Memory {
     if (opts.tainted) tags.push('tainted=1');
     // The job contract (BL-02). Free text goes base64 in tags, like `check`, so it survives as data.
     if (opts.until) tags.push(`until64=${Buffer.from(opts.until, 'utf8').toString('base64')}`);
+    // A resume's own task, without its framing (BL-10): what a later resume must finish.
+    if (opts.task) tags.push(`task64=${Buffer.from(opts.task.slice(0, 4000), 'utf8').toString('base64')}`);
     if (opts.limits) tags.push(`limits64=${Buffer.from(opts.limits, 'utf8').toString('base64')}`);
     if (opts.deliver && opts.deliver !== 'always') tags.push(`deliver=${opts.deliver}`);
     if (opts.resumeAttempt) tags.push(`resume=${opts.resumeAttempt}`);
@@ -651,7 +657,8 @@ export class MwaMemory implements Memory {
         const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
         const check64 = get('check64=');
         out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, origin: get('origin=') || undefined, tainted: tags.includes('tainted=1') || undefined, until: get('until64=') ? Buffer.from(get('until64='), 'base64').toString('utf8') : undefined, limits: get('limits64=') ? Buffer.from(get('limits64='), 'base64').toString('utf8') : undefined, deliver: (get('deliver=') || undefined) as ScheduledTask['deliver'], pendingComplete: tags.includes('pendingcomplete=1') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined, person: get('person=') || undefined, depth: Number(get('depth=')) || undefined, parent: get('parent=') || undefined, goal: get('goal=') || undefined, byRun: get('byrun=') || undefined, resumeOf: get('resumeof=') || undefined, budgetNotified: tags.includes('budgetnotified=1') || undefined, urgent: tags.includes('urgent=1') || undefined,
-          checkMode: (get('checkmode=') || undefined) as ScheduledTask['checkMode'], checkArm: get('checkarm=') || undefined, checkEv: get('checkev=') ? parseEvidence(get('checkev=')) : undefined, checkReady: tags.includes('checkready=1') || undefined, checkMissed: tags.includes('checkmissed=1') || undefined });
+          checkMode: (get('checkmode=') || undefined) as ScheduledTask['checkMode'], checkArm: get('checkarm=') || undefined, checkEv: get('checkev=') ? parseEvidence(get('checkev=')) : undefined, checkReady: tags.includes('checkready=1') || undefined, checkMissed: tags.includes('checkmissed=1') || undefined,
+          task: get('task64=') ? Buffer.from(get('task64='), 'base64').toString('utf8') : undefined });
       }
       return out.sort((a, b) => a.due - b.due);
     } catch (err) { console.error('[awm] pendingScheduled error:', (err as Error).message); return []; }

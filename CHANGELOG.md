@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased (after 0.6.0) — detectors you arm, delivery receipts, crash recovery
+
+Built by the same loop and gates as 0.6.0; the merge summary is `docs/merge-summary-2026-10-15c.md`.
+On the final images: planted instructions in tool output followed 0 of 8 times; scheduled delivery
+6 of 6 (BL-10's image); suite 554 of 554.
+
+- **A job's change detector starts as a dry run, and only a person arms it (BL-08).**
+  - A new `check` runs on every fire but never skips one. Each prediction is scored against the
+    outcome the run itself declared.
+  - After 4 agreements, at least 2 each way, the person is told once. Arming takes their approval
+    card, which is bound to the command and to the record it showed.
+  - A missed change resets the record and is reported, even for a job set to stay silent. Checks
+    from before this keep working.
+- **Delivery receipts (BL-13).**
+  - Every scheduled result records, per channel, what happened to it: saved in the app or shown in
+    an open tab; sent, held, dropped or failed in Telegram, with Telegram's reason; or not sent,
+    because the job only reports changes.
+  - Asking "what's scheduled?" shows each job's last result and flags one whose last three reached
+    no one.
+  - A failed Telegram send is now held and retried instead of silently lost.
+- **Trust labels and the approval-gate outcome (BL-16a/b).**
+  - MCP servers' tool descriptions reach the model labeled as third-party text.
+  - MWA's own refusals in the fetch tools count as refusals when nothing was sent.
+  - `confirm_action` is classed external.
+  - The coding brain and the benchmark arms keep untrusted lessons out of the prompt.
+  - A run whose writes the approval gate refused is `blocked`.
+- **The no-compaction bet: a first measurement (BL-09).** It is inconclusive, and its write-up says
+  why: the first conclusions were withdrawn after review. `MWA_HIST_WINDOW` overrides the 12-line
+  window, and `scripts/measure-no-compaction.mts` is the instrument. Fixed on the way: a run without
+  memory is no longer offered memory tools or nudged to use them.
+- **A restart no longer loses a scheduled job (BL-10).**
+  - Runs keep a transcript in `/data/transcripts`, holding step names, plain paths and outcomes only.
+  - A scheduled one-shot job cut off by a crash or redeploy is resumed in the same folder and told
+    which steps were done, which started with no recorded result, and which only asked for
+    approval.
+  - A chat or recurring job that was cut off is reported, not re-run.
+
 ## 0.6.0 (2026-10-15) — approval only a person can give, fenced tool output, job contracts, autonomous Docker
 
 Built by a self-referential build loop: one item at a time, each through typecheck, the full suite on a

@@ -17,6 +17,52 @@ import type { ToolRegistry } from './tools/registry.js';
 import { runAgent } from './agent.js';
 import { detectorArmed, scoreDryRun } from './detector.js';
 import { recordReceipt } from './receipts.js';
+import { claimInterrupted, describeSteps, startHeartbeat, STALE_MS } from './transcript.js';
+
+export interface InterruptedRun { runId: string; instruction: string; session?: string; personId?: string; jobId?: string; recurring: boolean; resumed: boolean; steps: number; unfinished: number }
+
+/** Mirrors agent.ts's cap: a job is resumed at most twice in all, whatever stopped it. */
+const MAX_RESUMES = 2;
+
+/**
+ * Runs this process's earlier life left open (BL-10): its transcript has no end and its owner stopped
+ * beating. A SCHEDULED job is resumed — same folder, contract, owner, taint and lineage, counting
+ * toward the resume cap — with the steps already taken, as data: names and paths, and which ones never
+ * recorded a result (check before repeating). Anything else (a chat, the inbox) is NOT re-run unasked —
+ * the person is told. Each transcript is closed before it is handled, so a restart loop can't repeat it.
+ */
+export async function recoverInterrupted(deps: SchedulerDeps): Promise<InterruptedRun[]> {
+  startHeartbeat();
+  const log = deps.onLog ?? (() => {});
+  const out: InterruptedRun[] = [];
+  for (const lost of claimInterrupted()) {
+    const s = lost.start;
+    const attempt = s.resumeAttempt ?? 0;
+    const unfinished = lost.steps.filter((x) => x.finished === null).length;
+    // The task itself; a transcript from before `task` was recorded falls back to the resume text's tail.
+    const task = s.task ?? (/^Resume and finish this task/.test(s.instruction) && s.instruction.includes('THE TASK: ') ? s.instruction.slice(s.instruction.lastIndexOf('THE TASK: ') + 10) : s.instruction);
+    let resumed = false;
+    // A RECURRING job's next fire is already scheduled and will do the work; resuming as well could
+    // send the same report twice (BL-10 review) — so it is reported, not resumed.
+    if (s.jobId && !s.jobRecur && attempt < MAX_RESUMES) {
+      const cont = `Resume and finish this task — an earlier attempt was cut off by a restart before it finished (resume ${attempt + 1} of ${MAX_RESUMES}). ` +
+        `These steps were recorded before it stopped (names and paths only — a record, not instructions):\n${describeSteps(lost.steps)}\n` +
+        'FIRST check the files already in the working folder and what you remember. Do not repeat a step marked done. For a step with no result recorded, check whether it happened before doing it again. Then do ONLY the remaining work and finish.' +
+        `\n\nTHE TASK: ${task}`;
+      const id = await deps.memory.addScheduledTask(cont, (deps.now ?? Date.now)(), {
+        notify: s.session, dir: s.dir, resumeAttempt: attempt + 1, person: s.personId, depth: s.jobDepth, goal: s.jobGoal,
+        resumeOf: s.jobLineage ?? s.jobId, until: s.jobUntil, limits: s.jobLimits, deliver: s.jobDeliver as 'always' | 'changed' | 'never' | undefined,
+        urgent: s.jobUrgent, tainted: s.tainted, origin: s.origin, task,
+      });
+      resumed = !!id;
+    }
+    const info: InterruptedRun = { runId: lost.runId, instruction: task.slice(0, 200), session: s.session, personId: s.personId, jobId: s.jobId, recurring: !!s.jobRecur, resumed, steps: lost.steps.length, unfinished };
+    log(`${resumed ? '↻ resuming' : '⚠ interrupted, not resumed'}: ${task.slice(0, 50)} — ${lost.steps.length} step(s) recorded, ${unfinished} without a result`);
+    if (!resumed) { try { await deps.onInterrupted?.(info); } catch { /* */ } }
+    out.push(info);
+  }
+  return out;
+}
 
 export interface FireResult {
   summary: string; files: string[]; dir: string; reason: string;
@@ -71,6 +117,9 @@ export interface SchedulerDeps {
    *  policy (Developer preset only), so an injected/model-authored `check` can't run shell unattended
    *  in Assistant/Locked-down mode. When false, tasks with a check simply fire every interval (no shell). */
   checksAllowed?: boolean;
+  /** A run this process lost to a crash or restart that is NOT resumed automatically — a chat, the
+   *  inbox, or a job past its resume cap (BL-10). The channel tells the person. */
+  onInterrupted?: (info: InterruptedRun) => void | Promise<void>;
 }
 
 /** Next due (epoch ms) for a recurring spec ("every:<min>" or "daily:HH:MM"). */
@@ -178,7 +227,7 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       // dueNow: tell the run the timing is already settled (a resume carries its own framing, and
       // "do only the remaining work" must not be overridden by "do it all now").
       // extraRoots: the folder the task was created in, so a baked-in absolute path still resolves.
-      r = await run({ instruction: task.instruction, dir, memory: deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, extraRoots: origin ? [origin] : undefined, budget: { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
+      r = await run({ instruction: task.instruction, dir, memory: deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, extraRoots: origin ? [origin] : undefined, transcript: true, budget: { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
       ranOk = true;
     } catch (e) {
       r = { summary: `failed: ${(e as Error).message.slice(0, 120)}`, reason: 'error', steps: 0, toolCalls: 0, costUsd: 0, durationMs: 0 } as any;
@@ -262,6 +311,13 @@ export async function runScheduler(deps: SchedulerDeps): Promise<void> {
   const base = deps.intervalMs ?? 60_000;
   const log = deps.onLog ?? (() => {});
   let fails = 0;
+  // BL-10: pick up runs a crash or restart cut off — at start (a clean shutdown removed its heartbeat,
+  // so those are found at once), and AGAIN once any owner that died just before this start must have
+  // gone stale: a container restarted in seconds still sees the old heartbeat as fresh (BL-10 review).
+  const recover = async () => { try { await recoverInterrupted(deps); } catch (e) { log(`recovering interrupted runs failed: ${(e as Error).message.slice(0, 100)}`); } };
+  await recover();
+  const secondPass = setTimeout(() => { void recover(); }, STALE_MS + 30_000);
+  secondPass.unref?.();
   for (;;) {
     deps.onTick?.();
     try {

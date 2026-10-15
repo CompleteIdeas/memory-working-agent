@@ -26,6 +26,7 @@ import { pendingMeta, confirmPending, cancelPending, claimOffer, setOfferMessage
 import { dirname } from 'node:path';
 import { isQuietNow, holdPush, flushHeld, firesOf } from '../quiet.js';
 import { recordReceipt, setReceiptProducer } from '../receipts.js';
+import { setTranscriptProducer } from '../transcript.js';
 
 async function tg(token: string, method: string, body?: Record<string, unknown>): Promise<any> {
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {});
@@ -127,7 +128,7 @@ export async function handleInstruction(text: string, chatId: string | number, d
   const r = await runAgent({
     instruction, userMessage: text,
     ...(recentContext && recentTainted ? { carried: `RECENT CONVERSATION (for follow-ups):\n${recentContext}`, startTainted: true } : {}),
-    dir, memory: deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.registry,
+    dir, memory: deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.registry, transcript: true, // BL-10
     session: `tg-${chatId}`, // per-chat session → conversation continuity
     personContext: prepared.personContext, // who I'm talking to (redacted on identity mismatch)
     personId: prepared.personId, identityInDoubt: prepared.mismatch, // S6 v2: arm the step-up gate on Telegram too
@@ -161,6 +162,7 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
   if (!token) throw new Error('Set TELEGRAM_BOT_TOKEN (get a token from @BotFather).');
   const allowed = new Set((process.env.TELEGRAM_ALLOWED_CHATS ?? '').split(',').map((s) => s.trim()).filter(Boolean));
   setReceiptProducer('telegram'); // BL-13: this process's own receipts file
+  setTranscriptProducer('telegram'); // BL-10: and its own run transcripts
 
   const me = await tg(token, 'getMe');
   log(`connected as @${me.username}`);
@@ -222,6 +224,12 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
   void runScheduler({
     memory, brain, worker, tools: registry, outRoot: deps.outRoot,
     maxSteps: deps.maxSteps, maxMin: deps.maxMin, intervalMs: 60_000, onLog: log,
+    // BL-10: a chat or job cut off by a restart and not resumed — tell the chat it came from.
+    onInterrupted: async (x) => {
+      const chat = (x.session ?? '').startsWith('tg-') ? x.session!.slice(3) : null;
+      if (!chat || !allowed.has(chat)) return;
+      await tg(token, 'sendMessage', { chat_id: chat, text: `⚠ Interrupted by a restart: ${x.instruction.slice(0, 120)}\n\n${x.jobId ? (x.recurring ? 'Its next scheduled run will pick the work up.' : 'This scheduled job has used its resumes, so it was not started again.') : 'It was not started again — send it again if you still want it.'}${x.unfinished ? `\n${x.unfinished} step(s) had started without a recorded result: check whether they happened.` : ''}`.slice(0, 3900) }).catch(() => {});
+    },
     onFire: async (task, res) => {
       const chatId = (task.notify ?? '').startsWith('tg-') ? task.notify!.slice(3) : null;
       const job = res.job ?? task.resumeOf ?? task.id, fire = res.fire ?? `${job.slice(0, 8)}-${Date.now()}`;
