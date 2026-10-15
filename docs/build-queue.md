@@ -76,9 +76,7 @@ two consecutive items REVISE; or Robert says stop.
 
 ## Queue
 
-**Merged 2026-10-15** (`master` = `b030c9f`). Release prep for 0.6.0 is on build-loop (`6ac2090`): Robert rotates the npm token, publishes and redeploys. **Next up, in order (Robert, 2026-10-15):** BL-14b (a live self-build; needs Robert's approval taps — skipped by the loop until he's present); then BL-08, BL-13, BL-16, BL-09 to BL-12.
-
-**STOPPED at the cap (2026-10-15):** five unmerged items (BL-05, BL-18, BL-14a, BL-06, BL-07) plus the 0.6.0 release prep. The ready-to-merge summary is `docs/merge-summary-2026-10-15b.md`. The loop builds nothing more until Robert merges or says to go on.
+**Merged again 2026-10-15** (`master` = `9a539d5`, a fast-forward Robert asked for): BL-05, BL-18, BL-14a, BL-06, BL-07 and the 0.6.0 release prep. The stack is reset to 0 unmerged. Still Robert's: rotate the npm token, publish 0.6.0, redeploy Railway. **Next up, in order (Robert, 2026-10-15):** BL-14b (a live self-build; needs Robert's approval taps — skipped by the loop until he's present); then BL-08, BL-13, BL-16, BL-09 to BL-12.
 
 Status: `ready` · `in progress` · `blocked` · `done` · `revise`.
 "Waits on" names an item or a person.
