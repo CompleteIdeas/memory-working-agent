@@ -24,7 +24,8 @@ import { loadEnv } from '../env.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { pendingMeta, confirmPending, cancelPending, claimOffer, setOfferMessage, releaseOffer, offerOf, unofferedFor, approvalStatus, setApprovalOwner, setApprovalStorePath, runApproved } from '../tools/approval.js';
 import { dirname } from 'node:path';
-import { isQuietNow, holdPush, flushHeld } from '../quiet.js';
+import { isQuietNow, holdPush, flushHeld, firesOf } from '../quiet.js';
+import { recordReceipt, setReceiptProducer } from '../receipts.js';
 
 async function tg(token: string, method: string, body?: Record<string, unknown>): Promise<any> {
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {});
@@ -159,6 +160,7 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error('Set TELEGRAM_BOT_TOKEN (get a token from @BotFather).');
   const allowed = new Set((process.env.TELEGRAM_ALLOWED_CHATS ?? '').split(',').map((s) => s.trim()).filter(Boolean));
+  setReceiptProducer('telegram'); // BL-13: this process's own receipts file
 
   const me = await tg(token, 'getMe');
   log(`connected as @${me.username}`);
@@ -197,11 +199,14 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
       }
     } catch (e) { log(`offer sweep failed: ${(e as Error).message.slice(0, 80)}`); }
   };
-  /** Send a result: the message, up to 5 files under 10 MB, then any approval cards. */
-  const deliverPush = async (chatId: string, text: string, files: string[], approvals: string[]): Promise<void> => {
-    await tg(token, 'sendMessage', { chat_id: chatId, text }).catch(() => {});
+  /** Send a result: the message, up to 5 files under 10 MB, then any approval cards. Says whether
+   *  Telegram ACCEPTED the message (BL-13) — it used to swallow the failure and report nothing. */
+  const deliverPush = async (chatId: string, text: string, files: string[], approvals: string[]): Promise<{ ok: boolean; error?: string }> => {
+    try { await tg(token, 'sendMessage', { chat_id: chatId, text }); }
+    catch (e) { return { ok: false, error: String((e as Error)?.message ?? e).slice(0, 160) }; }
     for (const p of files) { try { if (statSync(p).isFile() && statSync(p).size < 10_000_000) await sendDocument(token, chatId, p); } catch { /* */ } }
     await offerApprovals(chatId, approvals);
+    return { ok: true };
   };
   const convo = new Map<string, { u: string; a: string; t?: boolean }[]>(); // per-chat recent exchanges (multi-turn); t = that turn read external content
   const sessionStats = { tasks: 0, started: Date.now() };
@@ -219,18 +224,31 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
     maxSteps: deps.maxSteps, maxMin: deps.maxMin, intervalMs: 60_000, onLog: log,
     onFire: async (task, res) => {
       const chatId = (task.notify ?? '').startsWith('tg-') ? task.notify!.slice(3) : null;
-      if (!chatId) return;
+      const job = res.job ?? task.resumeOf ?? task.id, fire = res.fire ?? `${job.slice(0, 8)}-${Date.now()}`;
+      if (!chatId) { recordReceipt({ job, fire, channel: 'none', status: 'failed', detail: 'no chat to send it to' }); return; }
       const text = `⏰ Scheduled: ${task.instruction.slice(0, 80)}\n\n${res.summary}`.slice(0, 3900);
       const files = res.files.slice(0, 5).map((f) => join(res.dir, f));
       // Quiet hours (BL-07): the job ran on time; its message waits for the morning unless urgent.
       if (isQuietNow() && !task.urgent) {
         // One held item per job: a later result replaces it and is counted, so a frequent monitor
         // doesn't queue a hundred messages overnight.
-        holdPush({ chat: chatId, text, files, approvals: res.staged ?? [], key: task.resumeOf ?? task.id });
+        try { holdPush({ chat: chatId, text, files, approvals: res.staged ?? [], key: task.resumeOf ?? task.id, job, fire }); }
+        catch (e) { recordReceipt({ job, fire, channel: 'telegram', status: 'failed', detail: `could not hold it for quiet hours: ${(e as Error).message}` }); return; }
+        recordReceipt({ job, fire, channel: 'telegram', status: 'held', detail: 'quiet hours' });
         log(`· held for quiet hours: ${task.instruction.slice(0, 40)}`);
         return;
       }
-      await deliverPush(chatId, text, files, res.staged ?? []);
+      const sent = await deliverPush(chatId, text, files, res.staged ?? []);
+      if (sent.ok) recordReceipt({ job, fire, channel: 'telegram', status: 'sent' });
+      else {
+        // Not lost: held, so the flush retries it with Telegram's own answer deciding (a blocked chat
+        // is dropped, a rate limit waits, anything else is retried and given up on after five tries).
+        // (If Telegram did accept it and only the reply was lost, the retry sends a duplicate: at least once, never zero.)
+        try { holdPush({ chat: chatId, text, files, approvals: res.staged ?? [], key: task.resumeOf ?? task.id, job, fire }); }
+        catch (e) { recordReceipt({ job, fire, channel: 'telegram', status: 'failed', detail: `${sent.error}; could not hold it to retry: ${(e as Error).message}` }); return; }
+        recordReceipt({ job, fire, channel: 'telegram', status: 'held', detail: `send failed, will retry: ${sent.error}` });
+        log(`· send failed, held to retry: ${task.instruction.slice(0, 40)} — ${sent.error}`);
+      }
     },
   });
 
@@ -252,6 +270,10 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
           async (i) => {
             const n = (i.count ?? 1) > 1 ? `\n\n(${i.count} results from this job while it was quiet — this is the latest)` : '';
             await tg(token, 'sendMessage', { chat_id: i.chat, text: `${i.text}${n}`.slice(0, 3900) });
+            if (i.job && i.fire) {
+              recordReceipt({ job: i.job, fire: i.fire, channel: 'telegram', status: 'sent', detail: 'after being held' });
+              for (const f of i.replaced ?? []) recordReceipt({ job: i.job, fire: f, channel: 'telegram', status: 'superseded' });
+            }
             for (const p of i.files ?? []) { try { if (statSync(p).isFile() && statSync(p).size < 10_000_000) await sendDocument(token, i.chat, p); } catch { /* */ } }
             await offerApprovals(i.chat, i.approvals ?? []);
             await new Promise((r) => setTimeout(r, 1100));
@@ -269,6 +291,8 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
           },
           20, // per poll: the person's own messages interleave with a long morning queue
           log,
+          // BL-13: a held result that can never arrive says so in its receipt.
+          (items, why, status) => { for (const i of items) if (i.job) for (const f of firesOf(i)) recordReceipt({ job: i.job, fire: f, channel: 'telegram', status, detail: why.slice(0, 160) }); },
         );
         if (flushed.retryAfterMs) flushNotBefore = Date.now() + flushed.retryAfterMs;
       } catch (e) { log(`held-message flush failed: ${(e as Error).message.slice(0, 80)}`); }

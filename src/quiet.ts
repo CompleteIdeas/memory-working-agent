@@ -20,6 +20,12 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeF
 import { dirname, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { loadConfig, configPath } from './config.js';
+import { recordReceipt } from './receipts.js';
+
+/** Every fire a held item speaks for: its own and those it replaced. */
+export function firesOf(i: { fire?: string; replaced?: string[] }): string[] {
+  return [...(i.replaced ?? []), ...(i.fire ? [i.fire] : [])];
+}
 
 export interface QuietWindow { start: number; end: number; label: string }
 const MAX_WINDOW_MIN = 16 * 60;
@@ -118,6 +124,11 @@ export interface HeldPush {
   announced?: boolean;
   /** failed delivery attempts; an item that keeps failing for an unknown reason is dropped */
   tries?: number;
+  /** the scheduled fire this result came from — its delivery receipts (BL-13) — and the earlier
+   *  fires of the same job it replaced while held (they share its fate). */
+  job?: string;
+  fire?: string;
+  replaced?: string[];
 }
 
 function heldPath(): string {
@@ -153,6 +164,14 @@ export function holdPush(p: Omit<HeldPush, 'id' | 'at' | 'count' | 'announced'>)
   if (prev) {
     prev.count = (prev.count ?? 1) + 1;
     prev.text = p.text; prev.files = p.files; prev.at = Date.now();
+    // The newest fire now owns the item; the one it replaced keeps a record of what happened (BL-13 review).
+    if (prev.fire && p.fire && prev.fire !== p.fire) {
+      const all = [...(prev.replaced ?? []), prev.fire];
+      // Past 50, the oldest are settled now rather than left held forever.
+      for (const f of all.slice(0, Math.max(0, all.length - 50))) recordReceipt({ job: prev.job ?? f, fire: f, channel: 'telegram', status: 'superseded' });
+      prev.replaced = all.slice(-50);
+    }
+    if (p.fire) { prev.fire = p.fire; prev.job = p.job ?? prev.job; }
     prev.approvals = [...new Set([...(prev.approvals ?? []), ...(p.approvals ?? [])])];
     writeRaw(items, bad);
     return prev.id;
@@ -167,6 +186,7 @@ export function holdPush(p: Omit<HeldPush, 'id' | 'at' | 'count' | 'announced'>)
     const dropped = kept.length - MAX_HELD;
     const trimmed = dropped > 0 ? kept.slice(dropped) : kept;
     if (dropped > 0) trimmed[0] = { ...trimmed[0], text: `(${dropped} older held message${dropped > 1 ? 's were' : ' was'} dropped to keep the queue small)\n\n${trimmed[0].text}` };
+    for (const gone of kept.slice(0, Math.max(0, dropped))) for (const f of firesOf(gone)) recordReceipt({ job: gone.job ?? f, fire: f, channel: 'telegram', status: 'dropped', detail: 'the held queue was full' });
     writeRaw(trimmed, bad);
   }
   return item.id;
@@ -206,6 +226,7 @@ export async function flushHeld(
   onFail: (err: unknown) => SendFailure = () => ({ action: 'skip' }),
   limit = Infinity,
   log: (line: string) => void = (l) => console.error(l),
+  onGiveUp?: (items: HeldPush[], why: string, status: 'dropped' | 'failed') => void,
 ): Promise<{ sent: number; retryAfterMs?: number }> {
   const items = heldPushes();
   if (!items.length) return { sent: 0 };
@@ -213,7 +234,7 @@ export async function flushHeld(
   for (const i of items) byChat.set(i.chat, [...(byChat.get(i.chat) ?? []), i]);
   let sent = 0;
   for (const [chat, list] of byChat) {
-    if (!allowed(chat)) { for (const i of list) updateHeld(i.id, null); continue; }
+    if (!allowed(chat)) { for (const i of list) updateHeld(i.id, null); onGiveUp?.(list, 'that chat is no longer allowed', 'dropped'); continue; }
     // A failure says what it means: `drop` — this chat can never receive (blocked the bot, gone), so
     // all of its items go; `stop` — rate-limited, everything waits; `skip` — this chat waits for the
     // next flush, and the item it failed on counts a try (dropped, logged, after MAX_TRIES).
@@ -228,9 +249,11 @@ export async function flushHeld(
       if (sent >= limit) return { sent };
       try { await send(item); }
       catch (e) { failed = { f: onFail(e), on: item, err: e }; break; }
-      // Removed only if nothing was merged into it while it was being sent.
+      // Removed only if nothing was merged into it while it was being sent. If something was, the
+      // fires just delivered come off its replaced list — a later send must not re-mark them (BL-13).
       const now = readRaw().items.find((x) => x.id === item.id);
       if (now && now.at === item.at && (now.count ?? 1) === (item.count ?? 1)) updateHeld(item.id, null);
+      else if (now) { const done = new Set(firesOf(item)); updateHeld(item.id, (x) => ({ ...x, replaced: (x.replaced ?? []).filter((f) => !done.has(f)) })); }
       sent++;
     }
     if (!failed) continue;
@@ -238,12 +261,14 @@ export async function flushHeld(
     if (failed.f.action === 'stop') return { sent, retryAfterMs: failed.f.retryAfterMs };
     if (failed.f.action === 'drop') {
       for (const i of list) updateHeld(i.id, null);
+      onGiveUp?.(list, why, 'dropped');
       log(`[quiet-hours] dropped ${list.length} held message(s) for chat ${chat}: ${why}`);
       continue;
     }
     const tries = (failed.on.tries ?? 0) + 1;
     if (tries >= MAX_TRIES) {
       updateHeld(failed.on.id, null);
+      onGiveUp?.([failed.on], `gave up after ${tries} tries: ${why}`, 'failed');
       log(`[quiet-hours] dropped a held message for chat ${chat} after ${tries} failed tries: ${why}`);
     } else {
       updateHeld(failed.on.id, (x) => ({ ...x, tries }));

@@ -16,6 +16,7 @@ import type { MwaMemory, ScheduledTask } from './awm.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { runAgent } from './agent.js';
 import { detectorArmed, scoreDryRun } from './detector.js';
+import { recordReceipt } from './receipts.js';
 
 export interface FireResult {
   summary: string; files: string[]; dir: string; reason: string;
@@ -28,6 +29,9 @@ export interface FireResult {
   completion?: 'candidate' | 'stopped';
   /** actions the fire staged that wait for the person's approval (BL-03) — the channel offers them. */
   staged?: string[];
+  /** delivery receipts (BL-13): the job (its lineage, so resumes count as the job) and this fire. */
+  job?: string;
+  fire?: string;
 }
 
 /** A compact, fixed-size signature (sha1 hex) of a check command's output. Two identical outputs
@@ -224,9 +228,14 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     const policy = task.deliver ?? 'always';
     const deliver = completion !== undefined || budgetNews !== undefined || detectorNews !== undefined || outcome === 'complete' || outcome === 'could-not' || outcome === 'blocked'
       || policy === 'always' || (policy === 'changed' && outcome === 'changed');
+    // Receipts (BL-13): this fire's id, so every channel's record of its result lines up.
+    const job = task.resumeOf ?? task.id;
+    const fire = `${job.slice(0, 8)}-${now()}`;
     if (!deliver) {
       log(`\u00b7 quiet (${outcome}, deliver=${policy}): ${task.instruction.slice(0, 40)}`);
+      recordReceipt({ job, fire, channel: 'none', status: 'not-sent', detail: `told only ${policy === 'never' ? 'if it fails' : 'when something changes'}; this run: ${outcome}` });
     } else await deps.onFire(task, {
+      job, fire,
       outcome, ...(completion ? { completion } : {}),
       ...(Array.isArray((r as { staged?: string[] }).staged) ? { staged: (r as { staged?: string[] }).staged } : {}),
       summary, files, dir, reason: r.reason,

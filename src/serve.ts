@@ -53,6 +53,7 @@ async function migrateMemoryToPostgres(sqliteDbPath: string, url: string): Promi
 import { getProvider, listModels, PROVIDERS, type Provider } from './provider.js';
 import { RoutedProvider } from './model-router.js';
 import { MwaMemory } from './awm.js';
+import { recordReceipt, readReceipts, setReceiptProducer } from './receipts.js';
 import { scanSources } from './onboard.js';
 import { buildRegistry } from './tools/build.js';
 import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, runApproved, recentApprovalOutcomes } from './tools/approval.js';
@@ -173,13 +174,17 @@ async function resolveOpenQuestionsBg(): Promise<void> {
   await close(); memory.close();
 }
 
+/** Fires already recorded as served to a browser (BL-13) — seeded from the receipts on first use. */
+let servedFires: Set<string> | null = null;
+
 /** Record a fired scheduled-task result so the UI can surface it (proactive delivery). */
-function appendNotification(entry: Record<string, unknown>): void {
+function appendNotification(entry: Record<string, unknown>): boolean {
   try {
     const p = process.env.MWA_NOTIFY ?? resolve('./data/notifications.jsonl');
     mkdirSync(dirname(p), { recursive: true });
     appendFileSync(p, JSON.stringify(entry) + '\n');
-  } catch { /* best-effort */ }
+    return true;
+  } catch { return false; /* best-effort — but a receipt must not claim it was saved */ }
 }
 
 /** Persist the chosen brain into mwa.config.json. The cheap tier (fetch) becomes the
@@ -426,6 +431,7 @@ function serveStatic(res: ServerResponse, dir: string, pathname: string): void {
 // the platform's router and the app agree) → 7788 (local/Docker default). Honoring PORT means a
 // cloud deploy binds the platform's expected port automatically — no manual port var needed.
 export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? process.env.PORT ?? 7788)): Promise<void> {
+  setReceiptProducer('serve'); // BL-13: this process's own delivery receipts file
   // What this process stages, it owns: its memory identity (BL-18). Approvals for it made in Telegram
   // run here — swept independently of the scheduler, so it works with no model configured too.
   setApprovalOwner(SERVE_AGENT);
@@ -659,6 +665,15 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         const since = Number(url.searchParams.get('since') ?? 0);
         let notifications: any[] = [];
         try { notifications = readFileSync(np, 'utf8').trim().split('\n').map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean).filter((n: any) => Number(n.ts) > since).slice(-20); } catch { /* none yet */ }
+        // BL-13: a scheduled result handed to a signed-in browser is `served` — recorded once per fire.
+        // (Served, not read: an open tab polls whether anyone is looking.)
+        for (const n of notifications) {
+          if (typeof n?.fire !== 'string' || typeof n?.job !== 'string') continue;
+          if (!servedFires) servedFires = new Set(readReceipts().filter((r) => r.channel === 'app' && r.status === 'served').map((r) => r.fire));
+          if (servedFires.has(n.fire)) continue;
+          servedFires.add(n.fire);
+          recordReceipt({ job: n.job, fire: n.fire, channel: 'app', status: 'served' });
+        }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ notifications }));
         return;
@@ -1099,11 +1114,13 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           // steps/toolCalls/cost hardcoded to 0 and reason to 'done', so an autonomous run that did
           // 7 steps and $0.04 of work displayed as "what I did · 0 steps" — and one that refused
           // displayed as done. This is the only run a person cannot watch happen.
-          appendNotification({
+          const saved = appendNotification({
             ts: Date.now(), instruction: task.instruction, summary: r.summary, reason: r.reason, outcome: r.outcome, completion: r.completion,
             steps: r.steps, toolCalls: r.toolCalls, costUsd: r.costUsd, durationMs: r.durationMs,
-            files: r.files, dir: r.dir,
+            files: r.files, dir: r.dir, job: r.job, fire: r.fire,
           });
+          // BL-13: saved in the app's feed (or not). Whether an open tab is handed it is recorded when one is.
+          if (r.job && r.fire) recordReceipt({ job: r.job, fire: r.fire, channel: 'app', status: saved ? 'stored' : 'failed', ...(saved ? {} : { detail: 'could not write the app feed' }) });
           console.log(`  ⏰ fired: ${task.instruction.slice(0, 60)} → ${r.summary.slice(0, 80)}`);
         },
         onTick: () => { lastSchedulerTick = Date.now(); },

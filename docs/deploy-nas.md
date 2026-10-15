@@ -102,6 +102,15 @@ its latest result, with a count of how many it had, so a monitor's 03:00 "down" 
 "back up" arrives as "back up", marked as one of 2 results. A job you asked to be told about "the moment" something happens can be marked
 urgent and skip the window.
 
+Each scheduled result leaves a delivery receipt in `/data`. Every process keeps its own file:
+`deliveries-serve.jsonl` for the web app and `deliveries-telegram.jsonl` for the connector. Ask
+"what's scheduled?" and each job shows what happened to its last result: sent to Telegram, held,
+failed or dropped (with Telegram's reason), saved in the app, shown in an open app tab, or not sent
+because the job only reports changes. A job whose last three results reached no one is flagged.
+"Shown" means an open app tab fetched the result, which it does whether or not anyone is looking
+(and, without an access password, any client on your network could have). It doesn't prove anyone
+read it.
+
 Or drop a file. Put an instruction in a `.md` or `.txt` file in `mwa-workspace/inbox/` inside
 your data folder (in the container: `/data/mwa-workspace/inbox/`). MWA picks it up once the
 file has stopped changing for a couple of seconds, so a slow copy isn't read half-written. Tasks
