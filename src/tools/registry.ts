@@ -54,13 +54,21 @@ export class ToolRegistry {
 
   /** Run a registered tool; never throws — errors come back as a string the model can read. */
   async call(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
+    return (await this.callDetailed(name, args, ctx)).text;
+  }
+
+  /** As `call`, plus whether the REGISTRY itself failed the call (unknown tool, or the handler
+   *  threw). A tool's own text can say anything — an MCP server or a fetched page can start with
+   *  "(tool x failed: …)" — so this flag, not the text, is what says a call really failed. (BL-01:
+   *  matching on text let an external tool fake a refusal and skip the action log and tripwires.) */
+  async callDetailed(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<{ text: string; failed: boolean }> {
     const t = this.tools.get(name);
-    if (!t) return `(unknown tool: ${name})`;
+    if (!t) return { text: `(unknown tool: ${name})`, failed: true };
     try {
       const out = await t.handler(args ?? {}, ctx);
-      return typeof out === 'string' ? out : JSON.stringify(out);
+      return { text: typeof out === 'string' ? out : JSON.stringify(out), failed: false };
     } catch (e) {
-      return `(tool ${name} failed: ${(e as Error).message.slice(0, 200)})`;
+      return { text: `(tool ${name} failed: ${(e as Error).message.slice(0, 200)})`, failed: true };
     }
   }
 }

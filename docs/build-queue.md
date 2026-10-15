@@ -66,12 +66,14 @@ two consecutive items REVISE; or Robert says stop.
 
 ## Queue
 
+**Next up:** BL-17 (taint lineage) — its policy-capture path is HIGH and pre-existing. Then BL-02, BL-03.
+
 Status: `ready` · `in progress` · `blocked` · `done` · `revise`.
 "Waits on" names an item or a person.
 
 | ID | Item | Why | Waits on | Status | Commit | Gates (date) |
 |---|---|---|---|---|---|---|
-| BL-01 | **Label tool output in the model's context** (H-3). Tool, web, inbox and file results enter history as plain text (`agent.ts`, `history.push(\`tool …`). Mark them as untrusted data with delimiters the content can't forge. | The live injection path: a chat reads an email whose text reads like the agent's own notes. | — | ready | | |
+| BL-01 | **Label tool output in the model's context** (H-3). Tool, web, inbox and file results enter history as plain text (`agent.ts`, `history.push(\`tool …`). Mark them as untrusted data with delimiters the content can't forge. | The live injection path: a chat reads an email whose text reads like the agent's own notes. | — | **done** | (this commit) | 2026-10-14: suite 253/253, clean worktree 253/253 at pinned AWM, injection 4/9 → 0/9, 0/12, 0/8, 0/8 (incl. lookalike brackets 0/6), delivery 8/8 and 6/6, two isolated reviews, every finding fixed or moved to BL-16/BL-17 |
 | BL-02 | **Job contract + run outcome.** `schedule` gains an owner, a completion condition (`until`), a notify policy (`always` / `changed` / `never`) and explicit limits. The model writes a standing procedure, not a restatement. Each run is recorded in AWM as an episodic memory with provenance, linked to its owner. A run also records an `outcome` (`changed` / `no-change` / `could-not` / `blocked`), kept separate from `reason`. | Fixes at the source what today's scheduled-task failures came from, and stops no-op runs logging `done`. Call 4 is settled here. | — | ready | | |
 | BL-03 | **Approval the model can't give itself.** First a Telegram Approve/Cancel button handled by the connector, then remove human-required confirms from the model's tools. Keep a same-run check as a second guard. One item: removing the tool before the button exists would break Telegram approvals. | Measured 2026-10-14: the model staged a write and confirmed it itself in one turn. Call 3 is settled here. | — | ready | | |
 | BL-04 | **Gate shell commands** (H-4). A parsed allowlist of read-only commands runs directly; anything else is staged for approval. Developer mode unchanged. | In the default mode a chat can run any shell command unconfirmed. | BL-03 | blocked | | |
@@ -84,6 +86,9 @@ Status: `ready` · `in progress` · `blocked` · `done` · `revise`.
 | BL-11 | **One-file AWM interface** (H-7). A façade over the 11 deep imports. | The next AWM upgrade lands as a build break. | — | ready | | |
 | BL-12 | **Promote button for proposed routines** (H-9). A human control in the Memory tab. | Saved routines are inert by construction. | — | ready | | |
 | BL-13 | **Delivery receipts.** Record per channel whether a result reached the person. | A finished run is not a delivered result. | BL-02 | blocked | | |
+| BL-15 | **Dependency advisories.** Production deps carry 2 critical (`proxy-addr`, `tar`) and 16 high advisories, all with fixes available — including `mailparser` / `linkify-it` / `html-to-text` denial-of-service on attacker-written text (MWA reads email) and an MCP SDK OAuth credential issue. Upgrade, re-run every gate. | Found by BL-01's audit gate; pre-existing, not caused by it. | — | ready | | |
+| BL-17 | **Taint lineage, end to end.** BL-01 fences what the model *sees*; this makes "this run read outside content" follow the text into everything that *lasts*. Each path below was found by BL-01's second isolated review:<br>(1) **policy capture** lifts "always cc …" out of tainted text into a standing preference applied to every future run — no taint or sub-run guard (`agent.ts` ~1127–1160); HIGH, pre-existing;<br>(2) **fact transitions** write canonical with provenance from the prior fact only (~1003); HIGH;<br>(3) **chat turns**: earlier replies go unfenced into the next turn's instruction and `tainted` is never stored (`serve.ts` ~358, `telegram.ts` ~70);<br>(4) **`schedule` from a tainted run** creates an unattended task that starts clean;<br>(5) **person notes** learn from tainted replies (`serve.ts` ~390, `telegram.ts` ~88);<br>(6) **plan-step and run-outcome writes** and the synthesis prompt carry tainted text at inferred trust (~1178, ~1350, ~1356);<br>(7) **local reads** stop only `remember` being canonical — auto-learn, taught facts, skills and lessons ignore it;<br>(8) **the learning regression BL-01 accepted**: runs that touch the web, MCP or the shell no longer save skills or lessons. Write them as untrusted (`ingested`, not canonical) instead of dropping them; keep dropping open questions, which become unattended instructions. | These turn a one-turn injection into a lasting one. | — | ready | | |
+| BL-16 | **Fence the remaining low-risk paths.** MCP tool descriptions (up to 400 characters, written by the server) reach every prompt unfenced; `confirm_action` is classed as MWA's own output but returns the wrapped tool's raw result, which would wrongly trust a future gated tool that returns third-party text. Also: first-party refusals inside external-classed tools (`http_request`, `read_document`) now count as actions, not refusals, because only the registry's failure flag counts for external tools — fail-safe, but the Glass Box over-reports; have handlers set the flag themselves. | Low findings from BL-01's isolated review, deferred to keep BL-01 scoped. | — | ready | | |
 | BL-14 | **MWA runs this loop on its own repo.** The self-referential milestone: MWA's scheduler drives a build item end to end through these gates. | The point of the loop. Unsafe before injection labeling, real approval and shell gating exist. | BL-01, BL-03, BL-04 | blocked | | |
 
 **Waiting on Robert (not built by the loop):** call 1 — merge `docker-autonomy-2026-10-14`,
@@ -93,9 +98,12 @@ publish 0.6.0, redeploy the dogfood. Calls 6 and 7 stay "not now".
 
 | Date | Item | What | Cost |
 |---|---|---|---|
-| | | | |
+| 2026-10-14 | BL-01 | Injection baseline, 9 chat turns (Azure) | $0.12 |
+| 2026-10-14 | BL-01 | Injection rounds 1–4 (37 more chats) | $0.48 |
+| 2026-10-14 | BL-01 | Delivery rounds 1–4 (26 trials, chats + fired runs) | ~$0.81 |
+| 2026-10-14 | BL-01 | Coworker challenges (2) | ~$0.04 |
 
-**Running total: $0.00 of $10.00.**
+**Running total: ~$1.45 of $10.00.** Chat and run costs measured from `runs.jsonl`.
 
 ## Decision log
 
@@ -104,3 +112,5 @@ Decisions the loop made, each with its coworker challenge and what was taken or 
 | Date | Item | Decision | Coworker challenge |
 |---|---|---|---|
 | 2026-10-14 | — | Audit gate scaled: one isolated reviewer per item, full six-way audit per cluster | Not challenged; recorded above under Gates |
+| 2026-10-14 | BL-01 | Fence every tool result; label by source in three fail-closed classes (own / local / external), warning only on the last two. | **Taken:** classify fail-closed instead of by naming convention; grade labels so a cheap model doesn't learn to ignore warnings. **Rejected, then reversed:** a per-run random token in the markers. I judged replacing the marker glyphs sufficient. The isolated review forged a close with lookalike brackets on the first try, so the token went in. Lesson: the instrument tested only the glyph I already replaced, so 0/9 proved nothing about lookalikes. |
+| 2026-10-14 | BL-01 | A run that read external content saves no skill, lesson or open question. | From the isolated review, not the coworker. An open question becomes an unattended run's instruction, so learning from tainted runs is a path from a web page to an unattended run. Cost: fewer lessons from runs that read the inbox or web. |
