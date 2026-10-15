@@ -70,7 +70,7 @@ two consecutive items REVISE; or Robert says stop.
 
 ## Queue
 
-**Stack cap reached (5 unmerged: BL-01, BL-17, BL-02, BL-03 + BL-04, BL-15).** The next tick writes the ready-to-merge summary for Robert and stops building. After a merge: BL-05 (goals own work; fan-out budget), BL-18 (one shared, durable approval store).
+**Stack cap reached (5 unmerged: BL-01, BL-17, BL-02, BL-03 + BL-04, BL-15).** The ready-to-merge summary is written: [`docs/merge-summary-2026-10-15.md`](merge-summary-2026-10-15.md). **The loop is stopped** until Robert merges (a fast-forward) or says otherwise; each tick until then only re-checks for that and builds nothing. After a merge: BL-05 (goals own work; fan-out budget), BL-18 (one shared, durable approval store).
 
 Status: `ready` · `in progress` · `blocked` · `done` · `revise`.
 "Waits on" names an item or a person.
