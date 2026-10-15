@@ -132,7 +132,9 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
       const now = Date.now();
       const rows = mine.slice(0, MAX_LIST).map((t) => {
         const gate = t.check ? ' [change-gated: skips the run when the watched value is unchanged]' : '';
-        return `${t.id.slice(0, HANDLE_LEN)} — ${whenLabel(t.due, now)} — ${recurLabel(t.recur)}\n    "${clip(t.instruction, MAX_INSTRUCTION_CHARS)}"${gate}`;
+        // The job contract (BL-02): a person checking what is scheduled sees what bounds each job.
+        const contract = [t.until ? `stops when: ${clip(t.until, 80)}` : '', t.limits ? `limits: ${clip(t.limits, 80)}` : '', t.deliver && t.deliver !== 'always' ? `tells you: ${t.deliver === 'changed' ? 'only when something changes' : 'only if it fails'}` : '', t.pendingComplete ? 'looks finished — confirming' : ''].filter(Boolean).join(' · ');
+        return `${t.id.slice(0, HANDLE_LEN)} — ${whenLabel(t.due, now)} — ${recurLabel(t.recur)}\n    "${clip(t.instruction, MAX_INSTRUCTION_CHARS)}"${contract ? `\n    ${contract}` : ''}${gate}`;
       });
       const more = mine.length > MAX_LIST ? `\n(+${mine.length - MAX_LIST} more)` : '';
       return `SCHEDULED (${mine.length}):\n${rows.join('\n')}${more}${tail}`;

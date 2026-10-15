@@ -206,6 +206,8 @@ export interface Notification {
   ts: number; instruction: string; summary: string;
   /** present since 2026-10-14; older records in notifications.jsonl have none, so treat as optional. */
   reason?: string; steps?: number; toolCalls?: number; costUsd?: number; durationMs?: number; files?: string[]; dir?: string;
+  /** what the run achieved, and a two-phase completion's state (BL-02). */
+  outcome?: string; completion?: 'candidate' | 'stopped';
 }
 export async function getNotifications(since: number): Promise<Notification[]> {
   try { const r = await fetch('/api/notifications?since=' + since); return (await r.json()).notifications ?? []; } catch { return []; }

@@ -22,6 +22,9 @@ export interface FireResult {
    *  scheduled run was hardcoded to "0 steps" with no files, which is the one kind of run nobody
    *  can watch happen. */
   steps: number; toolCalls: number; costUsd: number; durationMs: number;
+  /** what the fire achieved (BL-02), and where a two-phase completion stands. */
+  outcome?: string;
+  completion?: 'candidate' | 'stopped';
 }
 
 /** A compact, fixed-size signature (sha1 hex) of a check command's output. Two identical outputs
@@ -91,7 +94,9 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // runAgent per fire already keeps context small; the gate avoids even paying for the fire when
     // there's nothing new. A resume never gates (it's continuing committed work, not polling).
     let newSig: string | undefined;
-    if (task.check && !task.resumeAttempt && allowChecks) {
+    // A completion candidate always fires its confirming check — an unchanged signature would skip it
+    // forever, and the person was told the job would stop (BL-02 review).
+    if (task.check && !task.resumeAttempt && !task.pendingComplete && allowChecks) {
       const c = await runCheck(task.check);
       if (c.ok) {
         const s = signature(c.out.trim());
@@ -135,7 +140,7 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       // dueNow: tell the run the timing is already settled (a resume carries its own framing, and
       // "do only the remaining work" must not be overridden by "do it all now").
       // extraRoots: the folder the task was created in, so a baked-in absolute path still resolves.
-      r = await run({ instruction: task.instruction, dir, memory: deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, extraRoots: origin ? [origin] : undefined, budget: { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
+      r = await run({ instruction: task.instruction, dir, memory: deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobSettingsTainted: task.tainted === true, extraRoots: origin ? [origin] : undefined, budget: { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
       ranOk = true;
     } catch (e) {
       r = { summary: `failed: ${(e as Error).message.slice(0, 120)}`, reason: 'error', steps: 0, toolCalls: 0, costUsd: 0, durationMs: 0 } as any;
@@ -146,14 +151,33 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     if (ranOk && newSig) await deps.memory.setScheduledSignature(task.id, newSig);
     let files: string[] = [];
     try { files = readdirSync(dir).filter((f) => !f.startsWith('.') && statSync(join(dir, f)).isFile()); } catch { /* */ }
-    await deps.onFire(task, {
-      summary: r.summary, files, dir, reason: r.reason,
+    // DELIVERY POLICY (BL-02). A failure always reaches the person. `complete` is two-phase: the first
+    // one is delivered as a candidate and the job keeps running; it stops only when the NEXT fire
+    // confirms — one hallucinated "complete" cannot silently end a monitor (second-model challenge).
+    // No outcome (a thrown run, an older runner) derives from `reason` — never defaults to success.
+    const outcome = String((r as { outcome?: string }).outcome ?? (r.reason === 'done' ? 'changed' : 'could-not'));
+    let completion: 'candidate' | 'stopped' | undefined;
+    let summary = r.summary;
+    if (outcome === 'complete' && task.recur && task.until) {
+      if (task.pendingComplete) { await deps.memory.completeScheduled(task.id); completion = 'stopped'; summary += '\n\n(Confirmed finished, so this job has stopped.)'; }
+      else { await deps.memory.setPendingComplete?.(task.id, true); completion = 'candidate'; summary += '\n\n(This looks finished. The job will stop after the next check confirms it.)'; }
+    } else if (task.pendingComplete) {
+      await deps.memory.setPendingComplete?.(task.id, false);
+    }
+    const policy = task.deliver ?? 'always';
+    const deliver = completion !== undefined || outcome === 'complete' || outcome === 'could-not' || outcome === 'blocked'
+      || policy === 'always' || (policy === 'changed' && outcome === 'changed');
+    if (!deliver) {
+      log(`\u00b7 quiet (${outcome}, deliver=${policy}): ${task.instruction.slice(0, 40)}`);
+    } else await deps.onFire(task, {
+      outcome, ...(completion ? { completion } : {}),
+      summary, files, dir, reason: r.reason,
       steps: Number(r.steps ?? 0), toolCalls: Number(r.toolCalls ?? 0),
       costUsd: Number(r.costUsd ?? 0), durationMs: Number(r.durationMs ?? 0),
     }).catch((e) => log(`onFire failed: ${(e as Error).message.slice(0, 80)}`));
     // One line per fire with what it actually did — "check the log" should answer "did my
     // automation work", and summary-only could not distinguish real work from a polite refusal.
-    log(`✔ ran (${r.reason}): ${task.instruction.slice(0, 40)} — ${Number(r.steps ?? 0)} steps, ${files.length} file(s), $${Number(r.costUsd ?? 0).toFixed(4)}`);
+    log(`✔ ran (${r.reason}/${outcome}): ${task.instruction.slice(0, 40)} — ${Number(r.steps ?? 0)} steps, ${files.length} file(s), $${Number(r.costUsd ?? 0).toFixed(4)}`);
   }
   return fired;
 }

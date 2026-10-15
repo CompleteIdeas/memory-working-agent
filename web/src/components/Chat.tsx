@@ -6,7 +6,7 @@ import { ActivitySpine } from './ActivitySpine';
 /** What an UNATTENDED (scheduled) run did. It has no live step spine — nobody streamed it — so the
  *  card shows these facts from the notification record instead. Absent on records written before
  *  2026-10-14, which carried only the summary. */
-interface SchedFacts { steps: number; toolCalls: number; costUsd: number; files: string[]; reason: string; }
+interface SchedFacts { steps: number; toolCalls: number; costUsd: number; files: string[]; reason: string; outcome?: string; completion?: string; }
 interface Turn { id: number; user: string; steps: SpineStep[]; live: boolean; result?: ChatResult; error?: string; topicReset?: boolean; sched?: SchedFacts; }
 
 function sessionId(): string {
@@ -43,7 +43,7 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
         // wrote a file. Carry the record's facts so the card can show them.
         sched: n.steps === undefined ? undefined : {
           steps: n.steps, toolCalls: n.toolCalls ?? 0, costUsd: n.costUsd ?? 0,
-          files: n.files ?? [], reason: n.reason ?? 'done',
+          files: n.files ?? [], reason: n.reason ?? 'done', outcome: n.outcome, completion: n.completion,
         },
       }))]);
       seen = Math.max(seen, ...notes.map((n) => n.ts));
@@ -132,6 +132,12 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
                       <div className="mono text-[11px] text-dim mt-2 break-words">
                         ran unattended · {tn.sched.steps} step{tn.sched.steps === 1 ? '' : 's'} · {tn.sched.toolCalls} tool call{tn.sched.toolCalls === 1 ? '' : 's'} · ${tn.sched.costUsd.toFixed(3)}
                         {tn.sched.reason !== 'done' && <span className="text-signal"> · stopped: {tn.sched.reason}</span>}
+                        {tn.sched.outcome === 'could-not' && <span className="text-signal"> · couldn't finish</span>}
+                        {tn.sched.outcome === 'no-change' && <span> · nothing new</span>}
+                        {tn.sched.completion === 'candidate' && <span> · looks finished — confirming</span>}
+                        {tn.sched.completion === 'stopped' && <span> · finished, job stopped</span>}
+                        {tn.sched.outcome === 'blocked' && tn.sched.reason === 'done' && <span className="text-signal"> · needs you</span>}
+                        {tn.sched.outcome === 'complete' && !tn.sched.completion && <span> · finished</span>}
                         {tn.sched.files.length
                           ? <span> · wrote {tn.sched.files.join(', ')}</span>
                           : <span> · no files</span>}

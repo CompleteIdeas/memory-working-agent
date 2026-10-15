@@ -125,7 +125,7 @@ export interface Memory {
   /** Sleep consolidation (cluster/strengthen/decay); no-op when AWM is off. Returns cycle stats. */
   consolidate(): Promise<Record<string, number>>;
   /** Persist a scheduled task (due = epoch ms) in the AWM task store. */
-  addScheduledTask(instruction: string, dueMs: number, opts?: { recur?: string; notify?: string; dir?: string; origin?: string; resumeAttempt?: number; check?: string; person?: string; tainted?: boolean }): Promise<string | null>;
+  addScheduledTask(instruction: string, dueMs: number, opts?: ScheduleOpts): Promise<string | null>;
   /** Persist a reusable procedure ("skill") recalled on similar future tasks. */
   saveSkill(name: string, steps: string, opts?: LearnOpts): Promise<string | null>;
   /** Persist a verbal failure reflection ("X failed because Y; next time Z") recalled
@@ -146,6 +146,17 @@ export interface Memory {
  *  canonical; a run that read local files teaches at normal trust but not canonical. (BL-17) */
 export interface LearnOpts { canonical?: boolean; untrusted?: boolean }
 
+/** Options for a scheduled task — the job contract (BL-02) plus delivery and lineage. */
+export interface ScheduleOpts {
+  recur?: string; notify?: string; dir?: string; origin?: string; resumeAttempt?: number; check?: string; person?: string; tainted?: boolean;
+  /** completion condition in plain words; a confirmed `complete` outcome stops a recurring job. */
+  until?: string;
+  /** hard limits shown to every fire. */
+  limits?: string;
+  /** when to message the person: always (default) | changed | never. Failures always deliver. */
+  deliver?: 'always' | 'changed' | 'never';
+}
+
 /** A pending scheduled task read back from the store. */
 export interface ScheduledTask {
   id: string;
@@ -160,6 +171,12 @@ export interface ScheduledTask {
   origin?: string;
   /** created by a run that had read external content — the fired run starts tainted (BL-17). */
   tainted?: boolean;
+  /** the job contract (BL-02) */
+  until?: string;
+  limits?: string;
+  deliver?: 'always' | 'changed' | 'never';
+  /** a fire reported `complete`; the next fire must confirm before the job stops. */
+  pendingComplete?: boolean;
   resumeAttempt?: number; // 1-based resume count (auto-resume of an unfinished long run); absent = not a resume
   check?: string; // cheap change-detection command: if its output signature is unchanged, the fire is skipped (no model call)
   lastSig?: string; // signature (sha1 hex) of the check output at the last actual fire
@@ -512,7 +529,7 @@ export class MwaMemory implements Memory {
     return [];
   }
 
-  async addScheduledTask(instruction: string, dueMs: number, opts: { recur?: string; notify?: string; dir?: string; origin?: string; resumeAttempt?: number; check?: string; person?: string; tainted?: boolean } = {}): Promise<string | null> {
+  async addScheduledTask(instruction: string, dueMs: number, opts: ScheduleOpts = {}): Promise<string | null> {
     const tags = ['topic=scheduled-task', 'status=pending', `due=${Math.round(dueMs)}`];
     // WHOSE task this is. One agent id serves every person on a shared deployment (serve, Telegram),
     // so without this tag a "what have I got scheduled?" tool would read back other people's
@@ -529,6 +546,10 @@ export class MwaMemory implements Memory {
     // learns or schedules in turn stays marked (BL-17). Without this, one tainted turn could launder
     // itself through an unattended run that starts clean.
     if (opts.tainted) tags.push('tainted=1');
+    // The job contract (BL-02). Free text goes base64 in tags, like `check`, so it survives as data.
+    if (opts.until) tags.push(`until64=${Buffer.from(opts.until, 'utf8').toString('base64')}`);
+    if (opts.limits) tags.push(`limits64=${Buffer.from(opts.limits, 'utf8').toString('base64')}`);
+    if (opts.deliver && opts.deliver !== 'always') tags.push(`deliver=${opts.deliver}`);
     if (opts.resumeAttempt) tags.push(`resume=${opts.resumeAttempt}`);
     // Base64 the check command so an arbitrary shell string (spaces, commas, pipes, '=') survives
     // both tag serializations (JSON array or comma-split). No commas in base64 → comma-split is safe.
@@ -542,7 +563,13 @@ export class MwaMemory implements Memory {
       try {
         const same = await this.store.findActiveMatchByConcept(this.agentId, `scheduled: ${instruction.slice(0, 56)}`.slice(0, 80), ['topic=scheduled-task', 'status=pending']);
         const st: string[] = same ? this.parseTags(same.tags) : [];
-        if (same && same.content === instruction && st.includes(`recur=${opts.recur}`)
+        // Identity includes the contract: the same instruction with a new limit ("never send") or a new
+        // completion condition is a CHANGED job, not a duplicate (BL-02 review).
+        const tag = (p: string) => st.find((t) => t.startsWith(p)) ?? '';
+        const b64 = (v?: string) => (v ? Buffer.from(v, 'utf8').toString('base64') : '');
+        const sameContract = tag('until64=').slice(8) === b64(opts.until) && tag('limits64=').slice(9) === b64(opts.limits)
+          && (tag('deliver=').slice(8) || 'always') === (opts.deliver ?? 'always') && tag('check64=').slice(8) === b64(opts.check);
+        if (same && sameContract && same.content === instruction && st.includes(`recur=${opts.recur}`)
           && st.includes(`person=${normalizePersonId(opts.person)}`) && st.includes('tainted=1') === Boolean(opts.tainted)) return same.id;
       } catch { /* fall through to a separate write */ }
     }
@@ -565,7 +592,7 @@ export class MwaMemory implements Memory {
         if (!tags.includes('topic=scheduled-task') || !tags.includes('status=pending')) continue;
         const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
         const check64 = get('check64=');
-        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, origin: get('origin=') || undefined, tainted: tags.includes('tainted=1') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined, person: get('person=') || undefined });
+        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, origin: get('origin=') || undefined, tainted: tags.includes('tainted=1') || undefined, until: get('until64=') ? Buffer.from(get('until64='), 'base64').toString('utf8') : undefined, limits: get('limits64=') ? Buffer.from(get('limits64='), 'base64').toString('utf8') : undefined, deliver: (get('deliver=') || undefined) as ScheduledTask['deliver'], pendingComplete: tags.includes('pendingcomplete=1') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined, person: get('person=') || undefined });
       }
       return out.sort((a, b) => a.due - b.due);
     } catch (err) { console.error('[awm] pendingScheduled error:', (err as Error).message); return []; }
@@ -577,6 +604,10 @@ export class MwaMemory implements Memory {
   /** Mark a scheduled task complete (status=done). */
   async completeScheduled(id: string): Promise<void> {
     await this.setScheduledTags(id, (tags) => tags.map((t) => (t.startsWith('status=') ? 'status=done' : t)));
+  }
+  /** Two-phase completion (BL-02): mark or clear "a fire said this job is complete". */
+  async setPendingComplete(id: string, on: boolean): Promise<void> {
+    await this.setScheduledTags(id, (tags) => [...tags.filter((t) => t !== 'pendingcomplete=1'), ...(on ? ['pendingcomplete=1'] : [])]);
   }
   /** Recurring task: set the next due (epoch ms), keep pending. */
   async rescheduleTask(id: string, nextDueMs: number): Promise<void> {

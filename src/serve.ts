@@ -1067,7 +1067,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           // 7 steps and $0.04 of work displayed as "what I did · 0 steps" — and one that refused
           // displayed as done. This is the only run a person cannot watch happen.
           appendNotification({
-            ts: Date.now(), instruction: task.instruction, summary: r.summary, reason: r.reason,
+            ts: Date.now(), instruction: task.instruction, summary: r.summary, reason: r.reason, outcome: r.outcome, completion: r.completion,
             steps: r.steps, toolCalls: r.toolCalls, costUsd: r.costUsd, durationMs: r.durationMs,
             files: r.files, dir: r.dir,
           });
