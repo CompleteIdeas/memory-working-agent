@@ -9,6 +9,12 @@ dist-ui
 
 # Local state / secrets — never bake into the image (at any depth, incl. the submodule).
 .env
+**/.env
+**/.env.*
+**/.awm-hook-secret
+**/*.sqlite*
+**/*.db.bak*
+**/memory-pg*
 **/*.db
 **/*.db-shm
 **/*.db-wal
@@ -21,6 +27,7 @@ hf
 sandbox
 results
 *.log
+**/*.log
 smoke.mjs
 verify-providers.mjs
 scripts/_*

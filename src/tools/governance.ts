@@ -17,7 +17,9 @@ const TOOL_CATEGORY: Record<string, ActionCategory> = {
   onboard_scan: 'read', onboard_questions: 'read',
   write_file: 'write-local',
   run_command: 'execute',
-  run_checks: 'execute', // runs code — in the sandboxed runner (BL-14c); logged as an action
+  // Runs code, but in the person's sandboxed runner (BL-14c): nothing on this machine changes, so it is
+  // not an action (no tripwire count, no "changed something"). Its output still taints the run.
+  run_checks: 'read',
   http_request: 'external', draft_email: 'external', send_email: 'external',
   schedule: 'schedule',
   remember: 'memory', supersede: 'memory',

@@ -120,16 +120,26 @@ the checks" to "run the checks with run_checks". Committing still needs your app
 
 - **Fixed commands.** It runs `tsc --noEmit` and `vitest run`, never `npm run`. MWA writes the
   worktree's `package.json`, so its scripts are MWA's to choose.
-- **Your files stay out.** It sees a copy of the worktree's files: the tracked ones and new ones,
-  never ignored ones such as `.env`. A symbolic link, a hard link, an oversized file or too many files
-  stop the run. The AWM submodule comes from the image.
+- **The toolchain is yours.** The compiler, the test runner and every dependency come from the image
+  built from `--from`. A `node_modules` in the worktree is never staged.
+- **Your files stay out.** It sees a copy of the worktree's files: the tracked ones and new ones that
+  git doesn't ignore, never a `.env` or a `node_modules`. A symbolic link, a hard link, a folder that
+  links somewhere else, an oversized file or too many files stop the run. The AWM submodule comes from
+  the image. Listing the files can't make git run a program from the worktree's settings.
 - **The container is locked down.**
   - It has no network, a read-only system, and a size-capped scratch area.
   - It runs as an unprivileged user with no capabilities.
   - Memory, CPU, processes and open files are limited, and it is killed after 15 minutes.
-- **One run at a time.** The copy is deleted afterwards.
-- **What it printed comes back to MWA as outside content.** It is fenced, and it taints the run.
+- **One run at a time.** The copy is deleted afterwards. MWA starts a run and then reads its result,
+  so a long suite isn't cut off while MWA waits.
+- **What it printed comes back to MWA as outside content.** It is fenced and taints the run, which
+  stops that run from saving lessons as trusted or scheduling follow-ups. A check run isn't counted as
+  a change on your machine, because nothing on it changes.
+
+**What a passing check does and doesn't tell you.** The sandbox protects your machine. It doesn't make
+the result trustworthy: MWA can also edit the tests, `tsconfig.json` and the vitest config, so a change
+that weakens them can pass. That is why committing still needs your approval. Look at the diff, not
+just the green result.
 
 The tests still run code MWA wrote. That is what a check is, and why it happens in the sandbox rather
 than as you.
-

@@ -8,25 +8,27 @@
  * - YOU start the runner (`mwa check-runner --allow <worktree>`). It is the only thing with Docker access;
  *   MWA talks to it over a token-protected API on 127.0.0.1 and never sees the Docker socket.
  * - The API does one thing: run `typecheck` and/or `test` on one of the worktrees you allowed, named by
- *   its id — no paths, no commands, no image choice. One run at a time.
+ *   its id — no paths, no commands, no image choice. One run at a time. A request starts a run and
+ *   returns its id; the result is read with a second request, so a long suite can't time out the caller.
  * - The commands are fixed here (`tsc --noEmit`, `vitest run`), never `npm run …`: MWA writes the
  *   worktree's package.json, so its scripts are MWA's to choose. The tests still run MWA's code — that is
  *   what a check is — but only inside the sandbox.
- * - The image is built from YOUR trusted checkout (Dockerfile.checks), never from the worktree, so MWA
- *   can't change the dependencies or the toolchain.
- * - Only the worktree's tracked files and new untracked ones are staged — never ignored ones like `.env` —
- *   with symlinks, hardlinks and special files refused, submodules skipped (the image has AWM), and caps
- *   on file size, file count and total size.
+ * - The image is built from YOUR trusted checkout (Dockerfile.checks), never from the worktree, and the
+ *   worktree can't bring its own `node_modules`, so MWA can't change the dependencies or the toolchain.
+ * - Only the worktree's tracked files and new untracked ones are staged — never ignored ones, never a
+ *   `.env`, never a `node_modules` — and only files that really live inside the worktree: a symlink, a
+ *   hard link, a linked folder (a junction) or a special file stops the run. Submodules are skipped (the
+ *   image has AWM). File size, file count and total size are capped.
  * - The container: no network, read-only root, a size-capped tmpfs to work in, every capability dropped,
  *   no new privileges, an unprivileged user, memory / CPU / process / open-file limits, and a wall-clock
  *   limit enforced by killing the container (which takes its whole process tree).
  * - Output is capped as it is read, and what comes back is outside content to MWA (fenced; it taints the run).
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { spawn, execFileSync } from 'node:child_process';
-import { lstatSync, mkdirSync, copyFileSync, rmSync, readdirSync, realpathSync, readFileSync, existsSync } from 'node:fs';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { lstatSync, mkdirSync, rmSync, readdirSync, realpathSync, readFileSync, writeFileSync, existsSync, openSync, fstatSync, closeSync, constants } from 'node:fs';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, relative, sep, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 
 export type CheckName = 'typecheck' | 'test';
@@ -34,18 +36,32 @@ export const CHECKS: Record<CheckName, string> = {
   typecheck: 'node_modules/.bin/tsc --noEmit',
   test: "node_modules/.bin/vitest run --exclude 'vendor/**' --no-file-parallelism",
 };
+const isCheck = (c: string): c is CheckName => Object.hasOwn(CHECKS, c);
 
 export interface StageLimits { maxFileBytes: number; maxFiles: number; maxTotalBytes: number }
 export const DEFAULT_LIMITS: StageLimits = { maxFileBytes: 5_000_000, maxFiles: 20_000, maxTotalBytes: 200_000_000 };
-/** Never staged: the AWM submodule (the image carries the pinned build) and anything git ignores. */
-const SKIP_PREFIXES = ['vendor/agent-working-memory/', '.git/'];
+
+/** Never staged: the AWM submodule (the image carries the pinned build), any `node_modules` (the image's
+ *  are the toolchain), git's own folder, and `.env` files (`.env.example` is documentation). */
+export function skipped(path: string): boolean {
+  if (path === 'vendor/agent-working-memory' || path.startsWith('vendor/agent-working-memory/')) return true;
+  const segs = path.split('/');
+  if (segs.some((s) => s.toLowerCase() === 'node_modules' || s.toLowerCase() === '.git')) return true;
+  const base = basename(path).toLowerCase();
+  return (base === '.env' || base.startsWith('.env.')) && base !== '.env.example';
+}
+
+const sameFold = (a: string, b: string) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
 
 /**
  * Copy a worktree's tracked files and its new, not-ignored files into `dest`. Throws on anything that
  * could reach outside the tree or carry something other than plain files.
  */
 export function stageWorktree(src: string, dest: string, limits: StageLimits = DEFAULT_LIMITS): { files: number; bytes: number } {
-  const git = (...a: string[]) => execFileSync('git', ['-C', src, ...a], { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 }).toString('utf8');
+  const root = realpathSync.native(resolve(src));
+  // git reads the worktree's config; these two settings could make `ls-files` run a program.
+  const git = (...a: string[]) => execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-C', root, ...a],
+    { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 }).toString('utf8');
   // Tracked entries WITH their modes: 160000 = a submodule link (skipped), 120000 = a symlink (refused).
   const tracked = git('ls-files', '-z', '--cached', '-s').split('\0').filter(Boolean).map((l) => {
     const tab = l.indexOf('\t');
@@ -57,22 +73,36 @@ export function stageWorktree(src: string, dest: string, limits: StageLimits = D
   for (const { mode, path } of [...tracked, ...untracked]) {
     if (seen.has(path)) continue;
     seen.add(path);
-    if (mode === '160000' || SKIP_PREFIXES.some((p) => path === p.slice(0, -1) || path.startsWith(p))) continue;
+    if (mode === '160000' || skipped(path)) continue;
     if (mode === '120000') throw new Error(`refused: ${path} is a symbolic link`);
-    if (path.split('/').some((seg) => seg === '..' || seg === '')) throw new Error(`refused: unusual path ${path}`);
-    const from = join(src, path);
+    if (path.split('/').some((seg) => seg === '..' || seg === '' || seg === '.')) throw new Error(`refused: unusual path ${path}`);
+    const from = join(root, path);
     let st;
-    try { st = lstatSync(from); } catch { continue; } // deleted in the working tree
+    try { st = lstatSync(from, { bigint: true }); } catch { continue; } // deleted in the working tree
     if (st.isSymbolicLink()) throw new Error(`refused: ${path} is a symbolic link`);
     if (!st.isFile()) throw new Error(`refused: ${path} is not a regular file`);
-    if (st.nlink > 1) throw new Error(`refused: ${path} is a hard link`);
-    if (st.size > limits.maxFileBytes) throw new Error(`refused: ${path} is larger than ${limits.maxFileBytes} bytes`);
-    files++; bytes += st.size;
+    if (st.nlink > 1n) throw new Error(`refused: ${path} is a hard link`);
+    // A linked folder anywhere on the way (a junction on Windows, a symlinked directory elsewhere) makes
+    // the file's real location differ from where git thinks it is.
+    let real: string;
+    try { real = realpathSync.native(from); } catch { continue; }
+    if (!sameFold(relative(root, real).split(sep).join('/'), path)) throw new Error(`refused: ${path} is reached through a linked folder`);
+    if (st.size > BigInt(limits.maxFileBytes)) throw new Error(`refused: ${path} is larger than ${limits.maxFileBytes} bytes`);
+    files++; bytes += Number(st.size);
     if (files > limits.maxFiles) throw new Error(`refused: more than ${limits.maxFiles} files`);
     if (bytes > limits.maxTotalBytes) throw new Error(`refused: more than ${limits.maxTotalBytes} bytes in all`);
-    const to = join(dest, path);
-    mkdirSync(dirname(to), { recursive: true });
-    copyFileSync(from, to);
+    // Read through a handle and check it is still the file that was inspected: a swap between the
+    // check and the copy (a file replaced by a link) is caught instead of followed.
+    const fd = openSync(from, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const now = fstatSync(fd, { bigint: true });
+      if (!now.isFile() || now.ino !== st.ino || now.dev !== st.dev) throw new Error(`refused: ${path} changed while it was being staged`);
+      const data = readFileSync(fd);
+      if (data.length > limits.maxFileBytes) throw new Error(`refused: ${path} is larger than ${limits.maxFileBytes} bytes`);
+      const to = join(dest, path);
+      mkdirSync(dirname(to), { recursive: true });
+      writeFileSync(to, data);
+    } finally { closeSync(fd); }
   }
   return { files, bytes };
 }
@@ -100,7 +130,9 @@ export interface RunnerOptions {
 
 /** `docker run` with the sandbox's limits. The container's name lets a timeout kill exactly it. */
 export function dockerArgs(image: string, stagedDir: string, check: CheckName, name: string): string[] {
-  const cmd = `cp -r /src/. /w/ && ln -s /base/node_modules /w/node_modules && mkdir -p /w/vendor && rm -rf /w/vendor/agent-working-memory && ln -s /base/vendor/agent-working-memory /w/vendor/agent-working-memory && cd /w && ${CHECKS[check]}`;
+  const cmd = 'cp -r /src/. /w/ && find /w -name node_modules -prune -exec rm -rf {} + ; ' +
+    'ln -s /base/node_modules /w/node_modules && mkdir -p /w/vendor && rm -rf /w/vendor/agent-working-memory && ' +
+    `ln -s /base/vendor/agent-working-memory /w/vendor/agent-working-memory && cd /w && ${CHECKS[check]}`;
   return [
     'run', '--rm', '--name', name, '--label', 'mwa-check=1',
     '--network', 'none', '--read-only',
@@ -115,19 +147,43 @@ export function dockerArgs(image: string, stagedDir: string, check: CheckName, n
   ];
 }
 
-function dockerExec(image: string): NonNullable<RunnerOptions['exec']> {
-  return ({ stagedDir, check, timeoutMs }) => new Promise((done) => {
-    const name = `mwa-check-${randomBytes(6).toString('hex')}`;
+/**
+ * Wait for a check's process with a wall-clock limit. At the limit `onTimeout` stops it (for Docker,
+ * `docker kill` on the container); if that doesn't end it within `graceMs`, the local process is killed
+ * and the run is answered anyway — a hung `docker` can't hold the runner's one-run lock forever.
+ */
+export function supervise(child: ChildProcess, timeoutMs: number, onTimeout: () => void, graceMs = 60_000): Promise<Omit<CheckResult, 'check'>> {
+  return new Promise((done) => {
     const started = Date.now(); const tail = new Tail();
-    const child = spawn('docker', dockerArgs(image, stagedDir, check, name), { windowsHide: true });
-    child.stdout.on('data', (d) => tail.push(String(d)));
-    child.stderr.on('data', (d) => tail.push(String(d)));
-    let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; try { execFileSync('docker', ['kill', name], { stdio: 'ignore' }); } catch { /* */ } }, timeoutMs);
-    child.on('close', (code) => { clearTimeout(timer); done({ exitCode: timedOut ? null : code, durationMs: Date.now() - started, timedOut, outputTail: tail.toString() }); });
-    child.on('error', (e) => { clearTimeout(timer); done({ exitCode: null, durationMs: Date.now() - started, timedOut: false, outputTail: `could not start docker: ${e.message}` }); });
+    let timedOut = false; let finished = false;
+    const finish = (exitCode: number | null, extra = '') => {
+      if (finished) return; finished = true;
+      clearTimeout(soft); clearTimeout(hard);
+      done({ exitCode: timedOut ? null : exitCode, durationMs: Date.now() - started, timedOut, outputTail: tail.toString() + extra });
+    };
+    child.stdout?.on('data', (d) => tail.push(String(d)));
+    child.stderr?.on('data', (d) => tail.push(String(d)));
+    const soft = setTimeout(() => { timedOut = true; try { onTimeout(); } catch { /* */ } }, timeoutMs);
+    const hard = setTimeout(() => { timedOut = true; try { child.kill('SIGKILL'); } catch { /* */ } finish(null, '\n(the check did not stop when it was killed)'); }, timeoutMs + graceMs);
+    child.on('close', (code) => finish(code));
+    child.on('error', (e) => finish(null, `could not start: ${e.message}`));
   });
 }
+
+function dockerExec(image: string): NonNullable<RunnerOptions['exec']> {
+  return ({ stagedDir, check, timeoutMs }) => {
+    const name = `mwa-check-${randomBytes(6).toString('hex')}`;
+    const child = spawn('docker', dockerArgs(image, stagedDir, check, name), { windowsHide: true });
+    return supervise(child, timeoutMs, () => { execFileSync('docker', ['kill', name], { stdio: 'ignore', timeout: 30_000 }); })
+      .finally(() => { try { execFileSync('docker', ['rm', '-f', name], { stdio: 'ignore', timeout: 30_000 }); } catch { /* already gone */ } });
+  };
+}
+
+export interface RunRecord {
+  id: string; worktree: string; status: 'running' | 'done' | 'refused';
+  startedAt: number; staged?: { files: number; bytes: number }; results?: CheckResult[]; error?: string;
+}
+const KEEP_RUNS = 20;
 
 /** The runner's request handler, separate from the socket so it can be tested. */
 export function createRunner(opts: RunnerOptions & { token: string }) {
@@ -138,6 +194,7 @@ export function createRunner(opts: RunnerOptions & { token: string }) {
   const exec = opts.exec ?? dockerExec(opts.image);
   const timeoutMs = opts.timeoutMs ?? 15 * 60_000;
   const expected = Buffer.from(opts.token);
+  const runs = new Map<string, RunRecord>();
   let busy = false;
 
   const authorized = (req: IncomingMessage) => {
@@ -146,9 +203,28 @@ export function createRunner(opts: RunnerOptions & { token: string }) {
   };
   const reply = (res: ServerResponse, status: number, body: unknown) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 
+  async function perform(run: RunRecord, src: string, checks: CheckName[]): Promise<void> {
+    const staged = join(workRoot, run.id);
+    try {
+      mkdirSync(staged, { recursive: true });
+      try { run.staged = stageWorktree(src, staged); }
+      catch (e) { run.status = 'refused'; run.error = (e as Error).message; return; }
+      run.results = [];
+      for (const check of checks) run.results.push({ check, ...(await exec({ stagedDir: staged, check, timeoutMs })) });
+      run.status = 'done';
+    } catch (e) {
+      run.status = 'refused'; run.error = `the run failed: ${(e as Error).message}`;
+    } finally {
+      busy = false;
+      rmSync(staged, { recursive: true, force: true });
+    }
+  }
+
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorized(req)) return reply(res, 401, { error: 'unauthorized' });
     if (req.method === 'GET' && req.url === '/worktrees') return reply(res, 200, { worktrees: allow.map((p, i) => ({ id: String(i + 1), path: p })) });
+    const m = req.method === 'GET' ? /^\/runs\/([0-9a-f]{16})$/.exec(req.url ?? '') : null;
+    if (m) { const r = runs.get(m[1]); return r ? reply(res, 200, r) : reply(res, 404, { error: 'no such run (the runner keeps the last 20, and forgets them when it restarts)' }); }
     if (req.method !== 'POST' || req.url !== '/checks') return reply(res, 404, { error: 'not found' });
     let body: { worktree?: unknown; checks?: unknown } = {};
     try {
@@ -159,31 +235,38 @@ export function createRunner(opts: RunnerOptions & { token: string }) {
     const idx = Number(body.worktree) - 1;
     if (!Number.isInteger(idx) || idx < 0 || idx >= allow.length) return reply(res, 400, { error: 'worktree must be one of the allowed ids', allowed: allow.map((_, i) => String(i + 1)) });
     const checks = (Array.isArray(body.checks) ? body.checks : ['typecheck', 'test']).map(String);
-    if (!checks.length || checks.some((c) => !(c in CHECKS))) return reply(res, 400, { error: 'checks must be typecheck and/or test' });
+    if (!checks.length || !checks.every(isCheck)) return reply(res, 400, { error: 'checks must be typecheck and/or test' });
     if (busy) return reply(res, 429, { error: 'a check run is already in progress — try again when it finishes' });
     busy = true;
-    const staged = join(workRoot, randomBytes(8).toString('hex'));
-    try {
-      mkdirSync(staged, { recursive: true });
-      let stagedInfo: { files: number; bytes: number };
-      try { stagedInfo = stageWorktree(allow[idx], staged); }
-      catch (e) { return reply(res, 422, { error: (e as Error).message }); }
-      const results: CheckResult[] = [];
-      for (const check of [...new Set(checks)] as CheckName[]) results.push({ check, ...(await exec({ stagedDir: staged, check, timeoutMs })) });
-      return reply(res, 200, { worktree: String(idx + 1), staged: stagedInfo, results });
-    } finally {
-      busy = false;
-      rmSync(staged, { recursive: true, force: true });
-    }
+    const run: RunRecord = { id: randomBytes(8).toString('hex'), worktree: String(idx + 1), status: 'running', startedAt: Date.now() };
+    runs.set(run.id, run);
+    for (const k of [...runs.keys()].slice(0, Math.max(0, runs.size - KEEP_RUNS))) runs.delete(k);
+    void perform(run, allow[idx], [...new Set(checks)] as CheckName[]);
+    return reply(res, 202, { run: run.id });
   }
-  return { handle, allow, workRoot };
+  return { handle, allow, workRoot, runs };
 }
 
-/** The image is named by what it was built from, so a changed lockfile or AWM pin builds a new one. */
+/** A worktree MWA edits and the checkout the image is built from must not contain one another. */
+export function overlaps(a: string, b: string): boolean {
+  const norm = (p: string) => { const r = realpathSync.native(resolve(p)); return process.platform === 'win32' ? r.toLowerCase() : r; };
+  const x = norm(a), y = norm(b);
+  return x === y || x.startsWith(y + sep) || y.startsWith(x + sep);
+}
+
+/**
+ * The image is named by what it was built from, so a changed lockfile, manifest, Dockerfile, model
+ * prewarm or AWM pin builds a new one. Refuses a checkout whose AWM is not the committed pin: the
+ * image would quietly test a different AWM from the one MWA ships with.
+ */
 export function imageTag(from: string): string {
-  const h = createHash('sha256');
-  for (const f of ['package-lock.json', 'package.json', 'Dockerfile.checks']) { const p = join(from, f); if (existsSync(p)) h.update(readFileSync(p)); }
-  try { h.update(execFileSync('git', ['-C', from, 'rev-parse', 'HEAD:vendor/agent-working-memory'], { encoding: 'utf8' })); } catch { /* */ }
+  const pin = execFileSync('git', ['-C', from, 'rev-parse', 'HEAD:vendor/agent-working-memory'], { encoding: 'utf8' }).trim();
+  const awm = join(from, 'vendor', 'agent-working-memory');
+  const head = execFileSync('git', ['-C', awm, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const dirty = execFileSync('git', ['-C', awm, 'status', '--porcelain'], { encoding: 'utf8' }).trim();
+  if (head !== pin || dirty) throw new Error(`the trusted checkout's AWM is ${head !== pin ? `at ${head.slice(0, 7)}, not the pinned ${pin.slice(0, 7)}` : 'changed from its pin'} — run \`git submodule update --init\` there, or use a clean checkout for --from`);
+  const h = createHash('sha256').update(pin);
+  for (const f of ['package-lock.json', 'package.json', 'web/package.json', 'Dockerfile.checks', 'scripts/prewarm.ts']) { const p = join(from, f); if (existsSync(p)) h.update(f).update(readFileSync(p)); }
   return `mwa-checks:${h.digest('hex').slice(0, 12)}`;
 }
 
@@ -191,8 +274,8 @@ export function imageTag(from: string): string {
 export async function startCheckRunner(o: { allow: string[]; from: string; listen?: string; log?: (m: string) => void }): Promise<void> {
   const log = o.log ?? ((m: string) => console.log(m));
   if (!o.allow.length) throw new Error('give at least one worktree: --allow <path>[,<path>…]');
+  for (const a of o.allow) if (overlaps(a, o.from)) throw new Error(`${a} and --from ${o.from} overlap: a worktree MWA edits must be separate from the trusted checkout the image is built from`);
   const from = realpathSync.native(resolve(o.from));
-  for (const a of o.allow) if ((realpathSync.native(resolve(a)) + sep).startsWith(from + sep) || from === realpathSync.native(resolve(a))) throw new Error('a worktree MWA edits must not be (or be inside) the trusted checkout the image is built from');
   const image = imageTag(from);
   const have = (() => { try { execFileSync('docker', ['image', 'inspect', image], { stdio: 'ignore' }); return true; } catch { return false; } })();
   if (!have) {
@@ -214,7 +297,7 @@ export async function startCheckRunner(o: { allow: string[]; from: string; liste
   log(`  MWA_CHECK_RUNNER_TOKEN=${token}`);
 }
 
-/** For tests and `mwa check-runner --list`: the stage step alone. */
+/** For tests: the files a stage step produced. */
 export function listStaged(dir: string): string[] {
   const out: string[] = [];
   const walk = (d: string, rel = '') => { for (const f of readdirSync(d, { withFileTypes: true })) { const r = rel ? `${rel}/${f.name}` : f.name; if (f.isDirectory()) walk(join(d, f.name), r); else out.push(r); } };
