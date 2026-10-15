@@ -18,7 +18,7 @@ conflicts. The AWM submodule pin is unchanged at `8070751` (AWM 0.13.6).
 | `dda2fdf` | The cost cap raised to $20 (your call). |
 | `cabbb49` | **BL-16a/b.** Third-party MCP text is labeled. MWA's own refusals count. The approval-gate outcome. |
 | `74c244f` `1964712` `399d834` | **BL-09 (revise).** The no-compaction instrument and a first, inconclusive run, written up honestly. Also a fix: runs without memory aren't offered memory tools. |
-| `4276b97` | **BL-10.** Run transcripts. A scheduled job cut off by a crash or redeploy is resumed. |
+| `89f461b` | **BL-10.** Run transcripts. A scheduled job cut off by a crash or redeploy is resumed. |
 
 Every item passed the loop's gates:
 
