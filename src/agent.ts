@@ -513,6 +513,9 @@ export async function runAgent(opts: {
    */
   const runSystem = [
     AGENT_SYSTEM + persona + personBlock,
+    // The shared system text describes recall/remember/supersede and a PRIOR KNOWLEDGE block; without
+    // memory none of them exist, so say so rather than let the model spend steps on them (BL-09 review).
+    ...(memory.enabled ? [] : ['MEMORY IS OFF in this run: recall, remember and supersede are unavailable and PRIOR KNOWLEDGE stays empty. When you need something you read earlier, read the file again.']),
     `INSTRUCTION: ${instruction}`,
     `FENCE CODE for this run: ${fence}`,
     // A job scheduled by a run that read outside content carries settings that may relay that content:
@@ -674,7 +677,8 @@ export async function runAgent(opts: {
     // byte-identical on every step of the run. See the note there.
     const prompt = [
       render(),
-      recent.length ? `RECENT STEPS (older context is in memory — recall it if needed):\n${recent.join('\n')}` : 'No steps yet.',
+      // Without memory there is nothing to recall: say so, rather than send the agent to a dead tool (BL-09 review).
+      recent.length ? `RECENT STEPS (${memory.enabled ? 'older context is in memory — recall it if needed' : 'older steps are not kept — re-read a file if you need it again'}):\n${recent.join('\n')}` : 'No steps yet.',
       steps >= maxSteps * 0.8
         ? 'Budget is nearly spent — call done NOW and summarize what you accomplished, unless one critical step genuinely remains.'
         : (productive >= doneThreshold || steps >= maxSteps * 0.55)
@@ -686,7 +690,8 @@ export async function runAgent(opts: {
 
     let out;
     try {
-      const base = [...BRAIN_TOOLS.filter((t) => t.name !== 'done'), AGENT_DONE_TOOL, REMEMBER_TOOL, SCHEDULE_TOOL, ASK_USER_TOOL];
+      // No memory, no memory tools: remember/recall/supersede would only fall through as unhandled steps (BL-09 review).
+      const base = [...BRAIN_TOOLS.filter((t) => t.name !== 'done' && (memory.enabled || !['recall', 'supersede'].includes(t.name))), AGENT_DONE_TOOL, ...(memory.enabled ? [REMEMBER_TOOL] : []), SCHEDULE_TOOL, ASK_USER_TOOL];
       // (AGENT_ACTION_NAMES below is this same set by name — keep them together.)
       const toolset = opts.tools ? [...base, ...opts.tools.defs()] : base;
       out = await brain.chat({ system: runSystem, messages: [{ role: 'user', content: prompt }], maxTokens: 800, tools: toolset, cache: true });
@@ -885,7 +890,7 @@ export async function runAgent(opts: {
       // Flattened like tool results: injected lines must not start at column 0 looking like history.
       history.push(`read(${action.path}): ${markToolOutput('read', content.slice(0, 1000).replace(/\n/g, ' '), fence)}`);
       emit('read', { path: action.path });
-      if (++gatherStreak >= 3) nudge = GATHER_NUDGE;
+      if (++gatherStreak >= 3 && memory.enabled) nudge = GATHER_NUDGE;
       continue;
     }
 
@@ -1092,7 +1097,7 @@ export async function runAgent(opts: {
         if (refusedAgain) { reason = 'done'; history.push('(refused twice on the same call — concluding honestly)'); break; }
       } else {
         consecNoProgress = 0;
-        if (action.action === 'read_file' || action.action === 'list_files') { if (++gatherStreak >= 3) nudge = GATHER_NUDGE; }
+        if (action.action === 'read_file' || action.action === 'list_files') { if (++gatherStreak >= 3 && memory.enabled) nudge = GATHER_NUDGE; }
         else { gatherStreak = 0; productive++; }
       }
       continue;
