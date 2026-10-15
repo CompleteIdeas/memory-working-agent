@@ -22,7 +22,8 @@ import { preparePersonTurn, learnFromTurn } from '../person-turn.js';
 import { runScheduler } from '../scheduler.js';
 import { loadEnv } from '../env.js';
 import type { ToolRegistry } from '../tools/registry.js';
-import { pendingMeta, confirmPending, cancelPending } from '../tools/approval.js';
+import { pendingMeta, confirmPending, cancelPending, claimOffer, setOfferMessage, releaseOffer, offerOf, unofferedFor, approvalStatus, setApprovalOwner, setApprovalStorePath, runApproved } from '../tools/approval.js';
+import { dirname } from 'node:path';
 
 async function tg(token: string, method: string, body?: Record<string, unknown>): Promise<any> {
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {});
@@ -75,21 +76,27 @@ export function approvalCardText(id: string): string | null {
   ].filter((x) => x !== '').join('\n');
 }
 
-/** Where an approval card was sent: its chat, and the card's own message (BL-03 review — a look-alike
- *  card carrying the same callback data, sent by anything holding the bot token, is not honored). */
-export interface Offer { chat: string; message?: number }
+/** Who may tap Approve: the allowlisted chats (a private chat's id IS its person's id) plus
+ *  TELEGRAM_ALLOWED_USERS. In an allowlisted GROUP chat the tapper must be allowed individually, so any
+ *  member of the group can't approve (BL-03 review). */
+export function approversFromEnv(env: NodeJS.ProcessEnv = process.env): Set<string> {
+  const list = (v?: string) => (v ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  return new Set([...list(env.TELEGRAM_ALLOWED_CHATS), ...list(env.TELEGRAM_ALLOWED_USERS)]);
+}
 
-/** Handle an Approve/Cancel tap. `offered` maps action id → the card it was offered on. */
-export async function handleApprovalCallback(data: string, chatId: string, offered: Map<string, Offer>, dir: string, messageId?: number): Promise<string> {
+/** Handle an Approve/Cancel tap. The offer — the chat and the card it went out as — lives in the shared
+ *  approval store (BL-18), so a card sent before a restart, or by another process, still works, and a
+ *  look-alike card carrying the same callback data is not honored. */
+export async function handleApprovalCallback(data: string, chatId: string, dir: string, messageId: number | undefined, from: { userId?: string | number; approvers: Set<string> }): Promise<string> {
   const m = /^(ap|cx):(act_[0-9a-f]{16})$/.exec(data);
   if (!m) return '(not an approval button)';
   const [, verb, id] = m;
-  const offer = offered.get(id);
-  if (!offer || offer.chat !== chatId) return '(that approval was not offered in this chat)';
+  // Required, never optional: an approver check that can be left out fails open (BL-18 review).
+  if (!from.approvers.has(String(from.userId ?? ''))) return '(you are not allowed to approve actions here)';
+  const offer = offerOf(id);
+  if (offer.chat !== chatId) return '(that approval was not offered in this chat)';
   if (offer.message !== undefined && offer.message !== messageId) return '(that is not the card this approval was offered on)';
-  const out = verb === 'cx' ? cancelPending(id) : await confirmPending(id, { sandboxDir: dir, interactive: true });
-  if (!pendingMeta(id)) offered.delete(id); // used up (run, cancelled or expired); a step-up block keeps it
-  return out;
+  return verb === 'cx' ? cancelPending(id) : await confirmPending(id, { sandboxDir: dir, interactive: true });
 }
 
 interface Deps { memory: MwaMemory; brain: Provider; worker: Provider; registry: ToolRegistry; maxSteps: number; maxMin: number; outRoot: string }
@@ -159,20 +166,35 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
   const brain = new RoutedProvider(getProvider('brain'), getProvider('high')); // conductor escalates on struggle/filter
   const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
   const memory = new MwaMemory('mwa-agent', opts.dbPath ?? './data/agent.db', opts.config.awm.workspace);
+  // Approvals: this process owns what it stages under its memory identity, and shares the store with
+  // the web app — beside the agent DB it was given, not wherever the working directory points (BL-18).
+  setApprovalOwner('mwa-agent');
+  if (!process.env.MWA_APPROVALS_DB) setApprovalStorePath(resolve(dirname(opts.dbPath ?? './data/agent.db'), 'approvals.db'));
   const { registry } = await buildRegistry(opts.config, memory);
   const deps: Deps = { memory, brain, worker, registry, maxSteps: opts.maxSteps ?? 40, maxMin: opts.maxMin ?? 10, outRoot: join(opts.config.workspace ?? './mwa-workspace', 'outputs') };
 
-  // Approvals offered (BL-03): action id → the chat and card its buttons were sent on.
-  const offered = new Map<string, Offer>();
+  // Approval cards (BL-18): each action is offered once, by whichever process claims it first in the
+  // shared store, and the card's chat + message are recorded there.
+  const approvers = approversFromEnv();
   const offerApprovals = async (chatId: string, ids: string[]): Promise<void> => {
     for (const id of ids.slice(0, 5)) {
       const text = approvalCardText(id);
-      if (!text) continue;
+      if (!text || !claimOffer(id, chatId)) continue;
       try {
         const sent = await tg(token, 'sendMessage', { chat_id: chatId, text: text.slice(0, 3900), reply_markup: approvalKeyboard(id) });
-        offered.set(id, { chat: chatId, message: Number(sent?.message_id) || undefined });
-      } catch (e) { log(`approval card failed: ${(e as Error).message.slice(0, 80)}`); }
+        if (Number(sent?.message_id)) setOfferMessage(id, Number(sent.message_id));
+      } catch (e) { releaseOffer(id); log(`approval card failed: ${(e as Error).message.slice(0, 80)}`); }
     }
+  };
+  // Actions staged for one of these chats by ANY process — the web app's scheduler firing a Telegram
+  // job, or this process before a restart — that nobody has offered yet.
+  const offerWaiting = async (): Promise<void> => {
+    try {
+      for (const id of unofferedFor([...allowed].map((c) => `tg-${c}`))) {
+        const session = pendingMeta(id)?.session ?? '';
+        await offerApprovals(session.slice(3), [id]);
+      }
+    } catch (e) { log(`offer sweep failed: ${(e as Error).message.slice(0, 80)}`); }
   };
   const convo = new Map<string, { u: string; a: string; t?: boolean }[]>(); // per-chat recent exchanges (multi-turn); t = that turn read external content
   const sessionStats = { tasks: 0, started: Date.now() };
@@ -203,6 +225,16 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
     let updates: any[];
     try { updates = await tg(token, 'getUpdates', { offset, timeout: 30, allowed_updates: ['message', 'callback_query'] }); }
     catch (e) { log(`poll error: ${(e as Error).message.slice(0, 100)}`); await new Promise((r) => setTimeout(r, 3000)); continue; }
+    await offerWaiting();
+    // Actions this process owns that a person approved elsewhere (the web app): run them here,
+    // against this process's memory, and report back in the chat that asked.
+    try {
+      for (const r of await runApproved()) {
+        const chat = (r.session ?? '').startsWith('tg-') ? r.session!.slice(3) : null;
+        log(`approved elsewhere, ran here: ${r.tool} → ${r.ok ? 'done' : 'failed'}`);
+        if (chat && allowed.has(chat)) await tg(token, 'sendMessage', { chat_id: chat, text: `${r.ok ? '✅' : '⚠'} Approved in the app: ${r.tool}\n\n${r.result}`.slice(0, 3900) }).catch(() => {});
+      }
+    } catch (e) { log(`approved-actions sweep failed: ${(e as Error).message.slice(0, 80)}`); }
     for (const u of updates) {
       offset = u.update_id + 1;
       // An Approve/Cancel tap — handled here, never by the model (BL-03).
@@ -210,11 +242,14 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
       if (cq) {
         const cqChat = String(cq.message?.chat?.id ?? '');
         const ok = allowed.has(cqChat);
-        const out = ok ? await handleApprovalCallback(String(cq.data ?? ''), cqChat, offered, resolve(deps.outRoot, `tg-${cqChat}`), cq.message?.message_id) : '(not authorized)';
+        const out = ok ? await handleApprovalCallback(String(cq.data ?? ''), cqChat, resolve(deps.outRoot, `tg-${cqChat}`), cq.message?.message_id, { userId: cq.from?.id, approvers }) : '(not authorized)';
         log(`approval tap in ${cqChat}: ${String(cq.data ?? '').slice(0, 30)} → ${out.replace(/\n/g, ' ').slice(0, 100)}`);
         await tg(token, 'answerCallbackQuery', { callback_query_id: cq.id, text: out.slice(0, 190) }).catch(() => {});
-        // A step-up block keeps the buttons: the person verifies, then taps Approve again.
-        if (ok && cq.message && !out.startsWith('(blocked:')) {
+        // Clear the buttons only once the action is no longer waiting: a tap from someone not allowed,
+        // or a step-up block, must not take the approver's only button away (BL-18 review). Step-up is
+        // completed in the web app, which can then approve it there.
+        const m = /^(?:ap|cx):(act_[0-9a-f]{16})$/.exec(String(cq.data ?? ''));
+        if (ok && cq.message && m && approvalStatus(m[1])?.status !== 'pending') {
           await tg(token, 'editMessageReplyMarkup', { chat_id: cqChat, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
           await tg(token, 'sendMessage', { chat_id: cqChat, text: out.slice(0, 3900) }).catch(() => {});
         }

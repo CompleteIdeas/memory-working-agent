@@ -16,7 +16,7 @@ function makeSpyTool(): { tool: RegisteredTool; runs: () => number } {
   return { tool, runs: () => runs };
 }
 
-const ctxInteractive: ToolContext = { sandboxDir: '.', interactive: true };
+const ctxInteractive: ToolContext = { sandboxDir: '.', interactive: true, session: 'test-session' };
 const ctxScheduled: ToolContext = { sandboxDir: '.', interactive: false };
 
 function tools() {

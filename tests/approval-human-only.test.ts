@@ -24,7 +24,8 @@ import { tickScheduler } from '../src/scheduler.js';
 import { MwaMemory } from '../src/awm.js';
 import { ToolRegistry, type RegisteredTool, type ToolContext } from '../src/tools/registry.js';
 import { requireApproval, approvalTools, confirmPending, stageAction, listPendingActions, pendingMeta } from '../src/tools/approval.js';
-import { handleApprovalCallback, approvalCardText, type Offer } from '../src/connectors/telegram.js';
+import { handleApprovalCallback, approvalCardText } from '../src/connectors/telegram.js';
+import { claimOffer } from '../src/tools/approval.js';
 import type { Provider, ChatResult, ChatInput } from '../src/provider.js';
 
 function scripted(script: Record<string, unknown>[]) {
@@ -115,21 +116,21 @@ describe('Telegram Approve button', () => {
   it('honors a tap only from the chat it was offered to, once', async () => {
     const s = spy();
     const id = stageAction({ tool: 'danger_write', summary: 'write', ctx: { sandboxDir: '.', interactive: true }, execute: (c) => s.tool.handler({}, c) });
-    const offered = new Map<string, Offer>([[id, { chat: '111' }]]);
-    expect(await handleApprovalCallback(`ap:${id}`, '222', offered, '.')).toMatch(/not offered in this chat/);
-    expect(await handleApprovalCallback('ap:act_nothex', '111', offered, '.')).toMatch(/not an approval button/);
+    expect(claimOffer(id, '111')).toBe(true);
+    expect(await handleApprovalCallback(`ap:${id}`, '222', '.', undefined, { userId: '111', approvers: new Set(['111']) })).toMatch(/not offered in this chat/);
+    expect(await handleApprovalCallback('ap:act_nothex', '111', '.', undefined, { userId: '111', approvers: new Set(['111']) })).toMatch(/not an approval button/);
     expect(s.calls).toHaveLength(0);
-    expect(await handleApprovalCallback(`ap:${id}`, '111', offered, '.')).toContain('[CONFIRMED danger_write]');
+    expect(await handleApprovalCallback(`ap:${id}`, '111', '.', undefined, { userId: '111', approvers: new Set(['111']) })).toContain('[CONFIRMED danger_write]');
     expect(s.calls).toHaveLength(1);
-    expect(await handleApprovalCallback(`ap:${id}`, '111', offered, '.')).toMatch(/not offered/); // replay
+    expect(await handleApprovalCallback(`ap:${id}`, '111', '.', undefined, { userId: '111', approvers: new Set(['111']) })).toMatch(/already done/); // replay
     expect(s.calls).toHaveLength(1);
   });
 
   it('Cancel discards it without running', async () => {
     const s = spy();
     const id = stageAction({ tool: 'danger_write', summary: 'write', ctx: { sandboxDir: '.' }, execute: (c) => s.tool.handler({}, c) });
-    const offered = new Map<string, Offer>([[id, { chat: '111' }]]);
-    expect(await handleApprovalCallback(`cx:${id}`, '111', offered, '.')).toMatch(/cancelled/);
+    claimOffer(id, '111');
+    expect(await handleApprovalCallback(`cx:${id}`, '111', '.', undefined, { userId: '111', approvers: new Set(['111']) })).toMatch(/cancelled/);
     expect(pendingMeta(id)).toBeUndefined();
     expect(s.calls).toHaveLength(0);
   });

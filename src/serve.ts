@@ -55,7 +55,7 @@ import { RoutedProvider } from './model-router.js';
 import { MwaMemory } from './awm.js';
 import { scanSources } from './onboard.js';
 import { buildRegistry } from './tools/build.js';
-import { listPendingActions, confirmPending, cancelPending } from './tools/approval.js';
+import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, runApproved, recentApprovalOutcomes } from './tools/approval.js';
 import { logger, readLogs, type LogLevel } from './logger.js';
 import { runAgent } from './agent.js';
 import { preparePersonTurn, learnFromTurn } from './person-turn.js';
@@ -426,6 +426,14 @@ function serveStatic(res: ServerResponse, dir: string, pathname: string): void {
 // the platform's router and the app agree) → 7788 (local/Docker default). Honoring PORT means a
 // cloud deploy binds the platform's expected port automatically — no manual port var needed.
 export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? process.env.PORT ?? 7788)): Promise<void> {
+  // What this process stages, it owns: its memory identity (BL-18). Approvals for it made in Telegram
+  // run here — swept independently of the scheduler, so it works with no model configured too.
+  setApprovalOwner(SERVE_AGENT);
+  setInterval(() => {
+    void runApproved().then((done) => {
+      for (const r of done) appendNotification({ ts: Date.now(), instruction: `Approved in Telegram: ${r.tool}`, summary: r.result.slice(0, 2000), reason: 'done', outcome: r.ok ? 'changed' : 'could-not' });
+    }).catch(() => { /* best-effort */ });
+  }, 15_000).unref();
   loadEnv();
   const ui = uiDir();
   const server = createServer(async (req, res) => {
@@ -670,7 +678,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       // action but not approve it; the person approves or declines it here (the chat's approvals panel).
       if (p === '/api/approvals' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ pending: listPendingActions() }));
+        res.end(JSON.stringify({ pending: listPendingActions(), recent: recentApprovalOutcomes() }));
         return;
       }
       if (p === '/api/approvals/confirm' && req.method === 'POST') {

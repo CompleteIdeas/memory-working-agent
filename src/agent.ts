@@ -1326,6 +1326,9 @@ export async function runAgent(opts: {
         tool: 'policy_save', kind: 'captured-policy', ttlMs: 24 * 60 * 60_000,
         summary: `Save a standing preference (it applies to every future task): "${r}"`,
         ctx: { sandboxDir: dir, interactive: true, personId: opts.personId, identityInDoubt: opts.identityInDoubt, extraRoots: opts.extraRoots, runId, session: opts.session, tainted: sawUntrustedRead },
+        // Runs through policy_save's executor in whichever process confirms it (BL-18); the closure
+        // covers a process whose registry has no work tools.
+        executor: 'policy_save', args: { rule: r },
         execute: async () => {
           const saved = await memory.savePolicy(r);
           return saved ? `standing preference saved: "${r}" — in force from your next conversation` : '(not saved — the memory filter declined it)';

@@ -25,7 +25,12 @@ export async function getStatus(): Promise<StatusResp> {
 /** An action staged for the person's approval (BL-03): only they approve it — here or in Telegram. */
 export interface PendingApproval { id: string; tool: string; summary: string; expiresInSec: number; tainted: boolean; kind: 'tool' | 'captured-policy' }
 export async function getApprovals(): Promise<PendingApproval[]> {
-  try { const r = bounceIfLocked(await fetch('/api/approvals')); return (await r.json()).pending ?? []; } catch { return []; }
+  return (await getApprovalsFull()).pending;
+}
+/** Approved here but owned by another app (waiting for it to run), or failed, in the last day (BL-18). */
+export interface ApprovalOutcome { id: string; tool: string; status: 'approved' | 'failed'; owner: string; result?: string; at: number }
+export async function getApprovalsFull(): Promise<{ pending: PendingApproval[]; recent: ApprovalOutcome[] }> {
+  try { const j = await (bounceIfLocked(await fetch('/api/approvals'))).json(); return { pending: j.pending ?? [], recent: j.recent ?? [] }; } catch { return { pending: [], recent: [] }; }
 }
 export async function decideApproval(id: string, approve: boolean): Promise<{ ok: boolean; message: string }> {
   try {

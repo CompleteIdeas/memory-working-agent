@@ -13,7 +13,8 @@
  * (Hive-native richer channel — AWM coordination mailbox — is a future upgrade.)
  */
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync, statSync } from 'node:fs';
-import { resolve, join, extname, basename } from 'node:path';
+import { resolve, join, extname, basename, dirname } from 'node:path';
+import { setApprovalOwner, setApprovalStorePath } from './tools/approval.js';
 import type { MwaConfig } from './config.js';
 import { getProvider } from './provider.js';
 import { RoutedProvider } from './model-router.js';
@@ -63,6 +64,9 @@ export async function processInbox(opts: {
   const brain = new RoutedProvider(getProvider('brain'), getProvider('high')); // conductor escalates on struggle/filter
   const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
   const memory = new MwaMemory('mwa-agent', opts.dbPath ?? './data/agent.db', opts.config.awm.workspace);
+  // Approvals this process stages belong to the `mwa-agent` identity, in the store beside its DB (BL-18).
+  setApprovalOwner('mwa-agent');
+  if (!process.env.MWA_APPROVALS_DB) setApprovalStorePath(resolve(dirname(opts.dbPath ?? './data/agent.db'), 'approvals.db'));
   const { registry, close } = await buildRegistry(opts.config, memory);
 
   let processed = 0;

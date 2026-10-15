@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getApprovals, decideApproval, type PendingApproval } from '../api';
+import { getApprovals, getApprovalsFull, decideApproval, type PendingApproval, type ApprovalOutcome } from '../api';
 
 function timeLeft(s: number): string {
   if (s >= 3600) return `${Math.round(s / 3600)}h`;
@@ -14,12 +14,13 @@ function timeLeft(s: number): string {
  */
 export function Approvals({ refresh }: { refresh: number }) {
   const [items, setItems] = useState<PendingApproval[]>([]);
+  const [recent, setRecent] = useState<ApprovalOutcome[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState('');
 
   useEffect(() => {
     let alive = true;
-    const load = () => getApprovals().then((a) => { if (alive) setItems(a); });
+    const load = () => getApprovalsFull().then((a) => { if (alive) { setItems(a.pending); setRecent(a.recent); } });
     load();
     const iv = setInterval(load, 15000);
     return () => { alive = false; clearInterval(iv); };
@@ -33,7 +34,7 @@ export function Approvals({ refresh }: { refresh: number }) {
     setItems(await getApprovals());
   }
 
-  if (!items.length && !msg) return null;
+  if (!items.length && !recent.length && !msg) return null;
   return (
     // Capped so several waiting items can't cover the conversation on a phone; the list scrolls.
     <div className="max-w-3xl mx-auto mb-3 space-y-2 max-h-[45vh] overflow-y-auto" aria-live="polite">
@@ -65,6 +66,13 @@ export function Approvals({ refresh }: { refresh: number }) {
             </button>
             <span className="mono text-[11px] text-dim">expires in {timeLeft(a.expiresInSec)}</span>
           </div>
+        </div>
+      ))}
+      {recent.map((r) => (
+        <div key={r.id} className="mono text-[12px] text-dim break-words">
+          {r.status === 'approved'
+            ? <>approved · {r.tool} · waiting for {r.owner} to run it</>
+            : <span className="text-signal">failed · {r.tool}{r.result ? ` · ${r.result}` : ''}</span>}
         </div>
       ))}
       {msg && (

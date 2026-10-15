@@ -13,7 +13,17 @@ import { resolveAllowed, runCommandAllowed, allowedRoots, accessPolicy } from '.
 import type { RegisteredTool, ToolContext } from './registry.js';
 import { classifyCommand, scrubbedEnv } from './shell-gate.js';
 import { guardedFetch } from './net-guard.js';
-import { stageAction } from './approval.js';
+import { stageAction, registerExecutor } from './approval.js';
+
+/** A staged command, approved by a person, runs here — in whichever process confirms it (BL-18). */
+registerExecutor('run_command_staged', async (args, ctx) => {
+  // The access policy at RUN time wins: a switch after staging (Locked-down) still blocks it.
+  const gate = runCommandAllowed(true);
+  if (!gate.ok) throw new Error(gate.reason);
+  const r = runCommand(String(args.command ?? ''), resolve(ctx.sandboxDir), 60_000, scrubbedEnv());
+  const out = `${r.stdout ?? ''}${r.stderr ? `\n[stderr] ${r.stderr}` : ''}`.trim();
+  return `exit=${r.code}\n${out.slice(0, CAP) || '(no output)'}`;
+});
 
 const CAP = 4000;
 const SHELL_HINT = process.platform === 'win32'
@@ -88,7 +98,7 @@ const runCommandTool: RegisteredTool = {
         /localhost|127\.|0\.0\.0\.0|\[::|::1|0x7f|2130706433|\/api\/approvals/i.test(command) ? '⚠ It targets this machine, possibly MWA\'s own controls (including approvals). Do not approve it unless you wrote it.' : '',
         `Run this command in ${ctx.sandboxDir}:`, `  ${command}`, `(Needs approval because ${verdict.reason}.)`,
       ].filter(Boolean).join('\n'),
-      execute: async (c) => run(c.sandboxDir, scrubbedEnv()),
+      executor: 'run_command_staged', args: { command },
     });
     return (
       `[APPROVAL REQUIRED] This command needs the person's approval because ${verdict.reason}. It has NOT run.\n` +

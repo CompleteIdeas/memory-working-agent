@@ -12,7 +12,8 @@
  * any MCP servers in mwa.config.json), working toward the instruction until
  * done/stuck/budget, with progress streamed to the console.
  */
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
+import { setApprovalOwner, setApprovalStorePath } from './tools/approval.js';
 import { runSetup } from './setup.js';
 import { loadConfig } from './config.js';
 import { getProvider } from './provider.js';
@@ -70,6 +71,9 @@ async function runCommand(args: string[]): Promise<void> {
   const brain = new RoutedProvider(getProvider('brain'), getProvider('high')); // conductor: cheap → escalate on struggle/filter
   const worker = new RoutedProvider(getProvider('brain'), getProvider('high')); // coder: cheap → escalate on failure
   const memory = new MwaMemory('mwa-agent', dbPath, cfg.awm.workspace);
+  // Approvals this run stages belong to the `mwa-agent` identity, in the store beside its DB (BL-18).
+  setApprovalOwner('mwa-agent');
+  if (!process.env.MWA_APPROVALS_DB) setApprovalStorePath(resolve(dirname(dbPath), 'approvals.db'));
   const { registry, close } = await buildRegistry(cfg, memory);
 
   console.log(`\n▶ mwa run`);

@@ -23,7 +23,8 @@ import { requireApproval, approvalTools, pendingMeta, confirmPending } from '../
 import { ToolRegistry, type RegisteredTool } from '../src/tools/registry.js';
 import { runAgent } from '../src/agent.js';
 import { MwaMemory } from '../src/awm.js';
-import { handleApprovalCallback, type Offer } from '../src/connectors/telegram.js';
+import { handleApprovalCallback } from '../src/connectors/telegram.js';
+import { claimOffer, setOfferMessage, pendingMeta as metaOf } from '../src/tools/approval.js';
 import { stageAction } from '../src/tools/approval.js';
 import { learnAboutPerson } from '../src/person-learn.js';
 import type { Provider, ChatResult, ChatInput } from '../src/provider.js';
@@ -164,18 +165,18 @@ describe('Telegram binding and step-up (review fixes)', () => {
   it('honors a tap only on the card the approval was offered on', async () => {
     let ran = 0;
     const id = stageAction({ tool: 'x', summary: 's', ctx: { sandboxDir: '.' }, execute: async () => { ran++; return 'ok'; } });
-    const offered = new Map<string, Offer>([[id, { chat: '111', message: 42 }]]);
-    expect(await handleApprovalCallback(`ap:${id}`, '111', offered, '.', 99)).toMatch(/not the card/);
+    claimOffer(id, '111'); setOfferMessage(id, 42);
+    expect(await handleApprovalCallback(`ap:${id}`, '111', '.', 99, { userId: '111', approvers: new Set(['111']) })).toMatch(/not the card/);
     expect(ran).toBe(0);
-    expect(await handleApprovalCallback(`ap:${id}`, '111', offered, '.', 42)).toContain('[CONFIRMED x]');
+    expect(await handleApprovalCallback(`ap:${id}`, '111', '.', 42, { userId: '111', approvers: new Set(['111']) })).toContain('[CONFIRMED x]');
     expect(ran).toBe(1);
   });
 
   it('a step-up block keeps the offer, so the person can verify and tap again', async () => {
     const id = stageAction({ tool: 'x', summary: 's', ctx: { sandboxDir: '.', personId: 'p-unverified', identityInDoubt: true }, execute: async () => 'ok' });
-    const offered = new Map<string, Offer>([[id, { chat: '111' }]]);
-    expect(await handleApprovalCallback(`ap:${id}`, '111', offered, '.')).toMatch(/^\(blocked:/);
-    expect(offered.has(id)).toBe(true);
+    claimOffer(id, '111');
+    expect(await handleApprovalCallback(`ap:${id}`, '111', '.', undefined, { userId: '111', approvers: new Set(['111']) })).toMatch(/^\(blocked:/);
+    expect(metaOf(id)).toBeDefined(); // still pending, still offered: tap again after step-up
   });
 });
 
