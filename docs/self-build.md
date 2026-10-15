@@ -83,9 +83,53 @@ in the background without stalling the app.
 | Option | What it is | What can go wrong |
 |---|---|---|
 | **A. You approve each check run (built)** | This page. | Approving without reading the change: the code runs as you. |
-| **B. A sandboxed check runner** | The checks run in a throwaway container with no network, on a copy of the folder, started by a small runner service with one fixed request: "run the checks on folder X". | If MWA itself gets the Docker socket, it effectively has the host. The runner must never accept a command line, mounts or environment. |
+| **B. A sandboxed check runner (built, BL-14c)** | The checks run in a throwaway container with no network, on a copy of the folder, started by a runner you start, with one fixed request: "run the checks on worktree 1". See below. | If MWA itself gets the Docker socket, it effectively has the host. The runner never accepts a command line, mounts or environment, and MWA never gets the socket. |
 | **C. Developer mode on a VM of its own** | The VM is the boundary. It holds only the repo, a model key and a deploy key limited to a fork. | Everything on that VM is the model's. Boundaries rot when "one more secret" gets added. |
 
 B is the only option where model-written code runs without a person and without your power. A
 second model also recommended starting with A, and moving to B, never with the Docker socket in
 MWA's hands, once A has shown the job is worth it.
+
+## Option B: the sandboxed check runner
+
+Start the runner yourself, on the machine with Docker. Name the worktrees MWA may have checked, and a
+**trusted** checkout the sandbox image is built from:
+
+```sh
+mwa check-runner --allow ../mwa-selfbuild --from .
+```
+
+`--from` must be a checkout MWA doesn't edit, such as your main one. The image's dependencies,
+toolchain and AWM come from there, so MWA can't change them. The first start builds the image, which
+takes a few minutes. It is rebuilt only when the lockfile or the AWM pin changes. The runner prints a
+URL and a token, and the token is new each time it starts. Give both to MWA:
+
+```sh
+MWA_CHECK_RUNNER_URL=http://127.0.0.1:7799
+MWA_CHECK_RUNNER_TOKEN=<the token it printed>
+```
+
+If MWA runs in Docker, start the runner with `--listen 0.0.0.0:7799` and use
+`http://host.docker.internal:7799`. The runner warns you, because then anything that can reach that
+port and has the token can ask for a check run.
+
+MWA then has a `run_checks` tool, and the job's instruction changes from "ask me to approve running
+the checks" to "run the checks with run_checks". Committing still needs your approval.
+
+**What a check run can and can't do.**
+
+- **Fixed commands.** It runs `tsc --noEmit` and `vitest run`, never `npm run`. MWA writes the
+  worktree's `package.json`, so its scripts are MWA's to choose.
+- **Your files stay out.** It sees a copy of the worktree's files: the tracked ones and new ones,
+  never ignored ones such as `.env`. A symbolic link, a hard link, an oversized file or too many files
+  stop the run. The AWM submodule comes from the image.
+- **The container is locked down.**
+  - It has no network, a read-only system, and a size-capped scratch area.
+  - It runs as an unprivileged user with no capabilities.
+  - Memory, CPU, processes and open files are limited, and it is killed after 15 minutes.
+- **One run at a time.** The copy is deleted afterwards.
+- **What it printed comes back to MWA as outside content.** It is fenced, and it taints the run.
+
+The tests still run code MWA wrote. That is what a check is, and why it happens in the sandbox rather
+than as you.
+

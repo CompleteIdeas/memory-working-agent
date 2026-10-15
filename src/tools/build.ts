@@ -13,6 +13,7 @@ import { onboardTools } from './onboard.js';
 import { memoryTools } from './memory.js';
 import { workTools } from './work.js';
 import { knowledgeTools } from './knowledge.js';
+import { checkTools } from './checks.js';
 import { googleConfigured, googleTools } from '../connectors/google.js';
 import { gmailImapConfigured, gmailImapTools } from '../connectors/gmail-imap.js';
 import { microsoftConfigured, microsoftTools } from '../connectors/microsoft.js';
@@ -52,6 +53,8 @@ export async function buildRegistry(
   // then never registered, so `knowledge_write`/`knowledge_list` existed as dead code —
   // the agent could not call either. Registering them is the whole fix.
   registry.registerAll(knowledgeTools(process.env.MWA_KNOWLEDGE_DIR));
+  // BL-14c: checks in the person's sandboxed runner — only when they have started one and given MWA its token.
+  registry.registerAll(checkTools());
   // Gmail/Calendar tools (read + draft) appear once Gmail is connected; Outlook tools
   // (search_outlook/read_outlook/draft_outlook) once a Microsoft account is connected.
   // Distinct names → both can be connected at once with no collision.

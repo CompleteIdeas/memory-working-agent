@@ -17,6 +17,7 @@ const TOOL_CATEGORY: Record<string, ActionCategory> = {
   onboard_scan: 'read', onboard_questions: 'read',
   write_file: 'write-local',
   run_command: 'execute',
+  run_checks: 'execute', // runs code — in the sandboxed runner (BL-14c); logged as an action
   http_request: 'external', draft_email: 'external', send_email: 'external',
   schedule: 'schedule',
   remember: 'memory', supersede: 'memory',

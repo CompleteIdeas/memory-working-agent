@@ -143,6 +143,12 @@ async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd || cmd === 'serve') { const { flags } = parseFlags(rest); return runServe(flags.port ? Number(flags.port) : undefined); }
   if (cmd === 'setup') return runSetup();
+  if (cmd === 'check-runner') {
+    // BL-14c: YOU run this; it is the only thing with Docker access. MWA gets a URL and a token.
+    const { flags } = parseFlags(rest);
+    const { startCheckRunner } = await import('./check-runner.js');
+    return startCheckRunner({ allow: String(flags.allow ?? '').split(',').map((s) => s.trim()).filter(Boolean), from: flags.from || '.', listen: flags.listen || undefined });
+  }
   if (cmd === 'wizard') return runWizard();
   if (cmd === 'run') return runCommand(rest);
   if (cmd === 'watch') return watchCommand(rest);

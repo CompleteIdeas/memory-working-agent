@@ -121,7 +121,9 @@ describe('promoting and retiring', () => {
 
 describe('only a person can promote', () => {
   it('no model tool promotes or retires a routine', async () => {
-    const { registry } = await buildRegistry(loadConfig(), mem);
+    // Built-in tools only: no MCP servers to start (a sandbox without network can't reach them).
+    const cfg = loadConfig();
+    const { registry } = await buildRegistry({ ...cfg, tools: { ...cfg.tools, mcpServers: {} } }, mem);
     expect(registry.defs().map((d) => d.name).filter((n) => /promote|retire|routine_(?!propose)/.test(n))).toEqual([]);
   }, 60_000);
 });

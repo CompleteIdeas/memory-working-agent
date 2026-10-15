@@ -73,7 +73,7 @@ describe('who a refusal belongs to', () => {
 
   it('http_request and read_document flag their OWN refusals — the network guard, a bad url, a folder', async () => {
     const r = reg();
-    for (const [tool, args] of [['http_request', { url: 'ftp://x' }], ['http_request', { url: 'http://127.0.0.1:7788/api/approvals' }], ['read_document', { source: 'http://10.0.0.1/a.pdf' }], ['read_document', { source: 'C:/Windows/win.ini' }]] as const) {
+    for (const [tool, args] of [['http_request', { url: 'ftp://x' }], ['http_request', { url: 'http://127.0.0.1:7788/api/approvals' }], ['read_document', { source: 'http://10.0.0.1/a.pdf' }], ['read_document', { source: process.platform === 'win32' ? 'C:/Windows/win.ini' : '/etc/hostname' }] /* an absolute path outside, on either OS */] as const) {
       const out = await r.callDetailed(tool, args as Record<string, unknown>, { sandboxDir: mkdtempSync(join(tmpdir(), 'mwa-f16-')) });
       expect([tool, out.failed]).toEqual([tool, true]);
       expect(out.text).toMatch(/^\((refused|could not read)/);
