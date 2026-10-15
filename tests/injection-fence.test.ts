@@ -186,7 +186,7 @@ describe('through the real loop', () => {
     expect(instructionLine).toBe('INSTRUCTION: write the summary');
   }, 60_000);
 
-  it('saves no skill, lesson or question from a run that read external content', async () => {
+  it('saves no open question from a run that read external content (skills are kept as untrusted — BL-17)', async () => {
     const calls = [{ action: 'read_email', id: '1' }, { action: 'read_email', id: '2' }, { action: 'read_email', id: '3' }];
     const { brain, seen } = scripted(calls);
     const r = await withMemory((dir, mem) => runAgent({
@@ -196,8 +196,10 @@ describe('through the real loop', () => {
     }));
     expect(r.tainted).toBe(true);
     const asked = seen.map((c) => String(c.system ?? ''));
-    expect(asked.some((s) => s.includes('REPEATABLE procedure'))).toBe(false); // skill pass skipped
-    expect(asked.some((s) => s.includes('UNKNOWNS'))).toBe(false);             // question pass skipped
+    // BL-17 reversed the skill drop (it is now saved as untrusted and never auto-primed — see
+    // tests/taint-lineage.test.ts). The question pass stays skipped: a question becomes an
+    // unattended run's instruction.
+    expect(asked.some((s) => s.includes('UNKNOWNS'))).toBe(false);
   }, 60_000);
 
   it('reports taint, and a run told it starts tainted stays tainted (the plan chain)', async () => {

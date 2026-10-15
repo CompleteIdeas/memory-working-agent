@@ -17,6 +17,8 @@ export interface ToolContext {
   /** extra folders THIS run may touch, on top of the sandbox + the user's granted roots. The
    *  scheduler passes the folder a task was created in (see agent.ts `extraRoots`). */
   extraRoots?: string[];
+  /** this run has read external content (BL-17) — a tool that writes lasting memory checks it. */
+  tainted?: boolean;
   /** whether a human is watching this run (gates run_command in Assistant mode). */
   interactive?: boolean;
   /** the resolved person this turn is for (S6) — used to gate sensitive confirms on step-up. */

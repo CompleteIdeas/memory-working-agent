@@ -59,7 +59,7 @@ interface Deps { memory: MwaMemory; brain: Provider; worker: Provider; registry:
  * Testable core: an instruction from a chat → run the agent → format a reply.
  * Channel-agnostic; the Telegram loop just transports text in/out.
  */
-export async function handleInstruction(text: string, chatId: string | number, deps: Deps, recentContext = ''): Promise<{ replyText: string; files: string[]; dir: string; reason: string }> {
+export async function handleInstruction(text: string, chatId: string | number, deps: Deps, recentContext = '', recentTainted = false): Promise<{ replyText: string; files: string[]; dir: string; reason: string; tainted: boolean }> {
   // PERSISTENT per-chat working dir (not per-message) → follow-ups can read/modify
   // files from earlier turns. Absolute path (Windows spawnSync).
   const dir = resolve(deps.outRoot, `tg-${chatId}`);
@@ -68,7 +68,8 @@ export async function handleInstruction(text: string, chatId: string | number, d
   const before = new Map<string, number>();
   for (const f of flat()) { try { before.set(f, statSync(join(dir, f)).mtimeMs); } catch { /* */ } }
   const instruction = [
-    recentContext ? `RECENT CONVERSATION (for follow-ups; the user may refer to it):\n${recentContext}` : '',
+    // A tainted earlier turn's reply goes in fenced via `carried`, not here (BL-17).
+    recentContext && !recentTainted ? `RECENT CONVERSATION (for follow-ups; the user may refer to it):\n${recentContext}` : '',
     text,
     'Your working directory persists across this conversation — files from earlier messages are already here; read or modify them for follow-ups, or create new ones. If something referenced is missing, just create it fresh.',
   ].filter(Boolean).join('\n\n');
@@ -76,7 +77,8 @@ export async function handleInstruction(text: string, chatId: string | number, d
   // authenticated this chat id, so it's recorded as a validated connection for out-of-band step-up (S6 v2).
   const prepared = await preparePersonTurn(deps.memory, { channel: 'tg', id: chatId }, text, { channelVerified: true });
   const r = await runAgent({
-    instruction,
+    instruction, userMessage: text,
+    ...(recentContext && recentTainted ? { carried: `RECENT CONVERSATION (for follow-ups):\n${recentContext}`, startTainted: true } : {}),
     dir, memory: deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.registry,
     session: `tg-${chatId}`, // per-chat session → conversation continuity
     personContext: prepared.personContext, // who I'm talking to (redacted on identity mismatch)
@@ -84,7 +86,8 @@ export async function handleInstruction(text: string, chatId: string | number, d
     interactive: true, // a human is on the other end of the chat → ask_user / confirm can involve them
     budget: { maxSteps: deps.maxSteps, maxWallMs: deps.maxMin * 60_000, consolidateEvery: 10 },
   });
-  await learnFromTurn(deps.brain, deps.memory, prepared, text, r.summary); // learn about them + recompress dossier
+  // learn about them + recompress dossier — but not from a reply that read external content (BL-17)
+  if (!r.tainted) await learnFromTurn(deps.brain, deps.memory, prepared, text, r.summary);
   // deliver only files CREATED or MODIFIED this turn (the dir persists, so don't re-send old ones)
   const files = flat().filter((f) => { try { return !before.has(f) || statSync(join(dir, f)).mtimeMs > (before.get(f) ?? 0); } catch { return false; } });
   // If it produced files this turn, that's a success even if it didn't formally
@@ -97,7 +100,7 @@ export async function handleInstruction(text: string, chatId: string | number, d
     produced ? `\n\n📎 outputs: ${files.join(', ')}` : '',
     `\n\n(${r.steps} steps · ${Math.round(r.durationMs / 1000)}s · $${r.costUsd.toFixed(4)})`,
   ].join('');
-  return { replyText: reply.slice(0, 3900), files, dir, reason: r.reason }; // Telegram msg cap 4096
+  return { replyText: reply.slice(0, 3900), files, dir, reason: r.reason, tainted: r.tainted === true }; // Telegram msg cap 4096
 }
 
 export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; maxSteps?: number; maxMin?: number; onLog?: (m: string) => void }): Promise<void> {
@@ -120,7 +123,7 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
   const { registry } = await buildRegistry(opts.config, memory);
   const deps: Deps = { memory, brain, worker, registry, maxSteps: opts.maxSteps ?? 40, maxMin: opts.maxMin ?? 10, outRoot: join(opts.config.workspace ?? './mwa-workspace', 'outputs') };
 
-  const convo = new Map<string, { u: string; a: string }[]>(); // per-chat recent exchanges (multi-turn)
+  const convo = new Map<string, { u: string; a: string; t?: boolean }[]>(); // per-chat recent exchanges (multi-turn); t = that turn read external content
   const sessionStats = { tasks: 0, started: Date.now() };
   const statusText = () => [
     '📊 Status',
@@ -166,8 +169,9 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
       sessionStats.tasks++;
       await tg(token, 'sendMessage', { chat_id: chatId, text: '🤖 on it…' }).catch(() => {});
       try {
-        const recent = (convo.get(String(chatId)) ?? []).slice(-3).map((x) => `You: ${x.u}\nAgent: ${x.a}`).join('\n');
-        const { replyText, files, dir } = await handleInstruction(textIn, chatId, deps, recent);
+        const turns = (convo.get(String(chatId)) ?? []).slice(-3);
+        const recent = turns.map((x) => `You: ${x.u}\nAgent: ${x.a}`).join('\n');
+        const { replyText, files, dir, tainted } = await handleInstruction(textIn, chatId, deps, recent, turns.some((x) => x.t));
         log(`reply to ${chatId}: ${replyText.replace(/\n/g, ' ').slice(0, 200)}`);
         await tg(token, 'sendMessage', { chat_id: chatId, text: replyText });
         // Deliver output files (up to 5, under 10MB) as Telegram documents.
@@ -176,7 +180,7 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
           catch (e) { log(`sendDocument ${f} failed: ${(e as Error).message.slice(0, 80)}`); }
         }
         // Remember the exchange for follow-ups.
-        const arr = convo.get(String(chatId)) ?? []; arr.push({ u: textIn, a: replyText.slice(0, 300) }); if (arr.length > 6) arr.shift(); convo.set(String(chatId), arr);
+        const arr = convo.get(String(chatId)) ?? []; arr.push({ u: textIn, a: replyText.slice(0, 300), t: tainted }); if (arr.length > 6) arr.shift(); convo.set(String(chatId), arr);
       } catch (e) {
         await tg(token, 'sendMessage', { chat_id: chatId, text: `error: ${(e as Error).message.slice(0, 200)}` }).catch(() => {});
       }

@@ -212,7 +212,9 @@ function setImageModel(provider: string, model: string): void {
 /** Per-session working dir + memory, so chat follow-ups build on earlier turns.
  *  topicStart = index into history where the CURRENT topic began; only turns from there
  *  forward are threaded as context, so a new task doesn't drag stale context with it. */
-interface Session { dir: string; history: { instruction: string; summary: string }[]; lastUsed: number; topicStart: number; }
+// `tainted`: the turn read external content (BL-17). Its reply is carried into later turns FENCED, via
+// runAgent's `carried`, instead of being pasted into the next instruction as if the person said it.
+interface Session { dir: string; history: { instruction: string; summary: string; tainted?: boolean }[]; lastUsed: number; topicStart: number; }
 const sessions = new Map<string, Session>();
 const SERVER_START = Date.now();
 let activeRuns = 0;          // in-flight agent runs — capped to protect the box
@@ -357,13 +359,15 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     // F5: topic-scoped memory is OPT-IN (MWA_TOPIC_NAMESPACE=1). Default OFF preserves cross-session continuity.
     if (process.env.MWA_TOPIC_NAMESPACE === '1') memory.setNamespace(`${sessionId}-t${s.topicStart}`);
     send('topic', { relation, hadContext });
-    const ctx = relation === 'continue'
-      ? s.history.slice(Math.max(s.topicStart, s.history.length - 3)).map((h, i) => `(${i + 1}) ${h.instruction} → ${h.summary}`).join('\n')
-      : '';
+    const carriedTurns = relation === 'continue' ? s.history.slice(Math.max(s.topicStart, s.history.length - 3)) : [];
+    const ctx = carriedTurns.map((h, i) => `(${i + 1}) ${h.instruction} → ${h.summary}`).join('\n');
+    // If any carried turn read external content, its replies may quote that content: send the whole
+    // context fenced through `carried` (with this run starting tainted), not inside the instruction.
+    const ctxTainted = carriedTurns.some((h) => h.tainted);
     const askNote = relation === 'ask' && topicTurns.length
       ? `\n\nNOTE: It's unclear whether this continues the recent conversation (about "${topicTurns[topicTurns.length - 1].instruction.slice(0, 60)}…") or is a new request. If that distinction affects your answer, ask the user ONE short yes/no question to confirm before proceeding; otherwise treat it as a new request.`
       : '';
-    const instruction = (ctx ? `Recent conversation so far:\n${ctx}\n\nNew request: ${message}` : message) + askNote;
+    const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${message}` : message) + askNote;
 
     // Per-person Profile (S1–S6): resolve who's talking, build their prompt context (identity guard +
     // primer + intake hint, with PII redacted on an identity mismatch). Off-switch MWA_PERSON_PROFILE=0.
@@ -376,7 +380,8 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     if (prepared.mismatch) send('identity', { level: 'mismatch' });
 
     const r = await runAgent({
-      instruction, dir: s.dir, memory, brain, worker, tools: registry,
+      instruction, userMessage: message, dir: s.dir, memory, brain, worker, tools: registry,
+      ...(ctx && ctxTainted ? { carried: `Recent conversation so far:\n${ctx}`, startTainted: true } : {}),
       workspace: cfg.awm.workspace, session: sessionId, interactive: true, // a human is watching → ask_user can ask them
       style: cfg.style, // guided (proactive/plain) vs direct (concise) — independent of access preset
       personContext, // S2: per-person adaptation block (empty for the shared/unknown profile)
@@ -385,12 +390,13 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
       budget: { maxSteps: 40, maxWallMs: 10 * 60_000, consolidateEvery: 10, maxTokens: Number(process.env.MWA_MAX_TOKENS ?? 400_000) },
       onEvent: (type, d) => send(type, d as Record<string, unknown>),
     });
-    s.history.push({ instruction: message, summary: r.summary });
+    s.history.push({ instruction: message, summary: r.summary, tainted: r.tainted === true });
     send('result', { reason: r.reason, summary: r.summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)) });
 
     // S3/S5 — LEARN durable facts about this person + recompress their dossier (suppressed for the
     // shared 'unknown' profile and on an identity mismatch). Runs after the reply is sent.
-    const learned = await learnFromTurn(brain, memory, prepared, message, r.summary);
+    // Not from a reply that read external content: person notes are primed into every turn with them.
+    const learned = r.tainted ? 0 : await learnFromTurn(brain, memory, prepared, message, r.summary);
     if (learned) send('learned', { about: prepared.personId, count: learned });
   } catch (e) {
     logger.error('chat', 'agent run failed', { session: sessionId, error: (e as Error).message.slice(0, 200) });

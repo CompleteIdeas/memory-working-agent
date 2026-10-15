@@ -112,6 +112,11 @@ export function memoryTools(memory: MwaMemory | null | undefined): RegisteredToo
       // scheduled run triages untrusted email AS its owner (scheduler passes personId), and whatever
       // it "learns" about them lands in their next interactive conversation. No person present, no
       // note. person-turn.ts already declines to learn when identity is in doubt; same intent.
+      // A tainted run may be relaying text someone else wrote about this person (BL-17 review).
+      if (ctx.tainted === true) {
+        return '(not recorded — this conversation has read outside content, so this may not have come from them. ' +
+          'Ask them directly if it matters.)';
+      }
       if (ctx.interactive !== true) {
         return '(not recorded — nobody is present to have told you this. Note it in your summary instead; ' +
           'what you learn about a person has to come from them, not from something you read unattended.)';

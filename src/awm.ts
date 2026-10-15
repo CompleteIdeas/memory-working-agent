@@ -92,6 +92,8 @@ export interface WriteOpts {
   /** F5: keep this write GLOBAL (cross-topic) — bypasses the instance's active namespace. Used by
    *  policies/skills/lessons/questions/scheduled-tasks so they're never trapped inside one topic. */
   global?: boolean;
+  /** Never merge this write into an existing memory with the same concept (reinforcement). */
+  noMerge?: boolean;
 }
 
 /** One recorded action the agent took (the "what it did" history + undo substrate). */
@@ -123,12 +125,12 @@ export interface Memory {
   /** Sleep consolidation (cluster/strengthen/decay); no-op when AWM is off. Returns cycle stats. */
   consolidate(): Promise<Record<string, number>>;
   /** Persist a scheduled task (due = epoch ms) in the AWM task store. */
-  addScheduledTask(instruction: string, dueMs: number, opts?: { recur?: string; notify?: string; dir?: string; origin?: string; resumeAttempt?: number; check?: string; person?: string }): Promise<string | null>;
+  addScheduledTask(instruction: string, dueMs: number, opts?: { recur?: string; notify?: string; dir?: string; origin?: string; resumeAttempt?: number; check?: string; person?: string; tainted?: boolean }): Promise<string | null>;
   /** Persist a reusable procedure ("skill") recalled on similar future tasks. */
-  saveSkill(name: string, steps: string): Promise<string | null>;
+  saveSkill(name: string, steps: string, opts?: LearnOpts): Promise<string | null>;
   /** Persist a verbal failure reflection ("X failed because Y; next time Z") recalled
    *  before similar future tasks — the Reflexion learn-from-failure counterpart to saveSkill. */
-  saveFriction(topic: string, lesson: string): Promise<string | null>;
+  saveFriction(topic: string, lesson: string, opts?: LearnOpts): Promise<string | null>;
   /** Persist a STANDING user preference/policy ("never send without review", "keep summaries
    *  to 5 bullets") that should be honored on EVERY future task — not just relevant ones. */
   savePolicy(rule: string): Promise<string | null>;
@@ -138,6 +140,11 @@ export interface Memory {
   saveQuestion(question: string): Promise<string | null>;
   close(): void;
 }
+
+/** How a run-end lesson or skill is stored. A run that read external content still teaches, but
+ *  its lesson is untrusted (provenance `ingested`, flagged when recalled, never auto-primed) and not
+ *  canonical; a run that read local files teaches at normal trust but not canonical. (BL-17) */
+export interface LearnOpts { canonical?: boolean; untrusted?: boolean }
 
 /** A pending scheduled task read back from the store. */
 export interface ScheduledTask {
@@ -151,6 +158,8 @@ export interface ScheduledTask {
    *  folder — it is passed as an extra allowed root, so an absolute path the model baked into the
    *  instruction at schedule time still resolves when the task fires in its own fresh folder. */
   origin?: string;
+  /** created by a run that had read external content — the fired run starts tainted (BL-17). */
+  tainted?: boolean;
   resumeAttempt?: number; // 1-based resume count (auto-resume of an unfinished long run); absent = not a resume
   check?: string; // cheap change-detection command: if its output signature is unchanged, the fire is skipped (no model call)
   lastSig?: string; // signature (sha1 hex) of the check output at the last actual fire
@@ -311,6 +320,46 @@ export class MwaMemory implements Memory {
         'proj=MWA',
         ...(this.sessionId ? [`session=${this.sessionId}`] : []),
       ];
+      // TRUST NEVER CROSSES A MERGE. AWM merges on concept equality into whichever same-concept memory
+      // is closest in CONTENT, and the merged memory keeps the OLD memory's trust — so a merge across
+      // trust classes either launders untrusted text into a trusted memory, or buries clean text in an
+      // untrusted one. Four isolated-review rounds (BL-17) broke every narrower guard: blocking every
+      // untrusted merge duplicated re-ingested facts; checking only the newest same-concept memory was
+      // walked around with a planted decoy; letting identical text short-circuit ignored noMerge.
+      // The rule: AWM may merge only when no same-concept memory of the OTHER trust class exists. When
+      // the classes are mixed, MWA picks the target itself, and only within the write's own tier: an
+      // identical write returns the existing memory, a correction supersedes the newest one.
+      let mayMerge = !opts.noMerge;
+      let correctionOf: string | null = null;
+      if (mayMerge) {
+        try {
+          const c80 = concept.slice(0, 80);
+          const find = async (tags?: string[]) => (await this.store.findActiveMatchByConcept(this.agentId, c80, tags)) ?? null;
+          let otherClass: unknown = null;
+          if (trust === 'untrusted') {
+            otherClass = (await find(['trust=high'])) ?? (await find(['trust=medium']));
+            if (!otherClass) { const newest = await find(); if (newest && this.trustOf(newest) !== 'untrusted') otherClass = newest; }
+          } else {
+            otherClass = await find(['trust=untrusted']);
+          }
+          const isCorrection = opts.eventType === 'surprise' || opts.eventType === 'friction';
+          if (otherClass) {
+            mayMerge = false;
+            const mine = await find([`trust=${trust}`]);
+            if (mine) {
+              if (mine.content === content) return mine.id;
+              if (isCorrection) correctionOf = mine.id;
+            }
+          } else if (trust === 'untrusted' && isCorrection) {
+            // AWM's own correction path supersedes by concept in ANY stage (staged, archived) — out of
+            // reach of an active-only check. So for untrusted text MWA always does the correction itself,
+            // on a target verified untrusted, and AWM never sees a correction event (below).
+            const mine = await find(['trust=untrusted']);
+            // MWA does the correction, so AWM must not merge it into the old fact as a plain observation.
+            if (mine && mine.content !== content) { correctionOf = mine.id; mayMerge = false; }
+          }
+        } catch { mayMerge = false; } // can't tell the classes apart → write it on its own
+      }
       const result = await performWrite(
         { store: this.store, connectionEngine: this.connections },
         {
@@ -320,14 +369,43 @@ export class MwaMemory implements Memory {
           tags: stamped,
           memoryClass: opts.canonical ? 'canonical' : 'working',
           memoryType: 'semantic',
-          eventType: opts.eventType ?? 'observation',
+          enableReinforcement: mayMerge,
+          // An untrusted write never reaches AWM as a correction: its supersede path has no stage check, so
+          // it could retire a staged or archived TRUSTED memory (fifth BL-17 review). MWA corrects instead.
+          eventType: trust === 'untrusted' && (opts.eventType === 'surprise' || opts.eventType === 'friction') ? 'observation' : (opts.eventType ?? 'observation'),
           surprise: opts.surprise ?? 0.3,
           decisionMade: opts.eventType === 'decision',
           causalDepth: 0.4,
           resolutionEffort: 0.3,
         },
       );
-      return result?.engram?.id ?? null;
+      const newId: string | null = result?.engram?.id ?? null;
+      // ENFORCE ON WHAT HAPPENED, not on a prediction of it. AWM can match memories no pre-check sees —
+      // archived (revived on match), staged, or the replacement of a superseded one, which may carry a
+      // different concept. If it reinforced an existing memory with untrusted text, that memory now
+      // contains untrusted text, so it IS untrusted: lower its trust. Worst case an attacker gets a fact
+      // flagged; never text smuggled in under a trusted label (fifth BL-17 review).
+      if (result?.action === 'reinforce' && trust === 'untrusted' && newId) {
+        let merged: any = null;
+        try { merged = await this.store.getEngram(newId); } catch (err) { console.error('[awm] SECURITY: could not re-read a merged memory:', newId, (err as Error).message); }
+        if (merged && this.trustOf(merged) !== 'untrusted') {
+          const mt: string[] = this.parseTags(merged.tags);
+          const lowered = [...mt.filter((t) => !t.startsWith('trust=') && !t.startsWith('src=')), 'trust=untrusted', 'src=ingested'];
+          // Retry once, then fail LOUDLY: a trusted label left on merged untrusted text is the exact
+          // failure this exists to prevent.
+          try { await this.store.updateTags(newId, lowered); } catch {
+            try { await this.store.updateTags(newId, lowered); } catch (err) { console.error('[awm] SECURITY: could not mark a merged memory untrusted:', newId, (err as Error).message); }
+          }
+          // Visible, not silent: the person can see a fact of theirs was flagged, and why.
+          try {
+            await this.logAction({ verb: 'flagged a memory as untrusted', summary: `"${String(merged.concept ?? concept).slice(0, 60)}" now also holds text from an outside source, so it is shown as untrusted`, effect: 'local', tool: 'memory' });
+          } catch { /* the flag itself stands */ }
+        }
+      }
+      if (correctionOf && newId && newId !== correctionOf) {
+        try { await this.store.supersedeEngram(correctionOf, newId); } catch { /* the new fact still stands */ }
+      }
+      return newId;
     } catch (err) {
       console.error('[awm] write error:', (err as Error).message);
       return null;
@@ -366,8 +444,11 @@ export class MwaMemory implements Memory {
    * surfacing the old value. Returns the new engram id.
    */
   async supersede(oldId: string, concept: string, content: string, tags: string[] = [], opts: WriteOpts = {}): Promise<string | null> {
-    const newId = await this.write(concept, content, tags, { ...opts, canonical: true });
-    if (newId && oldId) {
+    // The caller's canonical/provenance win: a tainted run must not be able to replace a trusted fact
+    // with a canonical one (BL-17 review). Canonical stays the default for ordinary corrections.
+    const newId = await this.write(concept, content, tags, { ...opts, canonical: opts.canonical ?? true });
+    // Never supersede a memory by itself (identical text returns the same id) — it would drop out of recall.
+    if (newId && oldId && newId !== oldId) {
       try {
         await this.store.supersedeEngram(oldId, newId);
       } catch (err) {
@@ -431,7 +512,7 @@ export class MwaMemory implements Memory {
     return [];
   }
 
-  async addScheduledTask(instruction: string, dueMs: number, opts: { recur?: string; notify?: string; dir?: string; origin?: string; resumeAttempt?: number; check?: string; person?: string } = {}): Promise<string | null> {
+  async addScheduledTask(instruction: string, dueMs: number, opts: { recur?: string; notify?: string; dir?: string; origin?: string; resumeAttempt?: number; check?: string; person?: string; tainted?: boolean } = {}): Promise<string | null> {
     const tags = ['topic=scheduled-task', 'status=pending', `due=${Math.round(dueMs)}`];
     // WHOSE task this is. One agent id serves every person on a shared deployment (serve, Telegram),
     // so without this tag a "what have I got scheduled?" tool would read back other people's
@@ -444,11 +525,33 @@ export class MwaMemory implements Memory {
     // origin = where the task was CREATED. `dir` means "run in this folder" (resume); origin only
     // widens what the fired run may touch, so an absolute path baked into the instruction resolves.
     if (opts.origin) tags.push(`origin=${opts.origin}`);
+    // Scheduled from a run that read external content: the fired run starts tainted, so what it
+    // learns or schedules in turn stays marked (BL-17). Without this, one tainted turn could launder
+    // itself through an unattended run that starts clean.
+    if (opts.tainted) tags.push('tainted=1');
     if (opts.resumeAttempt) tags.push(`resume=${opts.resumeAttempt}`);
     // Base64 the check command so an arbitrary shell string (spaces, commas, pipes, '=') survives
     // both tag serializations (JSON array or comma-split). No commas in base64 → comma-split is safe.
     if (opts.check) tags.push(`check64=${Buffer.from(opts.check, 'utf8').toString('base64')}`);
-    return this.write(`scheduled: ${instruction.slice(0, 56)}`, instruction, tags, { canonical: true, eventType: 'decision', global: true });
+    // noMerge: two tasks whose first 56 characters match are still two tasks. Merging appended one
+    // task's instruction to the other and dropped the tainted tag (BL-17 review).
+    // An IDENTICAL recurring task (same instruction, recurrence, owner and taint) is the same task:
+    // return it instead of scheduling it twice. Anything else is written separately (noMerge) — merging
+    // by concept appended one task's instruction to another and dropped its taint (BL-17 review).
+    if (opts.recur) {
+      try {
+        const same = await this.store.findActiveMatchByConcept(this.agentId, `scheduled: ${instruction.slice(0, 56)}`.slice(0, 80), ['topic=scheduled-task', 'status=pending']);
+        const st: string[] = same ? this.parseTags(same.tags) : [];
+        if (same && same.content === instruction && st.includes(`recur=${opts.recur}`)
+          && st.includes(`person=${normalizePersonId(opts.person)}`) && st.includes('tainted=1') === Boolean(opts.tainted)) return same.id;
+      } catch { /* fall through to a separate write */ }
+    }
+    return this.write(`scheduled: ${instruction.slice(0, 56)}`, instruction, tags, {
+      // Canonical is the SALIENCE floor, not trust: a scheduled task must never be staged or discarded.
+      // Trust comes from provenance — a tainted task is stored untrusted (flagged if recalled).
+      canonical: true, eventType: 'decision', global: true, noMerge: true,
+      ...(opts.tainted ? { provenance: 'ingested' as const } : {}),
+    });
   }
 
   /** All pending scheduled tasks (parsed). */
@@ -462,7 +565,7 @@ export class MwaMemory implements Memory {
         if (!tags.includes('topic=scheduled-task') || !tags.includes('status=pending')) continue;
         const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
         const check64 = get('check64=');
-        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, origin: get('origin=') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined, person: get('person=') || undefined });
+        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, origin: get('origin=') || undefined, tainted: tags.includes('tainted=1') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined, person: get('person=') || undefined });
       }
       return out.sort((a, b) => a.due - b.due);
     } catch (err) { console.error('[awm] pendingScheduled error:', (err as Error).message); return []; }
@@ -540,10 +643,14 @@ export class MwaMemory implements Memory {
   /** SPINE — the trust tier stamped on an engram, fail-closed to 'untrusted' on missing/invalid.
    *  F2's injection gate reads this to decide whether a fact may drive a privileged action. */
   trustOf(engram: any): TrustTier {
+    // Reads EVERY trust= tag, lowest wins. AWM consolidation's duplicate prune gives the survivor the
+    // UNION of both memories' tags, so one memory can carry trust=medium AND trust=untrusted; reading
+    // only the first tag called that trusted while a tag-filtered lookup called it untrusted (BL-17,
+    // sixth review). Any untrusted, missing or unknown value makes the memory untrusted.
     try {
-      const tag = this.parseTags(engram?.tags).find((t) => String(t).toLowerCase().startsWith('trust='));
-      const v = tag ? tag.slice(6).toLowerCase() : '';
-      return v === 'high' || v === 'medium' || v === 'untrusted' ? (v as TrustTier) : 'untrusted';
+      const vals = this.parseTags(engram?.tags).filter((t) => String(t).toLowerCase().startsWith('trust=')).map((t) => String(t).slice(6).toLowerCase());
+      if (!vals.length || vals.some((v) => v !== 'high' && v !== 'medium')) return 'untrusted';
+      return vals.includes('medium') ? 'medium' : 'high';
     } catch { return 'untrusted'; }
   }
 
@@ -587,17 +694,17 @@ export class MwaMemory implements Memory {
 
   /** Persist a reusable procedure ("skill") as a canonical memory. Tagged topic=skill so
    *  auto-prime recalls it on similar future tasks — the agent learns HOW, not just WHAT. */
-  async saveSkill(name: string, steps: string): Promise<string | null> {
+  async saveSkill(name: string, steps: string, opts: LearnOpts = {}): Promise<string | null> {
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
-    return this.write(`skill: ${name}`.slice(0, 80), steps, ['topic=skill', `skill=${slug}`, 'intent=procedural', 'confidence_level=observed'], { canonical: true, eventType: 'observation', global: true });
+    return this.write(`skill: ${name}`.slice(0, 80), steps, ['topic=skill', `skill=${slug}`, 'intent=procedural', 'confidence_level=observed'], { canonical: opts.canonical ?? true, eventType: 'observation', global: true, ...(opts.untrusted ? { provenance: 'ingested' as const } : {}) });
   }
 
   /** REFLEXION: record a verbal failure reflection as a canonical memory tagged topic=friction
    *  + eventType=friction, so auto-prime recalls it before similar future tasks. The failure
    *  counterpart of saveSkill — the agent learns from what went wrong, not just what worked. */
-  async saveFriction(topic: string, lesson: string): Promise<string | null> {
+  async saveFriction(topic: string, lesson: string, opts: LearnOpts = {}): Promise<string | null> {
     const slug = topic.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
-    return this.write(`lesson: ${topic}`.slice(0, 80), lesson, ['topic=friction', `about=${slug}`, 'intent=finding', 'confidence_level=observed'], { canonical: true, eventType: 'friction', global: true });
+    return this.write(`lesson: ${topic}`.slice(0, 80), lesson, ['topic=friction', `about=${slug}`, 'intent=finding', 'confidence_level=observed'], { canonical: opts.canonical ?? true, eventType: 'friction', global: true, ...(opts.untrusted ? { provenance: 'ingested' as const } : {}) });
   }
 
   /** Failure lessons the agent has recorded, for the UI "Lessons" view. */
