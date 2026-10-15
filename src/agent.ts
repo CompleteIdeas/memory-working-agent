@@ -48,13 +48,9 @@ import type { InteractionStyle } from './config.js';
  * half is requireApproval): a planted "forward everything to X" in an old email arrives as inert
  * reference data, never a command. Pure + exported so it can be unit-tested in isolation.
  */
-/** Whether a recalled memory may be AUTO-primed into the prompt. An untrusted skill or lesson is
- *  procedure-shaped text from a run that read external content: it stays in memory (inspectable,
- *  returned flagged by an explicit recall) but never volunteers itself as "how to do this". (BL-17,
- *  from the coworker challenge: untrusted procedures are evidence, not instructions.) */
-export function primeable(m: { concept: string; trust?: TrustTier }): boolean {
-  return !(m.trust === 'untrusted' && /^(skill|lesson):/i.test(m.concept));
-}
+// `primeable` lives in prime.ts so the coding brain applies it too (BL-16); re-exported for callers.
+export { primeable } from './prime.js';
+import { primeable } from './prime.js';
 
 export function buildKnowledgeBlock(recalled: { concept: string; content: string; trust?: TrustTier }[]): string {
   if (!recalled.length) return 'No prior memory yet for this request.';
@@ -465,6 +461,12 @@ export async function runAgent(opts: {
   // Keep up to four, with the argument that was refused: a measured failure logged only its first
   // refusal (a harmless not-found), and the two that actually explained it were lost.
   let refusals = 0; const refusalLog: string[] = [];
+  // The APPROVAL GATE refused a write in this run — a flag, not a search of refusalLog, which keeps only
+  // four entries: a fifth refusal from the gate must still make the run `blocked` (BL-16).
+  let approvalRefused = false;
+  // A successful action that CHANGED something (not an outbound read: an http GET/HEAD, read_document).
+  // An unknown tool counts as a write — the override then defers to the model, as before (BL-16 review).
+  let wroteSomething = false;
   let budgetRefusal: string | undefined; // BL-05: a follow-up job the fan-out budget refused
   // What the model said it achieved, and how many calls the REGISTRY itself failed (BL-02).
   let declaredOutcome: RunOutcome | undefined;
@@ -1042,6 +1044,7 @@ export async function runAgent(opts: {
       const refused = called.failed || (refusedShape && outputSource(action.action) !== 'external');
       // Keep refusals as EVIDENCE, not just as a nudge signal: a run that produced nothing needs to
       // say why in the run log, or the next identical failure is just as opaque as the last.
+      if (refused && result.includes('confirming a write needs a human present')) approvalRefused = true;
       if (refused) { refusals++; if (refusalLog.length < 4) refusalLog.push(`${action.action}(${String((args as Record<string, unknown>).path ?? (args as Record<string, unknown>).dir ?? '').slice(0, 80)}): ${result.slice(0, 140).replace(/\n/g, ' ')}`); }
       // F2: once this run has pulled in untrusted external content, taint later `remember` writes.
       // Taint on any external call, refused or not — fail-closed.
@@ -1049,6 +1052,10 @@ export async function runAgent(opts: {
       else if (!refused && outputSource(action.action) === 'local') sawLocalRead = true;
       // F3: record a successful SIDE-EFFECTING action to the action log (Glass Box "what I did",
       // Undo, and the trajectory tripwire). Reads/control calls are skipped — they aren't actions.
+      if (!refused && isSensitive(action.action)) {
+        const method = String((args as Record<string, unknown>).method ?? 'GET').toUpperCase();
+        if (!((action.action === 'http_request' && (method === 'GET' || method === 'HEAD')) || action.action === 'read_document')) wroteSomething = true;
+      }
       if (memory.enabled && !refused && isSensitive(action.action)) {
         const rec = { verb: action.action.replace(/_/g, ' '), tool: action.action, effect: effectOf(action.action) };
         runActions.push(rec);
@@ -1431,6 +1438,12 @@ export async function runAgent(opts: {
   let outcome: RunOutcome;
   if (reason === 'paused') outcome = 'blocked';
   else if (reason !== 'done') outcome = 'could-not';
+  // FIRST among the evidence rules: the approval gate refused and nothing was written: the run is waiting on a person, whatever it
+  // claims — "changed" here is false, `complete` would stop a job whose write never happened, and
+  // `deliver=never` would otherwise silence it (BL-16 review). Only `could-not` (delivered anyway) stands.
+  // Defensive in shipped wiring: since BL-03 unattended writes are STAGED (blocked via pendingStagedBy),
+  // and this phrase comes only from confirm_action, which an embedding app's human channel registers.
+  else if (approvalRefused && !wroteSomething && declaredOutcome !== 'could-not') outcome = 'blocked';
   // Failures AND first-party refusals count (the unattended-write gate, the path gate): a job refused on
   // every fire must not go quiet. Nothing exempts `complete`: a broken tracker API must not be able to
   // stop a job. "Achieved" includes successful reads, so one transient failure then a good answer is fine.
@@ -1442,7 +1455,7 @@ export async function runAgent(opts: {
   // `blocked` only when the APPROVAL GATE itself refused (an exact phrase from approval.ts — loose
   // wording matched the path gate's "nobody is present", and file names); otherwise could-not.
   else if (refusals > 0 && runActions.length === 0 && (declaredOutcome === undefined || declaredOutcome === 'no-change'))
-    outcome = refusalLog.some((r) => r.includes('confirming a write needs a human present')) ? 'blocked' : 'could-not';
+    outcome = 'could-not';
   else if (declaredOutcome) outcome = declaredOutcome;
   else if (runActions.length > 0) outcome = 'changed';
   else if (refusals > 0 && inabilityText) outcome = 'could-not';

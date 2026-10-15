@@ -18,12 +18,15 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { embed, cosineSimilarity } from 'agent-working-memory/dist/core/embeddings.js';
-import type { Memory, RecalledMemory, WriteOpts, TrustTier } from '../awm.js';
+import type { Memory, RecalledMemory, WriteOpts, TrustTier, LearnOpts, ScheduleOpts } from '../awm.js';
 import { MwaMemory, NullMemory } from '../awm.js';
 
 export type ArmName = 'awm' | 'off' | 'notes' | 'longctx' | 'rag';
 
 interface Entry { id: string; concept: string; content: string; tags: string[] }
+
+/** The trust a flat-file entry was written with — returned on recall so `primeable` can see it. */
+const trustOfEntry = (e: { tags: string[] }): { trust?: TrustTier } => (e.tags.includes('trust=untrusted') ? { trust: 'untrusted' } : {});
 
 /** Shared file-backed store for the notes + long-context arms (differ only in recall()). */
 abstract class FileMemory implements Memory {
@@ -40,9 +43,12 @@ abstract class FileMemory implements Memory {
 
   abstract recall(query: string, opts?: { limit?: number; full?: boolean; workspace?: string }): Promise<RecalledMemory[]>;
 
-  async write(concept: string, content: string, tags: string[] = [], _opts: WriteOpts = {}): Promise<string | null> {
+  async write(concept: string, content: string, tags: string[] = [], opts: WriteOpts = {}): Promise<string | null> {
     const id = `e${++this.seq}`;
-    this.entries.push({ id, concept: concept.slice(0, 80), content, tags });
+    // Keep the trust the caller gave (BL-16): an arm that dropped it primed untrusted lessons, which the
+    // AWM arm never does, so the comparison measured a security difference, not memory quality.
+    const untrusted = opts.provenance === 'ingested' || tags.includes('trust=untrusted'); // 'ingested' = from outside, as in awm.ts
+    this.entries.push({ id, concept: concept.slice(0, 80), content, tags: untrusted && !tags.includes('trust=untrusted') ? [...tags, 'trust=untrusted'] : tags });
     this.save();
     return id;
   }
@@ -60,11 +66,11 @@ abstract class FileMemory implements Memory {
   async feedback(): Promise<void> { /* no learning signal in a flat file */ }
   async consolidate(): Promise<Record<string, number>> { return {}; }
   async addScheduledTask(): Promise<string | null> { return null; }
-  async saveSkill(name: string, steps: string): Promise<string | null> {
-    return this.write(`skill: ${name}`.slice(0, 80), steps, ['topic=skill']);
+  async saveSkill(name: string, steps: string, opts: LearnOpts = {}): Promise<string | null> {
+    return this.write(`skill: ${name}`.slice(0, 80), steps, ['topic=skill', ...(opts.untrusted ? ['trust=untrusted'] : [])]);
   }
-  async saveFriction(topic: string, lesson: string): Promise<string | null> {
-    return this.write(`lesson: ${topic}`.slice(0, 80), lesson, ['topic=friction']);
+  async saveFriction(topic: string, lesson: string, opts: LearnOpts = {}): Promise<string | null> {
+    return this.write(`lesson: ${topic}`.slice(0, 80), lesson, ['topic=friction', ...(opts.untrusted ? ['trust=untrusted'] : [])]);
   }
   async savePolicy(rule: string): Promise<string | null> {
     return this.write(`policy: ${rule}`.slice(0, 80), rule.trim(), ['topic=policy']);
@@ -97,7 +103,7 @@ class NotesMemory extends FileMemory {
     // tie-break OLDEST-first (you scroll your notes top-down and hit the stale line first) —
     // so a later correction does NOT automatically outrank the original it superseded.
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, opts.limit ?? 5).map((x) => ({ id: x.e.id, concept: x.e.concept, content: x.e.content, score: x.score }));
+    return scored.slice(0, opts.limit ?? 5).map((x) => ({ id: x.e.id, concept: x.e.concept, content: x.e.content, score: x.score, ...trustOfEntry(x.e) }));
   }
 }
 
@@ -109,7 +115,7 @@ class LongCtxMemory extends FileMemory {
     for (const e of [...this.entries].reverse()) {
       bytes += e.concept.length + e.content.length;
       if (bytes > this.byteBudget) break; // capped so it can't win by unbounded context
-      out.push({ id: e.id, concept: e.concept, content: e.content, score: 1 });
+      out.push({ id: e.id, concept: e.concept, content: e.content, score: 1, ...trustOfEntry(e) });
       if (out.length >= (opts.limit ?? 1000)) break;
     }
     return out;
@@ -138,12 +144,13 @@ class VectorRagMemory implements Memory {
     let qv: number[]; try { qv = await embed(query); } catch { return []; }
     const scored = this.entries.map((e) => ({ e, score: cosineSimilarity(qv, e.vec) }));
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, opts.limit ?? this.topK).map((x) => ({ id: x.e.id, concept: x.e.concept, content: x.e.content, score: x.score }));
+    return scored.slice(0, opts.limit ?? this.topK).map((x) => ({ id: x.e.id, concept: x.e.concept, content: x.e.content, score: x.score, ...trustOfEntry(x.e) }));
   }
-  async write(concept: string, content: string, tags: string[] = [], _opts: WriteOpts = {}): Promise<string | null> {
+  async write(concept: string, content: string, tags: string[] = [], opts: WriteOpts = {}): Promise<string | null> {
     const id = `e${++this.seq}`;
     let vec: number[] = []; try { vec = await embed(`${concept}. ${content}`); } catch { /* */ }
-    this.entries.push({ id, concept: concept.slice(0, 80), content, tags, vec });
+    const untrusted = opts.provenance === 'ingested' || tags.includes('trust=untrusted'); // as the file arms (BL-16)
+    this.entries.push({ id, concept: concept.slice(0, 80), content, tags: untrusted && !tags.includes('trust=untrusted') ? [...tags, 'trust=untrusted'] : tags, vec });
     this.save();
     return id;
   }
@@ -158,8 +165,8 @@ class VectorRagMemory implements Memory {
   async feedback(): Promise<void> { /* */ }
   async consolidate(): Promise<Record<string, number>> { return {}; }
   async addScheduledTask(): Promise<string | null> { return null; }
-  async saveSkill(n: string, s: string): Promise<string | null> { return this.write(`skill: ${n}`.slice(0, 80), s, ['topic=skill']); }
-  async saveFriction(t: string, l: string): Promise<string | null> { return this.write(`lesson: ${t}`.slice(0, 80), l, ['topic=friction']); }
+  async saveSkill(n: string, s: string, opts: LearnOpts = {}): Promise<string | null> { return this.write(`skill: ${n}`.slice(0, 80), s, ['topic=skill', ...(opts.untrusted ? ['trust=untrusted'] : [])]); }
+  async saveFriction(t: string, l: string, opts: LearnOpts = {}): Promise<string | null> { return this.write(`lesson: ${t}`.slice(0, 80), l, ['topic=friction', ...(opts.untrusted ? ['trust=untrusted'] : [])]); }
   async savePolicy(r: string): Promise<string | null> { return this.write(`policy: ${r}`.slice(0, 80), r.trim(), ['topic=policy']); }
   async listPolicies(): Promise<string[]> {
     const seen = new Set<string>(); const out: string[] = [];
@@ -196,9 +203,11 @@ export class MeteredMemory implements Memory {
   setNamespace(ns?: string): void { this.inner.setNamespace(ns); }
   async feedback(id: string, useful: boolean): Promise<void> { return this.inner.feedback(id, useful); }
   async consolidate(): Promise<Record<string, number>> { return this.inner.consolidate(); }
-  async addScheduledTask(i: string, d: number, o?: { recur?: string; notify?: string; dir?: string; resumeAttempt?: number; check?: string }): Promise<string | null> { return this.inner.addScheduledTask(i, d, o); }
-  async saveSkill(n: string, s: string): Promise<string | null> { return this.inner.saveSkill(n, s); }
-  async saveFriction(t: string, l: string): Promise<string | null> { return this.inner.saveFriction(t, l); }
+  // Pass EVERYTHING through (BL-16): this wrapper used to drop LearnOpts — so even the AWM arm stored a
+  // tainted run's lessons as trusted — and typed away the job contract, taint, owner and origin.
+  async addScheduledTask(i: string, d: number, o?: ScheduleOpts): Promise<string | null> { return this.inner.addScheduledTask(i, d, o); }
+  async saveSkill(n: string, s: string, o?: LearnOpts): Promise<string | null> { return this.inner.saveSkill(n, s, o); }
+  async saveFriction(t: string, l: string, o?: LearnOpts): Promise<string | null> { return this.inner.saveFriction(t, l, o); }
   async savePolicy(r: string): Promise<string | null> { return this.inner.savePolicy(r); }
   async listPolicies(): Promise<string[]> { return this.inner.listPolicies(); }
   async saveQuestion(q: string): Promise<string | null> { return this.inner.saveQuestion(q); }

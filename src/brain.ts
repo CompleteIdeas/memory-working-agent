@@ -23,6 +23,7 @@ import { RoutedProvider, classifyIntent } from './model-router.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { runWorker } from './worker.js';
 import { parseJsonLoose, runCommand } from './util.js';
+import { primeable } from './prime.js';
 
 export interface BrainGoal {
   id: string;
@@ -139,7 +140,7 @@ export async function runBrain(opts: {
 
   // Prime: recall prior decisions/learnings, scoped + FULL content (precise values).
   const recalled: RecalledMemory[] = memory.enabled
-    ? await memory.recall(goal.goal, { limit: 5, workspace: opts.workspace, full: true })
+    ? (await memory.recall(goal.goal, { limit: 5, workspace: opts.workspace, full: true })).filter(primeable) // BL-16: as the agent does
     : [];
   emit('recall', { count: recalled.length, awm: memory.enabled });
 
@@ -210,7 +211,7 @@ export async function runBrain(opts: {
     if (action.action === 'recall' && action.query && memory.enabled) {
       reRecalls++;
       const more = await memory.recall(action.query, { limit: 5, workspace: opts.workspace, full: true });
-      const fresh = more.filter((m) => !recalled.some((r) => r.id === m.id));
+      const fresh = more.filter((m) => primeable(m) && !recalled.some((r) => r.id === m.id));
       recalled.push(...fresh);
       history.push(`recall("${action.query.slice(0, 60)}") -> ${fresh.length} new mem", total ${recalled.length}`);
       emit('recall', { count: recalled.length, awm: true, requery: action.query.slice(0, 80) });

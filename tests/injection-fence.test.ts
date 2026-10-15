@@ -33,9 +33,12 @@ describe('where tool output came from (fail-closed)', () => {
   it('treats file contents as local, and confirmations as MWA’s own', () => {
     expect(outputSource('read_file')).toBe('local');
     expect(outputSource('onboard_scan')).toBe('local');
-    for (const t of ['write_file', 'confirm_action', 'draft_email', 'propose_event', 'generate_image']) {
+    for (const t of ['write_file', 'draft_email', 'propose_event', 'generate_image']) {
       expect(outputSource(t)).toBe('own');
     }
+    // confirm_action returns the WRAPPED tool's raw result — someone else's text for a gated fetch —
+    // so it is not MWA's own words (BL-16): fail-closed to external.
+    expect(outputSource('confirm_action')).toBe('external');
   });
 
   it('taints memory after external reads (now including MCP), not after local ones', () => {

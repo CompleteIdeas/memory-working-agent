@@ -11,9 +11,9 @@ import { resolve, join, dirname, basename, sep } from 'node:path';
 import { runCommand, runCommandAsync } from '../util.js';
 import { resolveAllowed, runCommandAllowed, allowedRoots, accessPolicy } from './access.js';
 import { loadConfig } from '../config.js';
-import type { RegisteredTool, ToolContext } from './registry.js';
+import { ToolRefusal, type RegisteredTool, type ToolContext } from './registry.js';
 import { classifyCommand, scrubbedEnv, writeRefusal, realPathOf } from './shell-gate.js';
-import { guardedFetch } from './net-guard.js';
+import { guardedFetch, urlRefusal } from './net-guard.js';
 import { stageAction, registerExecutor, pendingStagedBy } from './approval.js';
 
 /** A staged command, approved by a person, runs here — in whichever process confirms it (BL-18). */
@@ -235,12 +235,19 @@ const httpRequestTool: RegisteredTool = {
   },
   handler: async (args) => {
     const url = String(args.url ?? '');
-    if (!/^https?:\/\//.test(url)) return '(refused: url must be http(s))';
+    if (!/^https?:\/\//.test(url)) throw new ToolRefusal('(refused: url must be http(s))');
     // Loopback and private addresses are refused (net-guard): MWA's own approvals endpoint lives there.
     const method = String(args.method ?? 'GET').toUpperCase();
     // Hard timeout so a hung endpoint can't stall the agent run indefinitely.
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), Number(process.env.MWA_HTTP_TIMEOUT_MS ?? 15_000));
+    // Only a refusal made BEFORE anything is sent is MWA refusing (BL-16): it is thrown, so the registry
+    // flags it — for this external-classed tool, text alone can't say "refused". Once a request has gone
+    // out, the call is an outbound action whatever follows — a redirect the guard then refuses, a
+    // timeout — and must stay counted against the run's budget and in the action log (BL-16 review:
+    // treating those as refusals let an unattended run send unlimited POSTs unlogged).
+    const firstHop = await urlRefusal(url);
+    if (firstHop) { clearTimeout(timer); throw new ToolRefusal(`(refused: ${firstHop})`); }
     try {
       const res = await guardedFetch(url, {
         method,
@@ -266,11 +273,16 @@ const readDocumentTool: RegisteredTool = {
   },
   handler: async (args, ctx) => {
     const src = String(args.source ?? '').trim();
-    if (!src) return '(no source given)';
+    if (!src) throw new ToolRefusal('(refused: no source given)');
     const max = Math.min(Number(args.max_chars ?? 8000), 40000);
     try {
       let buf: Buffer;
       if (/^https?:\/\//i.test(src)) {
+        // MWA refusing before anything is sent is flagged (BL-16); the site's own answer — a 404, an error,
+        // a redirect the guard refuses after the first request — is a RESULT, as before: a "tell me when it's
+        // posted" job must be able to see "not there yet" without reporting a failure every run.
+        const firstHop = await urlRefusal(src);
+        if (firstHop) throw new ToolRefusal(`(refused: ${firstHop})`);
         const res = await guardedFetch(src, { headers: { 'user-agent': 'Mozilla/5.0 (MWA)' } });
         if (typeof res === 'string') return res;
         if (!res.ok) return `(couldn't fetch ${src}: ${res.status})`;
@@ -278,7 +290,7 @@ const readDocumentTool: RegisteredTool = {
       } else {
         // Local file: confine to the allowed folders (workspace + granted) — not arbitrary paths.
         const full = allowed(ctx, src);
-        if (!full) return outsideRefusal(ctx, src, 'file');
+        if (!full) throw new ToolRefusal(outsideRefusal(ctx, src, 'file'));
         buf = readFileSync(full);
       }
       const lower = src.toLowerCase();
@@ -302,6 +314,7 @@ const readDocumentTool: RegisteredTool = {
       }
       return text.slice(0, max);
     } catch (e) {
+      if (e instanceof ToolRefusal) throw e;
       return `(could not read document: ${(e as Error).message.slice(0, 140)})`;
     }
   },

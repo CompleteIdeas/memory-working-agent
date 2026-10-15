@@ -100,7 +100,7 @@ export function isSensitive(name: string): boolean { return SENSITIVE.has(classi
 // echo no third-party text — a review found these were wrongly tainting runs as external).
 const OWN_OUTPUT_TOOLS = new Set([
   'write_file', 'knowledge_write', 'schedule_cancel', 'policy_save', 'policy_forget', 'routine_propose',
-  'memory_learn_person', 'memory_feedback', 'goal_add', 'goal_update', 'goal_list', 'quiet_hours', 'schedule_detector', 'confirm_action', 'cancel_action', 'list_pending',
+  'memory_learn_person', 'memory_feedback', 'goal_add', 'goal_update', 'goal_list', 'quiet_hours', 'schedule_detector', 'cancel_action', 'list_pending',
   'onboard_questions', 'draft_email', 'draft_outlook', 'propose_event', 'propose_outlook_event',
   'generate_image', 'install_connector', 'uninstall_connector', 'remove_mcp_server',
 ]);

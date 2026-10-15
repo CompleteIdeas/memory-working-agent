@@ -39,7 +39,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import Database from 'better-sqlite3';
-import type { RegisteredTool, ToolContext } from './registry.js';
+import { ToolRefusal, type RegisteredTool, type ToolContext } from './registry.js';
 import { isStepUpSatisfied } from '../step-up.js';
 
 export type ApprovalKind = 'tool' | 'captured-policy';
@@ -462,7 +462,16 @@ export const humanConfirmTool: RegisteredTool = {
       required: [],
     },
   },
-  handler: async (args, ctx) => confirmPending(args.confirmation_id ? String(args.confirmation_id) : undefined, ctx),
+  // Its result is the WRAPPED tool's raw output, so it is classed external (BL-16) and only the
+  // registry's flag can say it refused: the gate's own refusals are thrown, their words intact.
+  handler: async (args, ctx) => {
+    const out = await confirmPending(args.confirmation_id ? String(args.confirmation_id) : undefined, ctx);
+    // A wrapped tool's result always comes back as [CONFIRMED …] or [APPROVED …]; anything else is the
+    // gate's own refusal — so the prefix, not a guess at refusal wording, decides (a wrapped external
+    // tool's text can't fake one).
+    if (!/^\[(CONFIRMED|APPROVED) /.test(out)) throw new ToolRefusal(out);
+    return out;
+  },
 };
 
 /** The model sees and cancels only what its own conversation staged (BL-03 review). */

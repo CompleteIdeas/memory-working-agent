@@ -39,6 +39,16 @@ export interface RegisteredTool {
   handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<string>;
 }
 
+/**
+ * A first-party handler's own refusal or failure (BL-16). Thrown, the registry flags the call `failed`
+ * and passes the text through unchanged. For a tool classed EXTERNAL — one whose output is someone
+ * else's text (`http_request`, `read_document`) — only that flag counts as a refusal, so without it
+ * MWA's own "(refused: …)" from such a tool read as a successful action and the Glass Box over-reported.
+ */
+export class ToolRefusal extends Error {
+  constructor(readonly text: string) { super(text); }
+}
+
 export class ToolRegistry {
   private tools = new Map<string, RegisteredTool>();
 
@@ -76,6 +86,7 @@ export class ToolRegistry {
       const out = await t.handler(args ?? {}, ctx);
       return { text: typeof out === 'string' ? out : JSON.stringify(out), failed: false };
     } catch (e) {
+      if (e instanceof ToolRefusal) return { text: e.text, failed: true }; // MWA's own refusal, its words intact
       return { text: `(tool ${name} failed: ${(e as Error).message.slice(0, 200)})`, failed: true };
     }
   }
