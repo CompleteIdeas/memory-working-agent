@@ -5,11 +5,11 @@
 Built by a self-referential build loop: one item at a time, each through typecheck, the full suite on a
 clean checkout at the pinned AWM, `npm audit`, an isolated reviewer who attacked the diff, and for loop
 and scheduler changes a rebuilt Docker image with both end-to-end harnesses. The queue and every
-decision are in `docs/build-queue.md`; the merge summary is `docs/merge-summary-2026-10-15.md`. The
-AWM pin is unchanged (`8070751`, AWM 0.13.6).
+decision are in `docs/build-queue.md`; the merge summaries are `docs/merge-summary-2026-10-15.md` and
+`docs/merge-summary-2026-10-15b.md`. The AWM pin is unchanged (`8070751`, AWM 0.13.6).
 
 Measured on the final image: planted instructions in tool output were followed in 0 of 8 runs (4 of 9
-before BL-01), scheduled tasks delivered 6 of 6, and the suite passes 392 of 392.
+before BL-01), scheduled tasks delivered 6 of 6, and the suite passes 495 of 495.
 
 ### Breaking
 
@@ -62,6 +62,42 @@ before BL-01), scheduled tasks delivered 6 of 6, and the suite passes 392 of 392
 - **Dependency advisories (BL-15).** `npm audit --omit=dev` went from 29 (2 critical, 16 high) to 8
   (0 critical, 2 high). The two highs are `sharp` under AWM's `@huggingface/transformers`, whose fix
   is a major version for AWM to take; AWM never sends it an image.
+
+### Goals, approvals that last, self-build, the inbox and quiet hours
+
+- **Goals own their jobs, and jobs can't multiply without limit (BL-05).** `goal_add`, `goal_list`
+  and `goal_update` keep a person's goals as tagged AWM memories, mirrored to AWM's task fields. Only
+  an attended chat that hasn't read outside content can create or change one. A job can belong to
+  a goal, and only an explicit "done" stops it. A structural fan-out budget limits follow-up jobs
+  wherever they come from: at most two levels deep, two pending children per job, three per run and
+  five per goal. Unattended or tainted runs stop scheduling once a person has 50 pending jobs.
+- **One approval store, shared by the web app and Telegram, kept across restarts (BL-18).** Staged
+  actions live in `approvals.db` beside the agent database (`MWA_APPROVALS_DB` overrides it). They
+  move through explicit states: pending, approved, executing, done or failed, cancelled, expired.
+  Either channel can approve, but only the process that staged an action runs it, against its own
+  memory. Telegram approvers are `TELEGRAM_ALLOWED_CHATS` plus `TELEGRAM_ALLOWED_USERS`. Arguments
+  are blanked at once, summaries cleared after 24 hours, rows deleted after 7 days. Pending approvals
+  now survive a restart.
+- **MWA can work on its own repository, with a person at the gates (BL-14a).** Unattended runs
+  stage commands instead of running them, at most three per run, each waiting 24 hours. An approved
+  command runs with a 15-minute timeout that kills its whole process tree
+  (`MWA_APPROVED_COMMAND_TIMEOUT_MS`), and a non-zero exit is reported as failed with the end of its
+  output. **Approving a check run executes code as you**; the card and `docs/self-build.md` say so.
+  File writes now refuse `.git`, `.husky`, `.githooks` and `.vscode`. On Windows they also refuse
+  NTFS streams, names ending in a dot or space, 8.3 short names, and links that lead out of the
+  allowed folders.
+- **Drop a file in the inbox and MWA works it, in Docker too (BL-06).** `serve` now starts the
+  inbox watcher (`MWA_INBOX=0` turns it off). In Docker the inbox is `/data/mwa-workspace/inbox`, so
+  **anything already there is worked on the first boot after upgrading.** A file is taken only once
+  it has stopped changing. A claim that stops updating is reported as interrupted, and empty files
+  and errors are reported too. The agent can't write into the inbox, outbox or done folders, so it
+  can't hand itself instructions.
+- **Quiet hours (BL-07).** Set a window, `MWA_QUIET_HOURS=22:00-07:00` or "set my quiet hours to
+  22:00-07:00" in a chat, and the Telegram connector holds scheduled results and approval cards until
+  it ends. Jobs still run on time. The held messages are kept on disk, and each job sends only its
+  latest result, with a count. A job scheduled as `urgent` from an attended chat skips the window.
+  The Docker image runs only the web app, which pushes nothing, so quiet hours apply where the
+  Telegram connector runs.
 
 ### Running autonomously in Docker
 
