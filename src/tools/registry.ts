@@ -19,6 +19,8 @@ export interface ToolContext {
   extraRoots?: string[];
   /** this run has read external content (BL-17) — a tool that writes lasting memory checks it. */
   tainted?: boolean;
+  /** this run has read local content (a file, a dropped document) — goals refuse it too (BL-05). */
+  readLocal?: boolean;
   /** whether a human is watching this run (gates run_command in Assistant mode). */
   interactive?: boolean;
   /** the resolved person this turn is for (S6) — used to gate sensitive confirms on step-up. */

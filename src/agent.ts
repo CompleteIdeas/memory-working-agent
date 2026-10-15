@@ -30,6 +30,8 @@ import { RoutedProvider, classifyIntent, startTier, isComplexTask } from './mode
 import type { ToolRegistry } from './tools/registry.js';
 import { runWorker } from './worker.js';
 import { stageAction, pendingStagedBy, listPendingActions } from './tools/approval.js';
+import { fanoutRefusal, newJobDepth } from './fanout.js';
+import { normalizePersonId } from './person.js';
 import { parseJsonLoose, runCommand } from './util.js';
 import type { InteractionStyle } from './config.js';
 
@@ -107,6 +109,9 @@ export interface AgentResult {
   /** ids of actions this run staged that still wait for a person's approval (BL-03) — the channel
    *  that carried the request offers them (the app's approvals list, Telegram's Approve button). */
   staged?: string[];
+  /** a job this run wanted to schedule was refused by the fan-out budget (BL-05) — the scheduler
+   *  tells the person once per job, so a quiet monitor doesn't hide it. */
+  budgetRefusal?: string;
   summary: string;
   steps: number;
   dispatches: number;
@@ -197,6 +202,7 @@ export const SCHEDULE_TOOL: ToolDef = {
     every_minutes: { type: 'number', description: 'recurring every N minutes' },
     until: { type: 'string', description: 'OPTIONAL, for recurring jobs: when this job is finished for good, in plain words ("the package shows Delivered", "the ticket is closed"). A fire that finds it true finishes with outcome complete; once the next fire confirms, the job stops.' },
     limits: { type: 'string', description: 'OPTIONAL hard limits every fire must respect, in plain words ("only draft replies, never send", "do not spend money").' },
+    goal: { type: 'string', description: 'OPTIONAL: the short id of the goal this job serves (goal_list shows them). A job created by a scheduled run belongs to that run\'s goal automatically. A goal marked done stops its jobs; a blocked goal pauses them.' },
     deliver: { type: 'string', enum: ['always', 'changed', 'never'], description: 'When to message the person. always (default): every fire. changed: only when something changed or was produced — use for monitors ("tell me when…"). never: only if it fails. A failure is always delivered.' },
     check: { type: 'string', description: 'OPTIONAL cost-saver for recurring polls: a small shell command that prints a value reflecting the watched state (e.g. a row count, a max timestamp, an API hash). If its output is unchanged since the last run, the scheduled run is skipped with no model call. Only the full instruction runs when the value changes.' },
   }, required: ['instruction'] },
@@ -338,6 +344,11 @@ export async function runAgent(opts: {
   jobDeliver?: 'always' | 'changed' | 'never';
   /** the job was created by a run that had read outside content (the TASK's taint, not this run's). */
   jobSettingsTainted?: boolean;
+  /** this fire's job lineage depth and owning goal (BL-05) — jobs it creates inherit from them. */
+  jobDepth?: number;
+  jobGoal?: string;
+  /** the job this run continues: a scheduled fire's own id, or for a resume the original job's. */
+  jobLineage?: string;
   /** extra folders the file tools may touch for THIS run only, on top of the sandbox + granted
    *  roots. The scheduler passes the folder the task was created in, so an instruction that baked an
    *  absolute path in at schedule time still resolves when it fires in a fresh per-fire folder. */
@@ -448,6 +459,7 @@ export async function runAgent(opts: {
   // Keep up to four, with the argument that was refused: a measured failure logged only its first
   // refusal (a harmless not-found), and the two that actually explained it were lost.
   let refusals = 0; const refusalLog: string[] = [];
+  let budgetRefusal: string | undefined; // BL-05: a follow-up job the fan-out budget refused
   // What the model said it achieved, and how many calls the REGISTRY itself failed (BL-02).
   let declaredOutcome: RunOutcome | undefined;
   let failedCalls = 0;
@@ -902,6 +914,41 @@ export async function runAgent(opts: {
         history.push('(refused: re-scheduling this same task — it is due now; do the work)');
         continue;
       }
+      // FAN-OUT BUDGET (BL-05): structural limits on jobs creating jobs (src/fanout.ts). Lineage and
+      // counts, not wording, so "check back tomorrow" rephrased can't slip past.
+      // Any run that belongs to a job is a fire for lineage — a RESUME too (BL-05 review: resumes ran
+      // as "not a fire", reset depth to 1 and escaped the children cap, so depth never bounded growth).
+      const lineage = opts.jobLineage ?? opts.jobId;
+      const isFire = Boolean(lineage);
+      const me = normalizePersonId(opts.personId);
+      const pendingJobs = (memory.pendingScheduled ? await memory.pendingScheduled() : []).filter((t) => normalizePersonId(t.person) === me);
+      const explicitGoal = typeof action.goal === 'string' && action.goal.trim() ? action.goal.trim() : undefined;
+      const wantGoal = explicitGoal ?? opts.jobGoal;
+      let goal: Awaited<ReturnType<NonNullable<typeof memory.getGoal>>> = null; let goalUnreadable = false;
+      try { goal = wantGoal && memory.getGoal ? await memory.getGoal(wantGoal) : null; } catch { goalUnreadable = true; }
+      // Another person's goal is not one this run can add jobs to (BL-05 review).
+      if (goal && goal.person && goal.person !== me) goal = null;
+      const depth = newJobDepth({ isFire, jobDepth: opts.jobDepth, interactive: opts.interactive });
+      const budget = goalUnreadable ? 'its goal could not be read just now' : fanoutRefusal({
+        depth, isFire,
+        childrenOfThisJob: isFire ? pendingJobs.filter((t) => t.parent && lineage!.startsWith(t.parent)).length : 0,
+        byThisRun: pendingJobs.filter((t) => t.byRun && runId.startsWith(t.byRun)).length,
+        pending: pendingJobs.length,
+        goalJobs: goal ? pendingJobs.filter((t) => t.goal === goal!.id).length : undefined,
+        // A goal the model NAMED must exist and be open. An INHERITED goal that is gone means the job
+        // now runs unowned (the scheduler keeps it running), so its follow-ups are unowned too.
+        goalClosed: explicitGoal ? !goal || goal.status === 'done' : goal?.status === 'done',
+        unattendedOrTainted: opts.interactive === false || sawUntrustedRead || sawLocalRead,
+      });
+      if (budget) {
+        // A budget limit, not a failure of the job: like the self-reschedule guard it nudges and moves
+        // on, and does not turn the fire into "couldn't finish" — a monitor at its children cap would
+        // otherwise message the person on every fire (BL-05 review).
+        consecNoProgress++; budgetRefusal = budget;
+        history.push(`(refused: scheduling another job — ${budget})`);
+        nudge = `You can't schedule that: ${budget}. Do the work now if you can; otherwise say in your summary what you would schedule, and let the person decide.`;
+        continue;
+      }
       consecNoProgress = 0;
       const nowMs = now();
       let dueMs = nowMs + 60_000; let recur: string | undefined;
@@ -916,7 +963,8 @@ export async function runAgent(opts: {
       await memory.addScheduledTask(String(action.instruction), dueMs, { recur, notify: opts.session, check, person: opts.personId, origin: dir, tainted: sawUntrustedRead || sawLocalRead,
         until: typeof action.until === 'string' && action.until.trim() ? action.until.trim().slice(0, 400) : undefined,
         limits: typeof action.limits === 'string' && action.limits.trim() ? action.limits.trim().slice(0, 600) : undefined,
-        deliver: action.deliver === 'changed' || action.deliver === 'never' ? action.deliver : undefined });
+        deliver: action.deliver === 'changed' || action.deliver === 'never' ? action.deliver : undefined,
+        depth, parent: isFire ? lineage : undefined, goal: goal?.id, byRun: runId });
       declaredOutcome = 'changed';
       productive++;
       const when = new Date(dueMs).toISOString().slice(0, 16).replace('T', ' ');
@@ -961,7 +1009,7 @@ export async function runAgent(opts: {
       }
       toolCalls++;
       const { action: _n, ...args } = action as Record<string, unknown> & { action: string };
-      const callCtx = { sandboxDir: dir, interactive: opts.interactive, personId: opts.personId, identityInDoubt: opts.identityInDoubt, extraRoots: opts.extraRoots, tainted: sawUntrustedRead, runId, session: opts.session };
+      const callCtx = { sandboxDir: dir, interactive: opts.interactive, personId: opts.personId, identityInDoubt: opts.identityInDoubt, extraRoots: opts.extraRoots, tainted: sawUntrustedRead, readLocal: sawLocalRead, runId, session: opts.session };
       const called = typeof opts.tools.callDetailed === 'function'
         ? await opts.tools.callDetailed(action.action, args as Record<string, unknown>, callCtx)
         : { text: await opts.tools.call(action.action, args as Record<string, unknown>, callCtx), failed: false };
@@ -1330,7 +1378,7 @@ export async function runAgent(opts: {
     // the shared `unknown` profile, and anything IT schedules becomes visible to every
     // shared-profile session — the leak the person tag exists to close.
     // The resume reuses this run's folder: whatever a tainted run saved there must not come back clean.
-    const id = await memory.addScheduledTask(cont, dueMs, { notify: opts.session, dir, resumeAttempt: attempt + 1, person: opts.personId, limits: opts.jobLimits, until: opts.jobUntil, deliver: opts.jobDeliver, tainted: sawUntrustedRead || sawLocalRead });
+    const id = await memory.addScheduledTask(cont, dueMs, { notify: opts.session, dir, resumeAttempt: attempt + 1, person: opts.personId, depth: opts.jobDepth, goal: opts.jobGoal, resumeOf: opts.jobLineage ?? opts.jobId, byRun: runId, limits: opts.jobLimits, until: opts.jobUntil, deliver: opts.jobDeliver, tainted: sawUntrustedRead || sawLocalRead });
     if (id) {
       history.push(`(unfinished — queued a resume for ~1 min from now, attempt ${attempt + 1}/${MAX_RESUMES})`);
       emit('schedule', { instruction: `resume: ${instruction.slice(0, 50)}`, due: dueMs, resume: attempt + 1 });
@@ -1405,6 +1453,7 @@ export async function runAgent(opts: {
     tainted: sawUntrustedRead,
     outcome,
     ...(staged.length ? { staged } : {}),
+    ...(budgetRefusal ? { budgetRefusal } : {}),
     reason, summary: finalSummary, steps, dispatches, toolCalls, reRecalls, supersedes, consolidations,
     durationMs: now() - start, usage, costUsd: Number((brainCost + workerCost).toFixed(6)), history,
   };

@@ -29,6 +29,8 @@ const TOOL_CATEGORY: Record<string, ActionCategory> = {
   // unattended run that merely LISTS its own schedule three times would pause itself.
   schedule_list: 'read', memory_profile: 'read', memory_store_map: 'read',
   schedule_cancel: 'schedule',
+  // goals (BL-05): local writes; goal_list echoes stored text, so its output is local content.
+  goal_list: 'read', goal_add: 'schedule', goal_update: 'schedule',
   // policy_* are local, not outward — but they stay in a SENSITIVE category on purpose: a standing
   // preference is primed into every future run, so it belongs in the "what I did" log and under the
   // tripwires. ('memory', like remember/supersede, is NOT sensitive and would hide them.)
@@ -92,7 +94,7 @@ export function isSensitive(name: string): boolean { return SENSITIVE.has(classi
 // echo no third-party text — a review found these were wrongly tainting runs as external).
 const OWN_OUTPUT_TOOLS = new Set([
   'write_file', 'knowledge_write', 'schedule_cancel', 'policy_save', 'policy_forget', 'routine_propose',
-  'memory_learn_person', 'memory_feedback', 'confirm_action', 'cancel_action', 'list_pending',
+  'memory_learn_person', 'memory_feedback', 'goal_add', 'goal_update', 'goal_list', 'confirm_action', 'cancel_action', 'list_pending',
   'onboard_questions', 'draft_email', 'draft_outlook', 'propose_event', 'propose_outlook_event',
   'generate_image', 'install_connector', 'uninstall_connector', 'remove_mcp_server',
 ]);

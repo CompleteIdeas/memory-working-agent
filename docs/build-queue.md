@@ -39,7 +39,9 @@ merged or published by the loop.
 - **Run the end-to-end harnesses once per item, on its final revision** (from Robert's call 2,
   2026-10-15). Unit tests and the isolated reviewer gate the in-between revisions; re-running the
   harnesses every review round is where most of the spend went. If a gpt-5.4-nano deployment
-  appears, it may run non-blocking smoke rounds in between; gpt-5.4-mini stays the gate.
+  appears, it may run non-blocking smoke rounds in between; gpt-5.4-mini stays the gate. Start the
+  harness only after the review is settled: BL-05 paid for two rounds because the reviewer's second
+  pass changed the code after the first.
 - **Build the image from the clean worktree, never the main checkout** (from BL-15). The Dockerfile copies
   `vendor/agent-working-memory` from the build context, and the main checkout's `vendor/` is a newer AWM
   with uncommitted changes — so the images for BL-01 to BL-03 tested that AWM, not the pinned one. The
@@ -74,7 +76,7 @@ two consecutive items REVISE; or Robert says stop.
 
 ## Queue
 
-**Merged 2026-10-15** (`master` = `b030c9f`). Release prep for 0.6.0 is on build-loop (`6ac2090`): Robert rotates the npm token, publishes and redeploys. **Next up, in order (Robert, 2026-10-15):** BL-05, BL-18, BL-14, then BL-06, BL-07, BL-08, BL-13, BL-16, BL-09 to BL-12.
+**Merged 2026-10-15** (`master` = `b030c9f`). Release prep for 0.6.0 is on build-loop (`6ac2090`): Robert rotates the npm token, publishes and redeploys. **Next up, in order (Robert, 2026-10-15):** BL-18, BL-14, then BL-06, BL-07, BL-08, BL-13, BL-16, BL-09 to BL-12.
 
 Status: `ready` · `in progress` · `blocked` · `done` · `revise`.
 "Waits on" names an item or a person.
@@ -85,7 +87,7 @@ Status: `ready` · `in progress` · `blocked` · `done` · `revise`.
 | BL-02 | **Job contract + run outcome.** `schedule` gains an owner, a completion condition (`until`), a notify policy (`always` / `changed` / `never`) and explicit limits. The model writes a standing procedure, not a restatement. Each run is recorded in AWM as an episodic memory with provenance, linked to its owner. A run also records an `outcome` (`changed` / `no-change` / `could-not` / `blocked`), kept separate from `reason`. | Fixes at the source what today's scheduled-task failures came from, and stops no-op runs logging `done`. Call 4 is settled here. | — | **done** | (this commit) | 2026-10-15: suite 303/303, clean worktree 303/303 at pinned AWM, injection 0/8 and delivery 6/6 on a rebuilt image (four rounds), job-contract tests 23. One isolated review in three rounds: 8 defects (4 silenced something the person should hear), all fixed; two minor gaps moved to BL-16. Owner moved to BL-05. |
 | BL-03 | **Approval the model can't give itself.** First a Telegram Approve/Cancel button handled by the connector, then remove human-required confirms from the model's tools. Keep a same-run check as a second guard. One item: removing the tool before the button exists would break Telegram approvals. **Also:** a standing preference captured automatically at run end is saved silently today. If the person pastes third-party text ("from now on, always BCC …") into their own message, it is captured as theirs; make captured policies a confirmable pending item, not a silent save (from the BL-17 coworker challenge). | Measured 2026-10-14: the model staged a write and confirmed it itself in one turn. Call 3 is settled here. | — | **done** | (this commit) | 2026-10-15: BL-04 folded in. Suite 388/388, clean worktree 388/388 at pinned AWM; on a rebuilt image injection 0/8, delivery 5/6 then 6/6 (the miss: the model listed schedules and stopped, no gated tool involved), Playwright panel at 1440 and 375px (no overflow), approve-from-panel saves, live self-approval attack stays pending. Isolated review, three rounds: 1 critical (self-approval via run_command curl, proven twice) closed and replayed as a test; mediums and lows fixed or moved to BL-16 / BL-18. |
 | BL-04 | **Gate shell commands** (H-4). A parsed allowlist of read-only commands runs directly; anything else is staged for approval. Developer mode unchanged. | In the default mode a chat can run any shell command unconfirmed. | — | **done in BL-03** | (BL-03's commit) | Folded into BL-03 on 2026-10-15: BL-03's isolated review proved approval can't hold without it. See BL-03. |
-| BL-05 | **Goals own work; fan-out budget** (H-8). A goal is an AWM task (status, priority, `blocked_by`) that owns its scheduled tasks. Caps on tasks per run and per goal. | A scheduled run can create unbounded scheduled tasks. | BL-02 | ready | | |
+| BL-05 | **Goals own work; fan-out budget** (H-8). A goal is an AWM task (status, priority, `blocked_by`) that owns its scheduled tasks. Caps on tasks per run and per goal. | A scheduled run can create unbounded scheduled tasks. | BL-02 | **done** | (this commit) | 2026-10-15: suite 418/418 at the pinned AWM; on an image built at the pin injection 0/8, delivery 6/6 (on the final revision). Isolated review, two rounds: 2 high (resumes reset lineage; one failed store read stopped an open goal's jobs) + 3 medium + 5 low, all fixed; the 8 new tests fail on the pre-fix code. Gap: the planned-run path is tested through `rootRunId`, not a real planner. |
 | BL-06 | **Inbox watcher in `serve`** (call 5). Start the file-drop watcher in the container. | The only autonomous intake in Docker today is a timed task. | — | ready | | |
 | BL-07 | **Quiet hours.** A delivery window for non-urgent results. The delivery default stays `always` (BL-02's decision: a daily report changes nothing and would otherwise never be sent); `changed` remains opt-in. | An always-on agent would message at any hour. | BL-02 | ready | | |
 | BL-08 | **Detector dry run.** The `check` command gets a dry run and starts disabled. | It can't be tested before it is armed. | — | ready | | |
@@ -111,6 +113,7 @@ publish 0.6.0, redeploy the dogfood. Calls 6 and 7 stay "not now".
 | 2026-10-15 | — | **Robert's answers** in "MWA after the merge: your calls": (1) release 0.6.0 — the loop writes the changelog, Robert publishes and redeploys; (2) look at a cheaper test model before raising the cap; (3) **cancel Gallop on MWA** for now — Gallop Support stays a Claude Code agent; (4) yes to BL-06; (5) Developer mode stays ungated; (6) BL-05, BL-18, BL-14. "Proceed, I do not object" to the rest of the order. | Robert's decisions; not challenged. |
 | 2026-10-15 | gates | Cheaper testing: only gpt-5.4-mini is deployed on the Azure resource (nano and seven others: DeploymentNotFound); the local GPU (4 GB) fits only 4B models. So: harnesses once per item on the final revision, nano for non-blocking smoke if Robert deploys it, mini stays the gate; proposed cap $15. | **Coworker:** nano in between and mini as the gate, with A's once-per-item rule; local models only as an "is it obviously broken" smoke. **Taken.** |
 | 2026-10-15 | BL-07 | Reworded to quiet hours only. The queue's old wording ("recurring tasks default to notifying only when something changed") contradicted BL-02's decision. | Follows BL-02's coworker challenge (the read-only report trap). |
+| 2026-10-15 | BL-05 | Structural fan-out budget (depth ≤ 2, ≤ 2 pending follow-ups per job, ≤ 3 per run, ≤ 5 per goal, no unattended/tainted scheduling at ≥ 50 of a person's pending jobs); goals as tagged AWM engrams mirrored to native task fields; only attended, clean chats create or change goals; only explicit "done" stops a job. | **Taken** from the coworker: per-parent child cap, goals only from attended clean chats, budget for tainted runs, blocked-goal backoff, structural not textual limits. **Not taken:** limits on attended chats (one owner scheduling their own jobs; each run schedules once) and daily spend budgets (with BL-13). |
 
 ## Cost ledger
 
@@ -124,8 +127,9 @@ publish 0.6.0, redeploy the dogfood. Calls 6 and 7 stay "not now".
 | 2026-10-15 | BL-02 | Four gate rounds (80 runs carrying an `outcome`, $0.98 from the run log), plus coworker | ≤ ~$1.0 |
 | 2026-10-15 | BL-03 | Two gate rounds incl. Playwright and the live attack ($0.29 + $0.29 from the run log), plus two coworker challenges | ≤ ~$0.65 |
 | 2026-10-15 | BL-15 | One gate round at the pinned AWM ($0.28 from the run log) | ≤ ~$0.28 |
+| 2026-10-15 | BL-05 | Two gate rounds ($0.53 from the run log), plus coworker | ≤ ~$0.55 |
 
-**Running total: ≤ ~$6.15 of $10.00.** An upper bound: `runs.jsonl` logs a planned chat's sub-runs as separate entries whose cost the parent entry already includes, so summing it double-counts. All-time raw sum $4.81, of which ~$0.6 predates the loop.
+**Running total: ≤ ~$6.70 of $10.00.** An upper bound: `runs.jsonl` logs a planned chat's sub-runs as separate entries whose cost the parent entry already includes, so summing it double-counts. All-time raw sum $4.81, of which ~$0.6 predates the loop.
 
 ## Decision log
 

@@ -126,6 +126,10 @@ export interface Memory {
   consolidate(): Promise<Record<string, number>>;
   /** Persist a scheduled task (due = epoch ms) in the AWM task store. */
   addScheduledTask(instruction: string, dueMs: number, opts?: ScheduleOpts): Promise<string | null>;
+  /** All pending scheduled tasks — the fan-out budget counts them (BL-05). Absent when AWM is off. */
+  pendingScheduled?(): Promise<ScheduledTask[]>;
+  /** A goal by id or short id (BL-05). Absent when AWM is off. */
+  getGoal?(idOrPrefix: string): Promise<Goal | null>;
   /** Persist a reusable procedure ("skill") recalled on similar future tasks. */
   saveSkill(name: string, steps: string, opts?: LearnOpts): Promise<string | null>;
   /** Persist a verbal failure reflection ("X failed because Y; next time Z") recalled
@@ -155,7 +159,27 @@ export interface ScheduleOpts {
   limits?: string;
   /** when to message the person: always (default) | changed | never. Failures always deliver. */
   deliver?: 'always' | 'changed' | 'never';
+  /** lineage (BL-05): 0 = a person scheduled it; a job made by a fire is its parent's depth + 1. */
+  depth?: number;
+  /** the job whose fire created this one (short id). */
+  parent?: string;
+  /** the goal that owns this job (full id). */
+  goal?: string;
+  /** the run that created it (short id) — a planned run's steps share one. */
+  byRun?: string;
+  /** a resume continues this job (short id): it keeps the job's lineage, so a resume can't reset depth. */
+  resumeOf?: string;
+  /** the person was told, once, that a follow-up this job wanted was refused by the fan-out budget. */
+  budgetNotified?: boolean;
 }
+
+/** A goal (BL-05): an AWM task that owns scheduled jobs. Its status is the source of truth for
+ *  whether those jobs run: done stops them, blocked pauses them. */
+export type GoalStatus = 'open' | 'in_progress' | 'blocked' | 'done';
+export type GoalPriority = 'urgent' | 'high' | 'medium' | 'low';
+export interface Goal { id: string; title: string; detail: string; status: GoalStatus; priority: GoalPriority; person?: string; createdAt?: number }
+export const GOAL_STATUSES: GoalStatus[] = ['open', 'in_progress', 'blocked', 'done'];
+export const GOAL_PRIORITIES: GoalPriority[] = ['urgent', 'high', 'medium', 'low'];
 
 /** A pending scheduled task read back from the store. */
 export interface ScheduledTask {
@@ -183,6 +207,13 @@ export interface ScheduledTask {
   /** Who scheduled it (normalized personId). Absent on tasks written before person tagging — those
    *  are treated as belonging to the shared/unknown profile, never to an identified person. */
   person?: string;
+  /** lineage and ownership (BL-05) — see ScheduleOpts. Absent depth = 0. */
+  depth?: number;
+  parent?: string;
+  goal?: string;
+  byRun?: string;
+  resumeOf?: string;
+  budgetNotified?: boolean;
 }
 
 export class MwaMemory implements Memory {
@@ -551,6 +582,12 @@ export class MwaMemory implements Memory {
     if (opts.limits) tags.push(`limits64=${Buffer.from(opts.limits, 'utf8').toString('base64')}`);
     if (opts.deliver && opts.deliver !== 'always') tags.push(`deliver=${opts.deliver}`);
     if (opts.resumeAttempt) tags.push(`resume=${opts.resumeAttempt}`);
+    // Lineage and ownership (BL-05): what the fan-out budget counts, and what a goal owns.
+    if (opts.depth) tags.push(`depth=${Math.max(0, Math.floor(opts.depth))}`);
+    if (opts.parent) tags.push(`parent=${opts.parent.slice(0, 8)}`);
+    if (opts.goal) tags.push(`goal=${opts.goal}`);
+    if (opts.byRun) tags.push(`byrun=${opts.byRun.slice(0, 8)}`);
+    if (opts.resumeOf) tags.push(`resumeof=${opts.resumeOf.slice(0, 8)}`);
     // Base64 the check command so an arbitrary shell string (spaces, commas, pipes, '=') survives
     // both tag serializations (JSON array or comma-split). No commas in base64 → comma-split is safe.
     if (opts.check) tags.push(`check64=${Buffer.from(opts.check, 'utf8').toString('base64')}`);
@@ -570,7 +607,14 @@ export class MwaMemory implements Memory {
         const sameContract = tag('until64=').slice(8) === b64(opts.until) && tag('limits64=').slice(9) === b64(opts.limits)
           && (tag('deliver=').slice(8) || 'always') === (opts.deliver ?? 'always') && tag('check64=').slice(8) === b64(opts.check);
         if (same && sameContract && same.content === instruction && st.includes(`recur=${opts.recur}`)
-          && st.includes(`person=${normalizePersonId(opts.person)}`) && st.includes('tainted=1') === Boolean(opts.tainted)) return same.id;
+          && st.includes(`person=${normalizePersonId(opts.person)}`) && st.includes('tainted=1') === Boolean(opts.tainted)) {
+          const had = tag('goal=').slice(5) || undefined;
+          if (had === (opts.goal || undefined)) return same.id;
+          // The same job, now for a goal: give the existing job the goal instead of running two copies.
+          // Only a person, in an attended clean chat (depth 0, untainted), may put an existing job under
+          // a goal — marking that goal done later stops the job (BL-05 review).
+          if (!had && opts.goal && !opts.depth && !opts.tainted) { await this.setScheduledTags(same.id, (t) => [...t, `goal=${opts.goal}`]); return same.id; }
+        }
       } catch { /* fall through to a separate write */ }
     }
     return this.write(`scheduled: ${instruction.slice(0, 56)}`, instruction, tags, {
@@ -592,7 +636,7 @@ export class MwaMemory implements Memory {
         if (!tags.includes('topic=scheduled-task') || !tags.includes('status=pending')) continue;
         const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
         const check64 = get('check64=');
-        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, origin: get('origin=') || undefined, tainted: tags.includes('tainted=1') || undefined, until: get('until64=') ? Buffer.from(get('until64='), 'base64').toString('utf8') : undefined, limits: get('limits64=') ? Buffer.from(get('limits64='), 'base64').toString('utf8') : undefined, deliver: (get('deliver=') || undefined) as ScheduledTask['deliver'], pendingComplete: tags.includes('pendingcomplete=1') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined, person: get('person=') || undefined });
+        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, origin: get('origin=') || undefined, tainted: tags.includes('tainted=1') || undefined, until: get('until64=') ? Buffer.from(get('until64='), 'base64').toString('utf8') : undefined, limits: get('limits64=') ? Buffer.from(get('limits64='), 'base64').toString('utf8') : undefined, deliver: (get('deliver=') || undefined) as ScheduledTask['deliver'], pendingComplete: tags.includes('pendingcomplete=1') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined, person: get('person=') || undefined, depth: Number(get('depth=')) || undefined, parent: get('parent=') || undefined, goal: get('goal=') || undefined, byRun: get('byrun=') || undefined, resumeOf: get('resumeof=') || undefined, budgetNotified: tags.includes('budgetnotified=1') || undefined });
       }
       return out.sort((a, b) => a.due - b.due);
     } catch (err) { console.error('[awm] pendingScheduled error:', (err as Error).message); return []; }
@@ -604,6 +648,10 @@ export class MwaMemory implements Memory {
   /** Mark a scheduled task complete (status=done). */
   async completeScheduled(id: string): Promise<void> {
     await this.setScheduledTags(id, (tags) => tags.map((t) => (t.startsWith('status=') ? 'status=done' : t)));
+  }
+  /** BL-05: the person has been told this job's follow-up was refused by the fan-out budget. */
+  async setBudgetNotified(id: string): Promise<void> {
+    await this.setScheduledTags(id, (tags) => [...tags.filter((t) => t !== 'budgetnotified=1'), 'budgetnotified=1']);
   }
   /** Two-phase completion (BL-02): mark or clear "a fire said this job is complete". */
   async setPendingComplete(id: string, on: boolean): Promise<void> {
@@ -624,6 +672,72 @@ export class MwaMemory implements Memory {
    *  destroys the only audit trail of an automation that was stopped. Both leave pendingScheduled. */
   async cancelScheduled(id: string): Promise<void> {
     await this.setScheduledTags(id, (tags) => tags.map((t) => (t.startsWith('status=') ? 'status=canceled' : t)));
+  }
+
+  // ── Goals (BL-05) ────────────────────────────────────────────────────────────────────────────
+  // Stored like scheduled tasks — tags are the source of truth, so every storage backend works — and
+  // mirrored into AWM's native task fields where the store has them, so AWM's own task tools
+  // (memory_task_list and friends) see the same goals.
+
+  /** Create a goal; returns its id. */
+  async addGoal(title: string, detail: string, priority: GoalPriority = 'medium', person?: string): Promise<string | null> {
+    const p = GOAL_PRIORITIES.includes(priority) ? priority : 'medium';
+    const id = await this.write(`goal: ${title}`.slice(0, 80), detail ? `${title}\n\n${detail}` : title,
+      ['topic=goal', 'gstatus=open', `gprio=${p}`, `person=${normalizePersonId(person)}`, 'task'],
+      { canonical: true, eventType: 'decision', global: true, noMerge: true });
+    if (id) await this.mirrorGoal(id, 'open', p);
+    return id;
+  }
+
+  private async mirrorGoal(id: string, status: GoalStatus, priority?: GoalPriority): Promise<void> {
+    try {
+      await this.init();
+      if (typeof this.store.updateTaskStatus === 'function') await this.store.updateTaskStatus(id, status);
+      if (priority && typeof this.store.updateTaskPriority === 'function') await this.store.updateTaskPriority(id, priority);
+    } catch { /* the tags stay the source of truth */ }
+  }
+
+  private toGoal(e: any): Goal | null {
+    const tags = this.parseTags(e.tags);
+    if (!tags.includes('topic=goal')) return null;
+    const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
+    const [title, ...rest] = String(e.content ?? '').split('\n\n');
+    const status = get('gstatus=') as GoalStatus;
+    const priority = get('gprio=') as GoalPriority;
+    return {
+      id: e.id, title: title || String(e.concept ?? '').replace(/^goal: /, ''), detail: rest.join('\n\n'),
+      status: GOAL_STATUSES.includes(status) ? status : 'open', priority: GOAL_PRIORITIES.includes(priority) ? priority : 'medium',
+      person: get('person=') || undefined, createdAt: e.createdAt ? new Date(e.createdAt).getTime() : undefined,
+    };
+  }
+
+  /** Goals, open ones first by priority. THROWS when the store can't be read — "no goals" and
+   *  "couldn't look" must not look alike (BL-05 review: one failed read stopped every job an open
+   *  goal owned). listGoals() is the forgiving wrapper for display. */
+  async listGoalsStrict(): Promise<Goal[]> {
+    await this.init();
+    const all: any[] = (await this.store.getEngramsByAgent(this.agentId)) ?? [];
+    const rank = (g: Goal) => (g.status === 'done' ? 10 : 0) + GOAL_PRIORITIES.indexOf(g.priority);
+    return all.filter((e) => !e.retracted).map((e) => this.toGoal(e)).filter((g): g is Goal => g !== null).sort((a, b) => rank(a) - rank(b));
+  }
+  async listGoals(): Promise<Goal[]> {
+    try { return await this.listGoalsStrict(); } catch { return []; }
+  }
+
+  /** A goal by full id or a unique prefix of at least 4 characters; null when there is no such goal.
+   *  THROWS when the store can't be read. */
+  async getGoal(idOrPrefix: string): Promise<Goal | null> {
+    const want = String(idOrPrefix ?? '').trim().toLowerCase();
+    if (want.length < 4) return null;
+    const hits = (await this.listGoalsStrict()).filter((g) => g.id.toLowerCase().startsWith(want));
+    return hits.length === 1 ? hits[0] : null;
+  }
+
+  /** Set a goal's status (tags + AWM's native task field). */
+  async setGoalStatus(id: string, status: GoalStatus): Promise<void> {
+    if (!GOAL_STATUSES.includes(status)) return;
+    await this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('gstatus=')), `gstatus=${status}`]);
+    await this.mirrorGoal(id, status);
   }
 
   /** Rough count of stored memories for this agent — powers the UI "memory meter". */

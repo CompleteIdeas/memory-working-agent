@@ -78,7 +78,7 @@ describe('work tools', () => {
 
   it('exposes schedule list/cancel, policy save/forget and routine propose', () => {
     expect(workTools(fakeMemory()).map((t) => t.def.name).sort())
-      .toEqual(['policy_forget', 'policy_save', 'routine_propose', 'schedule_cancel', 'schedule_list']);
+      .toEqual(['goal_add', 'goal_list', 'goal_update', 'policy_forget', 'policy_save', 'routine_propose', 'schedule_cancel', 'schedule_list']);
   });
 
   it('no tool in the WHOLE registry reuses a name the agent loop already hardwires', async () => {

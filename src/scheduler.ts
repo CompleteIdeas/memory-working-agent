@@ -90,6 +90,28 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
   const due = (await deps.memory.pendingScheduled()).filter((t) => t.due <= now());
   let fired = 0;
   for (const task of due) {
+    // A GOAL owns its jobs (BL-05): a finished goal stops them for good; a blocked goal pauses them,
+    // and the paused job backs off to its next interval (an hour for a one-off) instead of being
+    // re-checked every tick. Costs no model call either way.
+    // Only an explicit "done" stops a job. A goal that can't be READ skips this tick; a goal that is
+    // GONE (deleted, or archived away by consolidation) leaves the job running unowned — one failed
+    // read must never stop the person's work for good (BL-05 review).
+    if (task.goal && deps.memory.getGoal) {
+      let goal: Awaited<ReturnType<NonNullable<typeof deps.memory.getGoal>>> = null;
+      try { goal = await deps.memory.getGoal(task.goal); }
+      catch { log(`\u00b7 skipped this tick (its goal could not be read): ${task.instruction.slice(0, 40)}`); continue; }
+      if (goal?.status === 'done') {
+        await deps.memory.completeScheduled(task.id);
+        log(`\u00b7 stopped (its goal is done): ${task.instruction.slice(0, 40)}`);
+        continue;
+      }
+      if (goal?.status === 'blocked') {
+        // back off to the job's own next slot (a daily job keeps its time), an hour for a one-off
+        await deps.memory.rescheduleTask(task.id, task.recur ? nextRecur(task.recur, now()) : now() + 60 * 60_000);
+        log(`\u00b7 paused (its goal is blocked): ${task.instruction.slice(0, 40)}`);
+        continue;
+      }
+    }
     // Cheap change-detection gate: before the (expensive) agent run, if the task carries a `check`
     // command whose output signature matches the last actual fire, skip it entirely — one small
     // subprocess, ZERO model tokens. This is what keeps an idle recurring poll ~free: a fresh
@@ -142,7 +164,7 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       // dueNow: tell the run the timing is already settled (a resume carries its own framing, and
       // "do only the remaining work" must not be overridden by "do it all now").
       // extraRoots: the folder the task was created in, so a baked-in absolute path still resolves.
-      r = await run({ instruction: task.instruction, dir, memory: deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobSettingsTainted: task.tainted === true, extraRoots: origin ? [origin] : undefined, budget: { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
+      r = await run({ instruction: task.instruction, dir, memory: deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, extraRoots: origin ? [origin] : undefined, budget: { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
       ranOk = true;
     } catch (e) {
       r = { summary: `failed: ${(e as Error).message.slice(0, 120)}`, reason: 'error', steps: 0, toolCalls: 0, costUsd: 0, durationMs: 0 } as any;
@@ -160,6 +182,13 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     const outcome = String((r as { outcome?: string }).outcome ?? (r.reason === 'done' ? 'changed' : 'could-not'));
     let completion: 'candidate' | 'stopped' | undefined;
     let summary = r.summary;
+    // A follow-up the fan-out budget refused (BL-05): tell the person ONCE per job, even under
+    // deliver=changed/never — "let the person decide" needs the person to hear it — then stay quiet.
+    const budgetNews = (r as { budgetRefusal?: string }).budgetRefusal && !task.budgetNotified ? (r as { budgetRefusal?: string }).budgetRefusal : undefined;
+    if (budgetNews) {
+      summary += `\n\n(This job wanted to schedule a follow-up and was not allowed: ${budgetNews}. I won't mention it again for this job.)`;
+      await deps.memory.setBudgetNotified?.(task.id);
+    }
     if (outcome === 'complete' && task.recur && task.until) {
       if (task.pendingComplete) { await deps.memory.completeScheduled(task.id); completion = 'stopped'; summary += '\n\n(Confirmed finished, so this job has stopped.)'; }
       else { await deps.memory.setPendingComplete?.(task.id, true); completion = 'candidate'; summary += '\n\n(This looks finished. The job will stop after the next check confirms it.)'; }
@@ -167,7 +196,7 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       await deps.memory.setPendingComplete?.(task.id, false);
     }
     const policy = task.deliver ?? 'always';
-    const deliver = completion !== undefined || outcome === 'complete' || outcome === 'could-not' || outcome === 'blocked'
+    const deliver = completion !== undefined || budgetNews !== undefined || outcome === 'complete' || outcome === 'could-not' || outcome === 'blocked'
       || policy === 'always' || (policy === 'changed' && outcome === 'changed');
     if (!deliver) {
       log(`\u00b7 quiet (${outcome}, deliver=${policy}): ${task.instruction.slice(0, 40)}`);
