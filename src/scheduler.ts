@@ -6,7 +6,7 @@
  *
  * AWM = the task store (the WHAT + due tag); this loop = the WHEN; onFire = delivery.
  */
-import { resolve, join } from 'node:path';
+import { resolve, join, sep } from 'node:path';
 import { mkdirSync, readdirSync, statSync } from 'node:fs';
 import { exec } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -16,7 +16,13 @@ import type { MwaMemory, ScheduledTask } from './awm.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { runAgent } from './agent.js';
 
-export interface FireResult { summary: string; files: string[]; dir: string; reason: string }
+export interface FireResult {
+  summary: string; files: string[]; dir: string; reason: string;
+  /** What the run actually cost and did. Carried so the caller can SHOW it: the chat card for a
+   *  scheduled run was hardcoded to "0 steps" with no files, which is the one kind of run nobody
+   *  can watch happen. */
+  steps: number; toolCalls: number; costUsd: number; durationMs: number;
+}
 
 /** A compact, fixed-size signature (sha1 hex) of a check command's output. Two identical outputs
  *  hash identically → "nothing changed"; any difference → "there's new work, run the agent". */
@@ -103,6 +109,12 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     }
 
     log(`⏰ firing: ${task.instruction.slice(0, 50)}${task.resumeAttempt ? ` (resume ${task.resumeAttempt})` : ''}`);
+    // `origin` is honored only when it is a run SANDBOX inside the workspace (outRoot's parent):
+    // serve sessions, Telegram chats and mailbox runs all are. `mwa run` is not — it passes the
+    // user's cwd — and an extra root bypasses even the Locked-down preset, so carrying an arbitrary
+    // user folder into an unattended run on the strength of where a chat happened is refused.
+    const wsRoot = resolve(deps.outRoot, '..');
+    const origin = task.origin && (resolve(task.origin) + sep).startsWith(wsRoot + sep) ? resolve(task.origin) : undefined;
     // A RESUME task reuses the original run's folder (so it sees the files it already wrote);
     // a normal task gets a fresh per-fire folder.
     const dir = task.dir ? resolve(task.dir) : resolve(deps.outRoot, `sched-${task.id.slice(0, 8)}-${now()}`);
@@ -114,10 +126,19 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     try {
       // A resume continues an unfinished run — never re-plan it (it already says "do only the
       // remaining work"). Fresh scheduled tasks plan automatically if complex.
-      r = await run({ instruction: task.instruction, dir, memory: deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt ? false : undefined, interactive: false, budget: { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
+      // AS THE OWNER. Without personId the run is the shared `unknown` profile, so a task owned by
+      // tg-1000000001 is invisible to its own run: schedule_list shows nothing and a recurring task
+      // cannot cancel itself once the thing it watches has happened. It also leaks the other way —
+      // anything that run schedules would be tagged person=unknown and become visible to every
+      // shared-profile session. An untagged legacy task gives undefined, which falls back to
+      // `unknown` — exactly the visibility those tasks already have.
+      // dueNow: tell the run the timing is already settled (a resume carries its own framing, and
+      // "do only the remaining work" must not be overridden by "do it all now").
+      // extraRoots: the folder the task was created in, so a baked-in absolute path still resolves.
+      r = await run({ instruction: task.instruction, dir, memory: deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, extraRoots: origin ? [origin] : undefined, budget: { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
       ranOk = true;
     } catch (e) {
-      r = { summary: `failed: ${(e as Error).message.slice(0, 120)}`, reason: 'error' } as any;
+      r = { summary: `failed: ${(e as Error).message.slice(0, 120)}`, reason: 'error', steps: 0, toolCalls: 0, costUsd: 0, durationMs: 0 } as any;
     }
     fired++;
     // Persist the new baseline only after a clean run — if the run threw, we WANT the next tick to
@@ -125,7 +146,14 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     if (ranOk && newSig) await deps.memory.setScheduledSignature(task.id, newSig);
     let files: string[] = [];
     try { files = readdirSync(dir).filter((f) => !f.startsWith('.') && statSync(join(dir, f)).isFile()); } catch { /* */ }
-    await deps.onFire(task, { summary: r.summary, files, dir, reason: r.reason }).catch((e) => log(`onFire failed: ${(e as Error).message.slice(0, 80)}`));
+    await deps.onFire(task, {
+      summary: r.summary, files, dir, reason: r.reason,
+      steps: Number(r.steps ?? 0), toolCalls: Number(r.toolCalls ?? 0),
+      costUsd: Number(r.costUsd ?? 0), durationMs: Number(r.durationMs ?? 0),
+    }).catch((e) => log(`onFire failed: ${(e as Error).message.slice(0, 80)}`));
+    // One line per fire with what it actually did — "check the log" should answer "did my
+    // automation work", and summary-only could not distinguish real work from a polite refusal.
+    log(`✔ ran (${r.reason}): ${task.instruction.slice(0, 40)} — ${Number(r.steps ?? 0)} steps, ${files.length} file(s), $${Number(r.costUsd ?? 0).toFixed(4)}`);
   }
   return fired;
 }

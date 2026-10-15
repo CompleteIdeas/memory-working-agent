@@ -63,7 +63,7 @@ export async function processInbox(opts: {
   const brain = new RoutedProvider(getProvider('brain'), getProvider('high')); // conductor escalates on struggle/filter
   const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
   const memory = new MwaMemory('mwa-agent', opts.dbPath ?? './data/agent.db', opts.config.awm.workspace);
-  const { registry, close } = await buildRegistry(opts.config);
+  const { registry, close } = await buildRegistry(opts.config, memory);
 
   let processed = 0;
   for (const file of items) {
@@ -81,6 +81,9 @@ export async function processInbox(opts: {
       dir: workDir, memory, brain, worker, tools: registry,
       workspace: opts.config.awm.workspace,
       session: `task-${id}`,
+      // A file dropped in the inbox is unattended in every sense. It was left UNSET, and the shared
+      // approval gate only refuses on an explicit false - so an unattended write was confirmable.
+      interactive: false,
       budget: { maxSteps: opts.maxSteps ?? 40, maxWallMs: (opts.maxMin ?? 10) * 60_000, consolidateEvery: 10 },
     });
 

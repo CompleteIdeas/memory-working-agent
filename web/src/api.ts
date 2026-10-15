@@ -202,7 +202,12 @@ export interface RunLog { ts: number; instruction: string; reason: string; steps
 export async function getRuns(): Promise<RunLog[]> {
   try { const r = await fetch('/api/runs'); return (await r.json()).runs ?? []; } catch { return []; }
 }
-export async function getNotifications(since: number): Promise<{ ts: number; instruction: string; summary: string }[]> {
+export interface Notification {
+  ts: number; instruction: string; summary: string;
+  /** present since 2026-10-14; older records in notifications.jsonl have none, so treat as optional. */
+  reason?: string; steps?: number; toolCalls?: number; costUsd?: number; durationMs?: number; files?: string[]; dir?: string;
+}
+export async function getNotifications(since: number): Promise<Notification[]> {
   try { const r = await fetch('/api/notifications?since=' + since); return (await r.json()).notifications ?? []; } catch { return []; }
 }
 export async function getSchedule(): Promise<{ instruction: string; due: number; recur: string | null }[]> {

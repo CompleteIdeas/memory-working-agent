@@ -22,7 +22,7 @@ import { ONBOARD_PROTOCOL } from './onboard.js';
 import type { Memory, RecalledMemory, TrustTier } from './awm.js';
 import { effectOf, isSensitive, buildDoneReport, checkTripwires, readsUntrustedContent } from './tools/governance.js';
 import { answerConfidence, type Confidence } from './tools/honesty.js';
-import { isRoutineWorthy } from './tools/routines.js';
+import { isRoutineWorthy, scanPolicy } from './tools/routines.js';
 import { BRAIN_TOOLS } from './brain.js';
 import type { ToolDef } from './provider.js';
 import { RoutedProvider, classifyIntent, startTier, isComplexTask } from './model-router.js';
@@ -92,7 +92,7 @@ export interface AgentResult {
   supersedes: number;
   consolidations: number;
   durationMs: number;
-  usage: { brainIn: number; brainOut: number; workerIn: number; workerOut: number };
+  usage: { brainIn: number; brainOut: number; workerIn: number; workerOut: number; cacheRead: number; cacheWrite: number };
   costUsd: number;
   history: string[];
 }
@@ -158,11 +158,15 @@ const REMEMBER_TOOL: ToolDef = {
 
 // Agent-only tool: schedule an instruction to run later (stored as an AWM task with
 // a due=<epochMs> tag; the scheduler loop fires it and proactively delivers the result).
-const SCHEDULE_TOOL: ToolDef = {
+export const SCHEDULE_TOOL: ToolDef = {
   name: 'schedule',
-  description: 'Schedule an instruction to run LATER and proactively deliver the result. Use in_minutes for a one-shot delay, daily_at "HH:MM" (24h) for a daily run, or every_minutes for a recurring interval.',
+  description: 'Schedule an instruction to run LATER and proactively deliver the result. Use in_minutes for a one-shot delay, daily_at "HH:MM" (24h) for a daily run, or every_minutes for a recurring interval. THIS is the tool that CREATES one — call it directly; you do not need to look anything up first, and an empty schedule_list is not a reason you cannot schedule something. If the person asked for work to happen later, call this rather than doing the work now. You may only say something is scheduled if THIS tool returned success this turn: if you did not call it, or it failed, say plainly that it is not scheduled — never describe work as set up for later when it is not.',
   parameters: { type: 'object', properties: {
-    instruction: { type: 'string', description: 'what to do when it fires' },
+    // The instruction runs in a FRESH run: no conversation history, a NEW empty folder. Measured
+    // 2026-10-14: the model stored the user's whole utterance ("In 124 minutes, write note-2.txt in
+    // /data/mwa-workspace/serve/trial-…, do not do it now; just schedule it for later"), so the fired
+    // run read its own scheduling wording and tried to re-schedule, into a folder it cannot reach.
+    instruction: { type: 'string', description: 'What to do WHEN IT FIRES, written as a direct standalone command ("Write note-2.txt saying check 2 ran"). This runs LATER in a fresh session with NO memory of this conversation, so it must make sense on its own. Do NOT include timing or scheduling words ("in 20 minutes", "later", "schedule this") — the timing goes in in_minutes/daily_at/every_minutes. Refer to files by plain name or a path relative to the workspace, NEVER an absolute path from this conversation: the scheduled run gets its own new folder.' },
     in_minutes: { type: 'number', description: 'one-shot: run after N minutes from now' },
     daily_at: { type: 'string', description: 'recurring daily at HH:MM (24-hour)' },
     every_minutes: { type: 'number', description: 'recurring every N minutes' },
@@ -177,6 +181,43 @@ const ASK_USER_TOOL: ToolDef = {
   description: 'Ask the USER ONE specific clarifying question when the request is ambiguous or needs information only they have (which item they mean, a date, a preference, scope). Use SPARINGLY — only when you genuinely cannot proceed well without it; otherwise make a reasonable assumption and do the work. The turn ends and waits for their answer.',
   parameters: { type: 'object', properties: { question: { type: 'string', description: 'one specific question for the user' } }, required: ['question'] },
 };
+
+/**
+ * The action names hardwired into this loop. They are concatenated with `tools.defs()` at the call
+ * below, and the model's tool list must have unique names — so a REGISTRY tool that reuses one of
+ * these either errors at the provider or gets silently shadowed by the branch here that handles the
+ * hardwired action. Exported so the registry can be asserted against it instead of hoping.
+ */
+export const AGENT_ACTION_NAMES: readonly string[] = [
+  ...BRAIN_TOOLS.map((t) => t.name), REMEMBER_TOOL.name, SCHEDULE_TOOL.name, ASK_USER_TOOL.name,
+];
+
+/** Words that describe WHEN or WHETHER to do a task rather than WHAT it is. Stripped before
+ *  comparing, because a stored instruction usually still carries them and a re-schedule usually
+ *  does not. Measured 2026-10-14: the real failing instruction ("In 124 minutes, write a file called
+ *  note-2.txt saying check 2 ran. Do not do it now; just schedule it for later.") against its bare
+ *  task scored 0.5 on raw words — UNDER the 0.6 threshold, so the guard would not have fired on the
+ *  very case it was written for. Its unit test had used an easier pair. */
+const TIMING_WORDS = new Set([
+  'minute', 'minutes', 'min', 'mins', 'hour', 'hours', 'day', 'days', 'daily', 'weekly', 'hourly',
+  'later', 'now', 'today', 'tomorrow', 'tonight', 'then', 'after', 'from', 'every', 'each', 'once',
+  'not', 'dont', 'just', 'please', 'schedule', 'scheduled', 'scheduling', 'run', 'runs', 'task',
+  'this', 'that', 'for', 'and', 'the', 'its',
+]);
+
+/** Rough "these are the same task" test — Jaccard overlap of CONTENT words, after dropping timing
+ *  and scheduling words and bare numbers. Deliberately fuzzy: a model re-creating its own scheduled
+ *  task paraphrases rather than repeating verbatim. Exported so the threshold is testable. */
+export function sameTask(a: string, b: string): boolean {
+  const words = (s: string) => new Set(
+    s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+      .filter((t) => t.length > 2 && !/^\d+$/.test(t) && !TIMING_WORDS.has(t)),
+  );
+  const A = words(a); const B = words(b);
+  if (!A.size || !B.size) return false;
+  let inter = 0; for (const t of A) if (B.has(t)) inter++;
+  return inter / (A.size + B.size - inter) >= 0.6;
+}
 
 function nextDailyAt(hhmm: string, nowMs: number): number {
   const [h, m] = hhmm.split(':').map(Number);
@@ -227,6 +268,16 @@ export async function runAgent(opts: {
   /** 1-based resume count when this run is the scheduler RESUMING an earlier unfinished run.
    *  0/undefined = a fresh run. Caps auto-resume so a stuck task can't re-queue forever. */
   resumeAttempt?: number;
+  /** true when the scheduler is firing this task because it is DUE NOW. The stored instruction is
+   *  whatever the model wrote at schedule time and usually still carries the scheduling language, so
+   *  the fired run needs telling that the timing is already settled. Kept OUT of `instruction` on
+   *  purpose: that string is also the recall query and the run-log line, and framing would pollute
+   *  both. See the directive in runSystem below. */
+  dueNow?: boolean;
+  /** extra folders the file tools may touch for THIS run only, on top of the sandbox + granted
+   *  roots. The scheduler passes the folder the task was created in, so an instruction that baked an
+   *  absolute path in at schedule time still resolves when it fires in a fresh per-fire folder. */
+  extraRoots?: string[];
   /** plan-and-execute: undefined = auto (plan iff isComplexTask), true = force planned,
    *  false = force the direct loop. Set false on sub-task runs to prevent re-planning. */
   plan?: boolean;
@@ -281,7 +332,7 @@ export async function runAgent(opts: {
   const domainPack = opts.domainPackDir ? loadDomainPack(opts.domainPackDir) : null;
   const domainContext = domainPack ? buildDomainContext(domainPack, instruction) : '';
 
-  const usage = { brainIn: 0, brainOut: 0, workerIn: 0, workerOut: 0 };
+  const usage = { brainIn: 0, brainOut: 0, workerIn: 0, workerOut: 0, cacheRead: 0, cacheWrite: 0 };
   const history: string[] = [];
   let dispatches = 0, toolCalls = 0, reRecalls = 0, supersedes = 0, consolidations = 0;
   let learnedFacts = 0, skillsDerived = 0, openQuestions = 0, frictionsLearned = 0, policiesLearned = 0; // for the run log + self-learning loop
@@ -325,6 +376,11 @@ export async function runAgent(opts: {
   // F3 governance: side-effecting actions taken THIS run — feeds the SPINE action log, the
   // "what I did" report, and the cumulative trajectory tripwire.
   const runActions: { verb: string; tool: string; effect: 'external' | 'local' | 'read' }[] = [];
+  // Refused tool calls this run (a path outside the allowed roots, an unknown tool, a policy gate).
+  // Recorded so a run that finishes with nothing to show explains itself in the run log.
+  // Keep up to four, with the argument that was refused: a measured failure logged only its first
+  // refusal (a harmless not-found), and the two that actually explained it were lost.
+  let refusals = 0; const refusalLog: string[] = [];
   // F2: set once this run reads untrusted external content (inbox/web) — taints subsequent
   // `remember` writes so model-laundered inbox/web text isn't stored at medium trust.
   let sawUntrustedRead = false;
@@ -335,6 +391,45 @@ export async function runAgent(opts: {
   // NOT relevance-pruned: they're always injected so recency/topic can't erase a standing rule.
   const policies: string[] = memory.enabled ? (await memory.listPolicies()).slice(0, 12) : [];
   emit('start', { instruction: instruction.slice(0, 120), recalled: recalled.length, dir });
+
+  /**
+   * The run-stable prompt prefix — assembled ONCE, byte-identical on every step.
+   *
+   * This is the cache boundary. A 40-step run previously re-sent ~1,200 tokens of
+   * AGENT_SYSTEM, the persona, the person block, a dozen tool schemas, the instruction, the
+   * working dir, the standing preferences and the whole domain pack on EVERY step, because
+   * they were concatenated into the per-step user message. Nothing about them changes
+   * between steps, so they belong here; `brain.chat({ cache: true })` then puts one
+   * `cache_control` breakpoint after them (see ChatInput.cache in provider.ts).
+   *
+   * The ordering rule is the only thing to preserve when editing: anything that can vary
+   * within a run must stay OUT of this string, or the prefix stops being byte-identical and
+   * the cache misses on every call — which is indistinguishable from having no cache at all.
+   * `render()` (recalled memories grow), RECENT STEPS (sliding window) and the budget nudges
+   * are therefore all left in the volatile tail.
+   *
+   * STANDING PREFERENCES sit here deliberately: they are not relevance-pruned, so they are
+   * both stable and must never be crowded out of context by later steps.
+   */
+  const runSystem = [
+    AGENT_SYSTEM + persona + personBlock,
+    `INSTRUCTION: ${instruction}`,
+    // Constant for the whole run, so it is safe to keep in the cached prefix.
+    opts.dueNow
+      ? 'THIS SCHEDULED TASK IS DUE NOW. Do the work in INSTRUCTION immediately and in full. The timing '
+        + 'was settled when it was scheduled, so any "in N minutes" / "later" / "do not do it now" / '
+        + '"just schedule it for later" wording inside it is STALE — ignore that wording, do the work, '
+        + 'and do NOT call schedule to re-create this same task. Nobody is watching, so do not ask '
+        + 'whether to proceed. WORKING DIR below is a NEW folder: if the instruction names an absolute '
+        + 'path that you cannot write to, write the file in the working dir under its plain name and '
+        + 'say so in your summary rather than giving up.'
+      : '',
+    `WORKING DIR: ${dir}`,
+    policies.length
+      ? `STANDING PREFERENCES (the user's standing rules — always honor these; they override defaults):\n${policies.map((p) => `• ${p}`).join('\n')}`
+      : '',
+    domainContext,
+  ].filter(Boolean).join('\n\n');
 
   // Auto-PRIME: pull memory relevant to a context into the prompt set, keeping only the
   // top-K by relevance. Called at start (above) and silently re-run as the task evolves,
@@ -458,11 +553,10 @@ export async function runAgent(opts: {
     }
 
     const recent = history.slice(-HIST_WINDOW);
+    // VOLATILE TAIL ONLY. Everything loop-invariant — instruction, working dir, standing
+    // preferences, domain pack — moved into `runSystem` above so the cached prefix is
+    // byte-identical on every step of the run. See the note there.
     const prompt = [
-      `INSTRUCTION: ${instruction}`,
-      `WORKING DIR: ${dir}`,
-      policies.length ? `STANDING PREFERENCES (the user's standing rules — always honor these; they override defaults):\n${policies.map((p) => `• ${p}`).join('\n')}` : '',
-      domainContext,
       render(),
       recent.length ? `RECENT STEPS (older context is in memory — recall it if needed):\n${recent.join('\n')}` : 'No steps yet.',
       steps >= maxSteps * 0.8
@@ -477,8 +571,9 @@ export async function runAgent(opts: {
     let out;
     try {
       const base = [...BRAIN_TOOLS, REMEMBER_TOOL, SCHEDULE_TOOL, ASK_USER_TOOL];
+      // (AGENT_ACTION_NAMES below is this same set by name — keep them together.)
       const toolset = opts.tools ? [...base, ...opts.tools.defs()] : base;
-      out = await brain.chat({ system: AGENT_SYSTEM + persona + personBlock, messages: [{ role: 'user', content: prompt }], maxTokens: 800, tools: toolset });
+      out = await brain.chat({ system: runSystem, messages: [{ role: 'user', content: prompt }], maxTokens: 800, tools: toolset, cache: true });
       brainErrors = 0;
     } catch (e) {
       // Tolerate a transient brain blip (the provider already retried internally):
@@ -494,6 +589,9 @@ export async function runAgent(opts: {
       continue;
     }
     usage.brainIn += out.usage.input; usage.brainOut += out.usage.output;
+    // Reported separately so the cache is OBSERVABLE: a prefix that stopped being
+    // byte-identical misses silently and looks exactly like having no cache at all.
+    usage.cacheRead += out.usage.cacheRead ?? 0; usage.cacheWrite += out.usage.cacheWrite ?? 0;
 
     let action: Action | null = null;
     const tc = out.toolCalls?.[0];
@@ -676,6 +774,21 @@ export async function runAgent(opts: {
     }
 
     if (action.action === 'schedule' && action.instruction && memory.enabled) {
+      // GUARD: an unattended run re-creating its OWN task. A fired task whose stored instruction kept
+      // the scheduling language reads "just schedule it for later" and obliges — and on a recurring
+      // task that is a loop that burns a model call every interval and never does the work. Measured
+      // 2026-10-14: a fired run answered "the safest next step is to schedule it again". Keyed on
+      // `dueNow` — a SCHEDULED FIRE that is not a resume — and deliberately not on interactive===false:
+      // the mailbox and the open-question resolver are unattended too, and a dropped file saying
+      // "summarize my inbox daily" legitimately schedules "Summarize my inbox" (Jaccard 0.67 to its
+      // own instruction). Creating a recurring task is only wrong when the task being run IS it.
+      // Interactive runs are untouched, so the "I couldn't schedule it from here" dead end cannot return.
+      if (opts.dueNow && sameTask(String(action.instruction), instruction)) {
+        consecNoProgress++;
+        nudge = 'That is THIS task, which is due now — do the work itself instead of scheduling it again.';
+        history.push('(refused: re-scheduling this same task — it is due now; do the work)');
+        continue;
+      }
       consecNoProgress = 0;
       const nowMs = now();
       let dueMs = nowMs + 60_000; let recur: string | undefined;
@@ -683,7 +796,11 @@ export async function runAgent(opts: {
       else if (typeof action.every_minutes === 'number') { dueMs = nowMs + action.every_minutes * 60_000; recur = `every:${action.every_minutes}`; }
       else if (typeof action.daily_at === 'string') { dueMs = nextDailyAt(action.daily_at, nowMs); recur = `daily:${action.daily_at}`; }
       const check = typeof action.check === 'string' && action.check.trim() ? action.check.trim() : undefined;
-      await memory.addScheduledTask(String(action.instruction), dueMs, { recur, notify: opts.session, check });
+      // `origin` = the folder this run is working in. The fired run gets a FRESH folder, so without
+      // this an instruction that named an absolute path here is unreachable there and the task can
+      // never succeed. Deliberately NOT `dir`, which means "run IN this folder" (the resume path) —
+      // a scheduled task still gets its own per-fire folder; origin only widens what it may touch.
+      await memory.addScheduledTask(String(action.instruction), dueMs, { recur, notify: opts.session, check, person: opts.personId, origin: dir });
       productive++;
       const when = new Date(dueMs).toISOString().slice(0, 16).replace('T', ' ');
       history.push(`scheduled "${String(action.instruction).slice(0, 50)}" for ${when}${recur ? ` (${recur})` : ''}`);
@@ -727,7 +844,7 @@ export async function runAgent(opts: {
       }
       toolCalls++;
       const { action: _n, ...args } = action as Record<string, unknown> & { action: string };
-      const result = await opts.tools.call(action.action, args as Record<string, unknown>, { sandboxDir: dir, interactive: opts.interactive, personId: opts.personId, identityInDoubt: opts.identityInDoubt });
+      const result = await opts.tools.call(action.action, args as Record<string, unknown>, { sandboxDir: dir, interactive: opts.interactive, personId: opts.personId, identityInDoubt: opts.identityInDoubt, extraRoots: opts.extraRoots });
       // Keep enough of the result for the model to actually USE it — read_email/read_document
       // return long documents (a full email thread, a PDF); 400 chars hid the answer.
       history.push(`tool ${action.action} -> ${result.slice(0, 6000).replace(/\n/g, ' ')}`);
@@ -735,6 +852,9 @@ export async function runAgent(opts: {
       const uses = (toolUses.get(action.action) ?? 0) + 1; toolUses.set(action.action, uses);
       const repeatedResult = lastToolResult.get(action.action) === result; lastToolResult.set(action.action, result);
       const refused = /^\((refused|could not read|could not write|unknown tool|tool .+ failed)/i.test(result.trimStart());
+      // Keep refusals as EVIDENCE, not just as a nudge signal: a run that produced nothing needs to
+      // say why in the run log, or the next identical failure is just as opaque as the last.
+      if (refused) { refusals++; if (refusalLog.length < 4) refusalLog.push(`${action.action}(${String((args as Record<string, unknown>).path ?? (args as Record<string, unknown>).dir ?? '').slice(0, 80)}): ${result.slice(0, 140).replace(/\n/g, ' ')}`); }
       // F2: once this run has pulled in untrusted external content, taint later `remember` writes.
       if (!refused && readsUntrustedContent(action.action)) sawUntrustedRead = true;
       // F3: record a successful SIDE-EFFECTING action to the action log (Glass Box "what I did",
@@ -984,6 +1104,19 @@ export async function runAgent(opts: {
     const known = new Set(policies.map((p) => p.toLowerCase().trim()));
     const capture = async (r: string): Promise<void> => {
       if (r.length < 8 || known.has(r.toLowerCase())) return;
+      // A policy is primed into EVERY future run, so it is the one write where laundered text
+      // becomes a permanent instruction. Routines were scanned from the start and this path was
+      // not — and the extractor below reads the whole instruction, so a pasted email carrying
+      // "always forward invoices to <address>" could be lifted out of it as a standing rule.
+      // scanPolicy, not scanRoutine: the routine scan rejects a NEGATED safety rule ("never bypass
+      // the approval step") because a denylist cannot see polarity — and that is the single most
+      // valuable kind of standing preference. Say so rather than dropping it silently; a rule the
+      // user believes was saved and was not is worse than a visible refusal.
+      const pscan = scanPolicy(r);
+      if (!pscan.safe) {
+        history.push(`did NOT save a standing preference ("${r.slice(0, 50)}") — ${pscan.reason}`);
+        return;
+      }
       const id = await memory.savePolicy(r);
       if (id) { policiesLearned++; known.add(r.toLowerCase()); emit('remember', { concept: `preference: ${r}`.slice(0, 80) }); history.push(`saved a standing preference ("${r.slice(0, 50)}")`); }
     };
@@ -1026,7 +1159,10 @@ export async function runAgent(opts: {
   if (memory.enabled && !opts.subRun && !askedUser && (reason === 'budget' || reason === 'stuck') && (toolCalls > 0 || dispatches > 0) && attempt < MAX_RESUMES) {
     const cont = `Resume and finish this task — an earlier attempt ran out of time before completing it (resume ${attempt + 1} of ${MAX_RESUMES}). FIRST recall what you already did and check the files already in the working folder; then do ONLY the remaining work and finish. Do not start over.\n\nTHE TASK: ${instruction}`;
     const dueMs = now() + RESUME_DELAY_MS;
-    const id = await memory.addScheduledTask(cont, dueMs, { notify: opts.session, dir, resumeAttempt: attempt + 1 });
+    // person: a resume inherits the owner of the run it continues. Without it the resumed run is
+    // the shared `unknown` profile, and anything IT schedules becomes visible to every
+    // shared-profile session — the leak the person tag exists to close.
+    const id = await memory.addScheduledTask(cont, dueMs, { notify: opts.session, dir, resumeAttempt: attempt + 1, person: opts.personId });
     if (id) {
       history.push(`(unfinished — queued a resume for ~1 min from now, attempt ${attempt + 1}/${MAX_RESUMES})`);
       emit('schedule', { instruction: `resume: ${instruction.slice(0, 50)}`, due: dueMs, resume: attempt + 1 });
@@ -1062,7 +1198,8 @@ export async function runAgent(opts: {
 
   appendRunLog({
     ts: start, session: opts.session ?? '', instruction: instruction.slice(0, 160), reason,
-    steps, dispatches, toolCalls, reRecalls, supersedes, consolidations,
+    steps, dispatches, toolCalls, reRecalls, supersedes, consolidations, refusals,
+    ...(refusalLog.length ? { refusalLog } : {}),
     learned: learnedFacts, skills: skillsDerived, questions: openQuestions, frictions: frictionsLearned, policies: policiesLearned, transitions: transitionsRecorded,
     durationMs: now() - start, costUsd: Number((brainCost + workerCost).toFixed(4)), summary: finalSummary.slice(0, 200),
   });
@@ -1093,7 +1230,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   const start = now();
   const maxWallMs = opts.budget?.maxWallMs ?? 10 * 60_000;
   const totalSteps = opts.budget?.maxSteps ?? 40;
-  const usage = { brainIn: 0, brainOut: 0, workerIn: 0, workerOut: 0 };
+  const usage = { brainIn: 0, brainOut: 0, workerIn: 0, workerOut: 0, cacheRead: 0, cacheWrite: 0 };
   let costUsd = 0;
   const history: string[] = [];
   memory.setSessionId(opts.session ?? `plan-${start}`);

@@ -64,7 +64,11 @@ import { hasVerifiedFactor } from './person-identity.js';
 import { issueStepUp, verifyStepUp } from './step-up.js';
 import { runIngest, ingestAvailable } from './ingest.js';
 import { runScheduler } from './scheduler.js';
-import { loadConfig, CONFIG_PATH, setStyle, INTERACTION_STYLES, type InteractionStyle } from './config.js';
+// configPath(), not the bare CONFIG_PATH constant: MWA_CONFIG_PATH is how a container points
+// config at its /data volume, and loadConfig() already honors it. setFetchModel/setImageModel
+// below used the constant, so the UI saved to /app/mwa.config.json while the agent read
+// /data/mwa.config.json — the model picker looked like it silently did nothing.
+import { loadConfig, configPath, setStyle, INTERACTION_STYLES, type InteractionStyle } from './config.js';
 import { loadEnv } from './env.js';
 import { mailboxDirs } from './mailbox.js';
 import { googleConfigured, startGmailConnect } from './connectors/google.js';
@@ -158,7 +162,7 @@ async function resolveOpenQuestionsBg(): Promise<void> {
   if (!open.length) { memory.close(); return; }
   const brain = new RoutedProvider(getProvider('brain'), getProvider('high'));
   const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
-  const { registry, close } = await buildRegistry(cfg);
+  const { registry, close } = await buildRegistry(cfg, memory);
   const dir = resolve(cfg.workspace ?? './mwa-workspace', 'serve', 'resolve');
   for (const q of open) {
     try {
@@ -186,23 +190,23 @@ function appendNotification(entry: Record<string, unknown>): void {
 function setFetchModel(provider: string, model: string): void {
   const spec = `${provider}:${model}`;
   let raw: any = {};
-  try { if (existsSync(CONFIG_PATH)) raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')); } catch { /* */ }
+  try { if (existsSync(configPath())) raw = JSON.parse(readFileSync(configPath(), 'utf8')); } catch { /* */ }
   raw.models = raw.models ?? {};
   raw.models.fetch = spec;
   // Reason tier: keep/restore a Sonnet ceiling iff Anthropic is usable; else mirror fetch.
   raw.models.reason = (provider === 'anthropic' || process.env.ANTHROPIC_API_KEY)
     ? (provider === 'anthropic' ? spec : (raw.models.reason || 'anthropic:claude-sonnet-4-6'))
     : spec;
-  writeFileSync(CONFIG_PATH, JSON.stringify(raw, null, 2) + '\n');
+  writeFileSync(configPath(), JSON.stringify(raw, null, 2) + '\n');
 }
 
 /** Set (or clear, when model is empty) the image-generation model in mwa.config.json. */
 function setImageModel(provider: string, model: string): void {
   let raw: any = {};
-  try { if (existsSync(CONFIG_PATH)) raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')); } catch { /* */ }
+  try { if (existsSync(configPath())) raw = JSON.parse(readFileSync(configPath(), 'utf8')); } catch { /* */ }
   raw.models = raw.models ?? {};
   if (model) raw.models.image = `${provider}:${model}`; else delete raw.models.image;
-  writeFileSync(CONFIG_PATH, JSON.stringify(raw, null, 2) + '\n');
+  writeFileSync(configPath(), JSON.stringify(raw, null, 2) + '\n');
 }
 
 /** Per-session working dir + memory, so chat follow-ups build on earlier turns.
@@ -343,7 +347,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     memory.setSessionId(sessionId); // entity-bridge continuity across this conversation
     const brain = new RoutedProvider(getProvider('brain'), getProvider('high'));
     const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
-    const reg = await buildRegistry(cfg); close = reg.close; const registry = reg.registry;
+    const reg = await buildRegistry(cfg, memory); close = reg.close; const registry = reg.registry;
 
     // AUTO-CHAIN, but know when to stop: continue the current topic, start a new one, or ask.
     const topicTurns = s.history.slice(s.topicStart);
@@ -435,7 +439,12 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           }
           return;
         }
-        if (!authed(req)) {
+        // /api/health is exempt: it is the LIVENESS probe. With a password set it answered 401,
+        // so the Dockerfile HEALTHCHECK failed forever and the container sat "unhealthy" — on a
+        // NAS or under a restart policy that acts on health, permanently. Measured 2026-10-14:
+        // FailingStreak 4 within two minutes of boot. The handler below still withholds the
+        // detail (counts, sessions) from an unauthenticated caller; only ok/db go out.
+        if (!authed(req) && p !== '/api/health') {
           if (p.startsWith('/api/')) { res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'locked', message: 'Sign in to continue.' })); return; }
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(LOGIN_HTML); return;
         }
@@ -635,7 +644,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         let memoryCount = -1, db = false;
         try { const m = new MwaMemory(SERVE_AGENT, dbPath); memoryCount = await m.memoryCount(); m.close(); db = true; } catch { /* db down */ }
         const schedulerLastTickAgoSec = lastSchedulerTick ? Math.round((Date.now() - lastSchedulerTick) / 1000) : -1;
-        const body = { ok: db, uptimeSec: Math.round((Date.now() - SERVER_START) / 1000), db, memoryCount, activeRuns, sessions: sessions.size, schedulerLastTickAgoSec };
+        const full = { ok: db, uptimeSec: Math.round((Date.now() - SERVER_START) / 1000), db, memoryCount, activeRuns, sessions: sessions.size, schedulerLastTickAgoSec };
+        // Locked + not signed in: the probe still gets its verdict (and the 503 when the DB is
+        // down, which is the whole point of the check), but not the operational detail.
+        const body = (ACCESS_PW && !authed(req)) ? { ok: db, db } : full;
         res.writeHead(db ? 200 : 503, { 'content-type': 'application/json' });
         res.end(JSON.stringify(body));
         return;
@@ -1032,13 +1044,27 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       const memory = new MwaMemory(SERVE_AGENT, process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
       const brain = new RoutedProvider(getProvider('brain'), getProvider('high'));
       const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
-      const { registry } = await buildRegistry(cfg);
+      // PASS `memory`. Without it memoryTools()/workTools() register nothing, so every SCHEDULED
+      // run — the only autonomous path in the web app and therefore in Docker — had no
+      // schedule_list, schedule_cancel, policy_save/forget, routine_propose, memory_profile,
+      // memory_store_map, memory_learn_person or memory_feedback. Measured 2026-10-14: a scheduled
+      // task asked to call schedule_list replied "TOOL NOT AVAILABLE". A recurring task could not
+      // see or cancel itself, which is the headline reason schedule_cancel exists.
+      const { registry } = await buildRegistry(cfg, memory);
       console.log('  ⏰ scheduler on — say e.g. "every day at 8am, summarize my inbox"');
       await runScheduler({
         memory, brain, worker, tools: registry,
         outRoot: resolve(cfg.workspace ?? './mwa-workspace', 'scheduled'),
         onFire: async (task, r) => {
-          appendNotification({ ts: Date.now(), instruction: task.instruction, summary: r.summary });
+          // Carry the real numbers. The chat card for a fired task was built from this record with
+          // steps/toolCalls/cost hardcoded to 0 and reason to 'done', so an autonomous run that did
+          // 7 steps and $0.04 of work displayed as "what I did · 0 steps" — and one that refused
+          // displayed as done. This is the only run a person cannot watch happen.
+          appendNotification({
+            ts: Date.now(), instruction: task.instruction, summary: r.summary, reason: r.reason,
+            steps: r.steps, toolCalls: r.toolCalls, costUsd: r.costUsd, durationMs: r.durationMs,
+            files: r.files, dir: r.dir,
+          });
           console.log(`  ⏰ fired: ${task.instruction.slice(0, 60)} → ${r.summary.slice(0, 80)}`);
         },
         onTick: () => { lastSchedulerTick = Date.now(); },

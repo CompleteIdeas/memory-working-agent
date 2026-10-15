@@ -3,7 +3,11 @@ import { motion } from 'framer-motion';
 import { chatStream, getSuggestions, getNotifications, type SpineStep, type ChatResult } from '../api';
 import { ActivitySpine } from './ActivitySpine';
 
-interface Turn { id: number; user: string; steps: SpineStep[]; live: boolean; result?: ChatResult; error?: string; topicReset?: boolean; }
+/** What an UNATTENDED (scheduled) run did. It has no live step spine — nobody streamed it — so the
+ *  card shows these facts from the notification record instead. Absent on records written before
+ *  2026-10-14, which carried only the summary. */
+interface SchedFacts { steps: number; toolCalls: number; costUsd: number; files: string[]; reason: string; }
+interface Turn { id: number; user: string; steps: SpineStep[]; live: boolean; result?: ChatResult; error?: string; topicReset?: boolean; sched?: SchedFacts; }
 
 function sessionId(): string {
   let s = localStorage.getItem('mwa-session');
@@ -30,7 +34,17 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
       if (!notes.length) return;
       setTurns((prev) => [...prev, ...notes.map((n) => ({
         id: n.ts, user: `⏰ Scheduled · ${n.instruction}`, steps: [] as SpineStep[], live: false,
-        result: { reason: 'done', summary: n.summary, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0 } as ChatResult,
+        result: {
+          reason: n.reason ?? 'done', summary: n.summary, steps: n.steps ?? 0,
+          dispatches: 0, toolCalls: n.toolCalls ?? 0, costUsd: n.costUsd ?? 0,
+        } as ChatResult,
+        // The card used to read `what I did · ${steps.length} steps` off a spine that a scheduled
+        // run never has, so every autonomous run said "0 steps" — even one that did 7 steps and
+        // wrote a file. Carry the record's facts so the card can show them.
+        sched: n.steps === undefined ? undefined : {
+          steps: n.steps, toolCalls: n.toolCalls ?? 0, costUsd: n.costUsd ?? 0,
+          files: n.files ?? [], reason: n.reason ?? 'done',
+        },
       }))]);
       seen = Math.max(seen, ...notes.map((n) => n.ts));
       localStorage.setItem('mwa-notify-seen', String(seen));
@@ -113,9 +127,20 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
                   >
                     <div className="mono text-[11px] text-dim mb-1">MWA</div>
                     <p className="text-[15.5px] leading-relaxed whitespace-pre-wrap">{tn.result.summary}</p>
-                    <button onClick={() => toggleExpand(tn.id)} className="mono text-[11px] text-dim mt-2 underline hover:text-signal">
-                      {expanded.has(tn.id) ? 'hide steps' : `what I did · ${tn.steps.length} steps`}
-                    </button>
+                    {tn.sched ? (
+                      // Unattended run: no spine to expand, so state the facts outright.
+                      <div className="mono text-[11px] text-dim mt-2 break-words">
+                        ran unattended · {tn.sched.steps} step{tn.sched.steps === 1 ? '' : 's'} · {tn.sched.toolCalls} tool call{tn.sched.toolCalls === 1 ? '' : 's'} · ${tn.sched.costUsd.toFixed(3)}
+                        {tn.sched.reason !== 'done' && <span className="text-signal"> · stopped: {tn.sched.reason}</span>}
+                        {tn.sched.files.length
+                          ? <span> · wrote {tn.sched.files.join(', ')}</span>
+                          : <span> · no files</span>}
+                      </div>
+                    ) : (
+                      <button onClick={() => toggleExpand(tn.id)} className="mono text-[11px] text-dim mt-2 underline hover:text-signal">
+                        {expanded.has(tn.id) ? 'hide steps' : `what I did · ${tn.steps.length} steps`}
+                      </button>
+                    )}
                   </motion.div>
                 )}
                 {/* Collapsible full timeline (hidden by default in this interactive view). */}

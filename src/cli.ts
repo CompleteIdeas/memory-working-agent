@@ -70,7 +70,7 @@ async function runCommand(args: string[]): Promise<void> {
   const brain = new RoutedProvider(getProvider('brain'), getProvider('high')); // conductor: cheap → escalate on struggle/filter
   const worker = new RoutedProvider(getProvider('brain'), getProvider('high')); // coder: cheap → escalate on failure
   const memory = new MwaMemory('mwa-agent', dbPath, cfg.awm.workspace);
-  const { registry, close } = await buildRegistry(cfg);
+  const { registry, close } = await buildRegistry(cfg, memory);
 
   console.log(`\n▶ mwa run`);
   console.log(`  instruction: ${instruction}`);
@@ -80,6 +80,7 @@ async function runCommand(args: string[]): Promise<void> {
   const r = await runAgent({
     instruction, dir, memory, brain, worker, tools: registry,
     workspace: cfg.awm.workspace,
+    interactive: true, // `mwa run` is a person at a terminal; the gates that need one can fire
     budget: { maxSteps: Number(flags['max-steps'] ?? 40), maxWallMs: Number(flags['max-min'] ?? 10) * 60_000, consolidateEvery: 10 },
     onEvent: (type, d) => {
       const t = `${Math.round((Date.now() - t0) / 1000)}s`;

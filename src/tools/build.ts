@@ -10,13 +10,21 @@ import { manageTools } from './manage.js';
 import { loadMcpServers } from './mcp.js';
 import { installerTools } from './installer.js';
 import { onboardTools } from './onboard.js';
+import { memoryTools } from './memory.js';
+import { workTools } from './work.js';
+import { knowledgeTools } from './knowledge.js';
 import { googleConfigured, googleTools } from '../connectors/google.js';
 import { gmailImapConfigured, gmailImapTools } from '../connectors/gmail-imap.js';
 import { microsoftConfigured, microsoftTools } from '../connectors/microsoft.js';
 import { imageGenConfigured, imageGenTools } from '../connectors/imagegen.js';
 import type { MwaConfig } from '../config.js';
 
-export async function buildRegistry(config: MwaConfig): Promise<{ registry: ToolRegistry; close: () => Promise<void> }> {
+export async function buildRegistry(
+  config: MwaConfig,
+  /** The run's memory, when there is one. Optional so every existing caller keeps working;
+   *  without it the memory tools are simply absent rather than present-and-broken. */
+  memory?: import('../awm.js').MwaMemory | null,
+): Promise<{ registry: ToolRegistry; close: () => Promise<void> }> {
   const registry = new ToolRegistry();
   registry.registerAll(builtinTools(config.tools.builtins ?? []));
   // confirm_action / cancel_action / list_pending — the control tools for any
@@ -32,6 +40,19 @@ export async function buildRegistry(config: MwaConfig): Promise<{ registry: Tool
   // Runtime tool management: list_active_tools + uninstall/remove (safe) + add_mcp_server
   // (approval-gated). Makes the tool/MCP set hot-swappable from chat.
   registry.registerAll(manageTools(config));
+  // Memory tools — the agent's reach into the memory it already has: the person it is
+  // talking to, the shape of its own store, and recall feedback. MwaMemory implemented
+  // these long before anything could call them; see src/tools/memory.ts for why that
+  // mattered more than it sounds.
+  registry.registerAll(memoryTools(memory));
+  // Work tools — the agent's own scheduled automations, standing preferences and saved procedures.
+  // Same gap as the memory tools one layer out: it could CREATE a recurring task but never see or
+  // stop one. See src/tools/work.ts for why the policy writers are the gated ones.
+  registry.registerAll(workTools(memory));
+  // Knowledge store (opt-in via MWA_KNOWLEDGE_DIR). These were written and exported and
+  // then never registered, so `knowledge_write`/`knowledge_list` existed as dead code —
+  // the agent could not call either. Registering them is the whole fix.
+  registry.registerAll(knowledgeTools(process.env.MWA_KNOWLEDGE_DIR));
   // Gmail/Calendar tools (read + draft) appear once Gmail is connected; Outlook tools
   // (search_outlook/read_outlook/draft_outlook) once a Microsoft account is connected.
   // Distinct names → both can be connected at once with no collision.

@@ -20,12 +20,43 @@ const TOOL_CATEGORY: Record<string, ActionCategory> = {
   schedule: 'schedule',
   remember: 'memory', supersede: 'memory',
   ask_user: 'control', done: 'control', confirm_action: 'control', cancel_action: 'control', list_pending: 'control',
+
+  // Registry tools that ship WITH MWA. They have to be listed: classifyTool() defaults an unknown
+  // name to 'external', which is right for a tool the agent installed itself and wrong for these.
+  // Measured in the 2026-10-14 Docker run: a local memory write was reported to the user as
+  // "Reached outside your machine: policy save", and because MAX_EXTERNAL is 3 (agent.ts:341) an
+  // unattended run that merely LISTS its own schedule three times would pause itself.
+  schedule_list: 'read', memory_profile: 'read', memory_store_map: 'read',
+  schedule_cancel: 'schedule',
+  // policy_* are local, not outward — but they stay in a SENSITIVE category on purpose: a standing
+  // preference is primed into every future run, so it belongs in the "what I did" log and under the
+  // tripwires. ('memory', like remember/supersede, is NOT sensitive and would hide them.)
+  policy_save: 'write-local', policy_forget: 'write-local',
+  routine_propose: 'memory', memory_learn_person: 'memory',
+  memory_feedback: 'control',
+
+  // Knowledge store + tool/connector management. The read-only ones say so in their own
+  // descriptions; the install/propose paths reach for third-party code and stay 'external'.
+  knowledge_list: 'read', list_active_tools: 'read', list_connectors: 'read',
+  knowledge_write: 'write-local',
+  install_connector: 'external', uninstall_connector: 'external', propose_connector: 'external',
+  add_mcp_server: 'external', remove_mcp_server: 'external',
+  // NOTE: MCP-bridged tools are named `<server>__<tool>` at runtime and cannot appear here.
+  // Defaulting those to 'external' is deliberate — they run third-party code.
 };
 
 /** Classify a tool by what it does to the world. Unknown tools are treated as 'external' — the most
  *  cautious bucket — so a newly self-installed tool is governed by default, not silently trusted. */
 export function classifyTool(name: string): ActionCategory {
   return TOOL_CATEGORY[String(name)] ?? 'external';
+}
+
+/** True when `name` is classified EXPLICITLY rather than falling through to the 'external' default.
+ *  The default is correct for a tool the agent installed itself and wrong for one MWA ships: it
+ *  mislabels the Glass Box "what I did" line and spends the unattended MAX_EXTERNAL budget. Exposed
+ *  so a test can assert that every first-party registry tool is accounted for here. */
+export function hasExplicitCategory(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(TOOL_CATEGORY, String(name));
 }
 
 /** The coarse reach used by the SPINE action log + the Glass Box "what I did" view. */

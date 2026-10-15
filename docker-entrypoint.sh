@@ -38,4 +38,7 @@ if [ -n "${MWA_SEED_DB:-}" ] && [ ! -f "$DB" ] && [ -f "$MWA_SEED_DB" ]; then
 fi
 
 echo "[mwa] open http://localhost:7788 — set up a model the first time, then just chat."
-exec npx tsx src/cli.ts serve
+# exec NODE directly, not `npx tsx`. Under npx, npm is PID 1 and eats the stop signal: `docker stop`
+# printed "npm error signal SIGTERM" and serve.ts's SIGTERM/SIGINT handlers never ran, so a restart
+# killed an in-flight run instead of closing it out. On a VM that is every deploy.
+exec node --import tsx src/cli.ts serve

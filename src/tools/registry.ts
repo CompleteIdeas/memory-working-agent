@@ -14,6 +14,9 @@ import type { ToolDef } from '../provider.js';
 
 export interface ToolContext {
   sandboxDir: string;
+  /** extra folders THIS run may touch, on top of the sandbox + the user's granted roots. The
+   *  scheduler passes the folder a task was created in (see agent.ts `extraRoots`). */
+  extraRoots?: string[];
   /** whether a human is watching this run (gates run_command in Assistant mode). */
   interactive?: boolean;
   /** the resolved person this turn is for (S6) — used to gate sensitive confirms on step-up. */

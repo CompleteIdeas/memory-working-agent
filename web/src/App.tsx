@@ -31,27 +31,28 @@ function Header({ dark, setDark, memN, view, setView, showNav, onWizard }: { dar
   const tab = (v: View, label: string) => (
     <button
       onClick={() => setView(v)}
-      className={`mono text-[12px] uppercase tracking-[0.12em] px-1 py-0.5 border-b-2 transition-colors ${view === v ? 'border-signal text-graphite' : 'border-transparent text-dim hover:text-graphite'}`}
+      className={`mono text-[12px] uppercase tracking-[0.12em] px-1 py-0.5 border-b-2 whitespace-nowrap transition-colors ${view === v ? 'border-signal text-graphite' : 'border-transparent text-dim hover:text-graphite'}`}
     >
       {label}
     </button>
   );
   return (
     <header className="border-b border-line">
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 h-[60px] flex items-center justify-between gap-4">
-        <div className="flex items-baseline gap-2.5 shrink-0">
-          <span className="text-[22px] font-bold tracking-tight">MWA</span>
+      {/* Below `sm` the nav takes its own full-width row under the logo. On one row it measured
+          174px wider than a 390px phone (five tabs + the memory meter + the theme toggle), so the
+          whole page scrolled sideways. From `sm` up this is the original single 60px row. */}
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 min-h-[60px] py-2 sm:py-0 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+        <span className="text-[22px] font-bold tracking-tight shrink-0">MWA</span>
           {showNav && (
-            <nav className="flex items-center gap-3 ml-2">
+            <nav className="order-last sm:order-none w-full sm:w-auto sm:mr-auto sm:ml-2 flex items-center gap-3 overflow-x-auto">
               {tab('chat', 'chat')}
               {tab('connections', 'connect')}
               {tab('memory', 'memory')}
               {tab('log', 'log')}
-              <button onClick={onWizard} className="mono text-[12px] uppercase tracking-[0.12em] px-1 py-0.5 border-b-2 border-transparent text-dim hover:text-signal transition-colors">warm‑start</button>
+              <button onClick={onWizard} className="mono text-[12px] uppercase tracking-[0.12em] px-1 py-0.5 border-b-2 border-transparent text-dim hover:text-signal whitespace-nowrap transition-colors">warm‑start</button>
             </nav>
           )}
-        </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 shrink-0">
           <MemoryMeter n={memN} />
           <button
             onClick={() => setDark(!dark)}

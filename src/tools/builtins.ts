@@ -7,9 +7,9 @@
  * guarded), mirroring the worker. http_request is network egress — opt-in.
  */
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
-import { resolve, join, dirname } from 'node:path';
+import { resolve, join, dirname, basename } from 'node:path';
 import { runCommand } from '../util.js';
-import { resolveAllowed, runCommandAllowed } from './access.js';
+import { resolveAllowed, runCommandAllowed, allowedRoots } from './access.js';
 import type { RegisteredTool, ToolContext } from './registry.js';
 
 const CAP = 4000;
@@ -19,8 +19,28 @@ const SHELL_HINT = process.platform === 'win32'
 
 // A file path is allowed if it lands inside the workspace OR a folder the user granted
 // (access preset). Relative paths resolve against the workspace.
+/** The refusal for a path outside the allowed roots. It has to tell the model how to RECOVER, not
+ *  just that it failed. Measured 2026-10-14: a scheduled run asked to write a file "in the
+ *  workspace" got this refusal three times (all 3 of its tool calls), then told the user "file-writing
+ *  wasn't available in this run — please rerun with write access enabled". It had write access the
+ *  whole time, to its OWN folder; the old text named no folder it could use, and its only advice —
+ *  "grant its folder in settings" — is meaningless to an unattended run with nobody there. */
+function outsideRefusal(ctx: ToolContext, p: string, what: 'file' | 'path' | 'folder'): string {
+  const name = basename(String(p || '').replace(/[\\/]+$/, '')) || 'the-file.txt';
+  const where = `Your working folder is ${ctx.sandboxDir} and you CAN read and write there: a plain name like "${name}" lands in it.`;
+  return ctx.interactive === false
+    ? `(refused: that ${what} is outside what this run may access. ${where} Nobody is present to grant other folders, so use the working folder and say in your summary where the result is.)`
+    : `(refused: that ${what} is outside what this assistant may access. ${where} To use a different folder, the person can grant it in settings.)`;
+}
+
 function allowed(ctx: ToolContext, p: string): string | null {
-  return resolveAllowed(ctx.sandboxDir, p);
+  // ctx.extraRoots widens this for one run only — the scheduler passes the folder the task was
+  // created in. Measured 2026-10-14: a scheduled run refused "write note-3.txt in
+  // /data/mwa-workspace/serve/trial-…" outright, because that absolute path (baked into the
+  // instruction at schedule time) is a DIFFERENT run's sandbox. The task could never succeed.
+  const extra = (ctx.extraRoots ?? []).map((r) => resolve(r));
+  if (!extra.length) return resolveAllowed(ctx.sandboxDir, p);
+  return resolveAllowed(ctx.sandboxDir, p, [...allowedRoots(ctx.sandboxDir), ...extra]);
 }
 
 /** Strip HTML to readable text — so read_document on a web page returns prose, not markup. */
@@ -57,7 +77,7 @@ const listFilesTool: RegisteredTool = {
   },
   handler: async (args, ctx) => {
     const base = allowed(ctx, String(args.dir ?? '.'));
-    if (!base) return '(refused: that folder is outside what this assistant may access — grant it in settings)';
+    if (!base) return outsideRefusal(ctx, String(args.dir ?? '.'), 'folder');
     const out: string[] = [];
     const walk = (d: string, rel: string) => {
       let ents; try { ents = readdirSync(d, { withFileTypes: true }); } catch { return; }
@@ -81,11 +101,15 @@ const readFileTool: RegisteredTool = {
   },
   handler: async (args, ctx) => {
     const full = allowed(ctx, String(args.path ?? ''));
-    if (!full) return '(refused: that file is outside what this assistant may access — grant its folder in settings)';
+    if (!full) return outsideRefusal(ctx, String(args.path ?? ''), 'file');
     try {
       if (statSync(full).size > CAP * 6) return `(large file; first ${CAP} bytes)\n` + readFileSync(full, 'utf8').slice(0, CAP);
       return readFileSync(full, 'utf8').slice(0, CAP);
     } catch (e) {
+      // Not-found is an ANSWER, not a failure: a run checking "does this exist yet?" before writing
+      // it got "(could not read: ENOENT…)", which both reads as an error and counts as one in the
+      // agent's refusal accounting — the first of the three "refusals" in the measured run above.
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return `(no such file yet: ${args.path} — nothing exists there. If you meant to create it, call write_file with this path.)`;
       return `(could not read: ${(e as Error).message.slice(0, 80)})`;
     }
   },
@@ -99,7 +123,7 @@ const writeFileTool: RegisteredTool = {
   },
   handler: async (args, ctx) => {
     const full = allowed(ctx, String(args.path ?? ''));
-    if (!full) return '(refused: that path is outside what this assistant may access — grant its folder in settings)';
+    if (!full) return outsideRefusal(ctx, String(args.path ?? ''), 'path');
     try {
       mkdirSync(dirname(full), { recursive: true });
       writeFileSync(full, String(args.content ?? ''), 'utf8');
@@ -166,7 +190,7 @@ const readDocumentTool: RegisteredTool = {
       } else {
         // Local file: confine to the allowed folders (workspace + granted) — not arbitrary paths.
         const full = allowed(ctx, src);
-        if (!full) return '(refused: that file is outside what this assistant may access — grant its folder in settings)';
+        if (!full) return outsideRefusal(ctx, src, 'file');
         buf = readFileSync(full);
       }
       const lower = src.toLowerCase();

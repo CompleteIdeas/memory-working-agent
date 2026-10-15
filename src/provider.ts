@@ -34,7 +34,10 @@ export interface ToolCall {
 export interface ChatResult {
   text: string;
   toolCalls?: ToolCall[];
-  usage: { input: number; output: number };
+  /** `cacheRead`/`cacheWrite` are 0 on providers without explicit prompt caching. They are
+   *  reported rather than folded into `input` so a caller can SEE whether caching is working —
+   *  a cache that silently misses looks exactly like no caching at all. */
+  usage: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
 }
 
 export interface ChatInput {
@@ -46,6 +49,21 @@ export interface ChatInput {
    *  it only to models that support it (gpt-5.x reasoning_effort, Claude thinking); ignored
    *  otherwise. The router sets this per tier: strong tier = high, cheap tier = minimal. */
   reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
+  /**
+   * Mark the run-stable prefix (tools + system) as cacheable.
+   *
+   * An agent loop re-sends the same system prompt and the same tool definitions on every
+   * step — in MWA's case roughly 1,200 tokens of AGENT_SYSTEM plus a dozen tool schemas,
+   * up to 40 times per run. Caching is only possible when that prefix is BYTE-IDENTICAL
+   * across calls, which is why `runAgent` moves every loop-invariant section (instruction,
+   * working dir, standing preferences, domain pack) into `system` and leaves only the
+   * volatile tail in the user message.
+   *
+   * Providers differ: Anthropic needs an explicit `cache_control` breakpoint (set here),
+   * while OpenAI-compatible endpoints cache long prefixes automatically and ignore this.
+   * Either way the caller does not have to know which.
+   */
+  cache?: boolean;
 }
 
 export interface Provider {
@@ -70,7 +88,7 @@ class AnthropicProvider implements Provider {
   ) {
     this.id = `anthropic:${model}${idSuffix}`;
   }
-  async chat({ system, messages, maxTokens = 1500, tools, reasoningEffort }: ChatInput): Promise<ChatResult> {
+  async chat({ system, messages, maxTokens = 1500, tools, reasoningEffort, cache }: ChatInput): Promise<ChatResult> {
     // Extended thinking on reasoning-capable Claude models (hidden thinking blocks; the
     // visible text stays concise). budget must be < max_tokens, so add headroom.
     const canThink = /claude-(opus|sonnet)/i.test(this.model);
@@ -80,7 +98,14 @@ class AnthropicProvider implements Provider {
       model: this.model,
       max_tokens: budget ? maxTokens + budget : maxTokens,
       ...(budget ? { thinking: { type: 'enabled', budget_tokens: budget } } as any : {}),
-      ...(system ? { system } : {}),
+      // One breakpoint, on the system block. The request is serialized tools-then-system-then-
+      // messages, so a breakpoint here covers BOTH the tool schemas and the system prompt —
+      // the whole run-stable prefix — without needing a second marker on the last tool.
+      ...(system
+        ? { system: cache
+            ? [{ type: 'text' as const, text: system, cache_control: { type: 'ephemeral' as const } }]
+            : system }
+        : {}),
       ...(tools?.length
         ? { tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters as Anthropic.Tool.InputSchema })) }
         : {}),
@@ -93,7 +118,16 @@ class AnthropicProvider implements Provider {
     const toolCalls = r.content
       .filter((c): c is Anthropic.ToolUseBlock => c.type === 'tool_use')
       .map((c) => ({ name: c.name, args: (c.input ?? {}) as Record<string, unknown> }));
-    return { text, toolCalls: toolCalls.length ? toolCalls : undefined, usage: { input: r.usage.input_tokens, output: r.usage.output_tokens } };
+    return {
+      text,
+      toolCalls: toolCalls.length ? toolCalls : undefined,
+      usage: {
+        input: r.usage.input_tokens,
+        output: r.usage.output_tokens,
+        cacheRead: (r.usage as { cache_read_input_tokens?: number }).cache_read_input_tokens ?? 0,
+        cacheWrite: (r.usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens ?? 0,
+      },
+    };
   }
 }
 

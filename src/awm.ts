@@ -123,7 +123,7 @@ export interface Memory {
   /** Sleep consolidation (cluster/strengthen/decay); no-op when AWM is off. Returns cycle stats. */
   consolidate(): Promise<Record<string, number>>;
   /** Persist a scheduled task (due = epoch ms) in the AWM task store. */
-  addScheduledTask(instruction: string, dueMs: number, opts?: { recur?: string; notify?: string; dir?: string; resumeAttempt?: number; check?: string }): Promise<string | null>;
+  addScheduledTask(instruction: string, dueMs: number, opts?: { recur?: string; notify?: string; dir?: string; origin?: string; resumeAttempt?: number; check?: string; person?: string }): Promise<string | null>;
   /** Persist a reusable procedure ("skill") recalled on similar future tasks. */
   saveSkill(name: string, steps: string): Promise<string | null>;
   /** Persist a verbal failure reflection ("X failed because Y; next time Z") recalled
@@ -147,9 +147,16 @@ export interface ScheduledTask {
   recur?: string; // e.g. "every:60" (minutes) or "daily:09:00"
   notify?: string; // where to send the result (e.g. a session id)
   dir?: string; // working dir to REUSE (resume tasks reuse the original run's folder + files)
+  /** The folder the task was CREATED in. Unlike `dir` it does NOT become the fired run's working
+   *  folder — it is passed as an extra allowed root, so an absolute path the model baked into the
+   *  instruction at schedule time still resolves when the task fires in its own fresh folder. */
+  origin?: string;
   resumeAttempt?: number; // 1-based resume count (auto-resume of an unfinished long run); absent = not a resume
   check?: string; // cheap change-detection command: if its output signature is unchanged, the fire is skipped (no model call)
   lastSig?: string; // signature (sha1 hex) of the check output at the last actual fire
+  /** Who scheduled it (normalized personId). Absent on tasks written before person tagging — those
+   *  are treated as belonging to the shared/unknown profile, never to an identified person. */
+  person?: string;
 }
 
 export class MwaMemory implements Memory {
@@ -424,11 +431,19 @@ export class MwaMemory implements Memory {
     return [];
   }
 
-  async addScheduledTask(instruction: string, dueMs: number, opts: { recur?: string; notify?: string; dir?: string; resumeAttempt?: number; check?: string } = {}): Promise<string | null> {
+  async addScheduledTask(instruction: string, dueMs: number, opts: { recur?: string; notify?: string; dir?: string; origin?: string; resumeAttempt?: number; check?: string; person?: string } = {}): Promise<string | null> {
     const tags = ['topic=scheduled-task', 'status=pending', `due=${Math.round(dueMs)}`];
+    // WHOSE task this is. One agent id serves every person on a shared deployment (serve, Telegram),
+    // so without this tag a "what have I got scheduled?" tool would read back other people's
+    // instructions. Always tagged (an unidentified caller normalizes to `unknown`) so the absence of
+    // the tag means "written before person tagging existed", not "belongs to nobody".
+    tags.push(`person=${normalizePersonId(opts.person)}`);
     if (opts.recur) tags.push(`recur=${opts.recur}`);
     if (opts.notify) tags.push(`notify=${opts.notify}`);
     if (opts.dir) tags.push(`dir=${opts.dir}`);
+    // origin = where the task was CREATED. `dir` means "run in this folder" (resume); origin only
+    // widens what the fired run may touch, so an absolute path baked into the instruction resolves.
+    if (opts.origin) tags.push(`origin=${opts.origin}`);
     if (opts.resumeAttempt) tags.push(`resume=${opts.resumeAttempt}`);
     // Base64 the check command so an arbitrary shell string (spaces, commas, pipes, '=') survives
     // both tag serializations (JSON array or comma-split). No commas in base64 → comma-split is safe.
@@ -447,7 +462,7 @@ export class MwaMemory implements Memory {
         if (!tags.includes('topic=scheduled-task') || !tags.includes('status=pending')) continue;
         const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
         const check64 = get('check64=');
-        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined });
+        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, origin: get('origin=') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined, person: get('person=') || undefined });
       }
       return out.sort((a, b) => a.due - b.due);
     } catch (err) { console.error('[awm] pendingScheduled error:', (err as Error).message); return []; }
@@ -468,6 +483,13 @@ export class MwaMemory implements Memory {
    *  tick can skip the (expensive) agent run when nothing has changed. */
   async setScheduledSignature(id: string, sig: string): Promise<void> {
     await this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('lastsig=')), `lastsig=${sig}`]);
+  }
+
+  /** Cancel a pending scheduled task (status=canceled). Deliberately NOT completeScheduled: "the
+   *  person called it off" and "it ran to completion" are different facts, and collapsing them
+   *  destroys the only audit trail of an automation that was stopped. Both leave pendingScheduled. */
+  async cancelScheduled(id: string): Promise<void> {
+    await this.setScheduledTags(id, (tags) => tags.map((t) => (t.startsWith('status=') ? 'status=canceled' : t)));
   }
 
   /** Rough count of stored memories for this agent — powers the UI "memory meter". */
@@ -610,6 +632,30 @@ export class MwaMemory implements Memory {
       }
       return out;
     } catch { return []; }
+  }
+
+  /**
+   * Retract a standing preference. EXACT (case- and whitespace-insensitive) content match only —
+   * never a substring — because this hard-deletes, and a loose match on always-primed rules is the
+   * kind of mistake nobody notices until a safety preference is quietly gone.
+   *
+   * It deletes EVERY engram carrying that rule, not the first: listPolicies() dedups by lowercased
+   * content, so one visible preference can be several engrams (savePolicy reinforces a duplicate but
+   * a near-duplicate writes anew). Removing one of three leaves the rule still in force and still
+   * primed, which reads as "the tool silently did nothing". Returns how many were removed.
+   */
+  async removePolicy(rule: string): Promise<number> {
+    const want = String(rule ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!want) return 0;
+    try {
+      await this.init();
+      const all: any[] = (await this.store.getEngramsByAgent(this.agentId)) ?? [];
+      const hits = all.filter((e) => this.parseTags(e.tags).includes('topic=policy')
+        && String(e.content ?? '').replace(/\s+/g, ' ').trim().toLowerCase() === want);
+      let removed = 0;
+      for (const e of hits) if (await this.forget(e.id)) removed++;
+      return removed;
+    } catch (err) { console.error('[awm] removePolicy error:', (err as Error).message); return 0; }
   }
 
   /** F6 — versions already saved for a routine slug (for the next-version bump). */

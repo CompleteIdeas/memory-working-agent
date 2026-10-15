@@ -52,9 +52,19 @@ RUN sed -i 's/\r$//' docker-entrypoint.sh && chmod +x docker-entrypoint.sh
 ENV MWA_ENV_PATH=/data/.env \
     MWA_DB=/data/agent.db \
     MWA_WORKSPACE=/data/mwa-workspace \
+    MWA_CONFIG_PATH=/data/mwa.config.json \
+    MWA_RUNLOG=/data/runs.jsonl \
+    MWA_NOTIFY=/data/notifications.jsonl \
+    MWA_LOG=/data/mwa.log \
     MWA_SERVE_HOST=0.0.0.0 \
     MWA_NO_OPEN=1 \
     NODE_ENV=production
+# RUNLOG / NOTIFY / LOG / CONFIG_PATH belong on /data too, and did not used to be: they default
+# to ./data/* which inside the image is /app/data — the EPHEMERAL layer. The database and the
+# workspace were persisted while the entire audit trail was not, so every image rebuild or
+# `--force-recreate` silently wiped the run history, the Log tab, and any scheduled-task result
+# not yet delivered to a browser. On a VM that is every deploy. Measured 2026-10-14: /data held
+# agent.db + mwa-workspace while /app/data held runs.jsonl, notifications.jsonl and mwa.log.
 # NOTE: no `VOLUME ["/data"]` — persistence is provided by the host at run time
 # (`-v mwa-data:/data` for self-host/NAS) or by the platform's own volume (Railway
 # Volumes, Azure). Railway's builder explicitly rejects a Dockerfile VOLUME directive.
