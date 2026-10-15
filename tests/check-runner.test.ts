@@ -9,7 +9,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
-import { stageWorktree, listStaged, createRunner, dockerArgs, Tail, CHECKS, supervise, overlaps, skipped } from '../src/check-runner.js';
+import { stageWorktree, listStaged, createRunner, dockerArgs, Tail, CHECKS, supervise, overlaps, skipped, unusualPath, readCapped } from '../src/check-runner.js';
+import { openSync, closeSync } from 'node:fs';
 import { checkTools } from '../src/tools/checks.js';
 import { ToolRegistry } from '../src/tools/registry.js';
 import { classifyTool, outputSource, isSensitive } from '../src/tools/governance.js';
@@ -73,6 +74,15 @@ describe('staging a worktree', () => {
     symlinkSync(outside, join(repo, 'src'), process.platform === 'win32' ? 'junction' : 'dir');
     expect(() => stageWorktree(repo, out)).toThrow(/linked folder|symbolic link/);
     expect(existsSync(join(out, 'src', 'a.ts'))).toBe(false);
+  });
+
+  it('names Windows would read differently, and a file that grows, are refused or capped', () => {
+    // `node_modules ` and `node_modules.` open `node_modules` on Windows; `a:b` is a hidden stream.
+    expect(['node_modules /x.js', 'node_modules./x.js', 'src/a.ts:secret', 'src/./a.ts', 'src/a.ts', 'src/v1.2/a.ts'].map(unusualPath))
+      .toEqual([true, true, true, true, false, false]);
+    const f = join(repo, 'big.txt'); writeFileSync(f, 'x'.repeat(100));
+    const fd = openSync(f, 'r');
+    try { expect(readCapped(fd, 10).length).toBe(11); } finally { closeSync(fd); }
   });
 
   it('git cannot be made to run a program while listing the files', () => {
@@ -158,6 +168,22 @@ describe('the runner API', () => {
     expect((await fetch(`${url}/runs/ffffffffffffffff`, { headers: auth() })).status).toBe(404);
   });
 
+  it('answers with the run id before staging starts, so a big worktree can’t time out the caller', async () => {
+    let replied = false; let stagedAfterReply: boolean | null = null;
+    const runner = createRunner({ allow: [repo], image: 'unused', token, workRoot: tmp('mwa-cr-w2-'),
+      stage: (s, d) => { stagedAfterReply = replied; return stageWorktree(s, d); },
+      exec: async () => ({ exitCode: 0, durationMs: 1, timedOut: false, outputTail: '' }) });
+    const srv = createServer((req, res) => { void runner.handle(req, res).then(() => { replied = true; }); });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+    try {
+      const u = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
+      const r = await fetch(`${u}/checks`, { method: 'POST', headers: auth(), body: JSON.stringify({ worktree: '1', checks: ['typecheck'] }) });
+      expect(r.status).toBe(202);
+      for (let i = 0; i < 100 && stagedAfterReply === null; i++) await new Promise((s) => setTimeout(s, 10));
+      expect(stagedAfterReply).toBe(true);
+    } finally { srv.close(); }
+  });
+
   it('one run at a time, and the lock is freed when a run ends or is refused', async () => {
     hold = true;
     const first = await (await post({ worktree: '1', checks: ['typecheck'] })).json();
@@ -176,7 +202,7 @@ describe('the runner API', () => {
     try {
       delete process.env.MWA_CHECK_RUNNER_URL; delete process.env.MWA_CHECK_RUNNER_TOKEN;
       expect(checkTools()).toEqual([]);
-      process.env.MWA_CHECK_RUNNER_URL = url; process.env.MWA_CHECK_RUNNER_TOKEN = token;
+      process.env.MWA_CHECK_RUNNER_URL = url; process.env.MWA_CHECK_RUNNER_TOKEN = token; process.env.MWA_CHECK_RUNNER_POLL_MS = '20';
       const reg = new ToolRegistry(); reg.registerAll(checkTools());
       const list = await reg.callDetailed('run_checks', {}, { sandboxDir: '.' });
       expect(list.text).toMatch(/1: .*mwa-cr-repo-/);
@@ -185,6 +211,20 @@ describe('the runner API', () => {
       // Not an action on this machine (no tripwire, no "changed something"), but its output taints the run.
       expect([classifyTool('run_checks'), isSensitive('run_checks'), outputSource('run_checks')]).toEqual(['read', false, 'external']);
       expect((await reg.callDetailed('run_checks', { run: 'nope' }, { sandboxDir: '.' })).failed).toBe(true);
+      // A runner too busy to answer one poll in time is asked again, not given up on.
+      let gets = 0;
+      const slow = createServer((req, res) => {
+        if (req.method === 'POST') { res.writeHead(202); res.end(JSON.stringify({ run: '0123456789abcdef' })); return; }
+        if (++gets === 1) return; // never answers: the client's request times out
+        res.writeHead(200); res.end(JSON.stringify({ id: '0123456789abcdef', worktree: '1', status: 'done', staged: { files: 1 }, results: [{ check: 'typecheck', exitCode: 0, durationMs: 1, timedOut: false, outputTail: '' }] }));
+      });
+      await new Promise<void>((r) => slow.listen(0, '127.0.0.1', r));
+      try {
+        process.env.MWA_CHECK_RUNNER_URL = `http://127.0.0.1:${(slow.address() as { port: number }).port}`; process.env.MWA_CHECK_RUNNER_REQUEST_MS = '300';
+        const patient = new ToolRegistry(); patient.registerAll(checkTools());
+        const got = await patient.callDetailed('run_checks', { worktree: '1' }, { sandboxDir: '.' });
+        expect([got.failed, gets >= 2, /typecheck: PASSED/.test(got.text)]).toEqual([false, true, true]);
+      } finally { slow.closeAllConnections(); slow.close(); delete process.env.MWA_CHECK_RUNNER_REQUEST_MS; }
       process.env.MWA_CHECK_RUNNER_URL = 'http://127.0.0.1:1'; // the URL is read when the tool is built
       const gone = new ToolRegistry(); gone.registerAll(checkTools());
       expect((await gone.callDetailed('run_checks', { worktree: '1' }, { sandboxDir: '.' })).failed).toBe(true); // flagged, not text

@@ -130,8 +130,9 @@ the checks" to "run the checks with run_checks". Committing still needs your app
   - It has no network, a read-only system, and a size-capped scratch area.
   - It runs as an unprivileged user with no capabilities.
   - Memory, CPU, processes and open files are limited, and it is killed after 15 minutes.
-- **One run at a time.** The copy is deleted afterwards. MWA starts a run and then reads its result,
-  so a long suite isn't cut off while MWA waits.
+- **One run at a time.** The copy is deleted afterwards. MWA starts a run, then reads its result. It
+  waits up to five minutes (`MWA_CHECK_RUNNER_WAIT_MS`). A longer run keeps going, and MWA reads its
+  result later by the run's id.
 - **What it printed comes back to MWA as outside content.** It is fenced and taints the run, which
   stops that run from saving lessons as trusted or scheduling follow-ups. A check run isn't counted as
   a change on your machine, because nothing on it changes.

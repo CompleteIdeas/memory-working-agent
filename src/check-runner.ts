@@ -25,8 +25,8 @@
  * - Output is capped as it is read, and what comes back is outside content to MWA (fenced; it taints the run).
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
-import { lstatSync, mkdirSync, rmSync, readdirSync, realpathSync, readFileSync, writeFileSync, existsSync, openSync, fstatSync, closeSync, constants } from 'node:fs';
+import { spawn, execFile, execFileSync, type ChildProcess } from 'node:child_process';
+import { lstatSync, mkdirSync, rmSync, readdirSync, realpathSync, readFileSync, readSync, writeFileSync, existsSync, openSync, fstatSync, closeSync, constants } from 'node:fs';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { dirname, join, resolve, relative, sep, basename } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -51,6 +51,15 @@ export function skipped(path: string): boolean {
   return (base === '.env' || base.startsWith('.env.')) && base !== '.env.example';
 }
 
+/** At most `max + 1` bytes of an open file: a file that grows after it was inspected can't grow the copy. */
+export function readCapped(fd: number, max: number): Buffer {
+  const buf = Buffer.alloc(max + 1); let n = 0;
+  for (;;) { const r = readSync(fd, buf, n, buf.length - n, null); if (r === 0) break; n += r; if (n === buf.length) break; }
+  return buf.subarray(0, n);
+}
+
+export const unusualPath = (path: string) => path.split('/').some((seg) => seg === '..' || seg === '' || seg === '.' || /[. ]$/.test(seg) || seg.includes(':'));
+
 const sameFold = (a: string, b: string) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
 
 /**
@@ -61,7 +70,7 @@ export function stageWorktree(src: string, dest: string, limits: StageLimits = D
   const root = realpathSync.native(resolve(src));
   // git reads the worktree's config; these two settings could make `ls-files` run a program.
   const git = (...a: string[]) => execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-C', root, ...a],
-    { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 }).toString('utf8');
+    { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout: 120_000 }).toString('utf8');
   // Tracked entries WITH their modes: 160000 = a submodule link (skipped), 120000 = a symlink (refused).
   const tracked = git('ls-files', '-z', '--cached', '-s').split('\0').filter(Boolean).map((l) => {
     const tab = l.indexOf('\t');
@@ -75,7 +84,9 @@ export function stageWorktree(src: string, dest: string, limits: StageLimits = D
     seen.add(path);
     if (mode === '160000' || skipped(path)) continue;
     if (mode === '120000') throw new Error(`refused: ${path} is a symbolic link`);
-    if (path.split('/').some((seg) => seg === '..' || seg === '' || seg === '.')) throw new Error(`refused: unusual path ${path}`);
+    // Windows drops a trailing dot or space from a name, and a colon names a hidden stream: any of them
+    // could make a name look different from what it opens (`node_modules ` is `node_modules`).
+    if (unusualPath(path)) throw new Error(`refused: unusual path ${path}`);
     const from = join(root, path);
     let st;
     try { st = lstatSync(from, { bigint: true }); } catch { continue; } // deleted in the working tree
@@ -88,17 +99,18 @@ export function stageWorktree(src: string, dest: string, limits: StageLimits = D
     try { real = realpathSync.native(from); } catch { continue; }
     if (!sameFold(relative(root, real).split(sep).join('/'), path)) throw new Error(`refused: ${path} is reached through a linked folder`);
     if (st.size > BigInt(limits.maxFileBytes)) throw new Error(`refused: ${path} is larger than ${limits.maxFileBytes} bytes`);
-    files++; bytes += Number(st.size);
+    files++;
     if (files > limits.maxFiles) throw new Error(`refused: more than ${limits.maxFiles} files`);
-    if (bytes > limits.maxTotalBytes) throw new Error(`refused: more than ${limits.maxTotalBytes} bytes in all`);
     // Read through a handle and check it is still the file that was inspected: a swap between the
     // check and the copy (a file replaced by a link) is caught instead of followed.
     const fd = openSync(from, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       const now = fstatSync(fd, { bigint: true });
       if (!now.isFile() || now.ino !== st.ino || now.dev !== st.dev) throw new Error(`refused: ${path} changed while it was being staged`);
-      const data = readFileSync(fd);
+      const data = readCapped(fd, limits.maxFileBytes);
       if (data.length > limits.maxFileBytes) throw new Error(`refused: ${path} is larger than ${limits.maxFileBytes} bytes`);
+      bytes += data.length;
+      if (bytes > limits.maxTotalBytes) throw new Error(`refused: more than ${limits.maxTotalBytes} bytes in all`);
       const to = join(dest, path);
       mkdirSync(dirname(to), { recursive: true });
       writeFileSync(to, data);
@@ -124,6 +136,8 @@ export interface RunnerOptions {
   timeoutMs?: number;
   /** Where staged copies live; cleaned at start. */
   workRoot?: string;
+  /** For tests: replaces staging. */
+  stage?: typeof stageWorktree;
   /** For tests: replaces `docker run`. */
   exec?: (args: { stagedDir: string; check: CheckName; timeoutMs: number }) => Promise<Omit<CheckResult, 'check'>>;
 }
@@ -174,8 +188,10 @@ function dockerExec(image: string): NonNullable<RunnerOptions['exec']> {
   return ({ stagedDir, check, timeoutMs }) => {
     const name = `mwa-check-${randomBytes(6).toString('hex')}`;
     const child = spawn('docker', dockerArgs(image, stagedDir, check, name), { windowsHide: true });
-    return supervise(child, timeoutMs, () => { execFileSync('docker', ['kill', name], { stdio: 'ignore', timeout: 30_000 }); })
-      .finally(() => { try { execFileSync('docker', ['rm', '-f', name], { stdio: 'ignore', timeout: 30_000 }); } catch { /* already gone */ } });
+    // Asynchronous, so the runner keeps answering while Docker is slow.
+    const docker = (...a: string[]) => new Promise<void>((r) => { execFile('docker', a, { timeout: 30_000, windowsHide: true }, () => r()); });
+    return supervise(child, timeoutMs, () => { void docker('kill', name); })
+      .finally(() => docker('rm', '-f', name));
   };
 }
 
@@ -192,6 +208,7 @@ export function createRunner(opts: RunnerOptions & { token: string }) {
   rmSync(workRoot, { recursive: true, force: true }); // leftovers from a crashed run
   mkdirSync(workRoot, { recursive: true });
   const exec = opts.exec ?? dockerExec(opts.image);
+  const stage = opts.stage ?? stageWorktree;
   const timeoutMs = opts.timeoutMs ?? 15 * 60_000;
   const expected = Buffer.from(opts.token);
   const runs = new Map<string, RunRecord>();
@@ -207,7 +224,7 @@ export function createRunner(opts: RunnerOptions & { token: string }) {
     const staged = join(workRoot, run.id);
     try {
       mkdirSync(staged, { recursive: true });
-      try { run.staged = stageWorktree(src, staged); }
+      try { run.staged = stage(src, staged); }
       catch (e) { run.status = 'refused'; run.error = (e as Error).message; return; }
       run.results = [];
       for (const check of checks) run.results.push({ check, ...(await exec({ stagedDir: staged, check, timeoutMs })) });
@@ -216,7 +233,7 @@ export function createRunner(opts: RunnerOptions & { token: string }) {
       run.status = 'refused'; run.error = `the run failed: ${(e as Error).message}`;
     } finally {
       busy = false;
-      rmSync(staged, { recursive: true, force: true });
+      try { rmSync(staged, { recursive: true, force: true }); } catch { /* the next start cleans the work folder */ }
     }
   }
 
@@ -241,8 +258,10 @@ export function createRunner(opts: RunnerOptions & { token: string }) {
     const run: RunRecord = { id: randomBytes(8).toString('hex'), worktree: String(idx + 1), status: 'running', startedAt: Date.now() };
     runs.set(run.id, run);
     for (const k of [...runs.keys()].slice(0, Math.max(0, runs.size - KEEP_RUNS))) runs.delete(k);
-    void perform(run, allow[idx], [...new Set(checks)] as CheckName[]);
-    return reply(res, 202, { run: run.id });
+    // Answer first: staging a big worktree takes seconds and blocks this process while it runs, and a
+    // caller that times out before it has the run id can't read the result.
+    reply(res, 202, { run: run.id });
+    setImmediate(() => { perform(run, allow[idx], [...new Set(checks)] as CheckName[]).catch(() => { busy = false; }); });
   }
   return { handle, allow, workRoot, runs };
 }
@@ -282,14 +301,23 @@ export async function startCheckRunner(o: { allow: string[]; from: string; liste
     log(`building the check image ${image} from ${from} (once per lockfile / AWM pin)…`);
     execFileSync('docker', ['build', '-f', join(from, 'Dockerfile.checks'), '-t', image, from], { stdio: 'inherit' });
   }
+  // Take the port FIRST: a second runner started by mistake stops here, before it can wipe the work
+  // folder or remove the containers of the runner already serving.
+  const [host, portStr] = (o.listen ?? '127.0.0.1:7799').split(':');
+  if (host !== '127.0.0.1' && host !== 'localhost') log(`⚠ listening on ${host}: anything that can reach this address and has the token can ask for check runs.`);
+  let runner: ReturnType<typeof createRunner> | null = null;
+  const server = createServer((req, res) => {
+    if (!runner) { res.writeHead(503); res.end(JSON.stringify({ error: 'starting' })); return; }
+    runner.handle(req, res).catch((e) => { try { res.writeHead(500); res.end(JSON.stringify({ error: (e as Error).message })); } catch { /* */ } });
+  });
+  await new Promise<void>((ok, fail) => {
+    server.once('error', (e: NodeJS.ErrnoException) => fail(e.code === 'EADDRINUSE' ? new Error(`port ${portStr || 7799} on ${host} is in use — is a check runner already running? Stop it first, or pass --listen with another port.`) : e));
+    server.listen(Number(portStr || 7799), host, () => ok());
+  });
   // Containers a crashed runner left behind.
   try { const ids = execFileSync('docker', ['ps', '-aq', '--filter', 'label=mwa-check=1'], { encoding: 'utf8' }).split(/\s+/).filter(Boolean); if (ids.length) execFileSync('docker', ['rm', '-f', ...ids], { stdio: 'ignore' }); } catch { /* */ }
   const token = randomBytes(24).toString('hex');
-  const runner = createRunner({ allow: o.allow, image, token });
-  const [host, portStr] = (o.listen ?? '127.0.0.1:7799').split(':');
-  if (host !== '127.0.0.1' && host !== 'localhost') log(`⚠ listening on ${host}: anything that can reach this address and has the token can ask for check runs.`);
-  const server = createServer((req, res) => { runner.handle(req, res).catch((e) => { try { res.writeHead(500); res.end(JSON.stringify({ error: (e as Error).message })); } catch { /* */ } }); });
-  await new Promise<void>((r) => server.listen(Number(portStr || 7799), host, r));
+  runner = createRunner({ allow: o.allow, image, token });
   log(`check runner on http://${host}:${portStr || 7799} — image ${image}`);
   runner.allow.forEach((p, i) => log(`  worktree ${i + 1}: ${p}`));
   log('Give MWA these two settings (a fresh token each start):');

@@ -14,9 +14,11 @@
 import type { RegisteredTool } from './registry.js';
 import { ToolRefusal } from './registry.js';
 
-const WAIT_MS = 35 * 60_000; // two checks at the runner's 15-minute limit, with room to stage
-const POLL_MS = Math.max(50, Number(process.env.MWA_CHECK_RUNNER_POLL_MS) || 5000);
-const REQUEST_MS = 30_000;
+// Read when used, so a test or a restart-free settings change takes effect. The wait is bounded well
+// below the runner's limits: a run's step can't block for long, and a longer run is read later by id.
+const waitMs = () => Math.max(1000, Number(process.env.MWA_CHECK_RUNNER_WAIT_MS) || 5 * 60_000);
+const pollMs = () => Math.max(20, Number(process.env.MWA_CHECK_RUNNER_POLL_MS) || 5000);
+const requestMs = () => Math.max(200, Number(process.env.MWA_CHECK_RUNNER_REQUEST_MS) || 30_000);
 
 export function checkRunnerConfigured(): boolean {
   return Boolean(process.env.MWA_CHECK_RUNNER_URL && process.env.MWA_CHECK_RUNNER_TOKEN);
@@ -39,7 +41,7 @@ export function checkTools(): RegisteredTool[] {
     try {
       // The URL comes from the person's settings, never from the model, so it is fetched directly
       // (the network guard refuses loopback for the model's own fetches).
-      const res = await fetch(`${base}${path}`, { ...init, signal: AbortSignal.timeout(REQUEST_MS), headers: { ...(init.headers ?? {}), authorization: `Bearer ${process.env.MWA_CHECK_RUNNER_TOKEN}`, 'content-type': 'application/json' } });
+      const res = await fetch(`${base}${path}`, { ...init, signal: AbortSignal.timeout(requestMs()), headers: { ...(init.headers ?? {}), authorization: `Bearer ${process.env.MWA_CHECK_RUNNER_TOKEN}`, 'content-type': 'application/json' } });
       const body = await res.json().catch(() => ({}));
       return { status: res.status, body: body as Record<string, any> };
     } catch (e) {
@@ -47,14 +49,19 @@ export function checkTools(): RegisteredTool[] {
     }
   };
   const waitFor = async (id: string): Promise<string> => {
-    const deadline = Date.now() + WAIT_MS;
+    const deadline = Date.now() + waitMs();
+    const later = `call run_checks with run "${id}" later to read its result`;
     for (;;) {
-      const { status, body } = await call(`/runs/${encodeURIComponent(id)}`);
-      if (status === 404) throw new ToolRefusal(`(the check runner has no run ${id} — it keeps the last 20 and forgets them when it restarts)`);
-      if (status !== 200) throw new ToolRefusal(`(the check runner refused: ${body.error ?? status})`);
-      if (body.status !== 'running') return describe(body as Run);
-      if (Date.now() > deadline) return `(run ${id} is still going — call run_checks with run "${id}" later to read its result)`;
-      await new Promise((r) => setTimeout(r, POLL_MS));
+      let got: { status: number; body: Record<string, any> } | null = null;
+      // A slow answer (the runner is busy staging) is retried until the deadline, not treated as the end.
+      try { got = await call(`/runs/${encodeURIComponent(id)}`); } catch (e) { if (Date.now() > deadline) throw new ToolRefusal(`${(e as Error).message.replace(/\)$/, '')}; ${later})`); }
+      if (got) {
+        if (got.status === 404) throw new ToolRefusal(`(the check runner has no run ${id} — it keeps the last 20 and forgets them when it restarts)`);
+        if (got.status !== 200) throw new ToolRefusal(`(the check runner refused to show run ${id}: ${got.body.error ?? got.status})`);
+        if (got.body.status !== 'running') return describe(got.body as Run);
+      }
+      if (Date.now() > deadline) return `(run ${id} is still going — ${later})`;
+      await new Promise((r) => setTimeout(r, pollMs()));
     }
   };
   const runChecks: RegisteredTool = {
