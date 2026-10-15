@@ -367,7 +367,8 @@ Dockerfile  docker-entrypoint.sh  README.md
 Core loop + A/B/C benchmark + Docker + serve UI verified; the brain embodies the USEA-tuned hybrid
 loop (recall-first, grep-on-miss, supersede-on-divergence). Shipping: the live agent (`mwa run` /
 `mwa serve`), mailbox (`mwa watch`), Telegram + Gmail/Outlook/Calendar connectors (read + draft only),
-a scheduler on AWM's task ledger (with a cheap change-detection gate), an MCP tool bridge, multi-provider
+a scheduler on AWM's task ledger (with a cheap change-detection gate that starts as a dry run until you
+arm it), an MCP tool bridge, multi-provider
 models (Anthropic/Azure/OpenAI/OpenRouter/Ollama), a **pluggable memory backend** (SQLite · PGlite ·
 Postgres), the **per-person Profile + step-up** identity layer, and AWM vendored as a built-from-source
 submodule. Dry-run→confirm write approval + CSRF + trust-tiered provenance are in place. V2 measured

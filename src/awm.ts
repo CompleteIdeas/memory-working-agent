@@ -23,6 +23,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { scanRoutine, nextVersion } from './tools/routines.js';
 import { normalizePersonId, type PersonNote, type PersonNoteKind } from './person.js';
+import { parseEvidence, formatEvidence, evidenceAfter, readyToArm, type DetectorEvidence, type DryScore } from './detector.js';
 
 export interface RecalledMemory {
   id: string;
@@ -206,6 +207,15 @@ export interface ScheduledTask {
   resumeAttempt?: number; // 1-based resume count (auto-resume of an unfinished long run); absent = not a resume
   check?: string; // cheap change-detection command: if its output signature is unchanged, the fire is skipped (no model call)
   lastSig?: string; // signature (sha1 hex) of the check output at the last actual fire
+  /** BL-08: a new check is a dry run until a person arms it (bound to the command's hash). Absent on
+   *  checks from before BL-08, which keep skipping as they always did. */
+  checkMode?: 'dry' | 'armed';
+  checkArm?: string;
+  checkEv?: DetectorEvidence;
+  /** the person was told, once, that the dry run is ready to arm. */
+  checkReady?: boolean;
+  /** the last scored dry fire missed a change (reported once per record). */
+  checkMissed?: boolean;
   /** Who scheduled it (normalized personId). Absent on tasks written before person tagging — those
    *  are treated as belonging to the shared/unknown profile, never to an identified person. */
   person?: string;
@@ -594,7 +604,7 @@ export class MwaMemory implements Memory {
     if (opts.urgent) tags.push('urgent=1');
     // Base64 the check command so an arbitrary shell string (spaces, commas, pipes, '=') survives
     // both tag serializations (JSON array or comma-split). No commas in base64 → comma-split is safe.
-    if (opts.check) tags.push(`check64=${Buffer.from(opts.check, 'utf8').toString('base64')}`);
+    if (opts.check) tags.push(`check64=${Buffer.from(opts.check, 'utf8').toString('base64')}`, 'checkmode=dry'); // BL-08: starts disabled
     // noMerge: two tasks whose first 56 characters match are still two tasks. Merging appended one
     // task's instruction to the other and dropped the tainted tag (BL-17 review).
     // An IDENTICAL recurring task (same instruction, recurrence, owner and taint) is the same task:
@@ -640,7 +650,8 @@ export class MwaMemory implements Memory {
         if (!tags.includes('topic=scheduled-task') || !tags.includes('status=pending')) continue;
         const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
         const check64 = get('check64=');
-        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, origin: get('origin=') || undefined, tainted: tags.includes('tainted=1') || undefined, until: get('until64=') ? Buffer.from(get('until64='), 'base64').toString('utf8') : undefined, limits: get('limits64=') ? Buffer.from(get('limits64='), 'base64').toString('utf8') : undefined, deliver: (get('deliver=') || undefined) as ScheduledTask['deliver'], pendingComplete: tags.includes('pendingcomplete=1') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined, person: get('person=') || undefined, depth: Number(get('depth=')) || undefined, parent: get('parent=') || undefined, goal: get('goal=') || undefined, byRun: get('byrun=') || undefined, resumeOf: get('resumeof=') || undefined, budgetNotified: tags.includes('budgetnotified=1') || undefined, urgent: tags.includes('urgent=1') || undefined });
+        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, origin: get('origin=') || undefined, tainted: tags.includes('tainted=1') || undefined, until: get('until64=') ? Buffer.from(get('until64='), 'base64').toString('utf8') : undefined, limits: get('limits64=') ? Buffer.from(get('limits64='), 'base64').toString('utf8') : undefined, deliver: (get('deliver=') || undefined) as ScheduledTask['deliver'], pendingComplete: tags.includes('pendingcomplete=1') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined, person: get('person=') || undefined, depth: Number(get('depth=')) || undefined, parent: get('parent=') || undefined, goal: get('goal=') || undefined, byRun: get('byrun=') || undefined, resumeOf: get('resumeof=') || undefined, budgetNotified: tags.includes('budgetnotified=1') || undefined, urgent: tags.includes('urgent=1') || undefined,
+          checkMode: (get('checkmode=') || undefined) as ScheduledTask['checkMode'], checkArm: get('checkarm=') || undefined, checkEv: get('checkev=') ? parseEvidence(get('checkev=')) : undefined, checkReady: tags.includes('checkready=1') || undefined, checkMissed: tags.includes('checkmissed=1') || undefined });
       }
       return out.sort((a, b) => a.due - b.due);
     } catch (err) { console.error('[awm] pendingScheduled error:', (err as Error).message); return []; }
@@ -664,6 +675,52 @@ export class MwaMemory implements Memory {
   /** Recurring task: set the next due (epoch ms), keep pending. */
   async rescheduleTask(id: string, nextDueMs: number): Promise<void> {
     await this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('due=')), `due=${Math.round(nextDueMs)}`]);
+  }
+  /** BL-08: record a dry run's evidence, and (once) that the person was told it is ready to arm. */
+  async setCheckEvidence(id: string, ev: DetectorEvidence, ready?: boolean): Promise<void> {
+    await this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('checkev=') && (ready === undefined || t !== 'checkready=1')), `checkev=${formatEvidence(ev)}`, ...(ready ? ['checkready=1'] : [])]);
+  }
+  /**
+   * BL-08: record one dry-run fire — its score (null: a bootstrap or an inconclusive run) and the
+   * signature it saw, which becomes the next baseline — in ONE update against the task as it is NOW.
+   * A run can last minutes and a person may arm or disarm meanwhile; both clear the baseline, so a
+   * baseline that no longer matches the one this fire predicted from means the record changed under
+   * it, and nothing is written (BL-08 review). Returns what changed, for the person's notice.
+   */
+  async recordDryRun(id: string, o: { score: DryScore | null; sig: string; prevSig?: string }): Promise<{ ev: DetectorEvidence; nowReady: boolean; missedNews: boolean } | null> {
+    let out: { ev: DetectorEvidence; nowReady: boolean; missedNews: boolean } | null = null;
+    await this.setScheduledTags(id, (tags) => {
+      if (!tags.includes('checkmode=dry')) return tags; // armed while the run was going
+      const get = (p: string) => tags.find((t) => t.startsWith(p))?.slice(p.length);
+      if (get('lastsig=') !== o.prevSig) return tags;   // disarmed (or re-baselined) meanwhile
+      const withSig = [...tags.filter((t) => !t.startsWith('lastsig=')), `lastsig=${o.sig}`];
+      const score = o.score;
+      if (!score || score === 'inconclusive') return withSig;
+      const before = parseEvidence(get('checkev='));
+      const ev = evidenceAfter(before, score);
+      const wasReady = tags.includes('checkready=1');
+      const nowReady = score !== 'missed' && readyToArm(ev) && !wasReady;
+      // A miss is news once per record: repeated misses on an empty record stay quiet (BL-08 review).
+      const missedNews = score === 'missed' && !tags.includes('checkmissed=1');
+      out = { ev, nowReady, missedNews };
+      return [
+        ...withSig.filter((t) => !t.startsWith('checkev=') && t !== 'checkready=1' && t !== 'checkmissed=1'),
+        `checkev=${formatEvidence(ev)}`,
+        ...((wasReady && score !== 'missed') || nowReady ? ['checkready=1'] : []),
+        ...(score === 'missed' ? ['checkmissed=1'] : []),
+      ];
+    });
+    return out;
+  }
+  /** BL-08: arm a detector for exactly this command, or put it back into a fresh dry run. Either way the
+   *  baseline is cleared: armed, the next fire runs and sets one (a change seen only by a failed dry
+   *  fire is not lost); disarmed, the dry run starts over with a bootstrap. */
+  async setCheckMode(id: string, mode: 'dry' | 'armed', arm?: string): Promise<void> {
+    await this.setScheduledTags(id, (tags) => [
+      ...tags.filter((t) => !t.startsWith('checkmode=') && !t.startsWith('checkarm=') && !t.startsWith('lastsig=')
+        && !(mode === 'dry' && (t.startsWith('checkev=') || t === 'checkready=1' || t === 'checkmissed=1'))),
+      `checkmode=${mode}`, ...(mode === 'armed' && arm ? [`checkarm=${arm}`] : []),
+    ]);
   }
   /** Record the change-detection signature (sha1 hex) captured at the last actual fire, so the next
    *  tick can skip the (expensive) agent run when nothing has changed. */

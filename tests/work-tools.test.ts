@@ -78,7 +78,7 @@ describe('work tools', () => {
 
   it('exposes schedule list/cancel, policy save/forget and routine propose', () => {
     expect(workTools(fakeMemory()).map((t) => t.def.name).sort())
-      .toEqual(['goal_add', 'goal_list', 'goal_update', 'policy_forget', 'policy_save', 'quiet_hours', 'routine_propose', 'schedule_cancel', 'schedule_list']);
+      .toEqual(['goal_add', 'goal_list', 'goal_update', 'policy_forget', 'policy_save', 'quiet_hours', 'routine_propose', 'schedule_cancel', 'schedule_detector', 'schedule_list']);
   });
 
   it('no tool in the WHOLE registry reuses a name the agent loop already hardwires', async () => {
@@ -189,7 +189,7 @@ describe('work tools', () => {
 
     it('marks a change-gated task so the agent knows why it may not have run', async () => {
       const out = await byName(fakeMemory(), 'schedule_list').handler({}, ctx({ personId: 'robert' }));
-      expect(out).toContain('change-gated');
+      expect(out).toContain('detector armed'); // a check from before BL-08 keeps skipping
     });
   });
 

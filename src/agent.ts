@@ -103,6 +103,9 @@ export interface AgentResult {
   reason: 'done' | 'budget' | 'stuck' | 'error' | 'paused';
   /** what the run achieved (BL-02) — see RunOutcome. */
   outcome?: RunOutcome;
+  /** the run itself declared `outcome` in `done`, and nothing overrode it — not derived from activity.
+   *  A detector's dry run is scored only on these (BL-08 review: derived outcomes lean to "changed"). */
+  outcomeDeclared?: boolean;
   /** true when this run read external content (H-3). A plan step's output is the NEXT step's
    *  instruction, so the chain needs to know — otherwise taint dies at every step boundary. */
   tainted?: boolean;
@@ -205,7 +208,7 @@ export const SCHEDULE_TOOL: ToolDef = {
     urgent: { type: 'boolean', description: 'OPTIONAL: deliver this job\'s results even during the person\'s quiet hours. Only when they asked to be told at once ("wake me if…", "tell me the moment…").' },
     goal: { type: 'string', description: 'OPTIONAL: the short id of the goal this job serves (goal_list shows them). A job created by a scheduled run belongs to that run\'s goal automatically. A goal marked done stops its jobs; a blocked goal pauses them.' },
     deliver: { type: 'string', enum: ['always', 'changed', 'never'], description: 'When to message the person. always (default): every fire. changed: only when something changed or was produced — use for monitors ("tell me when…"). never: only if it fails. A failure is always delivered.' },
-    check: { type: 'string', description: 'OPTIONAL cost-saver for recurring polls: a small shell command that prints a value reflecting the watched state (e.g. a row count, a max timestamp, an API hash). If its output is unchanged since the last run, the scheduled run is skipped with no model call. Only the full instruction runs when the value changes.' },
+    check: { type: 'string', description: 'OPTIONAL cost-saver for recurring polls: a small shell command that prints a value reflecting the watched state (e.g. a row count, a max timestamp, an API hash). If its output is unchanged since the last run, the scheduled run is skipped with no model call. Only the full instruction runs when the value changes. A new check starts in a DRY RUN: it never skips a run until the person arms it with schedule_detector, after it has agreed with what the runs found.' },
   }, required: ['instruction'] },
 };
 
@@ -465,6 +468,7 @@ export async function runAgent(opts: {
   let budgetRefusal: string | undefined; // BL-05: a follow-up job the fan-out budget refused
   // What the model said it achieved, and how many calls the REGISTRY itself failed (BL-02).
   let declaredOutcome: RunOutcome | undefined;
+  let doneOutcome: RunOutcome | undefined; // what `done` itself said (BL-08)
   let failedCalls = 0;
   // Tool calls that returned something usable (not a registry failure, not a first-party refusal).
   let succeededCalls = 0;
@@ -816,7 +820,7 @@ export async function runAgent(opts: {
         }
       }
       reason = 'done';
-      if (RUN_OUTCOMES.includes(action.outcome as RunOutcome)) declaredOutcome = action.outcome as RunOutcome;
+      if (RUN_OUTCOMES.includes(action.outcome as RunOutcome)) { declaredOutcome = action.outcome as RunOutcome; doneOutcome = declaredOutcome; }
       finalSummary = summ || 'instruction satisfied';
       modelAnswered = Boolean(summ.trim());
       history.push(`done: ${finalSummary}`);
@@ -1461,6 +1465,7 @@ export async function runAgent(opts: {
   return {
     tainted: sawUntrustedRead,
     outcome,
+    ...(doneOutcome !== undefined && doneOutcome === outcome ? { outcomeDeclared: true } : {}),
     ...(staged.length ? { staged } : {}),
     ...(budgetRefusal ? { budgetRefusal } : {}),
     reason, summary: finalSummary, steps, dispatches, toolCalls, reRecalls, supersedes, consolidations,
@@ -1546,6 +1551,10 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   let aggSteps = 0, aggDispatches = 0, aggToolCalls = 0;
   let allDone = true;
   const stepOutcomes: (RunOutcome | undefined)[] = [];
+  // BL-08: a plan's outcome counts as declared only when EVERY step declared its own — the combination
+  // below is then a fixed function of what the steps said, not a guess from activity. (A live proof
+  // found half of scheduled fires were planned; without this a detector's dry run never scored them.)
+  let allStepsDeclared = true;
   const stagedAll: string[] = []; // approvals any step left waiting — the channel offers them (BL-03)
   const perStepBudget = Math.max(6, Math.ceil(totalSteps / steps.length) + 4);
   for (let i = 0; i < steps.length; i++) {
@@ -1581,6 +1590,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     costUsd += sub.costUsd; aggSteps += sub.steps; aggDispatches += sub.dispatches; aggToolCalls += sub.toolCalls;
     if (sub.reason !== 'done') allDone = false;
     stepOutcomes.push(sub.outcome);
+    if (sub.outcomeDeclared !== true) allStepsDeclared = false;
     if (sub.staged) stagedAll.push(...sub.staged);
     if (attemptTainted) chainTainted = true;
     const out = sub.summary.trim();
@@ -1626,6 +1636,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     : stepOutcomes.some((o) => o === 'changed' || o === undefined) ? 'changed' : 'no-change';
   return {
     outcome: planOutcome,
+    ...(allDone && allStepsDeclared && stepOutcomes.length > 0 ? { outcomeDeclared: true } : {}),
     tainted: chainTainted,
     ...(stagedAll.length ? { staged: [...new Set(stagedAll)] } : {}),
     reason, summary: finalSummary, steps: aggSteps, dispatches: aggDispatches, toolCalls: aggToolCalls,

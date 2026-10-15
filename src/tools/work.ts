@@ -42,6 +42,8 @@ import { normalizePersonId } from '../person.js';
 import { scanPolicy } from './routines.js';
 import { requireApproval } from './approval.js';
 import { quietWindow, setQuietHours, quietEnvInvalid, timeZoneName } from '../quiet.js';
+import { detectorLine, detectorArmed, readyToArm, checkHash, formatEvidence, READY_N } from '../detector.js';
+import { runCommandAllowed } from './access.js';
 
 /** Hard caps so a tool call can never flood the context window. */
 const MAX_LIST = 20;
@@ -132,7 +134,7 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
       if (!mine.length) return `(nothing scheduled)${tail}`;
       const now = Date.now();
       const rows = mine.slice(0, MAX_LIST).map((t) => {
-        const gate = t.check ? ' [change-gated: skips the run when the watched value is unchanged]' : '';
+        const gate = t.check ? ` [${detectorLine(t)}]` : '';
         // The job contract (BL-02): a person checking what is scheduled sees what bounds each job.
         const contract = [t.until ? `stops when: ${clip(t.until, 80)}` : '', t.limits ? `limits: ${clip(t.limits, 80)}` : '', t.deliver && t.deliver !== 'always' ? `tells you: ${t.deliver === 'changed' ? 'only when something changes' : 'only if it fails'}` : '', t.pendingComplete ? 'looks finished — confirming' : '', t.goal ? `for goal ${t.goal.slice(0, HANDLE_LEN)}` : '', t.depth ? `created by another job (level ${t.depth})` : ''].filter(Boolean).join(' · ');
         return `${t.id.slice(0, HANDLE_LEN)} — ${whenLabel(t.due, now)} — ${recurLabel(t.recur)}\n    "${clip(t.instruction, MAX_INSTRUCTION_CHARS)}"${contract ? `\n    ${contract}` : ''}${gate}`;
@@ -409,5 +411,99 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
     },
   };
 
-  return [scheduleList, scheduleCancel, policySave, policyForget, routinePropose, goalAdd, goalList, goalUpdate, quietHours];
+  // ── Detectors (BL-08) ─────────────────────────────────────────────────────────────────────────
+  // A job's `check` starts as a dry run and skips nothing until the PERSON arms it — after seeing it
+  // agree with what the runs found, or explicitly, knowing it hasn't. Attended and clean, like goals:
+  // a pasted page must not be able to arm a detector that then silences a job.
+  // The approved half: arm exactly what the person saw on the card — this command, with this dry-run
+  // record. If the check changed, or a fire changed the record (a missed change, say) after the card
+  // was staged, nothing is armed: the card no longer tells the truth (BL-08 review).
+  /** What a card stakes its claim on: the evidence and whether a miss is outstanding. */
+  const detectorRecord = (t: { checkEv?: { n: number; skips: number; runs: number }; checkMissed?: boolean }) =>
+    `${formatEvidence(t.checkEv ?? { n: 0, skips: 0, runs: 0 })}${t.checkMissed ? '!' : ''}`;
+  const detectorArmInner: RegisteredTool = {
+    def: {
+      name: 'schedule_detector',
+      description: 'Arm a scheduled job\'s change detector.',
+      parameters: { type: 'object', properties: { task: { type: 'string' }, hash: { type: 'string' }, record: { type: 'string' } }, required: ['task', 'hash', 'record'], additionalProperties: false },
+    },
+    handler: async (args, ctx) => {
+      const { mine } = await myTasks(ctx);
+      const t = mine.find((x) => x.id === String(args.task ?? ''));
+      if (!t?.check) return '(that job is gone or has no detector — nothing armed)';
+      if (checkHash(t.check) !== String(args.hash ?? '')) return '(the job\'s check changed after this was approved — nothing armed; look at it again)';
+      if (detectorRecord(t) !== String(args.record ?? '')) return '(the detector\'s dry-run record changed after this card was made — nothing armed; check its status and ask again)';
+      if (detectorArmed(t)) return 'already armed';
+      await memory.setCheckMode!(t.id, 'armed', checkHash(t.check));
+      return `armed — "${clip(t.instruction, 80)}" now skips its run when its check prints the same as last time`;
+    },
+  };
+  const detectorArmGated = requireApproval(detectorArmInner, {
+    preview: (a) => String(a.preview ?? 'Arm a scheduled job\'s change detector.'),
+  });
+  // ── Detectors (BL-08) ─────────────────────────────────────────────────────────────────────────
+  // A job's `check` starts as a dry run and skips nothing until a PERSON arms it — by approving a card
+  // (like a standing preference), after seeing it agree with what the runs found or knowingly without
+  // that record. The model can ask; it can't arm. Only from an attended, clean chat, like goals.
+  // Status shows no stored text (the check and instruction may have been written by a tainted run),
+  // so this tool's output stays MWA's own; the card shows the command to the person.
+  const scheduleDetector: RegisteredTool = {
+    def: {
+      name: 'schedule_detector',
+      description:
+        'See, arm or disarm a scheduled job\'s change detector (its `check`). A new detector starts in a DRY RUN: ' +
+        'it runs on every fire but never skips one, and its prediction is compared with what each run found. ' +
+        `Once it has agreed ${READY_N} times (both when nothing changed and when something did), the person is told. ` +
+        'Ask to arm it ONLY when the person asks: "arm" puts an approval card in front of them, and only their approval arms it. ' +
+        'Armed, it skips runs whose watched value is unchanged. Pass the short id from schedule_list and action "status", "arm" ' +
+        'or "disarm". Asking to arm one that is not ready needs force: true and the person\'s explicit say-so.',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'the short id from schedule_list' },
+          action: { type: 'string', enum: ['status', 'arm', 'disarm'] },
+          force: { type: 'boolean', description: 'ask to arm before the dry run has shown it works — only when the person explicitly says so' },
+        },
+        required: ['id', 'action'],
+        additionalProperties: false,
+      },
+    },
+    handler: async (args, ctx) => {
+      const want = String(args.id ?? '').trim().toLowerCase();
+      if (want.length < 4) return '(give the short id from schedule_list — at least 4 characters)';
+      const { mine } = await myTasks(ctx);
+      const hits = mine.filter((t) => t.id.toLowerCase().startsWith(want));
+      if (!hits.length) return `(no scheduled task with id "${clip(want, 16)}" — call schedule_list for the current ids)`;
+      if (hits.length > 1) return `(ambiguous: ${hits.length} tasks start with "${clip(want, 16)}" — use more characters)`;
+      const t = hits[0];
+      if (!t.check) return '(this job has no detector — it simply runs every time)';
+      const note = runCommandAllowed(false).ok ? '' : '\n(Detectors only execute in Developer mode. In this mode the job runs every time, whatever the detector\'s state.)';
+      const action = String(args.action ?? 'status');
+      if (action === 'status') return `${t.id.slice(0, HANDLE_LEN)}: ${detectorLine(t)}${note}`;
+      if (action !== 'arm' && action !== 'disarm') return '(action must be "status", "arm" or "disarm")';
+      const gate = goalGate(ctx);
+      if (gate) return gate.replace('goals are set and changed', 'detectors are armed and disarmed').replace('set or change goals', 'arm or disarm a detector');
+      if (!memory.setCheckMode) return '(this memory store cannot change detectors)';
+      if (action === 'disarm') {
+        // The safe direction needs no card: the job simply runs every time again.
+        await memory.setCheckMode(t.id, 'dry');
+        return `disarmed — the detector is back in a dry run with a fresh record; the job runs every time${note}`;
+      }
+      if (detectorArmed(t)) return `already armed${note}`;
+      const ev = t.checkEv ?? { n: 0, skips: 0, runs: 0 };
+      const ready = readyToArm(ev);
+      if (!ready && args.force !== true) return `(not ready: ${detectorLine(t)}. Armed now, it could make the job skip real work unseen. Ask to arm it anyway only if the person explicitly says so — call again with force: true.)`;
+      const preview =
+        `Arm the change detector of a scheduled job.\n  job: "${clip(t.instruction, 100)}"\n` +
+        `  From now on the job SKIPS its run whenever this command prints the same as last time:\n  ${clip(t.check, 240)}\n` +
+        (ready ? `  Dry run: it agreed with ${ev.n} runs (${ev.skips} unchanged, ${ev.runs} changed).`
+          : `  NO dry-run record yet (${ev.n} of ${READY_N}): if this command doesn't really track the job, the job will stop running unseen.`);
+      const staged = await detectorArmGated.handler({ task: t.id, hash: checkHash(t.check), record: detectorRecord(t), preview }, ctx);
+      // The card shows the person the command; the model's copy leaves the stored text out, so this
+      // tool's output stays MWA's own words (BL-08 review).
+      return `${staged.replace(/--- preview of what will run ---[\s\S]*?--- end preview ---/, '--- the card shows the person the job and its command ---')}${note}`;
+    },
+  };
+
+  return [scheduleList, scheduleCancel, policySave, policyForget, routinePropose, goalAdd, goalList, goalUpdate, quietHours, scheduleDetector];
 }

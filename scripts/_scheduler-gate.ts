@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MwaMemory } from '../src/awm.js';
 import { tickScheduler } from '../src/scheduler.js';
+import { checkHash } from '../src/detector.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'mwa-gate-'));
 const dbPath = join(dir, 'agent.db');
@@ -43,6 +44,10 @@ async function main() {
   // round-trip: the check command survives AWM storage (base64 tag) and reads back intact
   const [t0] = await mem.pendingScheduled();
   ok('check command round-trips through AWM storage', t0?.check === CHECK, t0?.check);
+  // BL-08: a new detector starts as a dry run and skips nothing. This proof is about the ARMED gate,
+  // so a person arms it here (the dry run itself is proven in tests/detector-dry-run.test.ts).
+  ok('a new detector starts disabled (dry run)', t0?.checkMode === 'dry', t0?.checkMode);
+  await mem.setCheckMode(t0!.id, 'armed', checkHash(CHECK));
 
   const deps: any = {
     memory: mem, brain: {}, worker: {}, outRoot,
@@ -78,6 +83,9 @@ async function main() {
 
   // Fail-open: a check that ERRORS must never silently drop work — it runs the agent anyway.
   await mem.addScheduledTask('failing-check task', clock, { recur: 'every:1', check: 'node -e "process.exit(3)"' });
+  // armed, so this leg proves the ARMED path fails open (a dry run never skips anyway)
+  const failing = (await mem.pendingScheduled()).find((t) => t.instruction === 'failing-check task')!;
+  await mem.setCheckMode(failing.id, 'armed', checkHash('node -e "process.exit(3)"'));
   const before = ran.length;
   await tick('A'); // task1 unchanged (skips); the new failing-check task should fire despite the error
   ok('failed check fails OPEN (runs the agent, never silently skips)', ran.some((i) => i === 'failing-check task'), `ran=${ran.slice(before).join('|')}`);

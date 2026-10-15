@@ -61,7 +61,39 @@ describe('run outcome — runtime evidence beats the claim', () => {
   it('takes the model’s declared outcome when nothing contradicts it', async () => {
     const r = await run([{ action: 'done', summary: 'No new invoice.', outcome: 'no-change' }]);
     expect(r.outcome).toBe('no-change');
+    expect(r.outcomeDeclared).toBe(true); // BL-08: a detector's dry run may score this one
   }, 30_000);
+
+  it('an outcome derived from activity, or overridden by evidence, is not marked declared (BL-08)', async () => {
+    expect((await run([{ action: 'done', summary: 'Checked the portal.' }])).outcomeDeclared).toBeUndefined();
+    const { ToolRegistry } = await import('../src/tools/registry.js');
+    const reg = new ToolRegistry();
+    reg.registerAll([{ def: { name: 'portal__fetch', description: 'f', parameters: { type: 'object', properties: {} } }, handler: async () => { throw new Error('401 unauthorized'); } }]);
+    const r = await run([{ action: 'portal__fetch' }, { action: 'done', summary: 'Nothing new.', outcome: 'no-change' }], reg);
+    expect([r.outcome, r.outcomeDeclared]).toEqual(['could-not', undefined]);
+  }, 60_000);
+
+  it('a planned run is declared only when every step declared its own outcome (BL-08)', async () => {
+    // The planner splits the job in two; each step's brain then finishes with or without an outcome.
+    const planned = (outcomes: (string | undefined)[]): Provider => {
+      let step = 0;
+      return { id: 'p', model: 'p', price: [0, 0], chat: async (input: ChatInput): Promise<ChatResult> => {
+        const sys = String(input.system ?? '');
+        if (sys.includes('You are the PLANNER')) return { text: JSON.stringify({ steps: [{ task: 'look at the portal', done_when: 'looked' }, { task: 'report what is new', done_when: 'reported' }] }), usage: { input: 1, output: 1 } };
+        if (!sys.includes('TRUST BOUNDARY')) return { text: '{}', usage: { input: 1, output: 1 } };
+        const o = outcomes[step++];
+        return { text: JSON.stringify({ action: 'done', summary: 'No new invoice.', ...(o ? { outcome: o } : {}) }), usage: { input: 1, output: 1 } };
+      } };
+    };
+    const go = (outcomes: (string | undefined)[]) => withMemory((dir, mem) => runAgent({
+      instruction: 'check the vendor portal for a new invoice', dir, memory: mem, brain: planned(outcomes), worker: planned(outcomes),
+      interactive: false, plan: true, budget: { maxSteps: 6, maxWallMs: 30_000 },
+    }));
+    const all = await go(['no-change', 'no-change']);
+    expect([all.outcome, all.outcomeDeclared]).toEqual(['no-change', true]);
+    const some = await go(['no-change', undefined]);
+    expect(some.outcomeDeclared).toBeUndefined();
+  }, 90_000);
 
   it('a genuinely failed tool with nothing achieved is could-not, even if the model says no-change', async () => {
     const { ToolRegistry } = await import('../src/tools/registry.js');

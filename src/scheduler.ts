@@ -15,6 +15,7 @@ import type { Provider } from './provider.js';
 import type { MwaMemory, ScheduledTask } from './awm.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { runAgent } from './agent.js';
+import { detectorArmed, scoreDryRun } from './detector.js';
 
 export interface FireResult {
   summary: string; files: string[]; dir: string; reason: string;
@@ -118,11 +119,20 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // runAgent per fire already keeps context small; the gate avoids even paying for the fire when
     // there's nothing new. A resume never gates (it's continuing committed work, not polling).
     let newSig: string | undefined;
+    // BL-08: a detector nobody has armed is a DRY RUN — it runs and is scored against what the run
+    // finds, but never skips. `dry` is its prediction for this fire (undefined: bootstrap or no check).
+    let dry: { wouldSkip: boolean } | undefined;
+    const armed = detectorArmed(task);
     // A completion candidate always fires its confirming check — an unchanged signature would skip it
     // forever, and the person was told the job would stop (BL-02 review).
     if (task.check && !task.resumeAttempt && !task.pendingComplete && allowChecks) {
       const c = await runCheck(task.check);
-      if (c.ok) {
+      if (c.ok && !armed) {
+        const s = signature(c.out.trim());
+        if (task.lastSig) dry = { wouldSkip: s === task.lastSig }; // the first fire has no baseline: never scored
+        newSig = s;
+        log(`🔎 detector dry run: would ${dry ? (dry.wouldSkip ? 'skip' : 'run') : 'run (first look, no baseline)'} — running anyway: ${task.instruction.slice(0, 40)}`);
+      } else if (c.ok) {
         const s = signature(c.out.trim());
         if (task.lastSig && s === task.lastSig) {
           // Nothing changed: advance a recurring task's clock; leave a one-shot pending so it fires
@@ -171,8 +181,10 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     }
     fired++;
     // Persist the new baseline only after a clean run — if the run threw, we WANT the next tick to
-    // re-detect the same change and retry (at-least-once), not treat it as already handled.
-    if (ranOk && newSig) await deps.memory.setScheduledSignature(task.id, newSig);
+    // re-detect the same change and retry (at-least-once), not treat it as already handled. A dry run
+    // skips nothing, so its baseline is simply the last thing it saw — saved below, with its score, in
+    // one update (BL-08 review: a person may arm or disarm while the run is going).
+    if (newSig && armed && ranOk) await deps.memory.setScheduledSignature(task.id, newSig);
     let files: string[] = [];
     try { files = readdirSync(dir).filter((f) => !f.startsWith('.') && statSync(join(dir, f)).isFile()); } catch { /* */ }
     // DELIVERY POLICY (BL-02). A failure always reaches the person. `complete` is two-phase: the first
@@ -195,8 +207,22 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     } else if (task.pendingComplete) {
       await deps.memory.setPendingComplete?.(task.id, false);
     }
+    // BL-08: score the dry run. A missed change is news (the detector would have dropped real work),
+    // and so, once, is a detector ready to arm — both reach the person whatever `deliver` says.
+    let detectorNews: string | undefined;
+    // Only an outcome the run itself DECLARED is evidence — a derived one leans to "changed" (any tool
+    // call counts), which would score a correct detector as missing a change every quiet fire.
+    const declared = (r as { outcomeDeclared?: boolean }).outcomeDeclared === true;
+    if (newSig && !armed && deps.memory.recordDryRun) {
+      const score = dry ? (declared ? scoreDryRun(dry.wouldSkip, outcome) : 'inconclusive') : null; // null: the bootstrap
+      const rec = await deps.memory.recordDryRun(task.id, { score, sig: newSig, prevSig: task.lastSig });
+      if (rec?.missedNews) detectorNews = `(Detector dry run: its check said nothing had changed, but this run found something — armed, it would have skipped real work. It stays off, and its record starts over.)`;
+      if (rec?.nowReady) detectorNews = `(Detector dry run: its check agreed with ${rec.ev.n} runs — ${rec.ev.skips} where nothing had changed and ${rec.ev.runs} where something had. To let it skip runs when nothing has changed, say "arm the detector for job ${task.id.slice(0, 8)}" and approve the card.)`;
+      if (score) log(`🔎 detector dry run scored ${score}${rec ? ` (${rec.ev.n} agreeing)` : ''}: ${task.instruction.slice(0, 40)}`);
+    }
+    if (detectorNews) summary += `\n\n${detectorNews}`;
     const policy = task.deliver ?? 'always';
-    const deliver = completion !== undefined || budgetNews !== undefined || outcome === 'complete' || outcome === 'could-not' || outcome === 'blocked'
+    const deliver = completion !== undefined || budgetNews !== undefined || detectorNews !== undefined || outcome === 'complete' || outcome === 'could-not' || outcome === 'blocked'
       || policy === 'always' || (policy === 'changed' && outcome === 'changed');
     if (!deliver) {
       log(`\u00b7 quiet (${outcome}, deliver=${policy}): ${task.instruction.slice(0, 40)}`);
