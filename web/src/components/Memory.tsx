@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   getMemories, getSkills, getLessons, getPolicies, getQuestions, resolveQuestions, getPeople, type PersonRow,
+  getRoutines, setRoutine, type RoutineRow,
   getActions, forgetMemory, correctMemory, type MemoryItem, type ActionItem,
 } from '../api';
 
@@ -79,6 +80,9 @@ export function Memory() {
   const [items, setItems] = useState<MemoryItem[] | null>(null);
   const [actions, setActions] = useState<ActionItem[]>([]);
   const [skills, setSkills] = useState<{ name: string; content: string }[]>([]);
+  const [routines, setRoutinesList] = useState<RoutineRow[]>([]);
+  const [routineMsg, setRoutineMsg] = useState('');
+  const [routineBusy, setRoutineBusy] = useState('');
   const [lessons, setLessons] = useState<{ topic: string; content: string }[]>([]);
   const [policies, setPolicies] = useState<string[]>([]);
   const [questions, setQuestions] = useState<{ id: string; question: string }[]>([]);
@@ -86,7 +90,7 @@ export function Memory() {
   const [msg, setMsg] = useState('');
 
   function load() {
-    getMemories().then(setItems); getActions().then(setActions); getSkills().then(setSkills);
+    getMemories().then(setItems); getActions().then(setActions); getSkills().then(setSkills); getRoutines().then(setRoutinesList);
     getLessons().then(setLessons); getPolicies().then(setPolicies); getQuestions().then(setQuestions);
     getPeople().then(setPeople);
   }
@@ -142,6 +146,50 @@ export function Memory() {
                   {pp.fields.length > 0 && <span>known: {pp.fields.join(', ')}</span>}
                   {pp.missing.length > 0 && <span className="text-dim/70">{pp.fields.length ? '  ·  ' : ''}still learning: {pp.missing.join(', ')}</span>}
                 </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {routines.length > 0 && (
+        <div>
+          <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-1">routines I proposed · {routines.length}</div>
+          <p className="text-dim text-[13px] mb-3">
+            A proposed routine does nothing until you promote it. Promoted, its steps become a skill I use on similar tasks.
+            Only you can promote one; I can't.
+          </p>
+          {routineMsg && <div className="text-[13px] mb-2" role="status">{routineMsg}</div>}
+          <div className="space-y-2">
+            {routines.map((r) => (
+              <div key={r.id} className="rounded-[4px] border border-line bg-surface px-4 py-3">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <div className="font-medium text-[15px]">{r.name} <span className="mono text-[11px] text-dim">{r.version} · {r.status || 'proposed'}{r.agent && r.agent !== 'mwa-serve' ? ' · from Telegram' : ''}</span></div>
+                  <div className="flex gap-2">
+                    {r.status !== 'active' && (
+                      <button className="mono text-[12px] underline disabled:opacity-50" disabled={routineBusy === r.id} onClick={async () => {
+                        const warn = r.tainted ? '\n\nThis was proposed by a run that had read outside content (an email, a web page or a document). Read every step before you promote it.' : '';
+                        if (!window.confirm(`Promote "${r.name}" ${r.version}? Its steps will guide future similar tasks.${warn}`)) return;
+                        setRoutineBusy(r.id);
+                        const res = await setRoutine(r.id, 'promote', r.agent);
+                        setRoutineBusy('');
+                        setRoutineMsg(res.ok ? `Promoted "${r.name}" ${r.version}.` : `Not promoted: ${res.error ?? 'unknown error'}`);
+                        getRoutines().then(setRoutinesList); getSkills().then(setSkills);
+                      }}>promote</button>
+                    )}
+                    {r.status === 'active' && (
+                      <button className="mono text-[12px] underline disabled:opacity-50" disabled={routineBusy === r.id} onClick={async () => {
+                        setRoutineBusy(r.id);
+                        const res = await setRoutine(r.id, 'retire', r.agent);
+                        setRoutineBusy('');
+                        setRoutineMsg(res.ok ? `Retired "${r.name}" ${r.version}.` : `Not retired: ${res.error ?? 'unknown error'}`);
+                        getRoutines().then(setRoutinesList); getSkills().then(setSkills);
+                      }}>retire</button>
+                    )}
+                  </div>
+                </div>
+                {r.tainted && <div className="text-[12px] mt-1" role="note">⚠ Proposed by a run that had read outside content — read every step before promoting.</div>}
+                <div className="text-dim text-[13px] leading-snug whitespace-pre-wrap mt-1 max-h-64 overflow-y-auto">{r.content}</div>
               </div>
             ))}
           </div>

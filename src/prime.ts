@@ -8,5 +8,10 @@
 import type { TrustTier } from './awm.js';
 
 export function primeable(m: { concept: string; trust?: TrustTier }): boolean {
+  // A ROUTINE engram is never primed itself — proposed, active or retired (BL-12). A probe showed a
+  // PROPOSED routine came back from a relevance recall and would have been primed as an instruction
+  // before anyone approved it. Promoting one (a person, in the Memory tab) writes its steps as a
+  // trusted skill, and THAT is what is primed.
+  if (/^routine:/i.test(m.concept)) return false;
   return !(m.trust === 'untrusted' && /^(skill|lesson):/i.test(m.concept));
 }

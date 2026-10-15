@@ -68,7 +68,8 @@ export function lowestTrust(tiers: TrustTier[]): TrustTier {
 // in their tags array (scheduled tasks, routines, the action log), so stripping them would break
 // those features. The invariant that keeps THAT safe is upstream: no caller ever forwards
 // model-chosen tags to write() (every caller hardcodes its tag array), so content can't reach them.
-const RESERVED_TAG_PREFIXES = ['trust=', 'src=', 'ns=', 'origin=', 'proj=', 'session='];
+// promoted=: only promoteRoutine sets it, through WriteOpts.promotedOf (BL-12 review).
+const RESERVED_TAG_PREFIXES = ['trust=', 'src=', 'ns=', 'origin=', 'proj=', 'session=', 'promoted='];
 
 /** Normalize a free-text namespace into a stable slug for the `ns=` tag. A non-empty input that
  *  slugs to empty (all-symbol) falls back to a constant rather than silently disabling scoping. */
@@ -92,6 +93,8 @@ export interface WriteOpts {
   global?: boolean;
   /** Never merge this write into an existing memory with the same concept (reinforcement). */
   noMerge?: boolean;
+  /** INTERNAL — set only by promoteRoutine: this write is the skill a person promoted from that routine. */
+  promotedOf?: string;
 }
 
 /** One recorded action the agent took (the "what it did" history + undo substrate). */
@@ -351,7 +354,9 @@ export class MwaMemory implements Memory {
       const rows: any[] = ns
         ? results.filter((r: any) => { const t = this.parseTags(r.engram.tags).find((x: string) => String(x).startsWith('ns=')); return !t || t.slice(3) === ns; }).slice(0, want)
         : results;
-      return rows.map((r: any) => ({
+      // A ROUTINE never comes back from recall, by any path (BL-12 review: the model's own recall action
+      // surfaced a proposed one). Its promoted copy is a skill; the routine itself is for the person's review.
+      return rows.filter((r: any) => !this.parseTags(r.engram.tags).includes('topic=routine')).map((r: any) => ({
         id: r.engram.id,
         concept: r.engram.concept,
         content: opts.full ? r.engram.content : (r.summary ?? r.engram.content),
@@ -374,6 +379,10 @@ export class MwaMemory implements Memory {
       const provenance: Provenance = opts.provenance ?? 'inferred';
       const trust = TRUST_BY_PROVENANCE[provenance];
       const safeTags = tags.filter((t) => !RESERVED_TAG_PREFIXES.some((p) => String(t).toLowerCase().startsWith(p)));
+      if (opts.promotedOf) safeTags.push(`promoted=${opts.promotedOf}`);
+      // Only a promotion may carry a person's "(promoted vN)" label: any other write that uses it — a model
+      // saving a lookalike of a promoted skill — is stored without it (BL-12 review).
+      if (!opts.promotedOf && /\s*\(promoted v\d+\)\s*$/i.test(concept)) concept = concept.replace(/\s*\(promoted v\d+\)\s*$/i, '');
       // F5: stamp the active topic namespace unless this write is explicitly global (policies etc.).
       const effectiveNs = opts.global ? undefined : (opts.namespace ?? this.currentNamespace);
       const stamped = [
@@ -400,6 +409,10 @@ export class MwaMemory implements Memory {
         try {
           const c80 = concept.slice(0, 80);
           const find = async (tags?: string[]) => (await this.store.findActiveMatchByConcept(this.agentId, c80, tags)) ?? null;
+          // A skill a PERSON promoted (BL-12) is their approved text: nothing merges into it or supersedes
+          // it, whatever its trust — a same-named write is stored on its own.
+          const sameConcept: any = await find();
+          if (sameConcept && this.parseTags(sameConcept.tags).some((t: string) => String(t).startsWith('promoted='))) throw Object.assign(new Error('promoted'), { promoted: true });
           let otherClass: unknown = null;
           if (trust === 'untrusted') {
             otherClass = (await find(['trust=high'])) ?? (await find(['trust=medium']));
@@ -423,7 +436,7 @@ export class MwaMemory implements Memory {
             // MWA does the correction, so AWM must not merge it into the old fact as a plain observation.
             if (mine && mine.content !== content) { correctionOf = mine.id; mayMerge = false; }
           }
-        } catch { mayMerge = false; } // can't tell the classes apart → write it on its own
+        } catch { mayMerge = false; correctionOf = null; } // can't tell the classes apart, or a promoted skill → write it on its own
       }
       const result = await this.eng.performWrite(
         { store: this.store, connectionEngine: this.connections },
@@ -509,6 +522,12 @@ export class MwaMemory implements Memory {
    * surfacing the old value. Returns the new engram id.
    */
   async supersede(oldId: string, concept: string, content: string, tags: string[] = [], opts: WriteOpts = {}): Promise<string | null> {
+    // A skill a PERSON promoted is replaced only by promoting again or retiring it — never by a run (BL-12 review).
+    try {
+      await this.init();
+      const old: any = oldId ? await this.store.getEngram(oldId) : null;
+      if (old && this.parseTags(old.tags).some((t: string) => String(t).startsWith('promoted='))) return null;
+    } catch { /* fall through: the write below is guarded again */ }
     // The caller's canonical/provenance win: a tainted run must not be able to replace a trusted fact
     // with a canonical one (BL-17 review). Canonical stays the default for ordinary corrections.
     const newId = await this.write(concept, content, tags, { ...opts, canonical: opts.canonical ?? true });
@@ -996,7 +1015,7 @@ export class MwaMemory implements Memory {
    * persistent backdoor), NEVER overwrites (each save is a new version kept for rollback), and stores
    * status=proposed (propose-vs-commit — a proposed routine is not silently made the active one).
    */
-  async saveRoutine(name: string, steps: string): Promise<{ id: string | null; version?: string; rejected?: string }> {
+  async saveRoutine(name: string, steps: string, opts: { tainted?: boolean } = {}): Promise<{ id: string | null; version?: string; rejected?: string }> {
     // Scan BOTH the name and the steps — the name (a task instruction) is surfaced + could carry an
     // injection just as the body can.
     const scan = scanRoutine(`${name}\n${steps}`);
@@ -1009,23 +1028,79 @@ export class MwaMemory implements Memory {
     // Version in the concept keeps each version a DISTINCT engram (no reinforce-merge of similar steps).
     const id = await this.write(
       `routine: ${name} ${version}`.slice(0, 80), steps,
-      ['topic=routine', `routine=${slug}`, `version=${version}`, 'status=proposed', 'intent=procedural', 'confidence_level=observed'],
+      // tainted=1: proposed by a run that had read outside content — the person sees it before promoting (BL-12 review).
+      ['topic=routine', `routine=${slug}`, `version=${version}`, 'status=proposed', 'intent=procedural', 'confidence_level=observed', ...(opts.tainted ? ['tainted=1'] : [])],
       { canonical: true, eventType: 'observation', global: true },
     );
     return { id, version };
   }
 
   /** F6 — saved routines (all versions, newest-first), for the UI + replay. */
-  async listRoutines(): Promise<{ name: string; version: string; status: string; content: string }[]> {
+  async listRoutines(): Promise<{ id: string; slug: string; name: string; version: string; status: string; content: string; tainted: boolean }[]> {
     try {
       await this.init();
       const all: any[] = (await this.store.getEngramsByAgent(this.agentId)) ?? [];
-      return all.filter((e) => this.parseTags(e.tags).includes('topic=routine')).reverse().map((e) => {
+      // A routine is a `routine:` engram — a consolidation summary that inherited the tags is not one (BL-12 review).
+      return all.filter((e) => this.parseTags(e.tags).includes('topic=routine') && /^routine:/i.test(String(e.concept ?? ''))).reverse().map((e) => {
         const t = this.parseTags(e.tags);
         const get = (p: string) => { const x = t.find((y) => String(y).startsWith(p)); return x ? x.slice(p.length) : ''; };
-        return { name: String(e.concept ?? '').replace(/^routine:\s*/i, '').replace(/\s+v\d+$/i, ''), version: get('version='), status: get('status='), content: String(e.content ?? '').slice(0, 300) };
+        // The FULL text: a person must see every word of what they may promote (BL-12 review).
+        return { id: String(e.id), slug: get('routine='), name: String(e.concept ?? '').replace(/^routine:\s*/i, '').replace(/\s+v\d+$/i, ''), version: get('version='), status: get('status='), content: String(e.content ?? ''), tainted: t.includes('tainted=1') };
       });
     } catch { return []; }
+  }
+
+  /**
+   * BL-12 (H-9) — a PERSON promotes a routine: its steps become a trusted skill, the one thing that is
+   * primed into future runs; any other active version of the same routine is retired first, so one
+   * version is in force. The steps are scanned again (a scan rule added since it was saved still
+   * applies). Never a model tool: only the app's routines panel calls this.
+   */
+  async promoteRoutine(id: string): Promise<{ ok: boolean; error?: string; name?: string; version?: string }> {
+    try {
+      await this.init();
+      const e: any = await this.store.getEngram(id);
+      const t = e ? this.parseTags(e.tags) : [];
+      if (!e || !t.includes('topic=routine')) return { ok: false, error: 'no such routine' };
+      const get = (p: string) => { const x = t.find((y) => String(y).startsWith(p)); return x ? x.slice(p.length) : ''; };
+      // Active and its skill still there: nothing to do. Active but the skill is gone: promote it again.
+      const existing = get('skillid=');
+      if (get('status=') === 'active' && existing && (await this.store.getEngram(existing))) return { ok: true, name: String(e.concept), version: get('version=') };
+      const name = String(e.concept ?? '').replace(/^routine:\s*/i, '').replace(/\s+v\d+$/i, '');
+      const scan = scanRoutine(`${name}\n${e.content}`);
+      if (!scan.safe) return { ok: false, error: `it no longer passes the safety scan: ${scan.reason}` };
+      for (const other of await this.listRoutines()) {
+        if (other.slug === get('routine=') && other.status === 'active' && other.id !== id) await this.retireRoutine(other.id);
+      }
+      // Its OWN engram (BL-12 review): a concept no other write shares, and noMerge, so the person's approved
+      // steps never merge into a skill the model wrote, nor a later one into them; tagged to its routine so
+      // retiring removes exactly this copy. The person read the steps and chose them: their provenance.
+      const version = get('version=');
+      const skillId = await this.write(`skill: ${name} (promoted ${version})`.slice(0, 80), String(e.content ?? ''),
+        ['topic=skill', `skill=${get('routine=')}`, 'intent=procedural', 'confidence_level=verified'],
+        { canonical: true, eventType: 'decision', global: true, noMerge: true, provenance: 'user', promotedOf: id });
+      if (!skillId) return { ok: false, error: 'the memory filter declined to save it' };
+      await this.setScheduledTags(id, (tags) => [...tags.filter((x) => !x.startsWith('status=') && !x.startsWith('skillid=')), 'status=active', `skillid=${skillId}`]);
+      return { ok: true, name, version: get('version=') };
+    } catch (err) { return { ok: false, error: (err as Error).message.slice(0, 120) }; }
+  }
+
+  /** BL-12 — retire an active routine: its skill copy is forgotten, so it is primed no more. */
+  async retireRoutine(id: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await this.init();
+      const e: any = await this.store.getEngram(id);
+      const t = e ? this.parseTags(e.tags) : [];
+      if (!e || !t.includes('topic=routine')) return { ok: false, error: 'no such routine' };
+      const skillId = t.find((x) => String(x).startsWith('skillid='))?.slice(8);
+      if (skillId) {
+        // Only the copy THIS routine made (tagged promoted=<routine>) — never a skill that merely shares a name.
+        const sk: any = await this.store.getEngram(skillId);
+        if (sk && this.parseTags(sk.tags).includes(`promoted=${id}`) && !(await this.forget(skillId))) return { ok: false, error: 'could not remove its skill' };
+      }
+      await this.setScheduledTags(id, (tags) => [...tags.filter((x) => !x.startsWith('status=') && !x.startsWith('skillid=')), 'status=retired']);
+      return { ok: true };
+    } catch (err) { return { ok: false, error: (err as Error).message.slice(0, 120) }; }
   }
 
   /** Reusable procedures the agent has learned, for the UI "Skills" view. */

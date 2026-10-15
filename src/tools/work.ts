@@ -277,7 +277,7 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
         'it can be replayed instead of re-derived. Describe what you actually DID — the tools you ' +
         'called and in what order — not a summary of the outcome. ' +
         'It is saved for REVIEW: a proposed routine does not run, and does not change how you behave, ' +
-        'until a person approves it. Say that plainly rather than implying it is now automatic.',
+        'until a person promotes it in the Memory tab of the app (you cannot). Say that plainly rather than implying it is now automatic.',
       parameters: {
         type: 'object',
         properties: {
@@ -288,16 +288,16 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
         additionalProperties: false,
       },
     },
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       const name = clip(args.name, 80);
       const steps = String(args.steps ?? '').trim().slice(0, 4_000);
       if (name.length < 3) return '(give the routine a short name)';
       // saveRoutine owns the safety: it injection-scans name + steps, versions rather than
       // overwrites, and stores status=proposed so nothing is auto-activated.
-      const r = await memory.saveRoutine(name, steps);
+      const r = await memory.saveRoutine(name, steps, { tainted: ctx.tainted === true || ctx.readLocal === true });
       if (r.rejected) return `(not saved — ${r.rejected})`;
       if (!r.id) return '(not saved — the memory filter declined it)';
-      return `proposed routine "${name}" ${r.version} — saved for review. It does NOT take effect until a person approves it.`;
+      return `proposed routine "${name}" ${r.version} — saved for review. It does NOT take effect until a person promotes it in the Memory tab of the app.`;
     },
   };
 

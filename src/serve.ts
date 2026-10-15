@@ -100,6 +100,8 @@ const MIME: Record<string, string> = {
 // The agent id serve reads/writes memory under. Override with MWA_AGENT_ID to point an instance
 // at a memory store written by a different agent (e.g. testing a ported USEA store under its own id).
 const SERVE_AGENT = process.env.MWA_AGENT_ID ?? 'mwa-serve';
+/** The stores whose routines the Memory tab lists and promotes: this app's, and the Telegram connector's. */
+const ROUTINE_AGENTS = [...new Set([SERVE_AGENT, process.env.MWA_TELEGRAM_AGENT_ID ?? 'mwa-agent'])];
 
 export async function readBody(req: AsyncIterable<Buffer | string>): Promise<any> {
   // Collect raw bytes, then decode UTF-8 ONCE. Decoding per-chunk (raw += c) corrupts a
@@ -792,6 +794,35 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         } else {
           res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: 'unknown action' }));
         }
+        return;
+      }
+      // BL-12: routines a run proposed — listed for the person, who alone promotes or retires them.
+      // Both stores that share this database: the web app's and the Telegram connector's (BL-12 review —
+      // a routine proposed in Telegram must be promotable here, into the store its runs recall from).
+      if (p === '/api/routines' && req.method === 'GET') {
+        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        const routines: unknown[] = [];
+        for (const agent of ROUTINE_AGENTS) {
+          try { const m = new MwaMemory(agent, dbPath); routines.push(...(await m.listRoutines()).map((r) => ({ ...r, agent }))); m.close(); } catch { /* */ }
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ routines }));
+        return;
+      }
+      if ((p === '/api/routines/promote' || p === '/api/routines/retire') && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        let out: { ok: boolean; error?: string } = { ok: false, error: 'not done' };
+        const agent = ROUTINE_AGENTS.includes(String(b.agent ?? SERVE_AGENT)) ? String(b.agent ?? SERVE_AGENT) : null;
+        if (!agent) out = { ok: false, error: 'unknown store' };
+        else try {
+          const m = new MwaMemory(agent, dbPath);
+          out = p.endsWith('/promote') ? await m.promoteRoutine(String(b.id ?? '')) : await m.retireRoutine(String(b.id ?? ''));
+          m.close();
+        } catch (e) { out = { ok: false, error: (e as Error).message.slice(0, 120) }; }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(out));
         return;
       }
       if (p === '/api/skills') {

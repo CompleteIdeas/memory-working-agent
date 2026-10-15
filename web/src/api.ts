@@ -198,6 +198,14 @@ export async function getMemories(): Promise<MemoryItem[]> {
 export async function getActions(): Promise<ActionItem[]> {
   try { const r = await fetch('/api/actions'); return (await r.json()).actions ?? []; } catch { return []; }
 }
+export interface RoutineRow { id: string; slug: string; name: string; version: string; status: string; content: string; tainted: boolean; agent?: string }
+/** BL-12 — routines a run proposed; the person promotes or retires them. */
+export async function getRoutines(): Promise<RoutineRow[]> {
+  try { const r = await fetch('/api/routines'); return (await r.json()).routines ?? []; } catch { return []; }
+}
+export async function setRoutine(id: string, action: 'promote' | 'retire', agent?: string): Promise<{ ok: boolean; error?: string }> {
+  try { const r = await fetch(`/api/routines/${action}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, agent }) }); return await r.json(); } catch { return { ok: false, error: 'network error' }; }
+}
 /** F1 Glass Box — hard-delete (forget) one memory. */
 export async function forgetMemory(id: string): Promise<{ ok: boolean }> {
   try { const r = await fetch('/api/memory/forget', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) }); return await r.json(); } catch { return { ok: false }; }

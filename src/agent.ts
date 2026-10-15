@@ -1469,7 +1469,7 @@ export async function runAgent(opts: {
       && isRoutineWorthy({ reason, toolCalls, steps, repeated: false })) {
     try {
       const stepsText = runActions.map((a, i) => `${i + 1}. ${a.verb}`).join('\n');
-      await (memory as unknown as { saveRoutine: (n: string, s: string) => Promise<unknown> }).saveRoutine(instruction.slice(0, 60), stepsText);
+      await (memory as unknown as { saveRoutine: (n: string, s: string, o?: { tainted?: boolean }) => Promise<unknown> }).saveRoutine(instruction.slice(0, 60), stepsText, { tainted: sawUntrustedRead || sawLocalRead });
     } catch { /* best-effort */ }
   }
 
