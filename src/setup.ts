@@ -26,7 +26,8 @@ export async function runSetup(): Promise<void> {
 
   // 2) AWM substrate
   let awmOk = false;
-  try { await import('agent-working-memory/dist/storage/sqlite.js'); awmOk = true; } catch { /* */ }
+  // Dynamic, so a missing or unbuilt AWM is REPORTED here instead of failing the import (BL-11 review).
+  try { await (await import('./awm-api.js')).loadSqliteStore(); awmOk = true; } catch { /* */ }
   console.log(`AWM substrate:      ${awmOk ? 'installed ✓' : '✗ MISSING — run: npm install agent-working-memory'}`);
 
   // 3) Write config (preserve existing tool/escalation choices if present)

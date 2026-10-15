@@ -14,11 +14,8 @@
  * v1 represents the brain's plan/decisions AS recallable memories — the pure
  * "decision continuity" thesis — which is what the benchmark measures.)
  */
-import { ActivationEngine } from 'agent-working-memory/dist/engine/activation.js';
-import { ConnectionEngine } from 'agent-working-memory/dist/engine/connections.js';
-import { ConsolidationEngine } from 'agent-working-memory/dist/engine/consolidation.js';
-import { performWrite } from 'agent-working-memory/dist/core/write-pipeline.js';
-import { initCoordinationTables } from 'agent-working-memory/dist/coordination/schema.js';
+// AWM's internals come through one file (BL-11): an AWM upgrade that moves them breaks awm-api.ts only.
+import { loadEngines, loadSqliteStore, loadPGliteStore, loadPostgresStore, type AwmEngines } from './awm-api.js';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { scanRoutine, nextVersion } from './tools/routines.js';
@@ -239,6 +236,8 @@ export class MwaMemory implements Memory {
   private activation: any;
   private connections: any;
   private consolidationEngine: any;
+  /** AWM's engines and write pipeline, loaded in init (BL-11: loading them is no longer an import side effect). */
+  private eng!: AwmEngines;
   private sessionId?: string;
   /** F5: the active topic namespace. When set, fact-writes are stamped ns=<topic> and recalls scope
    *  to that topic (+ global) — so rapid task-switching never bleeds one topic's facts into another. */
@@ -271,30 +270,31 @@ export class MwaMemory implements Memory {
   private async init(): Promise<void> {
     if (this.initPromise) return this.initPromise;
     this.initPromise = (async () => {
+      // The engines first: if AWM can't load, fail before a store is opened (BL-11 review).
+      this.eng = await loadEngines();
       const backend = (process.env.AWM_STORE_BACKEND || '').toLowerCase();
       if (backend === 'pglite') {
         mkdirSync(this.dbPath, { recursive: true }); // PGlite path is a DIRECTORY
-        const { PGliteEngramStore } = await import('agent-working-memory/dist/storage/pglite.js');
+        const PGliteEngramStore = await loadPGliteStore();
         const s: any = new PGliteEngramStore(this.dbPath);
         await s.ready();
         this.store = s;
       } else if (backend === 'postgres') {
-        // Computed specifier: the postgres server adapter (pg + pgvector) ships in AWM; resolving it
-        // at runtime (not compile time) keeps MWA buildable on AWM builds that predate the adapter.
-        const mod = 'agent-working-memory/dist/storage/postgres.js';
-        const { PostgresEngramStore } = await import(/* @vite-ignore */ mod);
+        // The postgres server adapter (pg + pgvector) ships in AWM; awm-api resolves it at run time.
+        const PostgresEngramStore = await loadPostgresStore();
         const s: any = new PostgresEngramStore(process.env.AWM_DATABASE_URL ?? this.dbPath);
         if (typeof s.ready === 'function') await s.ready();
         this.store = s;
       } else {
         mkdirSync(dirname(this.dbPath), { recursive: true }); // SQLite path is a FILE
-        const { EngramStore } = await import('agent-working-memory/dist/storage/sqlite.js');
+        const EngramStore = await loadSqliteStore();
         this.store = new EngramStore(this.dbPath);
       }
-      this.activation = new ActivationEngine(this.store);
-      this.connections = new ConnectionEngine(this.store, this.activation);
+      this.activation = new this.eng.ActivationEngine(this.store);
+      this.connections = new this.eng.ConnectionEngine(this.store, this.activation);
       if (this.workspace) this.joinWorkspace(this.workspace);
     })();
+    this.initPromise.catch(() => { this.initPromise = undefined; }); // a failed init may be retried
     return this.initPromise;
   }
 
@@ -305,7 +305,7 @@ export class MwaMemory implements Memory {
     try {
       const db = (this.store as unknown as { db: any }).db;
       if (!db || typeof db.prepare !== 'function') return; // not SQLite → no coordination tables
-      initCoordinationTables(db);
+      this.eng.initCoordinationTables(db);
       db.prepare(
         `INSERT OR REPLACE INTO coord_agents (id, name, workspace, status, role, last_seen)
          VALUES (?, ?, ?, 'idle', 'worker', datetime('now'))`,
@@ -425,7 +425,7 @@ export class MwaMemory implements Memory {
           }
         } catch { mayMerge = false; } // can't tell the classes apart → write it on its own
       }
-      const result = await performWrite(
+      const result = await this.eng.performWrite(
         { store: this.store, connectionEngine: this.connections },
         {
           agentId: this.agentId,
@@ -561,7 +561,7 @@ export class MwaMemory implements Memory {
   async consolidate(): Promise<Record<string, number>> {
     try {
       await this.init();
-      if (!this.consolidationEngine) this.consolidationEngine = new ConsolidationEngine(this.store, this.connections);
+      if (!this.consolidationEngine) this.consolidationEngine = new this.eng.ConsolidationEngine(this.store, this.connections);
       return (await this.consolidationEngine.consolidate(this.agentId)) as Record<string, number>;
     } catch (err) {
       console.error('[awm] consolidate error:', (err as Error).message);

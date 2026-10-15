@@ -17,7 +17,9 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { embed, cosineSimilarity } from 'agent-working-memory/dist/core/embeddings.js';
+import { loadEmbeddings } from '../awm-api.js';
+// The embedding model, loaded on first use (BL-11: importing the arms doesn't load it).
+const embed = async (t: string) => (await loadEmbeddings()).embed(t);
 import type { Memory, RecalledMemory, WriteOpts, TrustTier, LearnOpts, ScheduleOpts } from '../awm.js';
 import { MwaMemory, NullMemory } from '../awm.js';
 
@@ -141,8 +143,9 @@ class VectorRagMemory implements Memory {
   private save(): void { try { writeFileSync(this.path, JSON.stringify(this.entries)); } catch { /* */ } }
   async recall(query: string, opts: { limit?: number } = {}): Promise<RecalledMemory[]> {
     if (!this.entries.length) return [];
-    let qv: number[]; try { qv = await embed(query); } catch { return []; }
-    const scored = this.entries.map((e) => ({ e, score: cosineSimilarity(qv, e.vec) }));
+    let qv: number[]; let cos: (a: number[], b: number[]) => number;
+    try { qv = await embed(query); cos = (await loadEmbeddings()).cosineSimilarity; } catch { return []; }
+    const scored = this.entries.map((e) => ({ e, score: cos(qv, e.vec) }));
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, opts.limit ?? this.topK).map((x) => ({ id: x.e.id, concept: x.e.concept, content: x.e.content, score: x.score, ...trustOfEntry(x.e) }));
   }

@@ -15,7 +15,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { extname, basename, join } from 'node:path';
 import { resolveAllowed } from './tools/access.js';
-import { INTERVIEW_QUESTIONS } from 'agent-working-memory/dist/onboard/index.js';
+import { INTERVIEW_QUESTIONS } from './awm-api.js';
 
 export { INTERVIEW_QUESTIONS };
 

@@ -21,20 +21,18 @@ import { readFileSync, existsSync, statSync, writeFileSync, appendFileSync, mkdi
 import { resolve, join, extname, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFileP = promisify(execFile);
-const requireFromHere = createRequire(import.meta.url);
 
 /** Copy the current SQLite memory into a Postgres target before switching backends, using AWM's
  *  backend-agnostic export/import CLI (embeddings included). Best-effort: returns ok:false (and the
  *  caller then does NOT switch) on error, so a failed copy never strands you on an empty store. */
 async function migrateMemoryToPostgres(sqliteDbPath: string, url: string): Promise<{ ok: boolean; message: string }> {
   let cli: string;
-  try { cli = requireFromHere.resolve('agent-working-memory/dist/cli.js'); }
+  try { cli = awmCliPath(); }
   catch { return { ok: false, message: 'the migration tool is not available in this build' }; }
   if (!existsSync(sqliteDbPath)) return { ok: true, message: 'no existing memory to copy' };
   const tmp = join(tmpdir(), `mwa-migrate-${randomBytes(6).toString('hex')}.json`);
@@ -83,6 +81,7 @@ import { accessPolicy, setAccess, ACCESS_PRESETS, type AccessPreset } from './to
 import { status, testAnthropic, testAzure, testTelegram, testProvider, envKeyForProvider, upsertEnv, removeEnv } from './wizard.js';
 import { disconnectGoogle } from './connectors/google.js';
 import { disconnectMicrosoft } from './connectors/microsoft.js';
+import { awmCliPath, loadEmbeddings, loadPostgresStore } from './awm-api.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 // dist-ui sits next to dist/ (built) or at repo root in dev.
@@ -538,7 +537,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       if (p === '/api/setup/warm' && req.method === 'POST') {
         let ready = false; let message = '';
         try {
-          const emb = await import('agent-working-memory/dist/core/embeddings.js');
+          const emb = await loadEmbeddings();
           await emb.embed('warm up');
           ready = true;
         } catch (e) { message = (e as Error).message.slice(0, 160); }
@@ -1024,8 +1023,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
               try {
                 // Connect for real — this validates creds + that pgvector is available, and
                 // provisions the AWM schema on the target.
-                const mod = 'agent-working-memory/dist/storage/postgres.js';
-                const { PostgresEngramStore } = await import(/* @vite-ignore */ mod);
+                const PostgresEngramStore = await loadPostgresStore();
                 const s: any = new PostgresEngramStore(url);
                 await s.ready();
                 await s.close();
