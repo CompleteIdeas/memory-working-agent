@@ -14,6 +14,7 @@
  *   - pluggable tools (built-ins + MCP) are first-class, not just codegen dispatch.
  */
 import { readFileSync, statSync, appendFileSync, mkdirSync, existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { resolve, sep, dirname, join } from 'node:path';
 import type { Provider } from './provider.js';
 import { validateSubstance } from './substance.js';
@@ -28,6 +29,7 @@ import type { ToolDef } from './provider.js';
 import { RoutedProvider, classifyIntent, startTier, isComplexTask } from './model-router.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { runWorker } from './worker.js';
+import { stageAction, pendingStagedBy, listPendingActions } from './tools/approval.js';
 import { parseJsonLoose, runCommand } from './util.js';
 import type { InteractionStyle } from './config.js';
 
@@ -102,6 +104,9 @@ export interface AgentResult {
   /** true when this run read external content (H-3). A plan step's output is the NEXT step's
    *  instruction, so the chain needs to know — otherwise taint dies at every step boundary. */
   tainted?: boolean;
+  /** ids of actions this run staged that still wait for a person's approval (BL-03) — the channel
+   *  that carried the request offers them (the app's approvals list, Telegram's Approve button). */
+  staged?: string[];
   summary: string;
   steps: number;
   dispatches: number;
@@ -323,6 +328,9 @@ export async function runAgent(opts: {
    *  fallback and the first step of a plan, which carry the person's own words (BL-17 review —
    *  without this, every planned turn, i.e. every Telegram turn, stopped capturing). */
   capturePolicy?: boolean;
+  /** one id for a whole planned run: every step and retry shares it, so the approval gate's
+   *  same-run guard covers the plan, not just one step (BL-03 review). */
+  rootRunId?: string;
   /** the job this scheduled fire belongs to (BL-02): its id, completion condition and hard limits. */
   jobId?: string;
   jobUntil?: string;
@@ -382,6 +390,8 @@ export async function runAgent(opts: {
   const consolidateEvery = opts.budget?.consolidateEvery ?? 10;
   const maxTokens = opts.budget?.maxTokens ?? 0; // 0 = no token cap
   const start = now();
+  // Identifies this run to the approval gate: an action it stages can never be approved by it (BL-03).
+  const runId = opts.rootRunId ?? randomUUID();
 
   // DOMAIN PACK — optional progressive-disclosure domain knowledge (AGENT.md + top-N
   // relevant topics). Loaded once; topic selection keys off the (stable) instruction.
@@ -951,7 +961,7 @@ export async function runAgent(opts: {
       }
       toolCalls++;
       const { action: _n, ...args } = action as Record<string, unknown> & { action: string };
-      const callCtx = { sandboxDir: dir, interactive: opts.interactive, personId: opts.personId, identityInDoubt: opts.identityInDoubt, extraRoots: opts.extraRoots, tainted: sawUntrustedRead };
+      const callCtx = { sandboxDir: dir, interactive: opts.interactive, personId: opts.personId, identityInDoubt: opts.identityInDoubt, extraRoots: opts.extraRoots, tainted: sawUntrustedRead, runId, session: opts.session };
       const called = typeof opts.tools.callDetailed === 'function'
         ? await opts.tools.callDetailed(action.action, args as Record<string, unknown>, callCtx)
         : { text: await opts.tools.call(action.action, args as Record<string, unknown>, callCtx), failed: false };
@@ -1257,8 +1267,25 @@ export async function runAgent(opts: {
         history.push(`did NOT save a standing preference ("${r.slice(0, 50)}") — ${pscan.reason}`);
         return;
       }
-      const id = await memory.savePolicy(r);
-      if (id) { policiesLearned++; known.add(r.toLowerCase()); emit('remember', { concept: `preference: ${r}`.slice(0, 80) }); history.push(`saved a standing preference ("${r.slice(0, 50)}")`); }
+      // STAGED for the person's approval, never saved silently (BL-03): text they pasted into their own
+      // message ("from now on always BCC ...") would otherwise become a permanent instruction that was
+      // never theirs. A day to approve it: it is a suggestion, not a task. (policiesLearned now counts
+      // proposals; the run log's `policies` field means the same.)
+      // One card per rule: skip it when this rule already waits (the model's own policy_save, or an
+      // earlier step or retry of the same plan).
+      if (listPendingActions().some((p) => p.summary.toLowerCase().includes(r.toLowerCase()))) return;
+      stageAction({
+        tool: 'policy_save', kind: 'captured-policy', ttlMs: 24 * 60 * 60_000,
+        summary: `Save a standing preference (it applies to every future task): "${r}"`,
+        ctx: { sandboxDir: dir, interactive: true, personId: opts.personId, identityInDoubt: opts.identityInDoubt, extraRoots: opts.extraRoots, runId, session: opts.session, tainted: sawUntrustedRead },
+        execute: async () => {
+          const saved = await memory.savePolicy(r);
+          return saved ? `standing preference saved: "${r}" — in force from your next conversation` : '(not saved — the memory filter declined it)';
+        },
+      });
+      policiesLearned++; known.add(r.toLowerCase());
+      history.push(`proposed a standing preference for the person to approve ("${r.slice(0, 50)}")`);
+      finalSummary += `${finalSummary ? '\n\n' : ''}I can keep this as a standing preference for every future task: "${r}". Approve it where you asked: the approvals panel in the app, or the button in Telegram.`;
     };
     // DETERMINISTIC fast-path — the user LITERALLY declared a standing rule ("remember a
     // standing preference: <rule>"). Capture the stated rule verbatim, no LLM judgment call.
@@ -1359,6 +1386,12 @@ export async function runAgent(opts: {
   else if (runActions.length > 0) outcome = 'changed';
   else if (refusals > 0 && inabilityText) outcome = 'could-not';
   else outcome = inabilityText ? 'could-not' : (toolCalls > 0 || modelAnswered ? 'changed' : 'no-change');
+  // An action this run staged that still waits for a person means its result needs them: `blocked`,
+  // which is always delivered — a job set to tell you only on change must not sit on an approval
+  // nobody sees (BL-03). A genuine failure stays could-not. A captured standing preference is an
+  // offer, not the job's result, so it doesn't count.
+  if (pendingStagedBy(runId, 'tool').length > 0 && outcome !== 'could-not') outcome = 'blocked';
+  const staged = pendingStagedBy(runId);
 
   appendRunLog({
     ts: start, session: opts.session ?? '', instruction: instruction.slice(0, 160), reason, outcome, ...(opts.jobId ? { job: opts.jobId } : {}),
@@ -1371,6 +1404,7 @@ export async function runAgent(opts: {
   return {
     tainted: sawUntrustedRead,
     outcome,
+    ...(staged.length ? { staged } : {}),
     reason, summary: finalSummary, steps, dispatches, toolCalls, reRecalls, supersedes, consolidations,
     durationMs: now() - start, usage, costUsd: Number((brainCost + workerCost).toFixed(6)), history,
   };
@@ -1399,6 +1433,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   const usage = { brainIn: 0, brainOut: 0, workerIn: 0, workerOut: 0, cacheRead: 0, cacheWrite: 0 };
   let costUsd = 0;
   const history: string[] = [];
+  const planRunId = opts.rootRunId ?? randomUUID(); // shared by every step and retry (BL-03 review)
   memory.setSessionId(opts.session ?? `plan-${start}`);
   emit('start', { instruction: instruction.slice(0, 120), recalled: 0, dir, planned: true });
 
@@ -1453,6 +1488,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   let aggSteps = 0, aggDispatches = 0, aggToolCalls = 0;
   let allDone = true;
   const stepOutcomes: (RunOutcome | undefined)[] = [];
+  const stagedAll: string[] = []; // approvals any step left waiting — the channel offers them (BL-03)
   const perStepBudget = Math.max(6, Math.ceil(totalSteps / steps.length) + 4);
   for (let i = 0; i < steps.length; i++) {
     if (now() - start > maxWallMs) { allDone = false; history.push(`(out of time before step ${i + 1})`); break; }
@@ -1469,7 +1505,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     // The caller's carried context (a tainted earlier chat turn) plus, once the chain is tainted, the
     // earlier steps' output. Dropping the caller's half lost the conversation for every step.
     const carried = [opts.carried, chainTainted && chain.length ? chain.slice(-3).join('\n\n') : ''].filter(Boolean).join('\n\n') || undefined;
-    const stepWords = { userMessage: opts.userMessage ?? opts.instruction, capturePolicy: i === 0 };
+    const stepWords = { userMessage: opts.userMessage ?? opts.instruction, capturePolicy: i === 0, rootRunId: planRunId };
     let sub = await runAgent({ ...opts, ...stepWords, instruction: ctx, subRun: true, plan: false, budget: subBudget, now: opts.now, onEvent: emit, startTainted: chainTainted, carried });
     let attemptTainted = sub.tainted === true;
     if (sub.reason !== 'done' && now() - start < maxWallMs) {
@@ -1477,7 +1513,9 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
       const retryCtx = `${ctx}\n\nA previous attempt did not finish this step — recall what went wrong and take a DIFFERENT concrete approach this time.`;
       // The first attempt failed, so the retry (done, or at worst equivalent) replaces it.
       // A tainted first attempt still tainted the shared folder — don't lose it when the retry replaces `sub`.
-      sub = await runAgent({ ...opts, ...stepWords, instruction: retryCtx, subRun: true, plan: false, budget: subBudget, now: opts.now, onEvent: emit, startTainted: chainTainted || attemptTainted, carried });
+      if (sub.staged) stagedAll.push(...sub.staged); // the first attempt's approvals still wait — keep offering them
+      // ...and a retry doesn't propose the same standing preference a second time.
+      sub = await runAgent({ ...opts, ...stepWords, capturePolicy: false, instruction: retryCtx, subRun: true, plan: false, budget: subBudget, now: opts.now, onEvent: emit, startTainted: chainTainted || attemptTainted, carried });
       attemptTainted = attemptTainted || sub.tainted === true;
     }
     usage.brainIn += sub.usage.brainIn; usage.brainOut += sub.usage.brainOut;
@@ -1485,6 +1523,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     costUsd += sub.costUsd; aggSteps += sub.steps; aggDispatches += sub.dispatches; aggToolCalls += sub.toolCalls;
     if (sub.reason !== 'done') allDone = false;
     stepOutcomes.push(sub.outcome);
+    if (sub.staged) stagedAll.push(...sub.staged);
     if (attemptTainted) chainTainted = true;
     const out = sub.summary.trim();
     // Plain here; once the chain is tainted, later steps receive it via `carried`, fenced with THEIR code.
@@ -1530,6 +1569,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   return {
     outcome: planOutcome,
     tainted: chainTainted,
+    ...(stagedAll.length ? { staged: [...new Set(stagedAll)] } : {}),
     reason, summary: finalSummary, steps: aggSteps, dispatches: aggDispatches, toolCalls: aggToolCalls,
     reRecalls: 0, supersedes: 0, consolidations: 0, durationMs: now() - start, usage, costUsd: Number(costUsd.toFixed(6)), history,
   };

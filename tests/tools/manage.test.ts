@@ -1,3 +1,4 @@
+import { confirmPending } from '../../src/tools/approval.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -52,7 +53,7 @@ describe('runtime tool management', () => {
     expect(preview).toContain('node foo.js');
     expect(Object.keys(listMcpServers())).not.toContain('foo'); // not wired yet
 
-    const confirmed = await tool('confirm_action').handler({ confirmation_id: idFrom(preview) }, ctx);
+    const confirmed = await confirmPending(idFrom(preview), ctx);
     expect(confirmed).toContain('[CONFIRMED add_mcp_server]');
     expect(Object.keys(listMcpServers())).toContain('foo'); // now wired
     expect(listMcpServers().foo.command).toBe('node');
@@ -61,7 +62,7 @@ describe('runtime tool management', () => {
   it('remove_mcp_server removes a wired server', async () => {
     const add = tool('add_mcp_server');
     const preview = await add.handler({ name: 'bar', command: 'npx', args: ['-y', 'x'] }, ctx);
-    await tool('confirm_action').handler({ confirmation_id: idFrom(preview) }, ctx);
+    await confirmPending(idFrom(preview), ctx);
     expect(Object.keys(listMcpServers())).toContain('bar');
 
     const r = await tool('remove_mcp_server').handler({ name: 'bar' }, ctx);
@@ -78,7 +79,7 @@ describe('runtime tool management', () => {
     // enable a curated connector by wiring it under its id, then uninstall it
     const add = tool('add_mcp_server');
     const preview = await add.handler({ name: 'search', command: 'node', args: ['mcp-servers/search.mjs'] }, ctx);
-    await tool('confirm_action').handler({ confirmation_id: idFrom(preview) }, ctx);
+    await confirmPending(idFrom(preview), ctx);
     expect(Object.keys(listMcpServers())).toContain('search');
 
     const r = await tool('uninstall_connector').handler({ id: 'search' }, ctx);

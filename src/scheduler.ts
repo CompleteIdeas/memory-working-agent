@@ -25,6 +25,8 @@ export interface FireResult {
   /** what the fire achieved (BL-02), and where a two-phase completion stands. */
   outcome?: string;
   completion?: 'candidate' | 'stopped';
+  /** actions the fire staged that wait for the person's approval (BL-03) — the channel offers them. */
+  staged?: string[];
 }
 
 /** A compact, fixed-size signature (sha1 hex) of a check command's output. Two identical outputs
@@ -171,6 +173,7 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       log(`\u00b7 quiet (${outcome}, deliver=${policy}): ${task.instruction.slice(0, 40)}`);
     } else await deps.onFire(task, {
       outcome, ...(completion ? { completion } : {}),
+      ...(Array.isArray((r as { staged?: string[] }).staged) ? { staged: (r as { staged?: string[] }).staged } : {}),
       summary, files, dir, reason: r.reason,
       steps: Number(r.steps ?? 0), toolCalls: Number(r.toolCalls ?? 0),
       costUsd: Number(r.costUsd ?? 0), durationMs: Number(r.durationMs ?? 0),

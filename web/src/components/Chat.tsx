@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { chatStream, getSuggestions, getNotifications, type SpineStep, type ChatResult } from '../api';
+import { Approvals } from './Approvals';
 import { ActivitySpine } from './ActivitySpine';
 
 /** What an UNATTENDED (scheduled) run did. It has no live step spine — nobody streamed it — so the
@@ -22,6 +23,8 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const toggleExpand = (id: number) => setExpanded((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const session = useRef(sessionId());
+  // Re-read pending approvals whenever a turn or a scheduled result lands (BL-03).
+  const [approvalTick, setApprovalTick] = useState(0);
   const feedEnd = useRef<HTMLDivElement>(null);
 
   useEffect(() => { getSuggestions().then(setSuggestions); }, []);
@@ -47,6 +50,7 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
         },
       }))]);
       seen = Math.max(seen, ...notes.map((n) => n.ts));
+      setApprovalTick((x) => x + 1);
       localStorage.setItem('mwa-notify-seen', String(seen));
     };
     check();
@@ -65,7 +69,7 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
     const patch = (fn: (turn: Turn) => Turn) => setTurns((prev) => prev.map((tn) => (tn.id === id ? fn(tn) : tn)));
     chatStream(t, session.current, {
       onStep: (s) => patch((tn) => ({ ...tn, steps: [...tn.steps, { ...s, id: stepId++ }] })),
-      onResult: (r) => { patch((tn) => ({ ...tn, live: false, result: r })); onActivity?.(); },
+      onResult: (r) => { patch((tn) => ({ ...tn, live: false, result: r })); setApprovalTick((x) => x + 1); onActivity?.(); },
       onError: (m) => patch((tn) => ({ ...tn, live: false, error: m })),
       // Show a "new topic" marker only when we actually set aside an earlier conversation
       // (not on the first message of a session) — so the user understands the reset.
@@ -164,6 +168,7 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
       </div>
 
       <div className="sticky bottom-0 bg-bone/95 backdrop-blur py-4 -mx-4 px-4 sm:-mx-6 sm:px-6 border-t border-line">
+        <Approvals refresh={approvalTick} />
         <div className="flex gap-2 max-w-3xl mx-auto">
           <input
             value={input}

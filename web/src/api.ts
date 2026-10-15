@@ -22,6 +22,22 @@ export async function getStatus(): Promise<StatusResp> {
   return r.json();
 }
 
+/** An action staged for the person's approval (BL-03): only they approve it — here or in Telegram. */
+export interface PendingApproval { id: string; tool: string; summary: string; expiresInSec: number; tainted: boolean; kind: 'tool' | 'captured-policy' }
+export async function getApprovals(): Promise<PendingApproval[]> {
+  try { const r = bounceIfLocked(await fetch('/api/approvals')); return (await r.json()).pending ?? []; } catch { return []; }
+}
+export async function decideApproval(id: string, approve: boolean): Promise<{ ok: boolean; message: string }> {
+  try {
+    const r = bounceIfLocked(await fetch(`/api/approvals/${approve ? 'confirm' : 'cancel'}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }),
+    }));
+    const j = await r.json();
+    const message = String(j.message ?? j.error ?? '');
+    return { ok: r.ok && (approve ? j.ok === true : !message.startsWith('(')), message };
+  } catch (e) { return { ok: false, message: (e as Error).message }; }
+}
+
 export async function getStats(): Promise<{ memories: number }> {
   try { const r = await fetch('/api/stats'); return await r.json(); } catch { return { memories: 0 }; }
 }

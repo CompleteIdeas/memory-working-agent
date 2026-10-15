@@ -50,13 +50,13 @@ export interface CommandResult {
 }
 
 /** Run a shell command in cwd with a timeout; capture output. Cross-platform. */
-export function runCommand(cmd: string, cwd: string, timeoutMs = 60_000): CommandResult {
+export function runCommand(cmd: string, cwd: string, timeoutMs = 60_000, env?: NodeJS.ProcessEnv): CommandResult {
   // Windows spawnSync throws ENOENT (naming the shell, e.g. cmd.exe) when cwd doesn't
   // exist — and the agent's working dir is created lazily. Ensure it exists first.
   try { mkdirSync(cwd, { recursive: true }); } catch { /* */ }
   let r;
   try {
-    r = spawnSync(cmd, { cwd, shell: true, timeout: timeoutMs, encoding: 'utf8' });
+    r = spawnSync(cmd, { cwd, shell: true, timeout: timeoutMs, encoding: 'utf8', ...(env ? { env } : {}) });
   } catch (e) {
     return { code: 1, stdout: '', stderr: `command failed to start: ${(e as Error).message}`.slice(-8000) };
   }

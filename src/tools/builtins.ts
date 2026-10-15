@@ -9,8 +9,11 @@
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve, join, dirname, basename } from 'node:path';
 import { runCommand } from '../util.js';
-import { resolveAllowed, runCommandAllowed, allowedRoots } from './access.js';
+import { resolveAllowed, runCommandAllowed, allowedRoots, accessPolicy } from './access.js';
 import type { RegisteredTool, ToolContext } from './registry.js';
+import { classifyCommand, scrubbedEnv } from './shell-gate.js';
+import { guardedFetch } from './net-guard.js';
+import { stageAction } from './approval.js';
 
 const CAP = 4000;
 const SHELL_HINT = process.platform === 'win32'
@@ -55,7 +58,7 @@ function htmlToText(html: string): string {
 const runCommandTool: RegisteredTool = {
   def: {
     name: 'run_command',
-    description: `Run a shell command in the project sandbox and return its stdout/stderr. Use for builds, tests, git, grep, running node. (${SHELL_HINT}.)`,
+    description: `Run a shell command in the project sandbox and return its stdout/stderr. Simple read-only commands (ls, cat, grep, find, head, wc …) run at once; anything else — builds, installs, git, scripts, network — is staged for the person to approve, and you will not see its output this turn. (${SHELL_HINT}.)`,
     parameters: { type: 'object', properties: { command: { type: 'string', description: 'the shell command' } }, required: ['command'] },
   },
   handler: async (args, ctx) => {
@@ -63,9 +66,37 @@ const runCommandTool: RegisteredTool = {
     if (!gate.ok) return `(refused: ${gate.reason})`;
     const command = String(args.command ?? '').trim();
     if (!command) return '(no command given)';
-    const r = runCommand(command, resolve(ctx.sandboxDir), 60_000); // absolute cwd — Windows spawnSync rejects relative
-    const out = `${r.stdout ?? ''}${r.stderr ? `\n[stderr] ${r.stderr}` : ''}`.trim();
-    return `exit=${r.code}\n${out.slice(0, CAP) || '(no output)'}`;
+    const run = (dir: string, env?: NodeJS.ProcessEnv): string => {
+      const r = runCommand(command, resolve(dir), 60_000, env); // absolute cwd — Windows spawnSync rejects relative
+      const out = `${r.stdout ?? ''}${r.stderr ? `\n[stderr] ${r.stderr}` : ''}`.trim();
+      return `exit=${r.code}\n${out.slice(0, CAP) || '(no output)'}`;
+    };
+    // Developer mode: the model has your shell, environment included (the docs say so plainly).
+    if (accessPolicy().preset === 'developer') return run(ctx.sandboxDir);
+    // Assistant mode (BL-04, folded into BL-03): a person watching a chat is not a person approving
+    // each command. Read-only commands run; anything else is staged for approval — otherwise a
+    // backgrounded `curl` to MWA's own approvals endpoint approves whatever the model just staged.
+    const verdict = classifyCommand(command, (p) => allowed(ctx, p) !== null);
+    if (verdict.kind === 'read-only') return run(ctx.sandboxDir, scrubbedEnv());
+    const id = stageAction({
+      tool: 'run_command', ctx,
+      // The card is now the last defense for anything not read-only (second BL-03 review): show the
+      // command in full and say plainly when it reaches the network or this machine's own MWA controls.
+      // Warnings FIRST: a channel that cuts a long card (Telegram) must not cut them off.
+      summary: [
+        /\b(curl|wget|fetch|https?|nc|ncat|telnet|ssh|scp|ftp|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|bitsadmin|certutil)\b/i.test(command) ? '⚠ It reaches the network.' : '',
+        /localhost|127\.|0\.0\.0\.0|\[::|::1|0x7f|2130706433|\/api\/approvals/i.test(command) ? '⚠ It targets this machine, possibly MWA\'s own controls (including approvals). Do not approve it unless you wrote it.' : '',
+        `Run this command in ${ctx.sandboxDir}:`, `  ${command}`, `(Needs approval because ${verdict.reason}.)`,
+      ].filter(Boolean).join('\n'),
+      execute: async (c) => run(c.sandboxDir, scrubbedEnv()),
+    });
+    return (
+      `[APPROVAL REQUIRED] This command needs the person's approval because ${verdict.reason}. It has NOT run.\n` +
+      `confirmation_id: ${id}\n` +
+      `The person approves or declines it in the MWA app (the approvals list) or with the Approve button in Telegram; ` +
+      `you will not see its output in this turn. You cannot approve it yourself. If a read-only command would do ` +
+      `(ls, cat, grep, find, head, tail, wc), use that instead; otherwise tell the person what is waiting, and finish.`
+    );
   },
 };
 
@@ -151,16 +182,18 @@ const httpRequestTool: RegisteredTool = {
   handler: async (args) => {
     const url = String(args.url ?? '');
     if (!/^https?:\/\//.test(url)) return '(refused: url must be http(s))';
+    // Loopback and private addresses are refused (net-guard): MWA's own approvals endpoint lives there.
     const method = String(args.method ?? 'GET').toUpperCase();
     // Hard timeout so a hung endpoint can't stall the agent run indefinitely.
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), Number(process.env.MWA_HTTP_TIMEOUT_MS ?? 15_000));
     try {
-      const res = await fetch(url, {
+      const res = await guardedFetch(url, {
         method,
         signal: ctl.signal,
         ...(args.body ? { body: String(args.body), headers: { 'content-type': 'application/json' } } : {}),
       });
+      if (typeof res === 'string') return res;
       const text = (await res.text()).slice(0, CAP);
       return `status=${res.status}\n${text}`;
     } catch (e) {
@@ -184,7 +217,8 @@ const readDocumentTool: RegisteredTool = {
     try {
       let buf: Buffer;
       if (/^https?:\/\//i.test(src)) {
-        const res = await fetch(src, { headers: { 'user-agent': 'Mozilla/5.0 (MWA)' }, redirect: 'follow' });
+        const res = await guardedFetch(src, { headers: { 'user-agent': 'Mozilla/5.0 (MWA)' } });
+        if (typeof res === 'string') return res;
         if (!res.ok) return `(couldn't fetch ${src}: ${res.status})`;
         buf = Buffer.from(await res.arrayBuffer());
       } else {

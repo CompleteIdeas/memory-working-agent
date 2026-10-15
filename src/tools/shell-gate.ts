@@ -1,0 +1,103 @@
+/**
+ * Shell-command gate (BL-04, folded into BL-03). In Assistant mode a person is watching an
+ * interactive chat, but that is not the same as approving every command the model runs: measured by
+ * BL-03's isolated review, a chat could background `curl` against MWA's own approvals endpoint and
+ * approve the action it had just staged. The gate splits commands in two:
+ *
+ *   read-only  — a small allowlist of commands that only READ, with no shell features at all and
+ *                every path argument inside the folders this run may access. These run directly.
+ *   everything else — staged for the person's approval, like any other write.
+ *
+ * Conservative on purpose: anything the parser is unsure of needs approval, which costs a click.
+ * Developer mode skips the gate (the model has your shell there, and the docs say so).
+ *
+ * Deliberately NOT on the list: git (a repo's .git/config, which write_file can create, makes
+ * `git status` and `git diff` run arbitrary commands via core.fsmonitor or a diff driver), any
+ * interpreter (node, python, sh), package managers, and network tools.
+ */
+
+export type ShellVerdict = { kind: 'read-only' } | { kind: 'needs-approval'; reason: string };
+
+/** Shell metacharacters: banned everywhere, inside quotes too — on Windows cmd.exe single quotes
+ *  are not quotes, so "quoted" text could still chain a second command. Backslash is a path
+ *  separator on Windows and an escape on POSIX. Globs (* ?) only expand to file names: allowed. */
+const META_POSIX = /[;&|<>`$(){}!#%^\\\r\n]/;
+const META_WIN = /[;&|<>`$(){}!#%^\r\n]/;
+
+/** command → flags that make it write, execute, or reach outside (exact or `--flag=` prefix). */
+const READ_ONLY: Record<string, { deny?: string[]; noArgs?: boolean; textArgs?: boolean }> = {
+  ls: {}, dir: {}, cat: {}, type: {}, head: {}, tail: {}, wc: {}, pwd: {}, whoami: {}, uname: {},
+  which: {}, where: {}, stat: {}, du: {}, df: {}, cut: {}, diff: {},
+  echo: { textArgs: true },
+  date: { noArgs: true },
+  grep: {},
+  rg: { deny: ['--pre', '--pre-glob'] },
+  find: { deny: ['-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprint0', '-fprintf', '-fls'] },
+  sort: { deny: ['-o', '--output', '--compress-program', '-T', '--temporary-directory'] },
+  tree: { deny: ['-o'] },
+};
+
+/** Split into tokens; quotes only group words. Returns null when the text isn't simple. */
+function tokenize(cmd: string): string[] | null {
+  const out: string[] = [];
+  const re = /\s*(?:'([^']*)'|"([^"]*)"|([^\s'"]+))/y;
+  let i = 0;
+  while (i < cmd.length) {
+    if (/^\s+$/.test(cmd.slice(i))) break;
+    re.lastIndex = i;
+    const m = re.exec(cmd);
+    if (!m || m[0].length === 0) return null;
+    out.push(m[1] ?? m[2] ?? m[3]);
+    i = re.lastIndex;
+  }
+  return out;
+}
+
+/** True when an argument names a file or folder rather than plain text (a bare name like
+ *  `notes.txt` resolves inside the working folder, which is always allowed). */
+function looksLikePath(a: string): boolean {
+  return /[\\/:]/.test(a) || a.startsWith('.') || a.startsWith('~');
+}
+
+export function classifyCommand(cmd: string, pathAllowed: (p: string) => boolean, platform: NodeJS.Platform = process.platform): ShellVerdict {
+  const text = cmd.trim();
+  if (!text) return { kind: 'needs-approval', reason: 'empty command' };
+  const meta = platform === 'win32' ? META_WIN : META_POSIX;
+  if (meta.test(text)) return { kind: 'needs-approval', reason: 'it uses shell features (chaining, pipes, redirection, substitution or variables)' };
+  const toks = tokenize(text);
+  if (!toks || !toks.length) return { kind: 'needs-approval', reason: 'it could not be read as a simple command' };
+  const name = toks[0].toLowerCase().replace(/\.exe$/, '');
+  const rule = READ_ONLY[name];
+  if (!rule || /[\\/]/.test(toks[0])) return { kind: 'needs-approval', reason: `"${toks[0]}" is not on the read-only list` };
+  const args = toks.slice(1);
+  if (rule.noArgs && args.length) return { kind: 'needs-approval', reason: `"${name}" with arguments can change things` };
+  for (const a of args) {
+    const denied = (rule.deny ?? []).some((d) => {
+      if (d.startsWith('--')) return a === d || a.startsWith(`${d}=`);
+      // a one-letter flag also hides in a cluster (`sort -ro out`) or with its value attached (`-oout`)
+      if (d.length === 2) return /^-[A-Za-z0-9]+$/.test(a) ? a.slice(1).includes(d[1]) : a.startsWith(d) && !a.startsWith('--');
+      return a === d;
+    });
+    if (denied) return { kind: 'needs-approval', reason: `"${name} ${a.split('=')[0]}" can write or run something` };
+    if (rule.textArgs) continue;
+    const value = a.startsWith('-') ? (a.includes('=') ? a.slice(a.indexOf('=') + 1) : '') : a;
+    if (value && looksLikePath(value) && !pathAllowed(value)) {
+      return { kind: 'needs-approval', reason: `it reads outside the folders this assistant may access (${value.slice(0, 60)})` };
+    }
+  }
+  return { kind: 'read-only' };
+}
+
+/** The environment a model-run command gets: enough to find programs and a temp folder, none of
+ *  MWA's secrets (API keys, the access password, the Telegram bot token). */
+const ENV_KEEP = [
+  'PATH', 'Path', 'PATHEXT', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'USER', 'USERNAME', 'LOGNAME',
+  'SystemRoot', 'SYSTEMROOT', 'windir', 'WINDIR', 'ComSpec', 'COMSPEC', 'SystemDrive', 'TEMP', 'TMP', 'TMPDIR',
+  'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'SHELL', 'TZ', 'APPDATA', 'LOCALAPPDATA', 'ProgramFiles', 'ProgramData',
+  'ProgramFiles(x86)', 'CommonProgramFiles', 'NUMBER_OF_PROCESSORS', 'OS', 'PROCESSOR_ARCHITECTURE',
+];
+export function scrubbedEnv(src: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const k of ENV_KEEP) if (src[k] !== undefined) out[k] = src[k];
+  return out;
+}

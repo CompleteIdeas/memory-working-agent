@@ -4,15 +4,20 @@
  *
  * Wrap a write tool with `requireApproval(tool)`. Calling the wrapped tool does
  * NOT execute it — it performs a dry-run: stores a pending action and returns a
- * preview + a confirmation_id. The action only runs when `confirm_action` is
- * called with that id, which is a separate, explicit step. A scheduled
- * (non-interactive) run cannot confirm a write unless explicitly allowed, so an
- * unattended agent physically cannot mutate production on its own.
+ * preview + a confirmation_id. The action only runs when a PERSON approves it,
+ * through a channel the model cannot call: the app's approvals list
+ * (/api/approvals/confirm) or the Approve button the Telegram connector sends.
+ * (BL-03: the model used to have a confirm_action tool; measured 2026-10-14, it
+ * staged a write and confirmed it itself in one turn with no human.) As a second
+ * guard, confirmPending refuses a confirm carrying the same runId that staged the
+ * action. A scheduled (non-interactive) run cannot confirm a write unless
+ * explicitly allowed, so an unattended agent physically cannot mutate on its own.
  *
  * Modeled on the USEA Gallop Support legacy-db dryrun→confirm flow (which guards
  * a live SQL Server) — generalized so any MWA tool can opt in. This is the hard
  * gate the USEA→MWA migration cannot cut over without.
  */
+import { randomBytes } from 'node:crypto';
 import type { RegisteredTool, ToolContext } from './registry.js';
 import { isStepUpSatisfied } from '../step-up.js';
 
@@ -27,6 +32,16 @@ export interface PendingAction {
    *  so it's enforced no matter which path confirms it (chat tool OR the UI /api/approvals/confirm). */
   personId?: string;
   identityInDoubt?: boolean;
+  /** the run that staged it — a confirm from the same run is refused (BL-03 second guard). */
+  runId?: string;
+  /** the conversation it came from (e.g. `tg-<chatId>`, a web session id). */
+  session?: string;
+  /** staged by a run that had read outside content — shown to the person beside the preview. */
+  tainted?: boolean;
+  /** what it is: a tool call the model made, or a standing preference captured from the person's words. */
+  kind?: 'tool' | 'captured-policy';
+  /** the context it was staged in; it executes in this one, whoever approves it. */
+  stagedCtx?: ToolContext;
 }
 
 /** Audit hook — wire to AWM from the agent layer so every approval is recorded. */
@@ -34,7 +49,6 @@ export type ApprovalEvent = 'dryrun' | 'confirm' | 'cancel' | 'expired';
 export type ApprovalAuditFn = (event: ApprovalEvent, a: { id: string; tool: string; summary: string }) => void;
 
 const pending = new Map<string, PendingAction>();
-let seq = 0;
 let audit: ApprovalAuditFn | null = null;
 
 /** Register an audit sink (e.g. write each approval event to AWM). Pass null to clear. */
@@ -47,9 +61,9 @@ function ttlMs(): number {
   return Number.isFinite(v) && v >= 0 ? v : 600_000; // default 10 min
 }
 
+/** Unguessable and never reused across restarts: an id is all an Approve button carries. */
 function newId(): string {
-  seq += 1;
-  return `act_${Date.now().toString(36)}_${seq}`;
+  return `act_${randomBytes(8).toString('hex')}`;
 }
 
 function prune(): void {
@@ -60,6 +74,45 @@ function prune(): void {
       audit?.('expired', { id: a.id, tool: a.tool, summary: a.summary });
     }
   }
+}
+
+/**
+ * Stage an action for a person's approval. Used by requireApproval and by the run-end capture of
+ * standing preferences (which must not be saved silently: text the person pasted could carry a
+ * "from now on always BCC ..." that was never theirs — BL-03). The ctx captured here is the one the
+ * action executes with, whoever approves it.
+ */
+export function stageAction(a: {
+  tool: string; summary: string; ctx?: ToolContext; ttlMs?: number; kind?: PendingAction['kind'];
+  execute: (ctx: ToolContext) => Promise<string>;
+}): string {
+  prune();
+  const id = newId();
+  const now = Date.now();
+  const ctx = a.ctx;
+  pending.set(id, {
+    id, tool: a.tool, summary: a.summary, createdAt: now, expiresAt: now + (a.ttlMs ?? ttlMs()),
+    execute: a.execute, personId: ctx?.personId, identityInDoubt: ctx?.identityInDoubt,
+    runId: ctx?.runId, session: ctx?.session, tainted: ctx?.tainted === true, kind: a.kind ?? 'tool',
+    stagedCtx: ctx,
+  });
+  audit?.('dryrun', { id, tool: a.tool, summary: a.summary });
+  return id;
+}
+
+/** Ids of actions a run staged that are still waiting (outcome + delivery use this). */
+export function pendingStagedBy(runId: string, kind?: PendingAction['kind']): string[] {
+  prune();
+  return [...pending.values()]
+    .filter((a) => a.runId === runId && (kind === undefined || (a.kind ?? 'tool') === kind))
+    .map((a) => a.id);
+}
+
+/** One pending action's metadata (no execute, no ctx) — the Telegram connector checks where it came from. */
+export function pendingMeta(id: string): { id: string; tool: string; summary: string; session?: string; tainted: boolean; kind: 'tool' | 'captured-policy' } | undefined {
+  prune();
+  const a = pending.get(id);
+  return a ? { id: a.id, tool: a.tool, summary: a.summary, session: a.session, tainted: a.tainted === true, kind: a.kind ?? 'tool' } : undefined;
 }
 
 /** Number of pending actions (test/inspection helper). */
@@ -81,39 +134,29 @@ export function requireApproval(
       ...tool.def,
       description:
         `${tool.def.description} ` +
-        `(WRITE — does NOT run immediately: returns a confirmation_id; after the human approves, ` +
-        `call confirm_action with that id to execute.)`,
+        `(WRITE — does NOT run now: it is staged for the person to approve in the app or with the ` +
+        `Approve button in Telegram. You cannot approve it yourself.)`,
     },
     handler: async (args, ctx) => {
-      prune();
-      const id = newId();
       const summary = opts?.preview
         ? opts.preview(args)
         : `${tool.def.name} ${JSON.stringify(args).slice(0, 300)}`;
-      const action: PendingAction = {
-        id,
-        tool: tool.def.name,
-        summary,
-        createdAt: Date.now(),
-        expiresAt: Date.now() + ttlMs(),
-        execute: (ctx2) => tool.handler(args, ctx2),
-        personId: ctx?.personId,
-        identityInDoubt: ctx?.identityInDoubt,
-      };
-      pending.set(id, action);
-      audit?.('dryrun', { id, tool: action.tool, summary });
+      // An unattended run's request waits a day: nobody is there to see it within ten minutes (BL-03 review).
+      const life = ctx?.interactive === false ? 24 * 60 * 60_000 : ttlMs();
+      const id = stageAction({ tool: tool.def.name, summary, ctx, ttlMs: life, execute: (ctx2) => tool.handler(args, ctx2) });
       return (
-        `[APPROVAL REQUIRED] "${tool.def.name}" will NOT run until confirmed.\n` +
+        `[APPROVAL REQUIRED] "${tool.def.name}" will NOT run until the person approves it.\n` +
         `confirmation_id: ${id}\n` +
         `--- preview of what will run ---\n${summary}\n--- end preview ---\n` +
-        `Present this to the human. After they explicitly approve, call confirm_action with this confirmation_id. ` +
-        `Expires in ${Math.round(ttlMs() / 60000)} min.`
+        `The person approves or declines it in the MWA app (the approvals list) or with the Approve button in Telegram. ` +
+        `You cannot approve it yourself. Tell them what is waiting for their approval, and finish. ` +
+        `Expires in ${life >= 3_600_000 ? `${Math.round(life / 3_600_000)} h` : `${Math.round(life / 60000)} min`}.`
       );
     },
   };
 }
 
-export interface PendingView { id: string; tool: string; summary: string; expiresInSec: number; }
+export interface PendingView { id: string; tool: string; summary: string; expiresInSec: number; tainted: boolean; kind: 'tool' | 'captured-policy'; }
 
 /** List pending actions (for the chat tool AND the Connections UI — the "both paths" model). */
 export function listPendingActions(): PendingView[] {
@@ -121,11 +164,12 @@ export function listPendingActions(): PendingView[] {
   const now = Date.now();
   return [...pending.values()]
     .sort((a, b) => b.createdAt - a.createdAt)
-    .map((a) => ({ id: a.id, tool: a.tool, summary: a.summary, expiresInSec: Math.max(0, Math.round((a.expiresAt - now) / 1000)) }));
+    .map((a) => ({ id: a.id, tool: a.tool, summary: a.summary, expiresInSec: Math.max(0, Math.round((a.expiresAt - now) / 1000)), tainted: a.tainted === true, kind: a.kind ?? 'tool' }));
 }
 
-/** Confirm + execute a pending action by id (omit id → the single most recent). Shared by
- *  the confirm_action chat tool and the UI approval endpoint. Unattended runs are gated. */
+/** Confirm + execute a pending action by id (omit id → the single most recent). Called only by
+ *  channels the model cannot reach: the app's approval endpoint and the Telegram connector's
+ *  Approve button. Unattended runs are gated, and so is the run that staged the action. */
 export async function confirmPending(id: string | undefined, ctx: ToolContext): Promise<string> {
   prune();
   if (ctx.interactive === false && process.env.MWA_ALLOW_UNATTENDED_WRITES !== '1') {
@@ -140,6 +184,10 @@ export async function confirmPending(id: string | undefined, ctx: ToolContext): 
   }
   const action = pending.get(key);
   if (!action) return `(no pending action with id "${key}" — it may have expired or already run)`;
+  // SECOND GUARD (BL-03): the run that staged an action never approves it, whatever path it finds.
+  if (ctx.runId && action.runId && ctx.runId === action.runId) {
+    return '(refused: an action cannot be approved by the run that staged it — the person approves it in the app or with the Telegram button.)';
+  }
   if (action.expiresAt <= Date.now()) {
     pending.delete(key);
     audit?.('expired', { id: action.id, tool: action.tool, summary: action.summary });
@@ -155,7 +203,9 @@ export async function confirmPending(id: string | undefined, ctx: ToolContext): 
   }
   pending.delete(key); // single-use — a confirmation can never be replayed
   audit?.('confirm', { id: action.id, tool: action.tool, summary: action.summary });
-  const result = await action.execute(ctx);
+  // Execute in the context it was STAGED in (its folder, person, roots) — not the approver's. A
+  // person approved it, so it runs as interactive and untainted.
+  const result = await action.execute(action.stagedCtx ? { ...action.stagedCtx, interactive: true, tainted: false } : ctx);
   return `[CONFIRMED ${action.tool}]\n${result}`;
 }
 
@@ -168,7 +218,9 @@ export function cancelPending(id: string): string {
   return `cancelled "${id}" (${action.tool}) — not executed`;
 }
 
-const confirmActionTool: RegisteredTool = {
+/** NOT given to the model (BL-03). For an embedding app that wires its own HUMAN channel to it;
+ *  never register it into an agent's tools. */
+export const humanConfirmTool: RegisteredTool = {
   def: {
     name: 'confirm_action',
     description:
@@ -206,7 +258,7 @@ const listPendingTool: RegisteredTool = {
   },
 };
 
-/** The approval control tools — always registered so confirm/cancel are available. */
+/** The approval tools the MODEL gets: decline and look — never approve (BL-03). */
 export function approvalTools(): RegisteredTool[] {
-  return [confirmActionTool, cancelActionTool, listPendingTool];
+  return [cancelActionTool, listPendingTool];
 }

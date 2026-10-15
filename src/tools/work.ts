@@ -173,7 +173,7 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
 
   // ── Standing preferences ────────────────────────────────────────────────────────────────────
   // Both writers below run their checks BEFORE delegating to the approval wrapper, so a refused call
-  // leaves no pending action for a later confirm_action to pick up.
+  // leaves no pending action for a person to approve by mistake.
 
   /** The gate every policy write shares. Returns a refusal string, or null when it may proceed. */
   function policyGate(rule: string, ctx: ToolContext): string | null {

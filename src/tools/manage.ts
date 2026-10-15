@@ -9,8 +9,8 @@
  *                           capability is always safe).
  *   - add an ARBITRARY MCP server (raw command) → add_mcp_server, wrapped in the two-step
  *                           approval gate: it previews the exact command and only writes it
- *                           to config after confirm_action (chat) OR the Connections UI
- *                           (both paths). Running a third-party server executes code locally.
+ *                           to config after the person approves it in the app or with the
+ *                           Telegram button (BL-03: the model cannot approve). Running a third-party server executes code locally.
  */
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';

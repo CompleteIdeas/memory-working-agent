@@ -26,6 +26,10 @@ export interface ToolContext {
   /** true when this person's identity is in doubt (S6 mismatch) — a sensitive confirm then requires
    *  a satisfied step-up (2nd factor via a validated connection). */
   identityInDoubt?: boolean;
+  /** the run making this call — an action it stages can't be approved by the same run (BL-03). */
+  runId?: string;
+  /** the conversation this run belongs to (e.g. `tg-<chatId>`): where an approval is offered. */
+  session?: string;
 }
 
 export interface RegisteredTool {

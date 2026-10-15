@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { requireApproval, approvalTools, setApprovalAudit, pendingCount } from '../../src/tools/approval.js';
+import { requireApproval, approvalTools, setApprovalAudit, pendingCount, confirmPending } from '../../src/tools/approval.js';
 import type { RegisteredTool, ToolContext } from '../../src/tools/registry.js';
 
 // A spy tool: records every real execution so we can prove the wrapper does NOT
@@ -22,7 +22,8 @@ const ctxScheduled: ToolContext = { sandboxDir: '.', interactive: false };
 function tools() {
   const map = new Map(approvalTools().map((t) => [t.def.name, t]));
   return {
-    confirm: map.get('confirm_action')!,
+    // The model no longer has a confirm tool (BL-03); a person's channel calls confirmPending.
+    confirm: { handler: (a: Record<string, unknown>, c: ToolContext) => confirmPending(String(a.confirmation_id), c) },
     cancel: map.get('cancel_action')!,
     list: map.get('list_pending')!,
   };

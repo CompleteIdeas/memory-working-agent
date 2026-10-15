@@ -7,8 +7,12 @@
  *
  *   locked-down — workspace only; run_command OFF.
  *   assistant   — workspace + granted folders; run_command ON only when a human is watching
- *                 (interactive), OFF when unattended (scheduled). [default]
- *   developer   — workspace + granted folders; run_command ON always.
+ *                 (interactive), OFF when unattended (scheduled). [default] Even when watched, only
+ *                 parsed read-only commands run directly; anything else is staged for the person's
+ *                 approval (shell-gate.ts), and fetch tools can't reach this machine (net-guard.ts).
+ *   developer   — workspace + granted folders; run_command ON always, ungated, full environment.
+ *                 NO security boundary: a command can reach MWA's own approvals endpoint, so in this
+ *                 mode the model can approve its own actions. Choose it only for a sandboxed machine.
  */
 import { resolve, sep } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';

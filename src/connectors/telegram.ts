@@ -22,6 +22,7 @@ import { preparePersonTurn, learnFromTurn } from '../person-turn.js';
 import { runScheduler } from '../scheduler.js';
 import { loadEnv } from '../env.js';
 import type { ToolRegistry } from '../tools/registry.js';
+import { pendingMeta, confirmPending, cancelPending } from '../tools/approval.js';
 
 async function tg(token: string, method: string, body?: Record<string, unknown>): Promise<any> {
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {});
@@ -53,13 +54,51 @@ const HELP_TEXT = [
   'Commands:  /help  ·  /status',
 ].join('\n');
 
+/**
+ * APPROVAL BUTTONS (BL-03). The model cannot approve anything; a person does, here, by tapping a
+ * button the connector sent. Telegram delivers the tap to this process (the bot token is the
+ * authentication), and an id is honored only from the chat it was offered to, once.
+ */
+export function approvalKeyboard(id: string): { inline_keyboard: { text: string; callback_data: string }[][] } {
+  return { inline_keyboard: [[{ text: '✅ Approve', callback_data: `ap:${id}` }, { text: '✖ Cancel', callback_data: `cx:${id}` }]] };
+}
+
+/** The card for one pending action — plain text (no parse_mode), so a preview can't restyle itself. */
+export function approvalCardText(id: string): string | null {
+  const m = pendingMeta(id);
+  if (!m) return null;
+  return [
+    `🔐 Needs your approval: ${m.kind === 'captured-policy' ? 'a standing preference' : m.tool}`,
+    '',
+    m.summary.slice(0, 3000),
+    m.tainted ? '\n⚠ Proposed by a run that read outside content (an email, a web page or a file). Make sure it is what you want.' : '',
+  ].filter((x) => x !== '').join('\n');
+}
+
+/** Where an approval card was sent: its chat, and the card's own message (BL-03 review — a look-alike
+ *  card carrying the same callback data, sent by anything holding the bot token, is not honored). */
+export interface Offer { chat: string; message?: number }
+
+/** Handle an Approve/Cancel tap. `offered` maps action id → the card it was offered on. */
+export async function handleApprovalCallback(data: string, chatId: string, offered: Map<string, Offer>, dir: string, messageId?: number): Promise<string> {
+  const m = /^(ap|cx):(act_[0-9a-f]{16})$/.exec(data);
+  if (!m) return '(not an approval button)';
+  const [, verb, id] = m;
+  const offer = offered.get(id);
+  if (!offer || offer.chat !== chatId) return '(that approval was not offered in this chat)';
+  if (offer.message !== undefined && offer.message !== messageId) return '(that is not the card this approval was offered on)';
+  const out = verb === 'cx' ? cancelPending(id) : await confirmPending(id, { sandboxDir: dir, interactive: true });
+  if (!pendingMeta(id)) offered.delete(id); // used up (run, cancelled or expired); a step-up block keeps it
+  return out;
+}
+
 interface Deps { memory: MwaMemory; brain: Provider; worker: Provider; registry: ToolRegistry; maxSteps: number; maxMin: number; outRoot: string }
 
 /**
  * Testable core: an instruction from a chat → run the agent → format a reply.
  * Channel-agnostic; the Telegram loop just transports text in/out.
  */
-export async function handleInstruction(text: string, chatId: string | number, deps: Deps, recentContext = '', recentTainted = false): Promise<{ replyText: string; files: string[]; dir: string; reason: string; tainted: boolean }> {
+export async function handleInstruction(text: string, chatId: string | number, deps: Deps, recentContext = '', recentTainted = false): Promise<{ replyText: string; files: string[]; dir: string; reason: string; tainted: boolean; staged: string[] }> {
   // PERSISTENT per-chat working dir (not per-message) → follow-ups can read/modify
   // files from earlier turns. Absolute path (Windows spawnSync).
   const dir = resolve(deps.outRoot, `tg-${chatId}`);
@@ -100,7 +139,7 @@ export async function handleInstruction(text: string, chatId: string | number, d
     produced ? `\n\n📎 outputs: ${files.join(', ')}` : '',
     `\n\n(${r.steps} steps · ${Math.round(r.durationMs / 1000)}s · $${r.costUsd.toFixed(4)})`,
   ].join('');
-  return { replyText: reply.slice(0, 3900), files, dir, reason: r.reason, tainted: r.tainted === true }; // Telegram msg cap 4096
+  return { replyText: reply.slice(0, 3900), files, dir, reason: r.reason, tainted: r.tainted === true, staged: r.staged ?? [] }; // Telegram msg cap 4096
 }
 
 export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; maxSteps?: number; maxMin?: number; onLog?: (m: string) => void }): Promise<void> {
@@ -123,6 +162,18 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
   const { registry } = await buildRegistry(opts.config, memory);
   const deps: Deps = { memory, brain, worker, registry, maxSteps: opts.maxSteps ?? 40, maxMin: opts.maxMin ?? 10, outRoot: join(opts.config.workspace ?? './mwa-workspace', 'outputs') };
 
+  // Approvals offered (BL-03): action id → the chat and card its buttons were sent on.
+  const offered = new Map<string, Offer>();
+  const offerApprovals = async (chatId: string, ids: string[]): Promise<void> => {
+    for (const id of ids.slice(0, 5)) {
+      const text = approvalCardText(id);
+      if (!text) continue;
+      try {
+        const sent = await tg(token, 'sendMessage', { chat_id: chatId, text: text.slice(0, 3900), reply_markup: approvalKeyboard(id) });
+        offered.set(id, { chat: chatId, message: Number(sent?.message_id) || undefined });
+      } catch (e) { log(`approval card failed: ${(e as Error).message.slice(0, 80)}`); }
+    }
+  };
   const convo = new Map<string, { u: string; a: string; t?: boolean }[]>(); // per-chat recent exchanges (multi-turn); t = that turn read external content
   const sessionStats = { tasks: 0, started: Date.now() };
   const statusText = () => [
@@ -143,16 +194,32 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
       const text = `⏰ Scheduled: ${task.instruction.slice(0, 80)}\n\n${res.summary}`.slice(0, 3900);
       await tg(token, 'sendMessage', { chat_id: chatId, text }).catch(() => {});
       for (const f of res.files.slice(0, 5)) { try { const p = join(res.dir, f); if (statSync(p).isFile() && statSync(p).size < 10_000_000) await sendDocument(token, chatId, p); } catch { /* */ } }
+      await offerApprovals(chatId, res.staged ?? []);
     },
   });
 
   let offset = 0;
   for (;;) {
     let updates: any[];
-    try { updates = await tg(token, 'getUpdates', { offset, timeout: 30 }); }
+    try { updates = await tg(token, 'getUpdates', { offset, timeout: 30, allowed_updates: ['message', 'callback_query'] }); }
     catch (e) { log(`poll error: ${(e as Error).message.slice(0, 100)}`); await new Promise((r) => setTimeout(r, 3000)); continue; }
     for (const u of updates) {
       offset = u.update_id + 1;
+      // An Approve/Cancel tap — handled here, never by the model (BL-03).
+      const cq = u.callback_query;
+      if (cq) {
+        const cqChat = String(cq.message?.chat?.id ?? '');
+        const ok = allowed.has(cqChat);
+        const out = ok ? await handleApprovalCallback(String(cq.data ?? ''), cqChat, offered, resolve(deps.outRoot, `tg-${cqChat}`), cq.message?.message_id) : '(not authorized)';
+        log(`approval tap in ${cqChat}: ${String(cq.data ?? '').slice(0, 30)} → ${out.replace(/\n/g, ' ').slice(0, 100)}`);
+        await tg(token, 'answerCallbackQuery', { callback_query_id: cq.id, text: out.slice(0, 190) }).catch(() => {});
+        // A step-up block keeps the buttons: the person verifies, then taps Approve again.
+        if (ok && cq.message && !out.startsWith('(blocked:')) {
+          await tg(token, 'editMessageReplyMarkup', { chat_id: cqChat, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+          await tg(token, 'sendMessage', { chat_id: cqChat, text: out.slice(0, 3900) }).catch(() => {});
+        }
+        continue;
+      }
       const msg = u.message;
       if (!msg?.text) continue;
       const chatId = msg.chat.id;
@@ -171,7 +238,7 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
       try {
         const turns = (convo.get(String(chatId)) ?? []).slice(-3);
         const recent = turns.map((x) => `You: ${x.u}\nAgent: ${x.a}`).join('\n');
-        const { replyText, files, dir, tainted } = await handleInstruction(textIn, chatId, deps, recent, turns.some((x) => x.t));
+        const { replyText, files, dir, tainted, staged } = await handleInstruction(textIn, chatId, deps, recent, turns.some((x) => x.t));
         log(`reply to ${chatId}: ${replyText.replace(/\n/g, ' ').slice(0, 200)}`);
         await tg(token, 'sendMessage', { chat_id: chatId, text: replyText });
         // Deliver output files (up to 5, under 10MB) as Telegram documents.
@@ -179,6 +246,7 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
           try { const p = join(dir, f); if (statSync(p).isFile() && statSync(p).size < 10_000_000) await sendDocument(token, chatId, p); }
           catch (e) { log(`sendDocument ${f} failed: ${(e as Error).message.slice(0, 80)}`); }
         }
+        await offerApprovals(String(chatId), staged);
         // Remember the exchange for follow-ups.
         const arr = convo.get(String(chatId)) ?? []; arr.push({ u: textIn, a: replyText.slice(0, 300), t: tainted }); if (arr.length > 6) arr.shift(); convo.set(String(chatId), arr);
       } catch (e) {

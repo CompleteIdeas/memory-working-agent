@@ -666,8 +666,8 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         res.end(JSON.stringify({ logs: readLogs({ since, limit: 100, level }) }));
         return;
       }
-      // Pending write-approvals — the UI half of the two-step gate ("both paths"): the agent
-      // can previewed-then-confirm in chat, OR the user can review + approve/decline here.
+      // Pending approvals — the ONLY place the app approves anything (BL-03): the model can stage an
+      // action but not approve it; the person approves or declines it here (the chat's approvals panel).
       if (p === '/api/approvals' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ pending: listPendingActions() }));
@@ -676,9 +676,12 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       if (p === '/api/approvals/confirm' && req.method === 'POST') {
         if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
-        const out = await confirmPending(b.id ? String(b.id) : undefined, { sandboxDir: resolve('.'), interactive: true });
+        // An explicit id only: a person approves the card they are looking at, never "the latest".
+        // The action runs in the context it was staged in (BL-03), so the ctx here only gates.
+        if (!b.id) { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: 'which approval? (id is required)' })); return; }
+        const out = await confirmPending(String(b.id), { sandboxDir: resolve('.'), interactive: true });
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: !/^\(|refused|no pending|expired|ambiguous/i.test(out), message: out }));
+        res.end(JSON.stringify({ ok: out.startsWith('[CONFIRMED'), message: out }));
         return;
       }
       if (p === '/api/approvals/cancel' && req.method === 'POST') {

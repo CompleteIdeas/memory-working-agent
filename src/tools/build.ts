@@ -27,9 +27,8 @@ export async function buildRegistry(
 ): Promise<{ registry: ToolRegistry; close: () => Promise<void> }> {
   const registry = new ToolRegistry();
   registry.registerAll(builtinTools(config.tools.builtins ?? []));
-  // confirm_action / cancel_action / list_pending — the control tools for any
-  // write tool wrapped in requireApproval(). Always available so a previewed
-  // write can be confirmed or discarded.
+  // cancel_action / list_pending — the model can decline or look at a staged write, never approve
+  // it: a person does, in the app or with the Telegram button (BL-03).
   registry.registerAll(approvalTools());
   // Warm-start tools: scan the user's folders/files into candidate memories +
   // the onboarding interview. The agent refines + verifies before writing.

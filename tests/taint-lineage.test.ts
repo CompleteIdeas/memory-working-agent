@@ -1,3 +1,4 @@
+import { pendingMeta, confirmPending } from '../src/tools/approval.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -78,17 +79,23 @@ describe('standing-preference capture reads only the person’s own words', () =
     expect(policies.join(' ')).not.toContain('audit@evil.test');
   }, 60_000);
 
-  it('still captures a rule the person states themselves', async () => {
-    const policies = await withMemory(async (dir, mem) => {
+  it('still captures a rule the person states themselves — staged for approval, saved only once approved (BL-03)', async () => {
+    const { before, after } = await withMemory(async (dir, mem) => {
       const { brain } = scripted([]);
-      await runAgent({
+      const r = await runAgent({
         instruction: 'standing preference: always reply in short bullet points confirm',
         userMessage: 'standing preference: always reply in short bullet points confirm',
         dir, memory: mem, brain, worker: brain, interactive: true, budget: { maxSteps: 3, maxWallMs: 30_000 },
       });
-      return mem.listPolicies();
+      const before = await mem.listPolicies();
+      const id = (r.staged ?? []).find((x) => pendingMeta(x)?.summary.includes('always reply in short bullet points'));
+      expect(id).toBeDefined();
+      expect(r.summary).toContain('Approve it');
+      await confirmPending(id!, { sandboxDir: dir, interactive: true });
+      return { before, after: await mem.listPolicies() };
     });
-    expect(policies.join(' ')).toContain('always reply in short bullet points');
+    expect(before.join(' ')).not.toContain('always reply in short bullet points'); // never saved silently
+    expect(after.join(' ')).toContain('always reply in short bullet points');
   }, 60_000);
 
   it('never captures inside a plan sub-run', async () => {
@@ -220,9 +227,14 @@ describe('Telegram turns still capture standing preferences (BL-17 review regres
     await withMemory(async (dir, mem) => {
       const { brain } = scripted([], { 'STANDING preference': '{"policies":["always sign off as Rob"]}' });
       const { ToolRegistry } = await import('../src/tools/registry.js');
-      await handleInstruction('From now on always sign off as Rob', 'chat-2', {
+      const out = await handleInstruction('From now on always sign off as Rob', 'chat-2', {
         memory: mem, brain, worker: brain, registry: new ToolRegistry(), maxSteps: 3, maxMin: 1, outRoot: dir,
       });
+      // Staged, and handed back so the connector can send the Approve button (BL-03).
+      const id = out.staged.find((x) => pendingMeta(x)?.summary.includes('sign off as Rob'));
+      expect(id).toBeDefined();
+      expect((await mem.listPolicies()).join(' ')).not.toContain('sign off as Rob');
+      await confirmPending(id!, { sandboxDir: dir, interactive: true });
       expect((await mem.listPolicies()).join(' ')).toContain('sign off as Rob');
     });
   }, 60_000);

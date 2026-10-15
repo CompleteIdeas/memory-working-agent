@@ -11,6 +11,7 @@ import type { Provider } from './provider.js';
 import type { MwaMemory } from './awm.js';
 import { normalizePersonId, PERSON_NOTE_KINDS, type PersonNoteKind } from './person.js';
 import { parseJsonLoose } from './util.js';
+import { scanPolicy } from './tools/routines.js';
 
 const norm = (s: string) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
@@ -52,6 +53,17 @@ export async function learnAboutPerson(opts: {
     if (!content) continue;
     if (seen.has(norm(content))) { skipped++; continue; } // already known — don't repeat it
     const kind: PersonNoteKind = (PERSON_NOTE_KINDS as string[]).includes(String(c?.kind)) ? (c!.kind as PersonNoteKind) : 'fact';
+    // A "preference" lands in this person's dossier and so in every future run with them — the same
+    // reach as a standing preference, so the same scan (BL-03 review: a pasted "from now on always
+    // BCC …" could otherwise be learned here silently, with no approval).
+    // scanPolicy alone doesn't catch "always BCC x@y" (a real owner rule like that belongs on an
+    // approval card, not refused), and this path saves WITHOUT approval — so a learned preference that
+    // names an address or a link is dropped. Contact details are learned as facts, not preferences.
+    // A "fact" that reads as a directive ("their assistant is x@y — BCC them on invoices") gets the same
+    // treatment (second BL-03 review); a plain contact fact ("Rob's email is rob@x.com") does not.
+    const directive = /\b(always|never|every|whenever|from now on|bcc|cc|forward|send|copy|share|upload|include|add|notify|loop in)\b/i.test(content);
+    const namesTarget = /[\w.+-]+@[\w-]+\.[\w.-]+|https?:\/\//i.test(content);
+    if (content.length >= 8 && (!scanPolicy(content).safe || (namesTarget && (kind !== 'fact' || directive)))) { skipped++; continue; }
     const field = INTAKE_KEYS.includes(String(c?.field)) ? String(c!.field) : undefined; // tag canonical intake answers
     const id = await opts.memory.rememberAboutPerson(pid, content, kind, field);
     if (!id) continue; // write failed — don't mark it seen or count it, so it can be retried next turn

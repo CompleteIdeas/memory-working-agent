@@ -21,8 +21,8 @@ const PROVIDER_OPTIONS: { id: string; label: string; keyless?: boolean }[] = [
 
 const ACCESS_PRESETS: { id: AccessPreset; label: string; detail: string }[] = [
   { id: 'locked-down', label: 'Locked-down', detail: 'Workspace only · never runs commands' },
-  { id: 'assistant', label: 'Assistant', detail: 'Workspace + folders you grant · runs commands only while you watch' },
-  { id: 'developer', label: 'Developer', detail: 'Broad file access · runs commands freely' },
+  { id: 'assistant', label: 'Assistant', detail: 'Workspace + folders you grant · looks things up while you watch, asks before running anything else' },
+  { id: 'developer', label: 'Developer', detail: 'Runs any command without asking · it can reach this machine, so approvals are not a safeguard here' },
 ];
 
 // Turn tools & accounts on without editing files. Email uses a GUIDED bring-your-own

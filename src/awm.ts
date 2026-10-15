@@ -952,6 +952,11 @@ export class MwaMemory implements Memory {
     } catch {
       /* ignore */
     }
+    // A closed handle reopens on next use. An action staged for a person's approval keeps a reference
+    // to the memory of the turn that staged it, and serve closes that memory when the turn ends — so
+    // the approval, which now always comes after the turn (BL-03), wrote through a dead handle and
+    // reported "not saved". Reopening lazily is the same path the first use takes.
+    this.initPromise = undefined;
   }
 }
 
