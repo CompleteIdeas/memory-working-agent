@@ -274,7 +274,9 @@ function nextDailyAt(hhmm: string, nowMs: number): number {
 }
 
 const PRICE_DIV = 1_000_000;
-const HIST_WINDOW = 12; // only recent steps go in the prompt; recall covers the rest (anti-context-rot)
+// Only recent steps go in the prompt; recall covers the rest (anti-context-rot). MWA_HIST_WINDOW
+// overrides it, for measuring that bet (BL-09, scripts/measure-no-compaction.mts); 4..200.
+export const HIST_WINDOW = Math.min(200, Math.max(4, Number(process.env.MWA_HIST_WINDOW) || 12));
 const MAX_READ_BYTES = 8_000;
 
 function readFileInDir(dir: string, rel: string): string {
