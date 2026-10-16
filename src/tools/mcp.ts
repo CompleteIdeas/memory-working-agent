@@ -20,7 +20,7 @@ import { logger } from '../logger.js';
 import { VERSION } from '../version.js';
 import type { RegisteredTool } from './registry.js';
 import { ToolRefusal } from './registry.js';
-import { urlRefusal, urlsIn } from './net-guard.js';
+import { mcpUrlRefusal } from './net-guard.js';
 import { defangMarkers } from './governance.js';
 
 /** A server's input schema carries its own prose — `description`, `title`, `examples` — which reaches the
@@ -113,13 +113,11 @@ export async function loadMcpServers(servers: Record<string, McpServerSpec> = {}
             parameters: tameSchema((t.inputSchema as Record<string, unknown>) ?? { type: 'object', properties: {} }),
           },
           handler: async (args) => {
-            // An MCP server fetches with its own code, outside MWA's guard: check every URL the call
-            // carries first (BL-16c). What the server does after that — its own redirects, its own
+            // An MCP server fetches with its own code, outside MWA's guard: check the links the call
+            // carries first (BL-16c; best effort, see mcpUrlRefusal). What the server does after that — its own redirects, its own
             // lookups — is outside MWA's reach, except for the bundled fetch server, which is pinned.
-            for (const u of urlsIn(args)) {
-              const why = await urlRefusal(u);
-              if (why) throw new ToolRefusal(`(refused: ${why})`);
-            }
+            const why = await mcpUrlRefusal(args);
+            if (why) throw new ToolRefusal(`(refused: ${why})`);
             const res = (await client.callTool({ name: t.name, arguments: args })) as {
               content?: Array<{ type?: string; text?: string }>;
               isError?: boolean;

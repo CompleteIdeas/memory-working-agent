@@ -56,8 +56,10 @@ export function isBlockedAddress(ip) {
   if (g[0] === 0x64 && g[1] === 0xff9b) return v4Blocked(v4Of(g[6], g[7]));
   if (g[0] === 0x2002) return v4Blocked(v4Of(g[1], g[2]));                              // 6to4
   if (g[0] === 0x2001 && g[1] === 0) return true;                                       // Teredo: hides an address
+  if (g.slice(0, 4).every((n) => n === 0) && g[4] === 0xffff && g[5] === 0) return v4Blocked(v4Of(g[6], g[7])); // SIIT ::ffff:0:a.b.c.d
+  if (g[0] === 0x100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return true;            // 100::/64, discard
   const top = g[0];
-  return (top & 0xfe00) === 0xfc00 || (top & 0xffc0) === 0xfe80 || (top & 0xff00) === 0xff00; // ULA, link-local, multicast
+  return (top & 0xfe00) === 0xfc00 || (top & 0xffc0) === 0xfe80 || (top & 0xffc0) === 0xfec0 || (top & 0xff00) === 0xff00; // ULA, link-local, site-local, multicast
 }
 
 /** Why a parsed URL's host may not be fetched before resolving it, or null. */
@@ -99,21 +101,33 @@ const NO_BODY = new Set([101, 204, 205, 304]);
 function requestOnce(u, init, lookup) {
   return new Promise((resolve, reject) => {
     const mod = u.protocol === 'https:' ? https : http;
-    const headers = {};
-    if (init.headers) for (const [k, v] of Object.entries(init.headers instanceof Headers ? Object.fromEntries(init.headers) : init.headers)) headers[k] = String(v);
+    // Headers in any form fetch accepts. Defaults keep what the global fetch used to provide: an
+    // identifiable user-agent, and no compression (this client does not decompress).
+    const h0 = new Headers(init.headers ?? {});
+    if (!h0.has('user-agent')) h0.set('user-agent', 'Mozilla/5.0 (MWA)');
+    h0.set('accept-encoding', 'identity');
+    const body = init.body === undefined || init.body === null ? null : typeof init.body === 'string' ? Buffer.from(init.body) : Buffer.from(init.body);
+    if (body) h0.set('content-length', String(body.length));
+    const headers = Object.fromEntries(h0);
     const req = mod.request(u, { method: init.method ?? 'GET', headers, agent: false, lookup, signal: init.signal }, (res) => {
-      const h = new Headers();
-      for (const [k, v] of Object.entries(res.headers)) for (const one of Array.isArray(v) ? v : [v]) if (one !== undefined) h.append(k, String(one));
-      const status = res.statusCode ?? 0;
-      const empty = NO_BODY.has(status) || (init.method ?? 'GET').toUpperCase() === 'HEAD';
-      if (empty) res.resume();
-      resolve(new Response(empty ? null : Readable.toWeb(res), { status, statusText: res.statusMessage ?? '', headers: h }));
+      // Anything thrown here would escape the promise and crash the process: a site must not be able to.
+      try {
+        const status = res.statusCode ?? 0;
+        if (status < 200 || status > 599) { res.destroy(); return reject(new Error(`the site answered with status ${status}, which is not an HTTP response this tool reads`)); }
+        const h = new Headers();
+        for (const [k, v] of Object.entries(res.headers)) for (const one of Array.isArray(v) ? v : [v]) if (one !== undefined) { try { h.append(k, String(one)); } catch { /* an invalid header is dropped */ } }
+        const empty = NO_BODY.has(status) || (init.method ?? 'GET').toUpperCase() === 'HEAD';
+        if (empty) res.resume();
+        resolve(new Response(empty ? null : Readable.toWeb(res), { status, statusText: res.statusMessage ?? '', headers: h }));
+      } catch (e) { res.destroy(); reject(e); }
     });
     req.on('error', reject);
-    if (init.body !== undefined && init.body !== null) req.write(typeof init.body === 'string' ? init.body : Buffer.from(init.body));
+    if (body) req.write(body);
     req.end();
   });
 }
+
+const CREDENTIALS = ['authorization', 'cookie', 'proxy-authorization'];
 
 /**
  * fetch with the guard pinned to every connection and every redirect hop. Returns the Response, or a
@@ -135,7 +149,10 @@ export async function pinnedFetch(url, init = {}, maxRedirects = 5, blocked = is
     const loc = res.headers.get('location');
     if (res.status >= 300 && res.status < 400 && loc) {
       try { await res.body?.cancel(); } catch { /* */ }
-      current = new URL(loc, u).toString();
+      const next = new URL(loc, u);
+      // Like fetch: credentials never follow a redirect to another origin.
+      if (next.origin !== u.origin && req.headers) { const h = new Headers(req.headers); for (const k of CREDENTIALS) h.delete(k); req = { ...req, headers: h }; }
+      current = next.toString();
       if (res.status === 303 || ((res.status === 301 || res.status === 302) && (req.method ?? 'GET').toUpperCase() === 'POST')) req = { ...req, method: 'GET', body: undefined };
       continue;
     }

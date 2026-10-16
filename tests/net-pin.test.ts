@@ -1,103 +1,140 @@
 /**
  * BL-16c — the network guard is pinned to the connection, and the bundled fetch MCP server uses it.
- * - Addresses: private IPv4 hidden in IPv6 (mapped, NAT64, 6to4, Teredo) is refused; public is not.
+ * - Addresses: private IPv4 hidden in IPv6 (mapped, SIIT, NAT64, 6to4, Teredo) is refused; public is not.
  * - Names that mean this machine are refused before any lookup.
- * - DNS rebinding: whatever an earlier check saw, the connection's own resolution decides.
- * - Redirects are checked hop by hop, and a POST that is redirected becomes a GET.
- * - The bundled fetch MCP server refuses this machine itself, and MWA pre-checks every URL in any MCP
- *   call's arguments.
+ * - DNS rebinding: the host is resolved once, by the connection; a second answer is never used.
+ * - Redirects are checked hop by hop; a redirected POST becomes a GET; credentials don't cross origins.
+ * - A site can't crash the process with an odd status; requests carry a user-agent and a length.
+ * - The bundled fetch MCP server refuses this machine itself, and MWA checks the links in any MCP call.
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type IncomingHttpHeaders } from 'node:http';
 import { join } from 'node:path';
 
 const answers: Record<string, string[]> = {};
+const lookups: string[] = [];
 vi.mock('node:dns', async (orig) => {
   const real = await orig<typeof import('node:dns')>();
   const lookup = (host: string, opts: any, cb: any) => {
     const list = answers[host];
     if (!list) return real.lookup(host, opts, cb);
+    lookups.push(host);
     const addr = list.length > 1 ? list.shift()! : list[0];
-    const all = [{ address: addr, family: 4 }];
-    return opts?.all ? cb(null, all) : cb(null, addr, 4);
+    return opts?.all ? cb(null, [{ address: addr, family: 4 }]) : cb(null, addr, 4);
   };
   return { ...real, default: { ...real, lookup }, lookup };
 });
 
 const { isBlockedAddress, hostRefusal, pinnedFetch } = await import('../mcp-servers/net-core.mjs');
-const { urlsIn } = await import('../src/tools/net-guard.js');
+const { urlsIn, mcpUrlRefusal } = await import('../src/tools/net-guard.js');
 
 describe('addresses', () => {
   it('refuses private IPv4 however IPv6 wraps it, and leaves public addresses alone', () => {
-    const blocked = ['127.0.0.1', '10.1.2.3', '169.254.169.254', '100.64.0.1', '0.0.0.0', '192.0.0.8', '198.18.0.1', '::1', '::',
-      '::ffff:7f00:1', '::ffff:10.0.0.1', '::127.0.0.1', '64:ff9b::7f00:1', '64:ff9b::a9fe:a9fe', '2002:7f00:1::', '2002:a00:1::5',
-      '2001:0:4136:e378:8000:63bf:3fff:fdd2', 'fd00::1', 'fe80::1', 'ff02::1', 'fe80::1%eth0', 'not-an-ip'];
+    const blocked = ['127.0.0.1', '10.1.2.3', '169.254.169.254', '100.64.0.1', '0.0.0.0', '192.0.0.8', '198.18.0.1', '255.255.255.255', '::1', '::',
+      '::ffff:7f00:1', '::ffff:10.0.0.1', '::127.0.0.1', '::ffff:0:127.0.0.1', '64:ff9b::7f00:1', '64:ff9b::a9fe:a9fe', '2002:7f00:1::', '2002:a00:1::5',
+      '2001:0:4136:e378:8000:63bf:3fff:fdd2', 'fd00::1', 'fe80::1', 'fec0::1', '100::1', 'ff02::1', 'fe80::1%eth0', 'not-an-ip'];
     const open = ['8.8.8.8', '93.184.216.34', '2606:4700:4700::1111', '64:ff9b::808:808', '2002:808:808::1', '::ffff:8.8.8.8'];
     expect(blocked.filter((a) => !isBlockedAddress(a))).toEqual([]);
     expect(open.filter((a) => isBlockedAddress(a))).toEqual([]);
   });
   it('names that mean this machine are refused before any lookup; odd spellings of 127.0.0.1 too', () => {
-    for (const u of ['http://localhost./', 'http://LOCALHOST:7788/', 'http://app.localhost/', 'http://host.docker.internal/', 'http://2130706433/', 'http://0x7f.1/', 'http://[::ffff:127.0.0.1]/'])
-      expect([u, hostRefusal(new URL(u))]).toEqual([u, expect.stringMatching(/this machine|private network/)]);
+    for (const u of ['http://localhost./', 'http://LOCALHOST:7788/', 'http://app.localhost/', 'http://host.docker.internal/', 'http://2130706433/', 'http://0x7f.1/', 'http://[::ffff:127.0.0.1]/', 'http://127.0.0.1./'])
+      expect([u, hostRefusal(new URL(u))]).toEqual([u, expect.stringMatching(/this machine or a private network/)]);
     expect(hostRefusal(new URL('https://example.com/'))).toBeNull();
     expect(hostRefusal(new URL('ftp://example.com/'))).toMatch(/only http/);
   });
 });
 
-describe('pinned to the connection', () => {
-  // A local server stands in for a public site: the tests' rule blocks only 127.0.0.2.
-  const blocked = (ip: string) => ip === '127.0.0.2' || isBlockedAddress(ip) && ip !== '127.0.0.1';
-  let site: Server; let inside: Server; let sitePort = 0; let insidePort = 0;
-  const hits: string[] = [];
+// 127.0.0.2 is loopback on Linux and Windows; macOS binds only 127.0.0.1 unless configured.
+describe.skipIf(process.platform === 'darwin')('pinned to the connection', () => {
+  // A local server stands in for a public site: the tests' rule allows 127.0.0.1 and blocks 127.0.0.2.
+  const blocked = (ip: string) => ip !== '127.0.0.1' && isBlockedAddress(ip);
+  let site: Server; let inside: Server; let port = 0;
+  const hits: string[] = []; let lastHeaders: IncomingHttpHeaders = {};
+  const handler = (who: string) => (req: any, res: any) => {
+    hits.push(`${who} ${req.method} ${req.url}`); lastHeaders = req.headers;
+    if (who === 'INSIDE') return res.end('secret');
+    if (req.url === '/to-inside') { res.writeHead(302, { location: `http://127.0.0.2:${port}/secret` }); return res.end(); }
+    if (req.url === '/post-redirect') { res.writeHead(302, { location: '/landed' }); return res.end(); }
+    if (req.url === '/elsewhere') { res.writeHead(307, { location: `http://other.test:${port}/landed` }); return res.end(); }
+    if (req.url === '/odd') { res.writeHead(600); return res.end('x'); }
+    res.writeHead(200, { 'content-type': 'text/plain', 'set-cookie': ['a=1', 'b=2'] }); res.end(`hello ${req.method}`);
+  };
   beforeAll(async () => {
-    site = createServer((req, res) => {
-      hits.push(`site ${req.method} ${req.url}`);
-      if (req.url === '/to-inside') { res.writeHead(302, { location: `http://127.0.0.2:${insidePort}/secret` }); return res.end(); }
-      if (req.url === '/post-redirect') { res.writeHead(302, { location: '/landed' }); return res.end(); }
-      res.writeHead(200, { 'content-type': 'text/plain', 'set-cookie': ['a=1', 'b=2'] }); res.end(`hello ${req.method}`);
-    });
-    inside = createServer((req, res) => { hits.push(`INSIDE ${req.method} ${req.url}`); res.end('secret'); });
+    // The same port on two addresses: whichever address a connection uses decides which server answers.
+    site = createServer(handler('site'));
     await new Promise<void>((r) => site.listen(0, '127.0.0.1', r));
-    await new Promise<void>((r) => inside.listen(0, '127.0.0.2', r));
-    sitePort = (site.address() as { port: number }).port; insidePort = (inside.address() as { port: number }).port;
+    port = (site.address() as { port: number }).port;
+    inside = createServer(handler('INSIDE'));
+    await new Promise<void>((r) => inside.listen(port, '127.0.0.2', r));
   });
   afterAll(() => { site.close(); inside.close(); });
-  beforeEach(() => { hits.length = 0; for (const k of Object.keys(answers)) delete answers[k]; });
+  beforeEach(() => { hits.length = 0; lookups.length = 0; for (const k of Object.keys(answers)) delete answers[k]; });
 
-  it('fetches an allowed site and returns a normal Response', async () => {
+  it('fetches an allowed site, with a user-agent and no compression asked for', async () => {
     answers['site.test'] = ['127.0.0.1'];
-    const res = await pinnedFetch(`http://site.test:${sitePort}/page`, {}, 5, blocked);
-    expect(typeof res).not.toBe('string');
-    const r = res as Response;
+    const r = await pinnedFetch(`http://site.test:${port}/page`, {}, 5, blocked) as Response;
     expect([r.status, await r.text(), r.headers.get('content-type')]).toEqual([200, 'hello GET', 'text/plain']);
+    expect([lastHeaders['user-agent'], lastHeaders['accept-encoding']]).toEqual(['Mozilla/5.0 (MWA)', 'identity']);
   });
 
-  it('DNS rebinding: a check that saw a public address does not let the connection reach a private one', async () => {
-    // First answer: "public" (what a separate pre-check would see). Every later answer: private.
+  it('DNS rebinding: the host is resolved once, by the connection, and a later answer is never used', async () => {
+    // First answer allowed, every later one private. Check-then-connect would resolve twice and reach
+    // the private server; the pinned fetch resolves once and reaches the site.
     answers['rebind.test'] = ['127.0.0.1', '127.0.0.2'];
-    const { lookup } = await import('node:dns');
-    const seenByCheck = await new Promise<string>((r) => lookup('rebind.test', {}, (_e: unknown, a: string) => r(a)));
-    expect(blocked(seenByCheck)).toBe(false);
-    const res = await pinnedFetch(`http://rebind.test:${insidePort}/secret`, {}, 5, blocked);
-    expect(res).toMatch(/^\(refused: rebind\.test is on this machine or a private network/);
-    expect(hits).toEqual([]); // nothing reached the private server
+    const r = await pinnedFetch(`http://rebind.test:${port}/page`, {}, 5, blocked) as Response;
+    expect([r.status, await r.text()]).toEqual([200, 'hello GET']);
+    expect(lookups).toEqual(['rebind.test']);
+    expect(hits).toEqual(['site GET /page']);
+    // And when the connection's own answer is private, it is refused before anything is sent.
+    answers['rebind2.test'] = ['127.0.0.2'];
+    expect(await pinnedFetch(`http://rebind2.test:${port}/secret`, {}, 5, blocked)).toMatch(/^\(refused: rebind2\.test is on this machine/);
+    expect(hits.filter((h) => h.startsWith('INSIDE'))).toEqual([]);
   });
 
-  it('a redirect to a private address is refused at that hop; a redirected POST becomes a GET', async () => {
+  it('a redirect to a private address is refused at that hop, after a GET or a POST; a redirected POST becomes a GET', async () => {
     answers['site.test'] = ['127.0.0.1'];
-    expect(await pinnedFetch(`http://site.test:${sitePort}/to-inside`, {}, 5, blocked)).toMatch(/^\(refused: 127\.0\.0\.2 is on this machine/);
-    expect(hits).toEqual(['site GET /to-inside']);
+    expect(await pinnedFetch(`http://site.test:${port}/to-inside`, {}, 5, blocked)).toMatch(/^\(refused: 127\.0\.0\.2 is on this machine/);
+    expect(await pinnedFetch(`http://site.test:${port}/to-inside`, { method: 'POST', body: '{}' }, 5, blocked)).toMatch(/^\(refused: /);
+    expect(hits).toEqual(['site GET /to-inside', 'site POST /to-inside']);
     hits.length = 0;
-    const r = await pinnedFetch(`http://site.test:${sitePort}/post-redirect`, { method: 'POST', body: '{"x":1}' }, 5, blocked) as Response;
+    const r = await pinnedFetch(`http://site.test:${port}/post-redirect`, { method: 'POST', body: '{"x":1}' }, 5, blocked) as Response;
     expect([r.status, await r.text()]).toEqual([200, 'hello GET']);
     expect(hits).toEqual(['site POST /post-redirect', 'site GET /landed']);
   });
+
+  it('a POST says how long it is; credentials don’t follow a redirect to another origin', async () => {
+    answers['site.test'] = ['127.0.0.1']; answers['other.test'] = ['127.0.0.1'];
+    await (await pinnedFetch(`http://site.test:${port}/page`, { method: 'POST', body: 'héllo', headers: [['x-a', '1']] }, 5, blocked) as Response).text();
+    expect([lastHeaders['content-length'], lastHeaders['x-a']]).toEqual(['6', '1']);
+    const r = await pinnedFetch(`http://site.test:${port}/elsewhere`, { headers: { authorization: 'Bearer s3cret', cookie: 'k=v', 'x-keep': 'yes' } }, 5, blocked) as Response;
+    await r.text();
+    expect(hits.at(-1)).toBe('site GET /landed');
+    expect([lastHeaders.authorization, lastHeaders.cookie, lastHeaders['x-keep']]).toEqual([undefined, undefined, 'yes']);
+  });
+
+  it('a site answering with a status outside 200–599 is an error, not a crash', async () => {
+    answers['site.test'] = ['127.0.0.1'];
+    await expect(pinnedFetch(`http://site.test:${port}/odd`, {}, 5, blocked)).rejects.toThrow(/status 600/);
+  });
 });
 
-describe('MCP servers', () => {
-  it('every URL in an MCP call’s arguments is found, at any depth and inside text', () => {
-    expect(urlsIn({ url: 'http://127.0.0.1:7788/api', opts: { list: ['see https://a.example/x?y=1 now', 3] }, n: 'no url' }))
-      .toEqual(['http://127.0.0.1:7788/api', 'https://a.example/x?y=1']);
+describe('MCP calls', () => {
+  it('finds every link, at any depth, inside text, with odd slashes, without trailing punctuation', () => {
+    const bs = '\\';
+    expect(urlsIn({ url: 'http://127.0.0.1:7788/api', opts: { list: [`see https://a.example/x?y=1, and http:${bs}${bs}10.0.0.1/z.`, 3] }, v6: '(http://[::1]:7788/q)' }))
+      .toEqual({ urls: ['http://127.0.0.1:7788/api', 'https://a.example/x?y=1', `http:${bs}${bs}10.0.0.1/z`, 'http://[::1]:7788/q'], truncated: false });
+    expect(urlsIn({ links: Array.from({ length: 51 }, (_, i) => `https://e${i}.example/`) }).truncated).toBe(true);
+    let deep: unknown = 'http://127.0.0.1/';
+    for (let i = 0; i < 20; i++) deep = { d: deep };
+    expect(urlsIn(deep).truncated).toBe(true);
+  });
+
+  it('refuses a call that links to this machine, or carries too many links to check; an ordinary email still goes', async () => {
+    const bs = '\\';
+    expect(await mcpUrlRefusal({ body: `please open http:${bs}${bs}127.0.0.1:7788/api/approvals` })).toMatch(/this machine or a private network/);
+    expect(await mcpUrlRefusal({ to: 'a@b.c', body: 'Agenda: https://nonexistent.invalid/agenda, and [notes](https://also-missing.invalid/n).' })).toBeNull();
+    expect(await mcpUrlRefusal({ links: Array.from({ length: 51 }, (_, i) => `https://e${i}.invalid/`) })).toMatch(/more than 50 links/);
   });
 
   it('the bundled fetch server refuses this machine and the private network itself', async () => {

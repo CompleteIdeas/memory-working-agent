@@ -283,7 +283,8 @@ const readDocumentTool: RegisteredTool = {
         // posted" job must be able to see "not there yet" without reporting a failure every run.
         const firstHop = await urlRefusal(src);
         if (firstHop) throw new ToolRefusal(`(refused: ${firstHop})`);
-        const res = await guardedFetch(src, { headers: { 'user-agent': 'Mozilla/5.0 (MWA)' } });
+        // A site that never answers must not hold the run: the connection has no timeout of its own.
+        const res = await guardedFetch(src, { headers: { 'user-agent': 'Mozilla/5.0 (MWA)' }, signal: AbortSignal.timeout(Number(process.env.MWA_DOCUMENT_TIMEOUT_MS ?? 60_000)) });
         if (typeof res === 'string') return res;
         if (!res.ok) return `(couldn't fetch ${src}: ${res.status})`;
         buf = Buffer.from(await res.arrayBuffer());
