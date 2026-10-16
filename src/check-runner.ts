@@ -303,7 +303,8 @@ export async function startCheckRunner(o: { allow: string[]; from: string; liste
   }
   // Take the port FIRST: a second runner started by mistake stops here, before it can wipe the work
   // folder or remove the containers of the runner already serving.
-  const [host, portStr] = (o.listen ?? '127.0.0.1:7799').split(':');
+  // 7797: 7799 and 7798 are the Google and Microsoft sign-in callbacks (docs/connect-email.md).
+  const [host, portStr] = (o.listen ?? '127.0.0.1:7797').split(':');
   if (host !== '127.0.0.1' && host !== 'localhost') log(`⚠ listening on ${host}: anything that can reach this address and has the token can ask for check runs.`);
   let runner: ReturnType<typeof createRunner> | null = null;
   const server = createServer((req, res) => {
@@ -311,17 +312,17 @@ export async function startCheckRunner(o: { allow: string[]; from: string; liste
     runner.handle(req, res).catch((e) => { try { res.writeHead(500); res.end(JSON.stringify({ error: (e as Error).message })); } catch { /* */ } });
   });
   await new Promise<void>((ok, fail) => {
-    server.once('error', (e: NodeJS.ErrnoException) => fail(e.code === 'EADDRINUSE' ? new Error(`port ${portStr || 7799} on ${host} is in use — is a check runner already running? Stop it first, or pass --listen with another port.`) : e));
-    server.listen(Number(portStr || 7799), host, () => ok());
+    server.once('error', (e: NodeJS.ErrnoException) => fail(e.code === 'EADDRINUSE' ? new Error(`port ${portStr || 7797} on ${host} is in use — is a check runner already running? Stop it first, or pass --listen with another port.`) : e));
+    server.listen(Number(portStr || 7797), host, () => ok());
   });
   // Containers a crashed runner left behind.
   try { const ids = execFileSync('docker', ['ps', '-aq', '--filter', 'label=mwa-check=1'], { encoding: 'utf8' }).split(/\s+/).filter(Boolean); if (ids.length) execFileSync('docker', ['rm', '-f', ...ids], { stdio: 'ignore' }); } catch { /* */ }
   const token = randomBytes(24).toString('hex');
   runner = createRunner({ allow: o.allow, image, token });
-  log(`check runner on http://${host}:${portStr || 7799} — image ${image}`);
+  log(`check runner on http://${host}:${portStr || 7797} — image ${image}`);
   runner.allow.forEach((p, i) => log(`  worktree ${i + 1}: ${p}`));
   log('Give MWA these two settings (a fresh token each start):');
-  log(`  MWA_CHECK_RUNNER_URL=http://${host === '0.0.0.0' ? '<this host>' : host}:${portStr || 7799}`);
+  log(`  MWA_CHECK_RUNNER_URL=http://${host === '0.0.0.0' ? '<this host>' : host}:${portStr || 7797}`);
   log(`  MWA_CHECK_RUNNER_TOKEN=${token}`);
 }
 

@@ -105,12 +105,12 @@ takes a few minutes. It is rebuilt only when the lockfile or the AWM pin changes
 URL and a token, and the token is new each time it starts. Give both to MWA:
 
 ```sh
-MWA_CHECK_RUNNER_URL=http://127.0.0.1:7799
+MWA_CHECK_RUNNER_URL=http://127.0.0.1:7797
 MWA_CHECK_RUNNER_TOKEN=<the token it printed>
 ```
 
-If MWA runs in Docker, start the runner with `--listen 0.0.0.0:7799` and use
-`http://host.docker.internal:7799`. The runner warns you, because then anything that can reach that
+If MWA runs in Docker, start the runner with `--listen 0.0.0.0:7797` and use
+`http://host.docker.internal:7797`. The runner warns you, because then anything that can reach that
 port and has the token can ask for a check run.
 
 MWA then has a `run_checks` tool, and the job's instruction changes from "ask me to approve running
