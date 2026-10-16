@@ -11,7 +11,8 @@
  * and replay the reviewer's attack end to end against a real local HTTP server.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync, symlinkSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
@@ -106,6 +107,27 @@ describe('the model’s shell gets no secrets', () => {
       expect(await write.handler({ path: 'notes/a.txt', content: 'fine' }, { sandboxDir: root, interactive: true })).not.toMatch(/PATH/);
       expect(existsSync(join(root, 'notes', 'a.txt'))).toBe(true);
     } finally { process.env.PATH = saved; rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('BL-27 review: a PATH folder not made yet is not reachable by a short name or through a junction', async () => {
+    if (process.platform !== 'win32') return;
+    const home = mkdtempSync(join(tmpdir(), 'mwa-bl27h-'));
+    const cargoBin = join(home, '.cargo', 'bin'); // on PATH, not created yet
+    const saved = process.env.PATH;
+    process.env.PATH = `${cargoBin};${saved ?? ''}`;
+    try {
+      const [write] = builtinTools(['write_file']);
+      // Junction above the PATH folder.
+      symlinkSync(home, join(home, 'link'), 'junction');
+      expect(await write.handler({ path: 'link/.cargo/bin/cargo.cmd', content: '@echo planted' }, { sandboxDir: home, interactive: true })).toMatch(/on your PATH/);
+      // 8.3 short name of the folder above it, once that folder exists.
+      expect(await write.handler({ path: '.cargo/readme.txt', content: 'x' }, { sandboxDir: home, interactive: true })).not.toMatch(/PATH/);
+      const short = execFileSync('powershell', ['-NoProfile', '-Command', `(New-Object -ComObject Scripting.FileSystemObject).GetFolder('${join(home, '.cargo')}').ShortPath`], { encoding: 'utf8' }).trim();
+      if (short.includes('~')) {
+        expect(await write.handler({ path: join(short, 'bin', 'cargo.cmd'), content: '@echo planted' }, { sandboxDir: home, interactive: true })).toMatch(/on your PATH/);
+      }
+      expect(existsSync(join(cargoBin, 'cargo.cmd'))).toBe(false);
+    } finally { process.env.PATH = saved; rmSync(home, { recursive: true, force: true }); }
   });
 
   it('BL-26: on Windows a planted npm.cmd in the folder does not replace npm; a script named with its folder still runs', async () => {

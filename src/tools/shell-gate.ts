@@ -18,6 +18,7 @@
 
 import { existsSync, realpathSync } from 'node:fs';
 import { dirname, basename, sep, resolve, isAbsolute } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 export type ShellVerdict = { kind: 'read-only' } | { kind: 'needs-approval'; reason: string };
 
@@ -140,20 +141,50 @@ export function writeRefusal(full: string): string | null {
 /**
  * Whether a folder is one the person's own PATH lists (BL-27). Programs are looked up directly in those
  * folders, so a `pnpm.cmd` written into `AppData\Roaming\npm` or `~/.local/bin` would replace the real
- * one everywhere — for MWA's commands and in the person's terminals. Compared as real paths where they
- * exist, case-insensitively on Windows.
+ * one everywhere — for MWA's commands and in the person's terminals.
+ *
+ * Both sides are compared as real paths, resolving the part of the path that exists: a PATH folder that
+ * doesn't exist yet can otherwise be reached through a short name (`CARGO~1\bin`) or a junction above it
+ * (BL-27 review: two write_file calls planted `.cargo\bin\cargo.cmd`, a missing folder on this
+ * machine's PATH). Case-insensitive on Windows.
  */
-export function onPath(dir: string, env: NodeJS.ProcessEnv = process.env): boolean {
+export function onPath(dir: string, env?: NodeJS.ProcessEnv): boolean {
   const win = process.platform === 'win32';
   const norm = (p: string) => {
-    let r = resolve(p);
-    try { r = realpathSync.native(r); } catch { /* not there yet: compare as written */ }
-    r = r.replace(/[\\/]+$/, '');
+    const r = realPathOf(resolve(p)).replace(/[\\/]+$/, '');
     return win ? r.toLowerCase() : r;
   };
   const target = norm(dir);
-  const entries = String(env.PATH ?? env.Path ?? '').split(win ? ';' : ':').map((e) => e.trim().replace(/^"(.*)"$/, '$1')).filter((e) => isAbsolute(e));
-  return entries.some((e) => norm(e) === target);
+  return pathEntries(env).some((e) => norm(e) === target);
+}
+
+/** The absolute folders on PATH: this process's, and on Windows also the person's live user and machine
+ *  PATH from the registry (MWA's own copy is from when it started, and a service gets the machine one). */
+function pathEntries(env?: NodeJS.ProcessEnv): string[] {
+  const win = process.platform === 'win32';
+  const e = env ?? process.env;
+  const raw = [String(e.PATH ?? e.Path ?? '')];
+  if (win && !env) raw.push(...registryPaths());
+  const expand = (s: string) => (win ? s.replace(/%([^%]+)%/g, (m, k: string) => {
+    const hit = Object.keys(e).find((x) => x.toLowerCase() === k.toLowerCase());
+    return hit ? String(e[hit]) : m;
+  }) : s);
+  return raw.join(win ? ';' : ':').split(win ? ';' : ':').map((x) => expand(x.trim().replace(/^"(.*)"$/, '$1'))).filter((x) => isAbsolute(x) && !/%/.test(x));
+}
+
+let regCache: { at: number; paths: string[] } | null = null;
+function registryPaths(): string[] {
+  if (regCache && Date.now() - regCache.at < 60_000) return regCache.paths;
+  const paths: string[] = [];
+  for (const key of ['HKCU\\Environment', 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment']) {
+    try {
+      const out = execFileSync('reg', ['query', key, '/v', 'Path'], { encoding: 'utf8', timeout: 5_000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      const m = /^\s*Path\s+REG_(?:EXPAND_)?SZ\s+(.*)$/im.exec(out);
+      if (m) paths.push(m[1].trim());
+    } catch { /* not set, or no reg: the process PATH still applies */ }
+  }
+  regCache = { at: Date.now(), paths };
+  return paths;
 }
 
 /** The environment a model-run command gets: enough to find programs and a temp folder, none of
