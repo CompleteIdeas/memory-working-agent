@@ -15,12 +15,16 @@ import { ToolRefusal, type RegisteredTool, type ToolContext } from './registry.j
 import { classifyCommand, scrubbedEnv, writeRefusal, realPathOf } from './shell-gate.js';
 import { guardedFetch, urlRefusal } from './net-guard.js';
 import { stageAction, registerExecutor, pendingStagedBy } from './approval.js';
+import { secondOpinionForCommand, changedSinceReview, type CommitTarget } from '../second-opinion.js';
 
 /** A staged command, approved by a person, runs here — in whichever process confirms it (BL-18). */
 registerExecutor('run_command_staged', async (args, ctx) => {
   // The access policy at RUN time wins: a switch after staging (Locked-down) still blocks it.
   const gate = runCommandAllowed(true);
   if (!gate.ok) throw new Error(gate.reason);
+  // BL-24: a commit whose card carried a second opinion runs only on the change that was read.
+  const reviewed = args.reviewed as { target: CommitTarget; fingerprint: string } | undefined;
+  if (reviewed && changedSinceReview(reviewed)) throw new Error('the change was edited after this card went out, so neither you nor the second opinion saw what would be committed. Nothing was committed: ask again.');
   // A person approved it, so it may take as long as a test suite does — without freezing this process.
   const r = await runCommandAsync(String(args.command ?? ''), resolve(ctx.sandboxDir), Number(process.env.MWA_APPROVED_COMMAND_TIMEOUT_MS ?? 15 * 60_000), scrubbedEnv());
   const out = `${r.stdout ?? ''}${r.stderr ? `\n[stderr] ${r.stderr}` : ''}`.trim();
@@ -119,12 +123,15 @@ const runCommandTool: RegisteredTool = {
     const verdict = verdict0.kind === 'read-only' ? { kind: 'needs-approval' as const, reason: 'nobody is watching this run, so nothing runs without your approval' } : verdict0;
     // A run nobody watches may stage only a few: a tainted job must not flood the approvals list.
     if (stageOnly && ctx.runId && pendingStagedBy(ctx.runId, 'tool').length >= 3) return '(refused: this run has already asked for 3 approvals — wait for the person, and say in your summary what is waiting)';
+    // BL-24: a commit gets a second opinion on its change, at the top of the card (when configured).
+    const second = await secondOpinionForCommand(command, resolve(ctx.sandboxDir));
     const id = stageAction({
       tool: 'run_command', ctx,
       // The card is now the last defense for anything not read-only (second BL-03 review): show the
       // command in full and say plainly when it reaches the network or this machine's own MWA controls.
       // Warnings FIRST: a channel that cuts a long card (Telegram) must not cut them off.
       summary: [
+        ...(second?.lines ?? []),
         /\b(curl|wget|fetch|https?|nc|ncat|telnet|ssh|scp|ftp|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|bitsadmin|certutil)\b/i.test(command) ? '⚠ It reaches the network.' : '',
         /localhost|127\.|0\.0\.0\.0|\[::|::1|0x7f|2130706433|\/api\/approvals/i.test(command) ? '⚠ It targets this machine, possibly MWA\'s own controls (including approvals). Do not approve it unless you wrote it.' : '',
         `Run this command in ${ctx.sandboxDir}:`, `  ${command}`, `(Needs approval because ${verdict.reason}.)`,
@@ -132,7 +139,7 @@ const runCommandTool: RegisteredTool = {
         // command runs whatever code is in that folder — including code MWA wrote.
         'Approving runs it as you, with your files and network. If it runs tests or a build, it runs the code in that folder, including any MWA wrote: look at the change first.',
       ].filter(Boolean).join('\n'),
-      executor: 'run_command_staged', args: { command },
+      executor: 'run_command_staged', args: { command, ...(second?.reviewed ? { reviewed: second.reviewed } : {}) },
       ...(ctx.interactive === false ? { ttlMs: 24 * 60 * 60_000 } : {}),
     });
     return (

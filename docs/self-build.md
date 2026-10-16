@@ -144,3 +144,31 @@ just the green result.
 
 The tests still run code MWA wrote. That is what a check is, and why it happens in the sandbox rather
 than as you.
+
+## A second opinion on the commit card (optional)
+
+A passing check doesn't mean a good change: MWA can also edit the tests. To help with that review,
+a decision model can read each change MWA asks to commit and answer two questions at the top of the
+card: "does it contain dangerous code?" and "does it weaken the checks?". It also says when the change
+reaches outside the repository (network, secrets, other files), as information. Turn it on in `.env`:
+
+```sh
+MWA_SECOND_OPINION=cloudflare:clef-flash     # or cloudflare:clef, slower and larger
+CLOUDFLARE_ACCOUNT_ID=<your account id>
+CLOUDFLARE_API_TOKEN=<a token with Workers AI permission>
+```
+
+What to know:
+
+- **It sends the change to Cloudflare.** Files named `.env` are never sent, and values that look like
+  secrets (API keys, tokens, passwords) are blanked first.
+- **It's advisory.** It approves and blocks nothing, and it can be wrong, including when the code it
+  reads tries to talk it out of a flag. A card with no flags still says to read the change.
+- **It reads what the commit will contain,** as far as the command shows: the files a `git add`
+  names, everything tracked for `commit -a`, otherwise what is already staged. When it can't be sure
+  (`--amend`, a command doing more than add and commit, a change cut at 40,000 characters), the card
+  says its coverage is partial.
+- **The card is bound to the change.** If the change is edited after the card goes out, approving it
+  commits nothing, and the run is told to ask again.
+- **Measured** on 15 hand-written changes: with both questions, 8 of 8 bad changes flagged and 0 of 7
+  clean ones (`docs/clef-eval-2026-10-16.md`). Each card costs a fraction of a cent.

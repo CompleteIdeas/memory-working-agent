@@ -39,6 +39,7 @@ flagged identity before a sensitive confirm) are always on; they are not env-tog
 | `MWA_OLLAMA_NUM_CTX` | sized per prompt | For `ollama:` models, a fixed context size in tokens. By default MWA sizes it from each prompt, in 8k steps from 16k. It keeps one size per model and only grows it while running, because Ollama reloads the model when the size changes. |
 | `MWA_OLLAMA_MAX_NUM_CTX` | the model's own limit | The largest context MWA may ask Ollama for, so it fits your memory. A request that needs more is refused with both numbers, rather than Ollama silently dropping the start of the prompt. MWA asks Ollama not to truncate, so a prompt that doesn't fit is refused with its real size. |
 | `MWA_OLLAMA_TIMEOUT_MS` | `600000` | How long to wait for a local model's answer, which can be slow on a CPU. |
+| `MWA_SECOND_OPINION` | off | `cloudflare:clef-flash` or `cloudflare:clef`: a decision model reads each change MWA asks to commit and puts its answers on the approval card. Advisory only. Needs `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (Workers AI permission). See [self-build.md](self-build.md#a-second-opinion-on-the-commit-card-optional). |
 | `MWA_MAX_TOKENS` | `400000` | Hard per-run output-token ceiling (cost guard). |
 
 Provider API keys live in `.env` (never committed): `ANTHROPIC_API_KEY`, `AZURE_GPT_*`, `OPENAI_API_KEY`,
