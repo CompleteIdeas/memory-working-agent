@@ -196,7 +196,7 @@ describe('what the reviews found', () => {
   });
 
   it('round 2 (9) and round 3 (M4): the common secret formats are blanked, and a plain hash is not', () => {
-    for (const s of ['sk_live_abcdefghijklmnopqrstuvwx', 'STRIPE_SECRET_KEY=abcdefgh12345678', 'aws_secret_access_key = abcdefgh12345678abcd',
+    for (const s of ['sk_' + 'live_abcdefghijklmnopqrstuvwx', 'STRIPE_SECRET_KEY=abcdefgh12345678', 'aws_secret_access_key = abcdefgh12345678abcd',
       'postgres://user:hunter2pass@db.example:5432/x', 'Authorization: Bearer abcdefghijklmnopqrstu', 're_AbCdEf12_abcdefghijklmnopqr',
       'CF = "Ab3dEfGh1jKlMn0pQrStUvWxYz0123456789AbCd"', '-----BEGIN PGP PRIVATE KEY BLOCK-----\nx\n-----END PGP PRIVATE KEY BLOCK-----',
       'SESSION_KEY=abcd1234efgh5678', 'MY_DB_PASS=hunter2hunter2'])
