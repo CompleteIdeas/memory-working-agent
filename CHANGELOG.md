@@ -47,6 +47,16 @@ On the final images: planted instructions in tool output followed 0 of 8 times; 
   - Each check runs in a container with no network, a read-only system, no capabilities, an
     unprivileged user, resource limits and a 15-minute kill.
   - A run's result is read separately, so a long suite can't time out. Its output taints the run.
+- **The network guard is pinned to each connection, and the bundled fetch server uses it (BL-16c).**
+  - A host is resolved once, by the connection itself, so a name that changes its address between
+    the check and the request (DNS rebinding) can't reach this machine.
+  - Private IPv4 hidden inside IPv6 is refused too, and so are names that mean this machine.
+  - The bundled `fetch_url` MCP server used to fetch any address with no guard, following redirects.
+    It now uses the same guard, always.
+  - Links in any MCP call's arguments are checked first, as a best effort.
+  - A site can no longer crash MWA with an odd status code, or hang a request with a "switch
+    protocols" reply. Login headers don't follow a redirect to another site. `read_document` times
+    out after 60 seconds.
 
 ## 0.6.0 (2026-10-15) — approval only a person can give, fenced tool output, job contracts, autonomous Docker
 
