@@ -8,6 +8,9 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+// The same guard as MWA's own fetch tools, pinned to each connection and redirect (BL-16c). Always on:
+// in Developer mode the model has a shell, so this server never needs to reach this machine.
+import { pinnedFetch } from './net-core.mjs';
 
 const server = new Server({ name: 'fetch', version: '1.0.0' }, { capabilities: { tools: {} } });
 
@@ -23,7 +26,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const url = String(req.params.arguments?.url ?? '');
   const max = Math.min(Number(req.params.arguments?.max_chars ?? 4000), 20000);
   try {
-    const res = await fetch(url, { headers: { 'user-agent': 'Mozilla/5.0 (MWA)' }, redirect: 'follow' });
+    const res = await pinnedFetch(url, { headers: { 'user-agent': 'Mozilla/5.0 (MWA)' }, signal: AbortSignal.timeout(20_000) });
+    if (typeof res === 'string') return { content: [{ type: 'text', text: res }], isError: true };
     const ct = res.headers.get('content-type') ?? '';
     let text = await res.text();
     if (ct.includes('html')) {
