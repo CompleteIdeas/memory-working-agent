@@ -167,11 +167,14 @@ What to know:
 - **It's advisory.** It approves and blocks nothing, and it can be wrong, including when the code it
   reads tries to talk it out of a flag. A card with no flags still says to read the change, and every
   probability is shown.
-- **It reads everything the commit could take,** not a guess at which files it will. That is what is
-  staged, plus, when the command can take working-tree files (`-a`, paths on the commit, an earlier
-  `git add`), every changed tracked file in the whole repository and the untracked ones a `git add`
-  could pick up. So it may read more than the commit takes, never less. A plain `git commit` reads
-  only what is staged. Line-ending differences alone don't count as changes.
+- **It reads everything the commit could take.** That is what is staged, plus the working-tree files
+  the command can take: all tracked files for `-a`, `add -u` or `add -A`, and the files matching the
+  paths a `git add` or `git commit` names. Git itself matches those paths, so globs, folders, case and
+  `-f` work as they do for `git add`. It may read more than the commit takes, never less. A plain
+  `git commit` reads only what is staged. Line-ending differences alone don't count as changes.
+- **When it can't read the command's git part** (an alias like `git ci`, quoting or a variable inside
+  the word, git run through another command, or a git command that commits, like `merge`), it reads
+  the whole repository and says so.
 - **It says when coverage is partial:** binary, linked or large files it didn't read, env files it
   held back, submodules, `--amend`, commit hooks, `-c` overrides, a command that runs other steps
   first or builds part of itself, and a change cut at 40,000 characters.
