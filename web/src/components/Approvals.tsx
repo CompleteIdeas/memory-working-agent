@@ -43,7 +43,7 @@ export function Approvals({ refresh }: { refresh: number }) {
           <div className="mono text-[11px] text-signal uppercase tracking-[0.14em] mb-1">
             needs your approval · {a.kind === 'captured-policy' ? 'standing preference' : a.tool}
           </div>
-          <p className="text-[14.5px] leading-snug whitespace-pre-wrap break-words max-h-40 overflow-y-auto">{a.summary}</p>
+          <p className="text-[14.5px] leading-snug whitespace-pre-wrap break-words max-h-64 overflow-y-auto">{a.summary}</p>
           {a.tainted && (
             <p className="text-[13px] text-signal mt-1.5">
               Proposed by a run that read outside content (an email, a web page or a file). Make sure it is what you want.

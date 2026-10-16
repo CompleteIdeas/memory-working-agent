@@ -15,7 +15,7 @@ import { ToolRefusal, type RegisteredTool, type ToolContext } from './registry.j
 import { classifyCommand, scrubbedEnv, writeRefusal, realPathOf } from './shell-gate.js';
 import { guardedFetch, urlRefusal } from './net-guard.js';
 import { stageAction, registerExecutor, pendingStagedBy } from './approval.js';
-import { secondOpinionForCommand, changedSinceReview, type CommitTarget } from '../second-opinion.js';
+import { secondOpinionForCommand, changedSinceReview, type Reviewed } from '../second-opinion.js';
 
 /** A staged command, approved by a person, runs here — in whichever process confirms it (BL-18). */
 registerExecutor('run_command_staged', async (args, ctx) => {
@@ -23,8 +23,8 @@ registerExecutor('run_command_staged', async (args, ctx) => {
   const gate = runCommandAllowed(true);
   if (!gate.ok) throw new Error(gate.reason);
   // BL-24: a commit whose card carried a second opinion runs only on the change that was read.
-  const reviewed = args.reviewed as { target: CommitTarget; fingerprint: string } | undefined;
-  if (reviewed && changedSinceReview(reviewed)) throw new Error('the change was edited after this card went out, so neither you nor the second opinion saw what would be committed. Nothing was committed: ask again.');
+  const reviewed = args.reviewed as Reviewed | undefined;
+  if (reviewed && (!reviewed.top || await changedSinceReview(reviewed))) throw new Error('the change was edited after this card went out, so neither you nor the second opinion saw what would be committed. Nothing was committed: ask again.');
   // A person approved it, so it may take as long as a test suite does — without freezing this process.
   const r = await runCommandAsync(String(args.command ?? ''), resolve(ctx.sandboxDir), Number(process.env.MWA_APPROVED_COMMAND_TIMEOUT_MS ?? 15 * 60_000), scrubbedEnv());
   const out = `${r.stdout ?? ''}${r.stderr ? `\n[stderr] ${r.stderr}` : ''}`.trim();

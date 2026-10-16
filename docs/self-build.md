@@ -160,15 +160,25 @@ CLOUDFLARE_API_TOKEN=<a token with Workers AI permission>
 
 What to know:
 
-- **It sends the change to Cloudflare.** Files named `.env` are never sent, and values that look like
-  secrets (API keys, tokens, passwords) are blanked first.
+- **It sends the change to Cloudflare.** Env files (`.env`, `.env.local`, …) are never sent. Values
+  that look like secrets (private keys, common API-key and token formats, passwords in URLs, values
+  assigned to names like `SECRET` or `TOKEN`) are blanked first. That is pattern matching, so it
+  will miss some: keep secrets out of the repository anyway.
 - **It's advisory.** It approves and blocks nothing, and it can be wrong, including when the code it
-  reads tries to talk it out of a flag. A card with no flags still says to read the change.
-- **It reads what the commit will contain,** as far as the command shows: the files a `git add`
-  names, everything tracked for `commit -a`, otherwise what is already staged. When it can't be sure
-  (`--amend`, a command doing more than add and commit, a change cut at 40,000 characters), the card
-  says its coverage is partial.
-- **The card is bound to the change.** If the change is edited after the card goes out, approving it
-  commits nothing, and the run is told to ask again.
+  reads tries to talk it out of a flag. A card with no flags still says to read the change, and every
+  probability is shown.
+- **It reads everything the commit could take,** not a guess at which files it will. That is what is
+  staged, plus, when the command can take working-tree files (`-a`, paths on the commit, an earlier
+  `git add`), every changed tracked file in the whole repository and the untracked ones a `git add`
+  could pick up. So it may read more than the commit takes, never less. A plain `git commit` reads
+  only what is staged. Line-ending differences alone don't count as changes.
+- **It says when coverage is partial:** binary, linked or large files it didn't read, env files it
+  held back, submodules, `--amend`, commit hooks, `-c` overrides, a command that runs other steps
+  first or builds part of itself, and a change cut at 40,000 characters.
+- **The card is bound to the change.** A fingerprint of the raw content of everything that was or
+  could be committed is kept with the card, including files it didn't read. If anything there changes
+  before you approve, approving commits nothing, and the run is told to ask again.
+- **It only reads a repository whose top folder the run may use.** A granted subfolder of a bigger
+  repository isn't read.
 - **Measured** on 15 hand-written changes: with both questions, 8 of 8 bad changes flagged and 0 of 7
   clean ones (`docs/clef-eval-2026-10-16.md`). Each card costs a fraction of a cent.
