@@ -64,6 +64,8 @@ async function runCommand(args: string[]): Promise<void> {
     console.error('usage: mwa run "<instruction>" [--dir .] [--max-steps 40] [--max-min 10] [--db ./data/agent.db]');
     process.exit(1);
   }
+  // BL-23: say so when the configured model hasn't held against instructions planted in what it reads.
+  try { const { modelWarnings } = await import('./model-safety.js'); for (const w of modelWarnings(loadConfig().models)) console.log(`⚠ ${w}`); } catch { /* no config yet */ }
   const dir = resolve(flags.dir ?? process.cwd()); // absolute — tools/worker spawnSync need it on Windows
   const dbPath = flags.db ?? process.env.MWA_DB ?? './data/agent.db';
   const cfg = loadConfig();

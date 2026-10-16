@@ -8,6 +8,8 @@ export interface StatusResp {
   gmail: boolean;
   outlook: boolean;
   ready: boolean;
+  /** BL-23: how the configured brain fared against instructions planted in what it reads. */
+  modelNote?: { standing: 'held' | 'failed' | 'unmeasured'; text: string } | null;
 }
 
 // If the access gate is on and our session expired (e.g. the server restarted),

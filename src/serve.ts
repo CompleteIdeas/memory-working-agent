@@ -69,6 +69,7 @@ import { runScheduler } from './scheduler.js';
 // below used the constant, so the UI saved to /app/mwa.config.json while the agent read
 // /data/mwa.config.json — the model picker looked like it silently did nothing.
 import { loadConfig, configPath, setStyle, INTERACTION_STYLES, type InteractionStyle } from './config.js';
+import { injectionNote, modelWarnings } from './model-safety.js';
 import { loadEnv } from './env.js';
 import { mailboxDirs, watchInbox } from './mailbox.js';
 import { googleConfigured, startGmailConnect } from './connectors/google.js';
@@ -497,7 +498,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
 
       if (p === '/api/status') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ...status(), gmail: googleConfigured() || gmailImapConfigured(), outlook: microsoftConfigured() }));
+        // BL-23: how the configured brain fared against planted instructions, for the model settings.
+        let modelNote: ReturnType<typeof injectionNote> | null = null;
+        try { modelNote = injectionNote(loadConfig().models.fetch); } catch { /* no config yet */ }
+        res.end(JSON.stringify({ ...status(), gmail: googleConfigured() || gmailImapConfigured(), outlook: microsoftConfigured(), modelNote }));
         return;
       }
       // Open an external link in the OS browser. The desktop (Tauri) webview swallows
@@ -1120,6 +1124,8 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   const u = `http://localhost:${port}`;
   console.log(`\n  MWA is running → ${u}`);
   console.log(ui ? '  (serving the built app)\n' : '  (no built app yet — serving the simple built-in page; run `npm run build:ui` for the full UI)\n');
+  // BL-23: say so when the configured model hasn't held against instructions planted in what it reads.
+  try { for (const w of modelWarnings(loadConfig().models)) console.log(`  ⚠ ${w}`); } catch { /* no config yet */ }
   if (process.env.MWA_NO_OPEN !== '1') openBrowser(u);
 
   // Start the scheduler so timed / recurring ("cron") tasks actually FIRE in the web app

@@ -34,7 +34,7 @@ flagged identity before a sensitive confirm) are always on; they are not env-tog
 ## Model
 | Var | Default | Purpose |
 |---|---|---|
-| `MWA_MODEL` | from `mwa.config.json` | Override the conductor model (`<provider>:<model>`, e.g. `azure:gpt-5-4-mini`, `openrouter:…`, `ollama:llama3.1`). |
+| `MWA_MODEL` | from `mwa.config.json` | Override the conductor model (`<provider>:<model>`, e.g. `azure:gpt-5-4-mini`, `openrouter:…`, `ollama:llama3.1`). Models differ in how well they ignore instructions planted in email and web pages: see [models.md](models.md). |
 | `MWA_MODEL_IMAGE` | from config | Override the image model. |
 | `MWA_OLLAMA_NUM_CTX` | sized per prompt | For `ollama:` models, a fixed context size in tokens. By default MWA sizes it from each prompt, in 8k steps from 16k. It keeps one size per model and only grows it while running, because Ollama reloads the model when the size changes. |
 | `MWA_OLLAMA_MAX_NUM_CTX` | the model's own limit | The largest context MWA may ask Ollama for, so it fits your memory. A request that needs more is refused with both numbers, rather than Ollama silently dropping the start of the prompt. MWA asks Ollama not to truncate, so a prompt that doesn't fit is refused with its real size. |
