@@ -124,7 +124,9 @@ describe('the model’s shell gets no secrets', () => {
       expect(await write.handler({ path: '.cargo/readme.txt', content: 'x' }, { sandboxDir: home, interactive: true })).not.toMatch(/PATH/);
       const short = execFileSync('powershell', ['-NoProfile', '-Command', `(New-Object -ComObject Scripting.FileSystemObject).GetFolder('${join(home, '.cargo')}').ShortPath`], { encoding: 'utf8' }).trim();
       if (short.includes('~')) {
-        expect(await write.handler({ path: join(short, 'bin', 'cargo.cmd'), content: '@echo planted' }, { sandboxDir: home, interactive: true })).toMatch(/on your PATH/);
+        // Refused either way (the sandbox check may catch the short spelling first); onPath must catch it on its own.
+        expect(await write.handler({ path: join(short, 'bin', 'cargo.cmd'), content: '@echo planted' }, { sandboxDir: home, interactive: true })).toMatch(/refused/);
+        expect(onPath(join(short, 'bin'))).toBe(true);
       }
       expect(existsSync(join(cargoBin, 'cargo.cmd'))).toBe(false);
     } finally { process.env.PATH = saved; rmSync(home, { recursive: true, force: true }); }
