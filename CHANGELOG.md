@@ -71,6 +71,19 @@ On the final images: planted instructions in tool output followed 0 of 8 times; 
     gemini-2.5-flash-lite followed them in 2 of 8 and deepseek-v3.2 in 4 of 8.
   - MWA warns at startup, and under Connect → AI brain, when the configured model failed this test
     or hasn't taken it. A result counts only for the provider it was measured on.
+- **An optional second opinion on the commits MWA asks to make (BL-24).**
+  - With `MWA_SECOND_OPINION=cloudflare:clef-flash` (or `clef`) and a Cloudflare Workers AI token, a
+    decision model reads the change and puts three scores at the top of the approval card: dangerous
+    code, weakened checks, reaches outside the repository.
+  - It's advisory: it approves and blocks nothing, and a card with no flags still says to read the
+    change.
+  - It speaks only to a plain `git add … && git commit -m …`. For anything else the card says
+    "Second opinion: not given" and why, instead of guessing what an unusual command commits.
+  - Within that, it reads everything the commit could take, both the staged copy and the file. The
+    card is bound to what was read: if anything changes before you approve, the commit doesn't run.
+  - Env files are never sent, and values that look like secrets are blanked first.
+  - Measured on 15 hand-written diffs: 8 of 8 bad ones flagged, 0 of 7 clean ones
+    (`docs/clef-eval-2026-10-16.md`). Off by default. See `docs/self-build.md`.
 
 ## 0.6.0 (2026-10-15) — approval only a person can give, fenced tool output, job contracts, autonomous Docker
 
