@@ -176,7 +176,11 @@ What to know:
   with the common options spelled out in full. For anything else, such as other commands in the chain,
   `git -C`, aliases like `git ci`, `merge`, a variable, a pipe, `apply --cached`, an abbreviated option,
   or a repository mid-merge, the card says "Second opinion: not given" and why, and is exactly as it
-  would be without the feature. It never guesses at what an unusual command commits.
+  would be without the feature. It never guesses at what an unusual command commits. The same applies
+  when git would commit other bytes than the file holds (a filter, `working-tree-encoding` or `ident`
+  attribute); when a file named `git` (`git.bat`, `git.cmd`, …) sits in a folder the command runs in,
+  because on Windows that would run instead of git; and when, on Windows, the `cd` goes to another
+  drive (cmd.exe's `cd` doesn't switch drives).
 - **It says when coverage is partial:** binary, linked or large files it didn't read, env files it
   held back, submodules, `--amend`, commit hooks, `-c` overrides, a command that runs other steps
   first or builds part of itself, and a change cut at 40,000 characters.

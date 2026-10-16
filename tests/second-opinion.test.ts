@@ -12,7 +12,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { commitTarget, redactSecrets, collectCommitDiff, opinionLines, secondOpinionForCommand, secondOpinionModel, isEnvFile, isNotGiven, type CommitTarget } from '../src/second-opinion.js';
@@ -49,7 +49,7 @@ describe('the grammar', () => {
     expect(commitTarget('rm .git/index.lock', repo)).toBeNull();
     expect(T(`cd ${repo} && git add src/a.ts tests/b.test.ts && git commit -m "x"`, '/elsewhere')).toEqual({
       dir: repo, tracked: { all: false, specs: [{ dir: repo, paths: ['src/a.ts', 'tests/b.test.ts'] }] },
-      untracked: { all: false, specs: [{ dir: repo, paths: ['src/a.ts', 'tests/b.test.ts'] }] }, forced: [], amend: false, unclear: [] });
+      untracked: { all: false, specs: [{ dir: repo, paths: ['src/a.ts', 'tests/b.test.ts'] }] }, forced: [], amend: false, unclear: [], runDir: resolve('/elsewhere') });
     expect(T('git commit -am "everything"')).toMatchObject({ tracked: all, untracked: nothing });
     expect(T('git commit -m "staged"')).toMatchObject({ tracked: nothing, untracked: nothing, unclear: [] });
     expect(T('git commit -m "a message with -a in it"')).toMatchObject({ tracked: nothing });
@@ -62,7 +62,7 @@ describe('the grammar', () => {
 
   it('anything outside it gets no opinion, said plainly', () => {
     for (const cmd of [
-      'npm run fmt && git commit -am x', 'git status && git commit -m x', 'git commit -m "$(git apply --cached p.diff)"',
+      'npm run fmt && git commit -am x', 'git status && git commit -m x', process.platform === 'win32' ? 'git commit -m "%CD%"' : 'git commit -m "$(git apply --cached p.diff)"',
       'git apply --cached p.diff\ngit commit -m x', 'cat p.diff | git apply --cached && git commit -m x', 'git -c core.hooksPath=hooks commit -m x',
       'GIT_INDEX_FILE=/tmp/i git commit -m x', `git -C ${repo} commit -am x`, 'git commit -m x; rm -rf /', 'git ci -am x', "git com''mit -am x",
       'sh -c "git commit -am x"', 'git merge feature', 'git commit -qm x', 'git add -Av && git commit -m x', 'git commit -m x --gpg-sign src/a.ts',
@@ -110,7 +110,8 @@ describe('what the reviews found', () => {
     git(repo, 'config', 'filter.pwn.clean', `node -e "require('fs').writeFileSync(process.argv[1], 'x'); process.stdin.pipe(process.stdout)" "${flag.split('\\').join('/')}"`);
     writeFileSync(join(repo, '.gitattributes'), '*.ts filter=pwn\n');
     writeFileSync(join(repo, 'src', 'a.ts'), 'export const a = 9;\n');
-    expect((await read('git commit -am x')).text).toContain('+export const a = 9;');
+    // A file git would filter is refused (round 5), and reading it runs nothing.
+    await expect(read('git commit -am x')).rejects.toThrow(/filter, encoding or ident/);
     expect(existsSync(flag)).toBe(false);
     // The filter is real: git itself runs it when asked to compare the working tree.
     try { git(repo, 'diff', 'HEAD'); } catch { /* the filter's output may upset git; it ran either way */ }
@@ -268,8 +269,60 @@ describe('what the reviews found', () => {
   });
 });
 
-describe('the card', () => {
+describe('what the fifth review found', () => {
   const env = { MWA_SECOND_OPINION: 'cloudflare:clef-flash', CLOUDFLARE_ACCOUNT_ID: 'a', CLOUDFLARE_API_TOKEN: 't' };
+  it('(1) a git.bat or git.cmd in a folder the command runs in gets no opinion, and one planted after the card is caught', async () => {
+    writeFileSync(join(repo, 'src', 'a.ts'), 'export const a = 2;\n');
+    const name = process.platform === 'win32' ? 'git.bat' : 'git';
+    const pathBefore = process.env.PATH;
+    if (process.platform !== 'win32') process.env.PATH = `.:${pathBefore}`; // a shell looks here only then
+    try {
+      const t = T('git add src/a.ts && git commit -m x');
+      const d = await collectCommitDiff(t);
+      writeFileSync(join(repo, name), '@echo off\n');
+      expect((await collectCommitDiff(t)).fingerprint).not.toBe(d.fingerprint);
+      const r = await secondOpinionForCommand('git add src/a.ts && git commit -m x', repo, () => true, env);
+      expect(r!.lines[0]).toMatch(/not given — a file named git/);
+    } finally { process.env.PATH = pathBefore; }
+  });
+
+  it('(2) a file with a working-tree-encoding gets no opinion, and a .gitattributes added after the card is caught', async () => {
+    writeFileSync(join(repo, 'src', 'y.js'), 'console.log(1)\n');
+    const t = T('git add src/y.js && git commit -m x');
+    const d = await collectCommitDiff(t);
+    writeFileSync(join(repo, '.gitattributes'), 'src/y.js working-tree-encoding=IBM037\n');
+    await expect(collectCommitDiff(t)).rejects.toThrow(/encoding/);
+    rmSync(join(repo, '.gitattributes'));
+    writeFileSync(join(repo, '.gitattributes'), '*.md text\n');
+    expect((await collectCommitDiff(t)).fingerprint).not.toBe(d.fingerprint);
+    writeFileSync(join(repo, '.gitattributes'), 'src/y.js working-tree-encoding=IBM037\n');
+    const r = await secondOpinionForCommand('git add src/y.js && git commit -m x', repo, () => true, env);
+    expect(r!.lines[0]).toMatch(/not given — a file in the change has a git filter, encoding or ident attribute/);
+  });
+
+  it('(3) on Windows a cd to another drive, or to a drive- or root-relative path, gets no opinion', () => {
+    if (process.platform !== 'win32') return;
+    const other = repo.slice(0, 1).toUpperCase() === 'Q' ? 'R' : 'Q';
+    for (const to of [`${other}:\\`, `${other}:sub`, '\\sub', '\\\\server\\share'])
+      expect(notGiven(`cd ${to} && git commit -am x`), to).toMatch(/another drive|current drive/);
+    expect(T(`cd ${join(repo, 'src')} && git commit -am x`).dir).toBe(join(repo, 'src'));
+  });
+
+  it('(4) ordinary commit messages are read, with ( ) ; | < > & and ! inside the quotes', () => {
+    for (const m of ['feat(api): add x', 'a -> b', 'Fix! now', 'one; two | three && four', ...(process.platform === 'win32' ? [] : ["Fix: don't crash"])])
+      expect(T(`git add src/a.ts && git commit -m "${m}"`).tracked.specs, m).toHaveLength(1);
+    expect(notGiven(process.platform === 'win32' ? 'git commit -m "100% done"' : 'git commit -m "costs $5"'), 'expansion').toBeTruthy();
+  });
+
+  it('(6) a file that only became executable is said (outside Windows)', async () => {
+    if (process.platform === 'win32') return;
+    execFileSync('chmod', ['+x', join(repo, 'src', 'a.ts')]);
+    expect((await read('git commit -am x')).text).toContain('src/a.ts: became executable');
+  });
+});
+
+describe('the card', () => {
+  const env ={ MWA_SECOND_OPINION: 'cloudflare:clef-flash', CLOUDFLARE_ACCOUNT_ID: 'a', CLOUDFLARE_API_TOKEN: 't' };
   it('flags first and never says safe; every probability shown; partial coverage and failures said plainly', () => {
     expect(opinionLines('clef-flash', { dangerous: 0.93, weakens: 0.1, reachesOut: 0.9 }, [])).toEqual([
       expect.stringMatching(/^⚠ Second opinion from Cloudflare Clef-flash \(advisory.*flags this change: dangerous code; reaches outside the repository \(dangerous code 93%, weakens the checks 10%, reaches outside the repository 90%\)/),

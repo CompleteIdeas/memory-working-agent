@@ -48,7 +48,7 @@ export interface Scope { all: boolean; specs: Specs[] }
  * tree; the untracked files a `git add` can take; those it force-adds past .gitignore; and notes for the
  * card (`unclear`, each a short reason, never text copied from the command).
  */
-export interface CommitTarget { dir: string; tracked: Scope; untracked: Scope; forced: Specs[]; amend: boolean; unclear: string[] }
+export interface CommitTarget { dir: string; runDir?: string; tracked: Scope; untracked: Scope; forced: Specs[]; amend: boolean; unclear: string[] }
 /** A command the second opinion won't speak to, and why — said on the card instead of an opinion. */
 export interface NotGiven { notGiven: string }
 
@@ -62,33 +62,53 @@ const COMMIT_FLAGS = new Set(['-a', '--all', '-q', '--quiet', '-v', '--verbose',
 const COMMIT_WITH_MESSAGE = new Set(['-m', '--message', '-am']);
 
 /**
- * The command's words, by a deliberately small tokenizer: a word is a run of plain characters, or one
- * whole "…" / '…' with no quote, backslash or `$` inside; words are separated by spaces. Anything a
- * shell could expand, escape, glue together or redirect makes the command unreadable (null).
+ * The command as parts (split on `&&`) of words, by a deliberately small tokenizer, in one pass that
+ * knows where quotes are. A word is a run of plain characters, or one whole "…" (or '…' outside
+ * Windows) not glued to anything; parts are separated by `&&` OUTSIDE quotes. Inside quotes only what
+ * the shell that runs the command treats literally is allowed: sh expands `$`, backticks and `\` inside
+ * "…"; cmd.exe expands %VAR%, has no single quotes, and a `\` before the closing quote escapes it.
+ * Anything a shell could expand, escape, glue together, redirect or chain otherwise makes the command
+ * unreadable (null). Text inside quotes, such as a commit message, may hold ( ) ; | < > & and ! freely.
  */
-function tokens(part: string): string[] | null {
-  const out: string[] = [];
-  const plain = process.platform === 'win32' ? /^[A-Za-z0-9_.,:=@+\/\\-]+$/ : /^[A-Za-z0-9_.,:=@+\/-]+$/;
+function commandParts(command: string): string[][] | null {
+  const win = process.platform === 'win32';
+  const plain = win ? /^[A-Za-z0-9_.,:=@+\/\\-]$/ : /^[A-Za-z0-9_.,:=@+\/-]$/;
+  const parts: string[][] = [[]];
   let i = 0;
-  while (i < part.length) {
-    if (part[i] === ' ' || part[i] === '\t') { i++; continue; }
-    const q = part[i];
-    if (q === '"' || q === "'") {
-      const end = part.indexOf(q, i + 1);
+  while (i < command.length) {
+    const c = command[i];
+    if (c === ' ' || c === '\t') { i++; continue; }
+    if (c === '&' && command[i + 1] === '&') { parts.push([]); i += 2; continue; }
+    if (c === '"' || (c === "'" && !win)) {
+      const end = command.indexOf(c, i + 1);
       if (end < 0) return null;
-      const word = part.slice(i + 1, end);
-      // In cmd.exe single quotes aren't quotes, and %VAR% expands inside double quotes.
-      if (process.platform === 'win32' ? q === "'" || /["%!\\]/.test(word) : /["'\\$`]/.test(word)) return null;
-      if (end + 1 < part.length && part[end + 1] !== ' ' && part[end + 1] !== '\t') return null; // glued on
-      out.push(word); i = end + 1; continue;
+      const word = command.slice(i + 1, end);
+      if (/[\r\n]/.test(word)) return null;
+      if (c === '"' && (win ? /[%"]/.test(word) || word.endsWith('\\') : /[$`\\"]/.test(word))) return null;
+      const next = command[end + 1];
+      if (next !== undefined && next !== ' ' && next !== '\t') return null; // glued on
+      parts[parts.length - 1].push(word); i = end + 1; continue;
     }
     let end = i;
-    while (end < part.length && part[end] !== ' ' && part[end] !== '\t') end++;
-    const word = part.slice(i, end);
-    if (!plain.test(word)) return null;
-    out.push(word); i = end;
+    while (end < command.length && plain.test(command[end])) end++;
+    if (end === i) return null; // a character no part of the grammar uses: ; | < > ( ) $ ` ' & …
+    const after = command[end];
+    if (after !== undefined && after !== ' ' && after !== '\t' && !(after === '&' && command[end + 1] === '&')) return null;
+    parts[parts.length - 1].push(command.slice(i, end)); i = end;
   }
-  return out;
+  return parts;
+}
+
+/**
+ * Where `cd <dir>` really goes, or null when cmd.exe would not go there: without `/d`, cmd.exe's `cd`
+ * to another drive changes that drive's folder but not the current drive (BL-24 round-5 review), and a
+ * drive-relative (`D:sub`) or root-relative (`\sub`) path depends on state the command doesn't show.
+ */
+function cdTarget(to: string, from: string): string | null {
+  if (process.platform !== 'win32') return isAbsolute(to) ? to : resolve(from, to);
+  if (/^[A-Za-z]:(?![\\/])/.test(to) || /^[\\/](?![\\/])/.test(to) || /^[\\/]{2}/.test(to)) return null;
+  const target = /^[A-Za-z]:[\\/]/.test(to) ? to : resolve(from, to);
+  return target.slice(0, 2).toLowerCase() === resolve(from).slice(0, 2).toLowerCase() ? target : null;
 }
 
 /** A path a command names: plain, not git's pathspec magic. */
@@ -109,17 +129,17 @@ export function commitTarget(command: string, cwd: string): CommitTarget | NotGi
   const commits = /\b(commit|merge|cherry-pick|revert|rebase)\b/i.test(command) || subs.some((s) => !NEVER_COMMITS.has(s));
   if (!commits) return null;
   const notGiven = (why: string): NotGiven => ({ notGiven: why });
-  if (/[;|<>(){}`$\n\r]/.test(command.replace(/&&/g, '')) || /&/.test(command.replace(/&&/g, ''))) return notGiven(MORE);
-  const parts = command.split('&&').map((p) => p.trim());
-  if (parts.some((p) => !p)) return notGiven(MORE);
-  const words = parts.map(tokens);
-  if (words.some((w) => !w || !w.length)) return notGiven("the command's text couldn't be read word by word");
-  const w = words as string[][];
+  const parsed = commandParts(command);
+  if (!parsed) return notGiven(MORE);
+  if (parsed.some((p) => !p.length)) return notGiven(MORE);
+  const w = parsed;
   let dir = resolve(cwd);
   let k = 0;
   if (w[0][0] === 'cd') {
     if (w[0].length !== 2) return notGiven(MORE);
-    dir = isAbsolute(w[0][1]) ? w[0][1] : resolve(dir, w[0][1]);
+    const to = cdTarget(w[0][1], dir);
+    if (!to) return notGiven('its cd goes to another drive, or to a path that depends on the current drive');
+    dir = to;
     k = 1;
   }
   const tracked = none(), untracked = none();
@@ -172,7 +192,7 @@ export function commitTarget(command: string, cwd: string): CommitTarget | NotGi
   }
   if (!message && !amend) return notGiven('the commit has no message, so git would open an editor');
   if (paths.length) tracked.specs.push({ dir, paths }); // git takes them from the working tree
-  return { dir, tracked, untracked, forced, amend, unclear };
+  return { dir, runDir: resolve(cwd), tracked, untracked, forced, amend, unclear };
 }
 
 export const isNotGiven = (t: CommitTarget | NotGiven | null): t is NotGiven => !!t && 'notGiven' in t;
@@ -354,6 +374,30 @@ async function matching(specs: Specs[], extra: string[]): Promise<string[]> {
   return out;
 }
 
+/** A file in the change that git transforms on commit (a filter, an encoding, ident). */
+export class AttributeError extends Error { constructor() { super('a file in the change has a git filter, encoding or ident attribute'); } }
+
+/**
+ * Files in the folders the command runs in that the shell would run instead of git: on Windows cmd.exe
+ * looks in the current folder before PATH, for every extension in PATHEXT (BL-24 round-5 review: a
+ * planted git.bat ran `git add -A` before the real commit). Elsewhere a shell only does if PATH lists
+ * `.` or an empty entry.
+ */
+export async function shadowingGit(t: Pick<CommitTarget, 'dir' | 'runDir'>): Promise<string[]> {
+  const win = process.platform === 'win32';
+  const pathDirs = String(process.env.PATH ?? process.env.Path ?? '').split(delimiter);
+  if (!win && !pathDirs.some((d) => d === '' || d === '.')) return [];
+  const exts = win ? String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map((e) => e.toLowerCase()) : [''];
+  const found: string[] = [];
+  for (const d of new Set([t.runDir, t.dir].filter((x): x is string => !!x))) {
+    for (const f of await readdir(d).catch(() => [] as string[])) {
+      const lower = f.toLowerCase();
+      if (lower === 'git' || exts.some((e) => e && lower === `git${e}`)) found.push(join(d, f));
+    }
+  }
+  return found;
+}
+
 /** The change the commit could contain, as text for the model, and a fingerprint of all of it. */
 export async function collectCommitDiff(t: CommitTarget, topIn?: string): Promise<CommitDiff> {
   const top = topIn ?? (await repoTop(t.dir));
@@ -365,6 +409,15 @@ export async function collectCommitDiff(t: CommitTarget, topIn?: string): Promis
   const head = headId ? await entries(top, 'HEAD') : { map: new Map<string, Entry>(), raw: Buffer.alloc(0) };
   const index = await entries(top, 'index');
   const fp = createHash('sha256').update(`head ${headId}\0`).update(index.raw);
+  // A git.bat (or .cmd/.com/.exe) in a folder the command runs in replaces git on Windows; bound, so
+  // one planted after the card is caught (BL-24 round-5 review). secondOpinionForCommand refuses any.
+  for (const s of await shadowingGit(t)) fp.update(`shadow\0${s}\0`);
+  // Attributes decide what git commits from a file (an encoding, a filter): every .gitattributes in the
+  // working tree is bound, ignored ones too.
+  for (const a of [...new Set([...[...index.map.keys()].filter((p) => /(^|\/)\.gitattributes$/.test(p)), ...zlist(await gitOk(top, ['ls-files', '-z', '--others', '--', ':(glob)**/.gitattributes']))])]) {
+    const b = await readFile(join(top, a)).catch(() => null);
+    fp.update(`attr\0${a}\0${b ? blobId(b) : 'missing'}\0`);
+  }
 
   // The files in scope to be taken from the working tree.
   const fromWorktree = new Set<string>(t.tracked.all ? index.map.keys() : await matching(t.tracked.specs, []));
@@ -380,6 +433,7 @@ export async function collectCommitDiff(t: CommitTarget, topIn?: string): Promis
   for (const u of unique.slice(0, MAX_UNTRACKED)) fromWorktree.add(u.replace(/\/$/, ''));
 
   const changed: { path: string; before: Entry | undefined; after: Buffer | Entry | null }[] = [];
+  const parts0: string[] = []; // mode-only changes, said before the content changes
   const skipped = new Map<string, number>();
   let env = 0, binary = 0, submodules = 0;
   for (const p of [...new Set([...index.map.keys(), ...head.map.keys(), ...fromWorktree])].sort()) {
@@ -397,12 +451,25 @@ export async function collectCommitDiff(t: CommitTarget, topIn?: string): Promis
     fp.update(`${p}\0${now.kind === 'file' ? now.id : now.kind === 'skip' ? now.ident : 'missing'}\0`);
     if (now.kind === 'skip') { if (!h || now.ident !== h.id) skipped.set(now.why, (skipped.get(now.why) ?? 0) + 1); continue; }
     if (now.kind === 'missing') { if (h || ix) changed.push({ path: p, before: h, after: null }); continue; }
-    // Unchanged, or changed only in its line endings (git normalises those on Windows).
-    if (h && (now.id.replace(/:x$/, '') === h.id || blobId(lf(now.bytes)) === h.id)) continue;
+    // Unchanged, or changed only in its line endings (git normalises those on Windows). A file that
+    // only became executable (or stopped being) is still said: that alone can matter.
+    if (h && (now.id.replace(/:x$/, '') === h.id || blobId(lf(now.bytes)) === h.id)) {
+      const x = now.id.endsWith(':x');
+      if (process.platform !== 'win32' && x !== (h.mode === '100755')) parts0.push(`=== ${p}: ${x ? 'became executable' : 'is no longer executable'}\n`);
+      continue;
+    }
     changed.push({ path: p, before: h, after: now.bytes });
   }
+  // A filter, an encoding or ident on a file read from the working tree makes git commit bytes other
+  // than the file's (BL-24 round-5 review: working-tree-encoding=IBM037). git check-attr only reads
+  // attributes; it runs nothing.
+  const fromDisk = changed.filter((c) => Buffer.isBuffer(c.after)).map((c) => c.path);
+  if (fromDisk.length) {
+    const rec = zlist(await gitOk(top, ['check-attr', '-z', '--stdin', 'filter', 'working-tree-encoding', 'ident'], fromDisk.join('\0') + '\0'));
+    for (let i = 0; i + 2 < rec.length; i += 3) if (rec[i + 2] !== 'unspecified' && rec[i + 2] !== 'unset') throw new AttributeError();
+  }
   const stored = await storedBlobs(top, changed.flatMap((c) => [c.before?.id, c.after && !Buffer.isBuffer(c.after) ? c.after.id : undefined]).filter((x): x is string => !!x));
-  const parts: string[] = [];
+  const parts: string[] = [...parts0];
   let size = 0;
   for (const c of changed) {
     if (size > MAX_CHARS * 2) { parts.push(`=== ${c.path} (not read: past the size limit)\n`); continue; }
@@ -539,6 +606,7 @@ export async function secondOpinionForCommand(command: string, cwd: string, allo
   // anyone has approved anything (BL-24 review).
   try { target.dir = realpathSync.native(target.dir); } catch { /* existsSync passed */ }
   if (!allowedDir(target.dir)) return { lines: opinionLines(model, new Error('the folder the command names is outside the folders this run may use, so its change wasn\'t read'), []), reviewed: null };
+  if ((await shadowingGit(target)).length) return notGiven('a file named git (git.bat, git.cmd …) in a folder it runs in would run instead of git');
   let top: string;
   try { top = await repoTop(target.dir); } catch { return { lines: opinionLines(model, new Error('the folder the command names is not in a git repository'), []), reviewed: null }; }
   if (!allowedDir(top)) return { lines: opinionLines(model, new Error('the repository reaches outside the folders this run may use, so its change wasn\'t read'), []), reviewed: null };
@@ -550,7 +618,10 @@ export async function secondOpinionForCommand(command: string, cwd: string, allo
   let diff: CommitDiff;
   // git's own error repeats the command's paths, so it never reaches the card (BL-24 round-4 review).
   try { diff = await collectCommitDiff(target, top); }
-  catch { return notGiven("its change couldn't be read (a path outside the repository, or a file another program holds open)"); }
+  catch (e) {
+    if (e instanceof AttributeError) return notGiven('a file in the change has a git filter, encoding or ident attribute, so git commits other bytes than the file holds');
+    return notGiven("its change couldn't be read (a path outside the repository, or a file another program holds open)");
+  }
   const reviewed = { target, top, fingerprint: diff.fingerprint };
   if (!diff.text.trim()) return { lines: [`Second opinion: it found no change to read${target.tracked.all || target.tracked.specs.length || target.untracked.all || target.untracked.specs.length ? '' : ' (nothing is staged)'}. That is not a review: read the change.`, ...(diff.notes.length ? [`Coverage is partial: ${diff.notes.join('; ')}.`] : [])], reviewed };
   let opinion: Opinion | Error;
