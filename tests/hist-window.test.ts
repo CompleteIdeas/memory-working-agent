@@ -55,3 +55,48 @@ describe('a run without memory is not offered memory tools (BL-09 review)', () =
     expect(on[0].system).not.toMatch(/MEMORY IS OFF/);
   }, 60_000);
 });
+
+describe('the experiment-only compaction hook (BL-30)', () => {
+  it('folds all but the last window of history once it passes twice the window, and shows the block above RECENT STEPS', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { runAgent, HIST_WINDOW } = await import('../src/agent.js');
+    const { NullMemory } = await import('../src/awm.js');
+    const { ToolRegistry } = await import('../src/tools/registry.js');
+    const tools = new ToolRegistry();
+    // Ten names, so no one tool passes the 5-uses no-progress rule.
+    for (let i = 0; i < 10; i++) tools.register({ def: { name: `tick${i}`, description: 'count', parameters: { type: 'object', properties: { n: { type: 'number' } } } } as any, handler: async (a) => `TICK-RESULT-${a.n}` });
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-compact-'));
+    const folds: string[][] = [];
+    const prompts: string[] = [];
+    let n = 0;
+    const brain = { id: 's', model: 's', price: [0, 0] as [number, number], chat: async (input: any) => {
+      if (!String(input.system ?? '').includes('TRUST BOUNDARY')) return { text: '{}', usage: { input: 1, output: 1 } };
+      prompts.push(String(input.messages?.[0]?.content ?? ''));
+      n++;
+      return { text: JSON.stringify(n <= 40 ? { action: `tick${n % 10}`, n } : { action: 'done', summary: 'ok', outcome: 'no-change' }), usage: { input: 1, output: 1 } };
+    } };
+    const prev = process.env.MWA_FAST_CHAT; process.env.MWA_FAST_CHAT = '0';
+    try {
+      await runAgent({ instruction: 'count', dir, memory: new NullMemory() as any, brain, worker: brain, tools, interactive: false, plan: false, budget: { maxSteps: 45, maxWallMs: 30_000 },
+        compaction: { fold: async (lines: string[]) => { folds.push(lines); }, block: () => (folds.length ? `SUMMARY-BLOCK-${folds.length}` : '') } } as any);
+    } finally { if (prev === undefined) delete process.env.MWA_FAST_CHAT; else process.env.MWA_FAST_CHAT = prev; rmSync(dir, { recursive: true, force: true }); }
+
+    expect(folds.length).toBeGreaterThanOrEqual(1);
+    // The first fold starts at the very first line and hands over everything but the last window.
+    expect(folds[0].join('\n')).toMatch(/TICK-RESULT-1\b/);
+    expect(new Set(folds.flat()).size).toBe(folds.flat().length); // no line is folded twice
+    expect(prompts[1]).toMatch(/older steps are not kept/); // before the first fold, nothing is summarized yet
+    const after = prompts.find((p) => p.includes('SUMMARY-BLOCK-1'))!;
+    expect(after).toBeDefined();
+    expect(after.indexOf('SUMMARY-BLOCK-1')).toBeLessThan(after.indexOf('RECENT STEPS'));
+    expect(after).toMatch(/older steps are summarized above\)/);
+    const recent = after.slice(after.indexOf('RECENT STEPS'));
+    expect(recent).not.toMatch(/TICK-RESULT-1\b/); // folded lines leave the prompt
+    for (const p of prompts) {
+      const r = p.slice(Math.max(0, p.indexOf('RECENT STEPS')));
+      expect((r.match(/TICK-RESULT-\d+/g) ?? []).length).toBeLessThanOrEqual(2 * HIST_WINDOW + 1);
+    }
+  }, 60_000);
+});

@@ -391,6 +391,11 @@ export async function runAgent(opts: {
   personId?: string;
   identityInDoubt?: boolean;
   onEvent?: (type: string, data: Record<string, unknown>) => void;
+  /** EXPERIMENT ONLY (BL-30, scripts/measure-topic-switch.mts): compaction in place of the fixed
+   *  window. Once the unfolded history passes twice HIST_WINDOW, every line but the last HIST_WINDOW
+   *  goes to `fold` (e.g. a model-written running summary), and `block()` is shown above RECENT
+   *  STEPS. Production never sets it: MWA's own design is the window plus recall. */
+  compaction?: { fold: (lines: string[]) => Promise<void>; block: () => string };
 }): Promise<AgentResult> {
   const { instruction, dir, memory, brain, worker } = opts;
   const now = opts.now ?? (() => Date.now());
@@ -441,6 +446,7 @@ export async function runAgent(opts: {
 
   const usage = { brainIn: 0, brainOut: 0, workerIn: 0, workerOut: 0, cacheRead: 0, cacheWrite: 0 };
   const history: string[] = [];
+  let folded = 0; // BL-30: history lines already handed to opts.compaction.fold
   let dispatches = 0, toolCalls = 0, reRecalls = 0, supersedes = 0, consolidations = 0;
   let learnedFacts = 0, skillsDerived = 0, openQuestions = 0, frictionsLearned = 0, policiesLearned = 0; // for the run log + self-learning loop
   let consecNoProgress = 0, consecWorkerFails = 0, brainErrors = 0, incompleteRejections = 0;
@@ -697,14 +703,21 @@ export async function runAgent(opts: {
       }
     }
 
-    const recent = history.slice(-HIST_WINDOW);
+    if (opts.compaction && history.length - folded > 2 * HIST_WINDOW) {
+      const cut = history.length - HIST_WINDOW;
+      await opts.compaction.fold(history.slice(folded, cut));
+      folded = cut;
+    }
+    const recent = opts.compaction ? history.slice(folded) : history.slice(-HIST_WINDOW);
+    const compacted = opts.compaction?.block() ?? '';
     // VOLATILE TAIL ONLY. Everything loop-invariant — instruction, working dir, standing
     // preferences, domain pack — moved into `runSystem` above so the cached prefix is
     // byte-identical on every step of the run. See the note there.
     const prompt = [
       render(),
+      compacted,
       // Without memory there is nothing to recall: say so, rather than send the agent to a dead tool (BL-09 review).
-      recent.length ? `RECENT STEPS (${memory.enabled ? 'older context is in memory — recall it if needed' : 'older steps are not kept — re-read a file if you need it again'}):\n${recent.join('\n')}` : 'No steps yet.',
+      recent.length ? `RECENT STEPS (${folded > 0 ? `older steps are summarized above${memory.enabled ? ', and older context is in memory — recall it if needed' : ''}` : memory.enabled ? 'older context is in memory — recall it if needed' : 'older steps are not kept — re-read a file if you need it again'}):\n${recent.join('\n')}` : 'No steps yet.',
       steps >= maxSteps * 0.8
         ? 'Budget is nearly spent — call done NOW and summarize what you accomplished, unless one critical step genuinely remains.'
         : (productive >= doneThreshold || steps >= maxSteps * 0.55)
