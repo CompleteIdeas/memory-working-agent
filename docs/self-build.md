@@ -70,6 +70,11 @@ Commands run in the job's own working folder unless they `cd` first, so keep the
 command. An approved run may take up to 15 minutes (`MWA_APPROVED_COMMAND_TIMEOUT_MS`), and it runs
 in the background without stalling the app.
 
+A program a command names (`npm`, `git`, `node`) is always the one on your PATH, never a file of the
+same name in the folder the command runs in. MWA writes in that folder, and on Windows cmd.exe would
+otherwise run a `npm.cmd` it left there instead of the real npm. To run a script in the folder, name
+it with its folder: `.\build.bat` or `./build.sh`.
+
 ## What you'll see
 
 - A card: "Run this command in …: cd <worktree> && npm run typecheck && npm test", followed by the

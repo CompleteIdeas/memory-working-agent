@@ -144,8 +144,23 @@ const ENV_KEEP = [
   'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'SHELL', 'TZ', 'APPDATA', 'LOCALAPPDATA', 'ProgramFiles', 'ProgramData',
   'ProgramFiles(x86)', 'CommonProgramFiles', 'NUMBER_OF_PROCESSORS', 'OS', 'PROCESSOR_ARCHITECTURE',
 ];
-export function scrubbedEnv(src: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function scrubbedEnv(src: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const k of ENV_KEEP) if (src[k] !== undefined) out[k] = src[k];
+  // A program a command names is found on PATH, never in the folder it runs in: the model writes
+  // there, so a planted npm.cmd or git.bat would run instead of the real one when a person approves
+  // `npm test` (BL-26, found by BL-24's review). cmd.exe searches the current folder first unless told
+  // not to; a POSIX shell does only through a `.` or empty PATH entry. A script named with its folder
+  // (`.\build.bat`, `./build.sh`) still runs.
+  if (platform === 'win32') out.NoDefaultCurrentDirectoryInExePath = '1';
+  const sep = platform === 'win32' ? ';' : ':';
+  for (const k of ['PATH', 'Path']) {
+    if (out[k] === undefined) continue;
+    // Only absolute entries: a relative one (`.`, empty, `bin`) is looked up from the current folder.
+    out[k] = String(out[k]).split(sep).filter((d) => {
+      const e = d.trim().replace(/^"(.*)"$/, '$1');
+      return platform === 'win32' ? /^([A-Za-z]:[\\/]|[\\/]{2})/.test(e) : e.startsWith('/');
+    }).join(sep);
+  }
   return out;
 }

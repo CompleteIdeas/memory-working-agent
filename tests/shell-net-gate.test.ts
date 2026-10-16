@@ -78,9 +78,28 @@ describe('classifyCommand', () => {
 
 describe('the model’s shell gets no secrets', () => {
   it('keeps PATH, drops keys, passwords and tokens', () => {
-    const env = scrubbedEnv({ PATH: '/bin', MWA_ACCESS_PASSWORD: 'pw', TELEGRAM_BOT_TOKEN: 't', ANTHROPIC_API_KEY: 'k', AWM_HOOK_SECRET: 's' });
+    const env = scrubbedEnv({ PATH: '/bin', MWA_ACCESS_PASSWORD: 'pw', TELEGRAM_BOT_TOKEN: 't', ANTHROPIC_API_KEY: 'k', AWM_HOOK_SECRET: 's' }, 'linux');
     expect(env).toEqual({ PATH: '/bin' });
   });
+
+  it('BL-26: programs are found on PATH, never in the folder the command runs in', () => {
+    expect(scrubbedEnv({ PATH: '/usr/bin:.::bin:/opt/x' }, 'linux').PATH).toBe('/usr/bin:/opt/x');
+    const win = scrubbedEnv({ Path: 'C:\\Windows;.;;tools;"C:\\Program Files\\Git\\cmd";\\\\srv\\share' }, 'win32');
+    expect(win.Path).toBe('C:\\Windows;"C:\\Program Files\\Git\\cmd";\\\\srv\\share');
+    expect(win.NoDefaultCurrentDirectoryInExePath).toBe('1');
+  });
+
+  it('BL-26: on Windows a planted npm.cmd in the folder does not replace npm; a script named with its folder still runs', async () => {
+    if (process.platform !== 'win32') return;
+    const { runCommandAsync } = await import('../src/util.js');
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-bl26-'));
+    writeFileSync(join(dir, 'npm.cmd'), '@echo PLANTED\r\n');
+    writeFileSync(join(dir, 'mine.bat'), '@echo MINE\r\n');
+    const npm = await runCommandAsync('npm --version', dir, 60_000, scrubbedEnv());
+    expect(npm.stdout).not.toContain('PLANTED');
+    expect(npm.stdout.trim()).toMatch(/^\d+\.\d+/);
+    expect((await runCommandAsync('.\\mine.bat', dir, 30_000, scrubbedEnv())).stdout).toContain('MINE');
+  }, 90_000);
 });
 
 describe('network guard', () => {
