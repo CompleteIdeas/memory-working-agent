@@ -409,8 +409,10 @@ function BrainSettings({ brain, onChange }: { brain: Brain; onChange: () => void
   const [model, setModel] = useState(brain.model || '');
   const [models, setModels] = useState<{ id: string; name?: string }[]>([]);
   // BL-23: whether the saved model held against instructions planted in what it reads.
-  const [note, setNote] = useState<{ standing: string; text: string } | null>(null);
-  useEffect(() => { getStatus().then((s) => setNote(s.modelNote ?? null)).catch(() => setNote(null)); }, [brain.provider, brain.model]);
+  const [notes, setNotes] = useState<{ standing: string; text: string }[]>([]);
+  useEffect(() => {
+    getStatus().then((s) => setNotes([s.modelNote, s.reasonNote].filter((n): n is NonNullable<typeof n> => !!n && n.standing !== 'held'))).catch(() => setNotes([]));
+  }, [brain.provider, brain.model]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
@@ -435,12 +437,12 @@ function BrainSettings({ brain, onChange }: { brain: Brain; onChange: () => void
       <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">ai brain</div>
       <div className={cardCls}>
         <div className="flex items-center justify-between gap-3 px-4 py-3">
-          <div><div className="font-medium">Model</div><div className="text-dim mono text-[12px]">{brain.provider ? `${brain.provider}:${brain.model}` : 'not set'}</div></div>
+          <div className="min-w-0"><div className="font-medium">Model</div><div className="text-dim mono text-[12px] break-all">{brain.provider ? `${brain.provider}:${brain.model}` : 'not set'}</div></div>
           <button onClick={() => setOpen((o) => !o)} className={open ? 'rounded-[3px] border border-line px-4 py-2 text-sm font-medium' : btnCls}>{open ? 'Cancel' : 'Change'}</button>
         </div>
-        {note && note.standing !== 'held' && (
-          <p className={`border-t border-line px-4 py-2 text-[12px] ${note.standing === 'failed' ? 'text-signal' : 'text-dim'}`}>{note.text}</p>
-        )}
+        {notes.map((n) => (
+          <p key={n.text} className={`border-t border-line px-4 py-2 text-[12px] break-words ${n.standing === 'failed' ? 'text-signal' : 'text-dim'}`}>{n.text}</p>
+        ))}
         {open && (
           <div className="border-t border-line px-4 py-4 space-y-3">
             <select value={provider} onChange={(e) => { setProvider(e.target.value); setModels([]); }} className={inputCls}>

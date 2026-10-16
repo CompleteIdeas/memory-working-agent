@@ -10,6 +10,8 @@ export interface StatusResp {
   ready: boolean;
   /** BL-23: how the configured brain fared against instructions planted in what it reads. */
   modelNote?: { standing: 'held' | 'failed' | 'unmeasured'; text: string } | null;
+  /** The same for the stronger model MWA escalates to, when it is a different one. */
+  reasonNote?: { standing: 'held' | 'failed' | 'unmeasured'; text: string } | null;
 }
 
 // If the access gate is on and our session expired (e.g. the server restarted),

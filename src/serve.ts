@@ -499,9 +499,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       if (p === '/api/status') {
         res.writeHead(200, { 'content-type': 'application/json' });
         // BL-23: how the configured brain fared against planted instructions, for the model settings.
-        let modelNote: ReturnType<typeof injectionNote> | null = null;
-        try { modelNote = injectionNote(loadConfig().models.fetch); } catch { /* no config yet */ }
-        res.end(JSON.stringify({ ...status(), gmail: googleConfigured() || gmailImapConfigured(), outlook: microsoftConfigured(), modelNote }));
+        // The stronger model is reported too when it is a different one: it reads the same content.
+        let modelNote: ReturnType<typeof injectionNote> | null = null, reasonNote: ReturnType<typeof injectionNote> | null = null;
+        try { const m = loadConfig().models; modelNote = injectionNote(m.fetch); if (m.reason !== m.fetch) reasonNote = injectionNote(m.reason); } catch { /* no config yet */ }
+        res.end(JSON.stringify({ ...status(), gmail: googleConfigured() || gmailImapConfigured(), outlook: microsoftConfigured(), modelNote, reasonNote }));
         return;
       }
       // Open an external link in the OS browser. The desktop (Tauri) webview swallows

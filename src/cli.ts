@@ -57,6 +57,12 @@ function parseFlags(args: string[]): { flags: Record<string, string>; positional
   return { flags, positional };
 }
 
+/** BL-23: say so when a configured model hasn't held against instructions planted in what it reads.
+ *  .env first: MWA_MODEL may be set only there, and it decides the model the run actually uses. */
+async function warnModels(): Promise<void> {
+  try { loadEnv(); const { modelWarnings } = await import('./model-safety.js'); for (const w of modelWarnings(loadConfig().models)) console.log(`⚠ ${w}`); } catch { /* no config yet */ }
+}
+
 async function runCommand(args: string[]): Promise<void> {
   const { flags, positional } = parseFlags(args);
   const instruction = positional.join(' ').trim();
@@ -64,8 +70,7 @@ async function runCommand(args: string[]): Promise<void> {
     console.error('usage: mwa run "<instruction>" [--dir .] [--max-steps 40] [--max-min 10] [--db ./data/agent.db]');
     process.exit(1);
   }
-  // BL-23: say so when the configured model hasn't held against instructions planted in what it reads.
-  try { const { modelWarnings } = await import('./model-safety.js'); for (const w of modelWarnings(loadConfig().models)) console.log(`⚠ ${w}`); } catch { /* no config yet */ }
+  await warnModels();
   const dir = resolve(flags.dir ?? process.cwd()); // absolute — tools/worker spawnSync need it on Windows
   const dbPath = flags.db ?? process.env.MWA_DB ?? './data/agent.db';
   const cfg = loadConfig();
@@ -111,6 +116,7 @@ async function runCommand(args: string[]): Promise<void> {
 }
 
 async function watchCommand(args: string[]): Promise<void> {
+  await warnModels();
   const { flags } = parseFlags(args);
   const cfg = loadConfig();
   if (flags.root) cfg.workspace = flags.root;
@@ -134,7 +140,7 @@ async function connectCommand(args: string[]): Promise<void> {
   const channel = positional[0];
   const cfg = loadConfig();
   const common = { config: cfg, dbPath: flags.db ?? process.env.MWA_DB ?? './data/agent.db', maxSteps: flags['max-steps'] ? Number(flags['max-steps']) : undefined, maxMin: flags['max-min'] ? Number(flags['max-min']) : undefined, onLog: (m: string) => console.log(`  ${m}`) };
-  if (channel === 'telegram') { console.log('\n▶ mwa connect telegram'); return runTelegram(common); }
+  if (channel === 'telegram') { console.log('\n▶ mwa connect telegram'); await warnModels(); return runTelegram(common); }
   if (channel === 'gmail' || channel === 'google') { console.log('\n▶ mwa connect gmail'); loadEnv(); return connectGmailGuided((m) => console.log(m)); }
   if (channel === 'outlook' || channel === 'microsoft') { console.log('\n▶ mwa connect outlook'); loadEnv(); return connectOutlookGuided((m) => console.log(m)); }
   console.error('usage: mwa connect <gmail|outlook|telegram>');
