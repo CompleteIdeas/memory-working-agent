@@ -10,13 +10,13 @@
  *
  * - Only configured when the person opts in: MWA_SECOND_OPINION=cloudflare:clef-flash (or clef), with
  *   CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN. The change itself is sent to Cloudflare.
- * - It reads everything the commit COULD take (BL-24 reviews, rounds 2 and 3: modelling git's rules from
- *   the command's text kept missing files). The command's text decides only the SCOPE: what is staged,
- *   always; the tracked files a `-a`, an `add -u`/`-A` or a pathspec could take; the untracked files a
- *   `git add` could take. Pathspecs are matched by git itself (`ls-files -- <paths>`, from the folder the
- *   command runs in), so globs, case, folders and forced adds match exactly as `git add` would. Where the
- *   git part of a command can't be read (an alias, quoting inside a word, a variable), it reads the whole
- *   repository and says so. A plain `git commit` reads only what is staged.
+ * - It speaks only to a plain `[cd <dir> &&] [git add … &&] git commit …`, read by a strict grammar with
+ *   exact options (BL-24 reviews, rounds 2-4: deriving a commit's scope from arbitrary shell text kept
+ *   missing files). Anything else gets no opinion, and the card says so. Within the grammar it reads
+ *   everything the commit COULD take: what is staged, always; the tracked files `-a`, `add -u`/`-A` or a
+ *   pathspec could take; the untracked files a `git add` could take. Git matches the pathspecs itself
+ *   (`ls-files -- <paths>`, from the folder the command runs in), so globs, case, folders and forced
+ *   adds match as `git add` would. A plain `git commit` reads only what is staged.
  * - Env files are never sent, and values that look like secrets are blanked first (best effort).
  * - The card is bound to the change: a fingerprint of the raw content of everything in scope (bytes and
  *   the executable bit, not the text the model read), plus HEAD and the index, is stored with the
@@ -44,119 +44,138 @@ export interface Specs { dir: string; paths: string[] }
 /** Which files are in scope: all of them, or those matching some pathspecs. */
 export interface Scope { all: boolean; specs: Specs[] }
 /**
- * What a command could commit: the folder; the tracked files it can take from the working tree; the
- * untracked files a `git add` can take; those it force-adds past .gitignore; and why coverage may be
- * partial (`unclear`, each a short reason for the card, never text copied from the command).
+ * What a plain add-and-commit could commit: the folder; the tracked files it can take from the working
+ * tree; the untracked files a `git add` can take; those it force-adds past .gitignore; and notes for the
+ * card (`unclear`, each a short reason, never text copied from the command).
  */
 export interface CommitTarget { dir: string; tracked: Scope; untracked: Scope; forced: Specs[]; amend: boolean; unclear: string[] }
+/** A command the second opinion won't speak to, and why — said on the card instead of an opinion. */
+export interface NotGiven { notGiven: string }
 
 const none = (): Scope => ({ all: false, specs: [] });
-const unquote = (s: string) => s.replace(/^(['"])([\s\S]*)\1$/, '$2');
-const rawWords = (s: string) => s.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
-const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
-/** git commands that never create a commit (anything else that runs git might). */
-const NO_COMMIT_GIT = new Set(['status', 'diff', 'log', 'show', 'rev-parse', 'ls-files', 'ls-tree', 'blame', 'add', 'stage', 'fetch', 'push', 'clone', 'init', 'checkout', 'switch', 'restore', 'branch', 'tag', 'remote', 'stash', 'reset', 'rm', 'mv', 'grep', 'describe', 'shortlog', 'help', 'version', 'apply', 'update-index', 'commit']);
-/** git commands before the commit that change nothing it takes. */
-const READ_ONLY_GIT = new Set(['status', 'diff', 'log', 'show', 'rev-parse', 'ls-files', 'ls-tree', 'blame', 'grep', 'describe', 'shortlog', 'fetch', 'help', 'version']);
-/** `git commit` long options that take the next word as their value when not joined with `=`. */
-const COMMIT_VALUE_LONG = new Set(['--message', '--file', '--reuse-message', '--reedit-message', '--fixup', '--squash', '--author', '--date', '--template', '--cleanup', '--trailer', '--pathspec-from-file']);
-const COMMIT_VALUE_SHORT = new Set(['m', 'F', 'C', 'c', 't']);
+/** git commands that never make a commit: a card for one of them needs no second opinion. */
+const NEVER_COMMITS = new Set(['status', 'diff', 'log', 'show', 'add', 'stage', 'fetch', 'push', 'clone', 'init', 'checkout', 'switch', 'restore', 'branch', 'tag', 'remote', 'stash', 'reset', 'rm', 'mv', 'grep', 'describe', 'shortlog', 'help', 'version', 'blame', 'ls-files', 'ls-tree', 'rev-parse', 'config', 'apply', 'clean', 'worktree', 'submodule', 'gc', 'fsck']);
+const MORE = 'the command does more than a plain git add and git commit';
+/** Every option the grammar allows, spelled exactly: git accepts abbreviations, the grammar doesn't. */
+const ADD_FLAGS = new Set(['-A', '--all', '-u', '--update', '-f', '--force', '-v', '--verbose']);
+const COMMIT_FLAGS = new Set(['-a', '--all', '-q', '--quiet', '-v', '--verbose', '-s', '--signoff', '--no-edit', '--amend', '-n', '--no-verify']);
+const COMMIT_WITH_MESSAGE = new Set(['-m', '--message', '-am']);
 
-/** The whole repository, read because the command's git part couldn't be. */
-const everything = (dir: string, why: string): CommitTarget => ({ dir, tracked: { all: true, specs: [] }, untracked: { all: true, specs: [] }, forced: [], amend: false, unclear: [why] });
+/**
+ * The command's words, by a deliberately small tokenizer: a word is a run of plain characters, or one
+ * whole "…" / '…' with no quote, backslash or `$` inside; words are separated by spaces. Anything a
+ * shell could expand, escape, glue together or redirect makes the command unreadable (null).
+ */
+function tokens(part: string): string[] | null {
+  const out: string[] = [];
+  const plain = process.platform === 'win32' ? /^[A-Za-z0-9_.,:=@+\/\\-]+$/ : /^[A-Za-z0-9_.,:=@+\/-]+$/;
+  let i = 0;
+  while (i < part.length) {
+    if (part[i] === ' ' || part[i] === '\t') { i++; continue; }
+    const q = part[i];
+    if (q === '"' || q === "'") {
+      const end = part.indexOf(q, i + 1);
+      if (end < 0) return null;
+      const word = part.slice(i + 1, end);
+      // In cmd.exe single quotes aren't quotes, and %VAR% expands inside double quotes.
+      if (process.platform === 'win32' ? q === "'" || /["%!\\]/.test(word) : /["'\\$`]/.test(word)) return null;
+      if (end + 1 < part.length && part[end + 1] !== ' ' && part[end + 1] !== '\t') return null; // glued on
+      out.push(word); i = end + 1; continue;
+    }
+    let end = i;
+    while (end < part.length && part[end] !== ' ' && part[end] !== '\t') end++;
+    const word = part.slice(i, end);
+    if (!plain.test(word)) return null;
+    out.push(word); i = end;
+  }
+  return out;
+}
 
-/** What a command could commit, read from its text. null when it doesn't run git at all. */
-export function commitTarget(command: string, cwd: string): CommitTarget | null {
-  if (!/(^|[^A-Za-z0-9_-])git(\.exe)?([^A-Za-z0-9_-]|$)/i.test(command)) return null;
-  const unclear: string[] = [];
-  const say = (why: string) => { if (!unclear.includes(why)) unclear.push(why); };
-  if (/\$\(|`|<\(|>\(/.test(command)) say('the command builds part of itself when it runs');
-  const parts = command.split(/&&|\|\||[;|&\n\r]/).map((p) => p.trim().replace(/^\(+\s*/, '').replace(/\s*\)+$/, '')).filter(Boolean);
+/** A path a command names: plain, not git's pathspec magic. */
+const plainPath = (p: string) => p !== '' && !p.startsWith(':') && !p.startsWith('-');
+
+/**
+ * What a command could commit, read by a strict grammar: `[cd <dir> &&] [git add … &&]* git commit …`,
+ * with exact options only (BL-24 reviews, rounds 2–4: deriving a commit's scope from arbitrary shell
+ * text kept missing files; `-C` carried across parts, `--al` is `--all` to git, `apply --cached` stages
+ * from elsewhere). Anything outside the grammar gets NO second opinion, said plainly on the card — it
+ * never claims coverage it can't back. null when the command doesn't look like it commits at all.
+ */
+export function commitTarget(command: string, cwd: string): CommitTarget | NotGiven | null {
+  const mentionsGit = /(^|[^A-Za-z0-9_-])git([^A-Za-z0-9_-]|$)/i.test(command);
+  if (!mentionsGit) return null;
+  // A commit word, or any git subcommand not known never to commit (an alias like `git ci` included).
+  const subs = [...command.matchAll(/(?:^|[\s&|;(])git(?:\.exe)?\s+((?:-[Cc]\s+\S+\s+|-\S+\s+)*)([^\s&|;)]+)/gi)].map((m) => m[2].toLowerCase());
+  const commits = /\b(commit|merge|cherry-pick|revert|rebase)\b/i.test(command) || subs.some((s) => !NEVER_COMMITS.has(s));
+  if (!commits) return null;
+  const notGiven = (why: string): NotGiven => ({ notGiven: why });
+  if (/[;|<>(){}`$\n\r]/.test(command.replace(/&&/g, '')) || /&/.test(command.replace(/&&/g, ''))) return notGiven(MORE);
+  const parts = command.split('&&').map((p) => p.trim());
+  if (parts.some((p) => !p)) return notGiven(MORE);
+  const words = parts.map(tokens);
+  if (words.some((w) => !w || !w.length)) return notGiven("the command's text couldn't be read word by word");
+  const w = words as string[][];
   let dir = resolve(cwd);
+  let k = 0;
+  if (w[0][0] === 'cd') {
+    if (w[0].length !== 2) return notGiven(MORE);
+    dir = isAbsolute(w[0][1]) ? w[0][1] : resolve(dir, w[0][1]);
+    k = 1;
+  }
   const tracked = none(), untracked = none();
   const forced: Specs[] = [];
-  let amend = false, commits = false, hidden = false;
-  for (const p of parts) {
-    const raw = rawWords(p);
-    let k = 0;
-    while (k < raw.length && ASSIGN.test(raw[k])) k++;
-    if (k > 0 && raw[k] && /^git(\.exe)?$/i.test(unquote(raw[k]))) say('it sets environment variables for git');
-    const w = raw.slice(k).map(unquote);
-    const cmd = (w[0] ?? '').toLowerCase();
-    if (cmd === 'cd' || cmd === 'pushd' || cmd === 'chdir') {
-      const to = w.slice(1).find((x) => x.toLowerCase() !== '/d');
-      if (to) dir = isAbsolute(to) ? to : resolve(dir, to);
-      continue;
-    }
-    if (cmd === 'popd') { say('it changes folder in a way that was not followed'); continue; }
-    if (!/^git(\.exe)?$/.test(cmd)) {
-      if (/(^|[^A-Za-z0-9_-])git([^A-Za-z0-9_-]|$)/i.test(p)) { hidden = true; say('it runs git through another command'); }
-      else if (!commits) say('it runs other commands before the commit');
-      continue;
-    }
-    // Global options, then the subcommand.
-    let at = 1;
-    for (; at < w.length; at++) {
-      if (w[at] === '-C' && w[at + 1]) { dir = isAbsolute(w[at + 1]) ? w[at + 1] : resolve(dir, w[at + 1]); at++; continue; }
-      if (w[at] === '-c' || w[at] === '--git-dir' || w[at] === '--work-tree' || w[at] === '--namespace') { say('it overrides git settings'); at++; continue; }
-      if (/^--(git-dir|work-tree|namespace|config-env)=/.test(w[at]) || w[at] === '--config-env') { say('it overrides git settings'); continue; }
-      if (!w[at].startsWith('-')) break;
-    }
-    const subRaw = raw[k + at];
-    const sub = w[at];
-    if (!sub) continue;
-    // A subcommand spelled with quotes inside it, an escape or a variable can't be read.
-    if (subRaw !== sub && !/^(['"]).*\1$/.test(subRaw ?? '') || /[\\^%$`'"]/.test(sub)) { hidden = true; say('its git command could not be read'); continue; }
-    if (!NO_COMMIT_GIT.has(sub)) { hidden = true; say('it runs a git command that can commit, or an alias'); continue; }
-    if (commits) continue; // after the commit: nothing more it takes
-    const rest = w.slice(at + 1);
-    if (sub === 'add' || sub === 'stage') {
-      const flags = rest.filter((x) => x.startsWith('-') && !x.startsWith('--')).join('');
-      const long = rest.filter((x) => x.startsWith('--')).map((x) => x.split('=')[0]);
-      const paths = rest.filter((x) => !x.startsWith('-'));
-      const all = /A/.test(flags) || long.includes('--all') || long.includes('--no-ignore-removal');
-      const update = /u/.test(flags) || long.includes('--update');
-      const force = /f/.test(flags) || long.includes('--force');
-      if (/[pie]/.test(flags) || long.some((l) => l === '--patch' || l === '--interactive' || l === '--edit')) say('it stages part of a file interactively');
-      if (long.includes('--pathspec-from-file')) { say('it reads the files to add from a file'); tracked.all = true; untracked.all = true; continue; }
-      if (!paths.length) { if (all || update) tracked.all = true; if (all) untracked.all = true; continue; }
-      tracked.specs.push({ dir, paths });
-      if (!update) untracked.specs.push({ dir, paths });
-      if (force) forced.push({ dir, paths });
-    } else if (sub === 'commit') {
-      commits = true;
-      const paths: string[] = [];
-      for (let i = 0; i < rest.length; i++) {
-        const x = rest[i];
-        if (x === '--') { paths.push(...rest.slice(i + 1)); break; }
-        if (x.startsWith('--')) {
-          const name = x.split('=')[0];
-          if (name === '--all') tracked.all = true;
-          if (name === '--amend') amend = true;
-          if (name === '--interactive' || name === '--patch') say('it stages part of a file interactively');
-          if (name === '--pathspec-from-file') { say('it reads the files to commit from a file'); tracked.all = true; }
-          if (COMMIT_VALUE_LONG.has(name) && !x.includes('=')) i++;
-          continue;
-        }
-        if (x.startsWith('-') && x.length > 1) {
-          const letters = x.slice(1);
-          for (let j = 0; j < letters.length; j++) {
-            if (letters[j] === 'a') tracked.all = true;
-            if (letters[j] === 'p') say('it stages part of a file interactively');
-            if (COMMIT_VALUE_SHORT.has(letters[j])) { if (j === letters.length - 1) i++; break; }
-          }
-          continue;
-        }
-        paths.push(x);
+  for (; k < w.length - 1; k++) {
+    const [g, sub, ...rest] = w[k];
+    if (g !== 'git' || sub !== 'add') return notGiven(MORE);
+    const paths: string[] = [];
+    let all = false, update = false, force = false, afterDashes = false;
+    for (const x of rest) {
+      if (!afterDashes && x === '--') { afterDashes = true; continue; }
+      if (!afterDashes && x.startsWith('-')) {
+        if (!ADD_FLAGS.has(x)) return notGiven('it uses a git add option the second opinion does not model');
+        if (x === '-A' || x === '--all') all = true;
+        if (x === '-u' || x === '--update') update = true;
+        if (x === '-f' || x === '--force') force = true;
+        continue;
       }
-      if (paths.length) tracked.specs.push({ dir, paths }); // git takes them from the working tree
-    } else if (!READ_ONLY_GIT.has(sub)) say(`it runs git ${sub} before the commit`); // a known name, never the command's own text
+      if (x.startsWith(':')) return notGiven('it uses pathspec magic');
+      if (!x) return notGiven(MORE);
+      paths.push(x);
+    }
+    if (!paths.length) { if (all || update) tracked.all = true; if (all) untracked.all = true; continue; }
+    tracked.specs.push({ dir, paths });
+    if (!update) untracked.specs.push({ dir, paths });
+    if (force) forced.push({ dir, paths });
   }
-  if (hidden && !commits) return { ...everything(resolve(dir), unclear[0]), unclear };
-  if (!commits) return null;
-  if (hidden) { tracked.all = true; untracked.all = true; }
+  const [g, sub, ...rest] = w[w.length - 1];
+  if (g !== 'git' || sub !== 'commit') return notGiven(MORE);
+  const unclear: string[] = [];
+  let amend = false, message = false, afterDashes = false;
+  const paths: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const x = rest[i];
+    if (!afterDashes && x === '--') { afterDashes = true; continue; }
+    if (!afterDashes && x.startsWith('-')) {
+      if (x.startsWith('--message=')) { message = true; continue; }
+      if (COMMIT_WITH_MESSAGE.has(x)) {
+        if (i + 1 >= rest.length) return notGiven(MORE);
+        if (x === '-am') tracked.all = true;
+        message = true; i++; continue;
+      }
+      if (!COMMIT_FLAGS.has(x)) return notGiven('it uses a git commit option the second opinion does not model');
+      if (x === '-a' || x === '--all') tracked.all = true;
+      if (x === '--amend') amend = true;
+      continue;
+    }
+    if (!plainPath(x)) return notGiven('it uses pathspec magic');
+    paths.push(x);
+  }
+  if (!message && !amend) return notGiven('the commit has no message, so git would open an editor');
+  if (paths.length) tracked.specs.push({ dir, paths }); // git takes them from the working tree
   return { dir, tracked, untracked, forced, amend, unclear };
 }
+
+export const isNotGiven = (t: CommitTarget | NotGiven | null): t is NotGiven => !!t && 'notGiven' in t;
 
 /** Shannon entropy in bits per character: a random token is high, a long identifier is not. */
 function entropy(s: string): number {
@@ -193,6 +212,9 @@ export function redactSecrets(text: string): { text: string; count: number } {
       if (!/[0-9].*[0-9]/.test(m) || !/[a-z]/.test(m) || !/[A-Z]/.test(m) || entropy(m) < 4.3) return m;
       count++; return '[REDACTED]';
     });
+  // A key whose end was cut off (by the size limit) is blanked to the end of the text.
+  const open = out.search(/-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY/);
+  if (open >= 0) { count++; return { text: `${out.slice(0, open)}[REDACTED PRIVATE KEY, cut off]`, count }; }
   return { text: out, count };
 }
 
@@ -350,7 +372,11 @@ export async function collectCommitDiff(t: CommitTarget, topIn?: string): Promis
   const untracked = t.untracked.all ? zlist(await gitOk(top, ['ls-files', '-z', '--others', '--exclude-standard'])) : await matching(t.untracked.specs, ['--others', '--exclude-standard']);
   untracked.push(...(await matching(t.forced, ['--others'])));
   const unique = [...new Set(untracked)];
-  if (unique.length > MAX_UNTRACKED) notes.push(`only ${MAX_UNTRACKED.toLocaleString('en-US')} of ${unique.length.toLocaleString('en-US')} untracked files were checked`);
+  if (unique.length > MAX_UNTRACKED) {
+    notes.push(`only ${MAX_UNTRACKED.toLocaleString('en-US')} of ${unique.length.toLocaleString('en-US')} untracked files were read`);
+    // The rest are still bound, by size and time, so a change to one after the card is caught.
+    for (const u of unique.slice(MAX_UNTRACKED)) { const st = await lstat(join(top, u)).catch(() => null); fp.update(`${u}\0${st ? `${st.size}:${st.mtimeMs}` : 'missing'}\0`); }
+  }
   for (const u of unique.slice(0, MAX_UNTRACKED)) fromWorktree.add(u.replace(/\/$/, ''));
 
   const changed: { path: string; before: Entry | undefined; after: Buffer | Entry | null }[] = [];
@@ -501,8 +527,12 @@ export async function secondOpinionForCommand(command: string, cwd: string, allo
   Promise<{ lines: string[]; reviewed: Reviewed | null } | null> {
   const model = secondOpinionModel(env);
   if (!model) return null;
-  const target = commitTarget(command, cwd);
-  if (!target) return null;
+  const parsed = commitTarget(command, cwd);
+  if (!parsed) return null;
+  // Outside the grammar: no opinion and no binding, and the card says so rather than staying silent.
+  const notGiven = (why: string) => ({ lines: [`Second opinion: not given — ${why}, so what it commits can't be known in advance. It speaks only to a plain \`git add … && git commit -m …\`; this card is as it would be without it.`], reviewed: null });
+  if (isNotGiven(parsed)) return notGiven(parsed.notGiven);
+  const target = parsed;
   // The folder's name comes from the command's text, so the card never repeats it (BL-24 review).
   if (!existsSync(target.dir)) return { lines: opinionLines(model, new Error("the folder the command names doesn't exist yet"), []), reviewed: null };
   // Only a repository whose top folder this run may already work in: reading happens now, before
@@ -512,9 +542,15 @@ export async function secondOpinionForCommand(command: string, cwd: string, allo
   let top: string;
   try { top = await repoTop(target.dir); } catch { return { lines: opinionLines(model, new Error('the folder the command names is not in a git repository'), []), reviewed: null }; }
   if (!allowedDir(top)) return { lines: opinionLines(model, new Error('the repository reaches outside the folders this run may use, so its change wasn\'t read'), []), reviewed: null };
+  // A commit in the middle of a merge, rebase, cherry-pick or revert records more than the change read.
+  try {
+    const gitDir = resolve(top, (await gitOk(top, ['rev-parse', '--git-dir'])).toString('utf8').trim());
+    if (['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply'].some((f) => existsSync(join(gitDir, f)))) return notGiven('the repository is in the middle of a merge, rebase, cherry-pick or revert');
+  } catch { return notGiven("the repository's state couldn't be read"); }
   let diff: CommitDiff;
+  // git's own error repeats the command's paths, so it never reaches the card (BL-24 round-4 review).
   try { diff = await collectCommitDiff(target, top); }
-  catch (e) { return { lines: opinionLines(model, new Error(`couldn't read the change (${String((e as Error).message).split('\n')[0].slice(0, 100)})`), target.unclear.length ? target.unclear : []), reviewed: null }; }
+  catch { return notGiven("its change couldn't be read (a path outside the repository, or a file another program holds open)"); }
   const reviewed = { target, top, fingerprint: diff.fingerprint };
   if (!diff.text.trim()) return { lines: [`Second opinion: it found no change to read${target.tracked.all || target.tracked.specs.length || target.untracked.all || target.untracked.specs.length ? '' : ' (nothing is staged)'}. That is not a review: read the change.`, ...(diff.notes.length ? [`Coverage is partial: ${diff.notes.join('; ')}.`] : [])], reviewed };
   let opinion: Opinion | Error;

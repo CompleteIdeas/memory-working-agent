@@ -172,9 +172,11 @@ What to know:
   paths a `git add` or `git commit` names. Git itself matches those paths, so globs, folders, case and
   `-f` work as they do for `git add`. It may read more than the commit takes, never less. A plain
   `git commit` reads only what is staged. Line-ending differences alone don't count as changes.
-- **When it can't read the command's git part** (an alias like `git ci`, quoting or a variable inside
-  the word, git run through another command, or a git command that commits, like `merge`), it reads
-  the whole repository and says so.
+- **It only speaks to a plain add-and-commit:** `[cd <folder> &&] [git add … &&] git commit -m …`,
+  with the common options spelled out in full. For anything else, such as other commands in the chain,
+  `git -C`, aliases like `git ci`, `merge`, a variable, a pipe, `apply --cached`, an abbreviated option,
+  or a repository mid-merge, the card says "Second opinion: not given" and why, and is exactly as it
+  would be without the feature. It never guesses at what an unusual command commits.
 - **It says when coverage is partial:** binary, linked or large files it didn't read, env files it
   held back, submodules, `--amend`, commit hooks, `-c` overrides, a command that runs other steps
   first or builds part of itself, and a change cut at 40,000 characters.
