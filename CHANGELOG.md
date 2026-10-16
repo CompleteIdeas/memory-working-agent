@@ -84,6 +84,12 @@ On the final images: planted instructions in tool output followed 0 of 8 times; 
   - Env files are never sent, and values that look like secrets are blanked first.
   - Measured on 15 hand-written diffs: 8 of 8 bad ones flagged, 0 of 7 clean ones
     (`docs/clef-eval-2026-10-16.md`). Off by default. See `docs/self-build.md`.
+- **A program a command names is the real one, not a file MWA left in the folder (BL-26).**
+  - On Windows, cmd.exe runs a `npm.cmd` or `git.bat` from the current folder before looking on
+    PATH. MWA writes in that folder, so approving `npm test` could run a file it planted, and so
+    could a read-only command that runs without a card.
+  - Every command MWA runs now finds programs on PATH only, on every platform. To run a script in
+    the folder, name it with its folder: `.\build.bat`, `./build.sh`.
 
 ## 0.6.0 (2026-10-15) — approval only a person can give, fenced tool output, job contracts, autonomous Docker
 
