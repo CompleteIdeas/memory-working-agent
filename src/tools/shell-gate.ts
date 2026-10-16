@@ -17,7 +17,7 @@
  */
 
 import { existsSync, realpathSync } from 'node:fs';
-import { dirname, basename, sep, resolve, isAbsolute } from 'node:path';
+import { dirname, basename, sep, resolve, isAbsolute, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 export type ShellVerdict = { kind: 'read-only' } | { kind: 'needs-approval'; reason: string };
@@ -151,7 +151,10 @@ export function writeRefusal(full: string): string | null {
 export function onPath(dir: string, env?: NodeJS.ProcessEnv): boolean {
   const win = process.platform === 'win32';
   const norm = (p: string) => {
-    const r = realPathOf(resolve(p)).replace(/[\\/]+$/, '');
+    // One odd entry (an unreadable share, a bad name) compares as written rather than failing the write.
+    let r: string;
+    try { r = realPathOf(resolve(p)); } catch { r = resolve(p); }
+    r = r.replace(/[\\/]+$/, '');
     return win ? r.toLowerCase() : r;
   };
   const target = norm(dir);
@@ -178,7 +181,8 @@ function registryPaths(): string[] {
   const paths: string[] = [];
   for (const key of ['HKCU\\Environment', 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment']) {
     try {
-      const out = execFileSync('reg', ['query', key, '/v', 'Path'], { encoding: 'utf8', timeout: 5_000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      // By full path: a bare `reg` is searched for, and Node on Windows looks in the current folder first.
+      const out = execFileSync(join(String(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows'), 'System32', 'reg.exe'), ['query', key, '/v', 'Path'], { encoding: 'utf8', timeout: 5_000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
       const m = /^\s*Path\s+REG_(?:EXPAND_)?SZ\s+(.*)$/im.exec(out);
       if (m) paths.push(m[1].trim());
     } catch { /* not set, or no reg: the process PATH still applies */ }
