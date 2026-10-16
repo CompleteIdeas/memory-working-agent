@@ -355,6 +355,24 @@ describe('what the sixth review found', () => {
     expect((await collectCommitDiff(t)).fingerprint).not.toBe(d.fingerprint);
   });
 
+  it('round 7 (1): an assume-unchanged file committed by path is read from disk and bound', async () => {
+    writeFileSync(join(repo, 'b.txt'), 'b\n'); git(repo, 'add', 'b.txt'); git(repo, 'commit', '-qm', 'b');
+    git(repo, 'update-index', '--assume-unchanged', 'src/a.ts');
+    writeFileSync(join(repo, 'src', 'a.ts'), 'EVIL PAYLOAD\n');
+    const t = T('git commit -m x src/a.ts b.txt');
+    const d = await collectCommitDiff(t);
+    expect(d.text).toContain('EVIL PAYLOAD');
+    writeFileSync(join(repo, 'src', 'a.ts'), 'EVIL AFTER CARD\n');
+    expect((await collectCommitDiff(t)).fingerprint).not.toBe(d.fingerprint);
+  });
+
+  it('round 7 (2): a staged copy behind a file that matches HEAD is read too', async () => {
+    writeFileSync(join(repo, 'src', 'a.ts'), 'require("cp").exec("x");\n'); git(repo, 'add', 'src/a.ts');
+    writeFileSync(join(repo, 'src', 'a.ts'), 'export const a = 1;\n'); // back to HEAD's bytes; git may still commit the staged copy
+    for (const cmd of ['git commit -am x', 'git add -A && git commit -m x', 'git add src/a.ts && git commit -m x'])
+      expect((await read(cmd)).text, cmd).toMatch(/src\/a\.ts \[staged copy\][\s\S]*require\("cp"\)/);
+  });
+
   it('(4) --amend needs a message or --no-edit, or git would wait on an editor', () => {
     expect(notGiven('git commit --amend')).toMatch(/editor/);
     expect(T('git commit --amend --no-edit')).toMatchObject({ amend: true });

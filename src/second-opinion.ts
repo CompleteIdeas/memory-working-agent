@@ -424,9 +424,10 @@ export async function collectCommitDiff(t: CommitTarget, topIn?: string): Promis
 
   // The files in scope to be taken from the working tree.
   const fromWorktree = new Set<string>(t.tracked.all ? index.map.keys() : await matching(t.tracked.specs, []));
-  // Skip-worktree (S) and assume-unchanged (a lowercase tag) entries are committed from the index, not
-  // the working tree (BL-24 round-6 review).
-  if (fromWorktree.size) for (const rec of zlist(await gitOk(top, ['ls-files', '-v', '-z']))) if (/^(S|[a-z]) /.test(rec)) fromWorktree.delete(rec.slice(2));
+  // Skip-worktree (S) entries are committed from the index in every form. Assume-unchanged ones are not
+  // dropped: `git add` skips them but `git commit <paths>` re-reads them (BL-24 round-7 review), and
+  // every path read from the working tree also has its staged copy read below, so either is covered.
+  if (fromWorktree.size) for (const rec of zlist(await gitOk(top, ['ls-files', '-v', '-z']))) if (/^S /.test(rec)) fromWorktree.delete(rec.slice(2));
   // An fsmonitor tells git which files changed; the check here doesn't use it, but the commit would,
   // and a hook the repository names may live in the working tree. No opinion where one is set.
   // Read from each config file: this module's own `-c core.fsmonitor=false` would mask a plain --get.
@@ -444,7 +445,7 @@ export async function collectCommitDiff(t: CommitTarget, topIn?: string): Promis
   }
   for (const u of unique.slice(0, MAX_UNTRACKED)) fromWorktree.add(u.replace(/\/$/, ''));
 
-  const changed: { path: string; before: Entry | undefined; after: Buffer | Entry | null }[] = [];
+  const changed: { path: string; before: Entry | undefined; after: Buffer | Entry | null; staged?: boolean }[] = [];
   const parts0: string[] = []; // mode-only changes, said before the content changes
   const skipped = new Map<string, number>();
   let env = 0, binary = 0, submodules = 0;
@@ -472,6 +473,11 @@ export async function collectCommitDiff(t: CommitTarget, topIn?: string): Promis
     }
     const now = await readInside(top, p, blobId);
     fp.update(`${p}\0${now.kind === 'file' ? now.id : now.kind === 'skip' ? now.ident : 'missing'}\0`);
+    // Git may commit the STAGED copy instead of the file: when its stat data matches the index it
+    // doesn't re-read the file, and an assume-unchanged entry isn't re-read by `git add` (BL-24
+    // round-7 review). So a staged copy that differs from HEAD is read too, whatever the file holds.
+    if (ix && ix.mode !== '160000' && (ix.id !== h?.id || ix.mode !== h?.mode) && !(now.kind === 'file' && now.id.replace(/:x$/, '') === ix.id))
+      changed.push({ path: p, before: h, after: ix, staged: true });
     if (now.kind === 'skip') { if (!h || now.ident !== h.id) skipped.set(now.why, (skipped.get(now.why) ?? 0) + 1); continue; }
     if (now.kind === 'missing') { if (h || ix) changed.push({ path: p, before: h, after: null }); continue; }
     // Unchanged, or changed only in its line endings (git normalises those on Windows). A file that
@@ -507,7 +513,7 @@ export async function collectCommitDiff(t: CommitTarget, topIn?: string): Promis
     }
     if (isEnvFile(c.path)) { env++; continue; }
     if ((before && isBinary(before)) || (after && isBinary(after))) { binary++; parts.push(`=== ${c.path}: a binary file ${before ? (after ? 'changed' : 'deleted') : 'added'} (not read)\n`); continue; }
-    const text = fileChange(c.path, before, after);
+    const text = fileChange(c.staged ? `${c.path} [staged copy]` : c.path, before, after);
     size += text.length;
     parts.push(text);
   }
