@@ -373,6 +373,34 @@ describe('what the sixth review found', () => {
       expect((await read(cmd)).text, cmd).toMatch(/src\/a\.ts \[staged copy\][\s\S]*require\("cp"\)/);
   });
 
+  it('round 8: with autocrlf a staged change is shown once', async () => {
+    git(repo, 'config', 'core.autocrlf', 'true');
+    writeFileSync(join(repo, 'src', 'a.ts'), 'export const a = 2;\r\n'); git(repo, 'add', 'src/a.ts');
+    for (const cmd of ['git add src/a.ts && git commit -m tweak', 'git commit -am tweak']) {
+      const d = await read(cmd);
+      expect(d.text, cmd).not.toContain('[staged copy]');
+      expect(d.text.match(/\+export const a = 2;/g), cmd).toHaveLength(1);
+    }
+  });
+
+  it('round 8: a staged chmod alone is said, and a staged-then-deleted file is not an empty entry', async () => {
+    git(repo, 'update-index', '--chmod=+x', 'src/a.ts');
+    expect((await read('git commit -am x')).text).toContain('src/a.ts: its staged file mode changed from 100644 to 100755');
+    git(repo, 'update-index', '--chmod=-x', 'src/a.ts');
+    writeFileSync(join(repo, 'src', 'n.ts'), 'NEW\n'); git(repo, 'add', 'src/n.ts'); rmSync(join(repo, 'src', 'n.ts'));
+    const d = await read('git commit -am x');
+    expect(d.text).toContain('src/n.ts [staged copy] (new file)');
+    expect(d.text).not.toMatch(/=== src\/n\.ts \(new file\)/);
+  });
+
+  it('round 8: a staged chmod is said even when the staged content differs only in line endings', async () => {
+    git(repo, 'config', 'core.autocrlf', 'true');
+    writeFileSync(join(repo, 'src', 'a.ts'), 'export const a = 2;\r\n'); git(repo, 'add', 'src/a.ts');
+    git(repo, 'reset', '-q'); git(repo, 'checkout', '-q', '--', 'src/a.ts'); git(repo, 'config', 'core.autocrlf', 'false');
+    git(repo, 'update-index', '--chmod=+x', 'src/a.ts'); // re-stages the CRLF bytes as they are
+    expect((await read('git commit -am x')).text).toContain('src/a.ts: its staged file mode changed from 100644 to 100755');
+  });
+
   it('(4) --amend needs a message or --no-edit, or git would wait on an editor', () => {
     expect(notGiven('git commit --amend')).toMatch(/editor/);
     expect(T('git commit --amend --no-edit')).toMatchObject({ amend: true });

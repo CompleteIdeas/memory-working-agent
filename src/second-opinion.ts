@@ -476,10 +476,16 @@ export async function collectCommitDiff(t: CommitTarget, topIn?: string): Promis
     // Git may commit the STAGED copy instead of the file: when its stat data matches the index it
     // doesn't re-read the file, and an assume-unchanged entry isn't re-read by `git add` (BL-24
     // round-7 review). So a staged copy that differs from HEAD is read too, whatever the file holds.
-    if (ix && ix.mode !== '160000' && (ix.id !== h?.id || ix.mode !== h?.mode) && !(now.kind === 'file' && now.id.replace(/:x$/, '') === ix.id))
-      changed.push({ path: p, before: h, after: ix, staged: true });
+    // The file "matches" the staged copy also when they differ only in line endings (core.autocrlf
+    // keeps CRLF on disk and LF in the index): no second, identical block (BL-24 round-8 review).
+    const sameAsStaged = now.kind === 'file' && !!ix && (now.id.replace(/:x$/, '') === ix.id || blobId(lf(now.bytes)) === ix.id);
+    // A staged mode change is said on its own, whatever happens to the content (a chmod staged with a
+    // line-ending-only change was missed when the two were tied together).
+    if (ix && ix.mode !== '160000' && h && ix.mode !== h.mode) parts0.push(`=== ${p}: its staged file mode changed from ${h.mode} to ${ix.mode}\n`);
+    if (ix && ix.mode !== '160000' && ix.id !== h?.id && !sameAsStaged) changed.push({ path: p, before: h, after: ix, staged: true });
     if (now.kind === 'skip') { if (!h || now.ident !== h.id) skipped.set(now.why, (skipped.get(now.why) ?? 0) + 1); continue; }
-    if (now.kind === 'missing') { if (h || ix) changed.push({ path: p, before: h, after: null }); continue; }
+    // Gone from disk: a deletion of a committed file. A file only ever staged is the staged block above.
+    if (now.kind === 'missing') { if (h) changed.push({ path: p, before: h, after: null }); continue; }
     // Unchanged, or changed only in its line endings (git normalises those on Windows). A file that
     // only became executable (or stopped being) is still said: that alone can matter.
     if (h && (now.id.replace(/:x$/, '') === h.id || blobId(lf(now.bytes)) === h.id)) {
