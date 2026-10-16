@@ -114,9 +114,9 @@ export async function testProvider(provider: string, model: string, key?: string
   const info = await ollamaModelInfo(ollamaHost(base), model);
   const limit = info?.limit ?? null;
   if (limit !== null && limit < OLLAMA_MIN_MODEL_CONTEXT)
-    return { ok: false, message: `${model} holds at most ${limit} tokens of context; MWA's instructions and tools alone are about 11,000, so it needs at least ${OLLAMA_MIN_MODEL_CONTEXT} (32,768 or more is better). Pick a model with a larger context.` };
+    return { ok: false, message: `${model} holds at most ${limit.toLocaleString('en-US')} tokens of context; MWA's instructions and tools alone are about 11,000, so it needs at least ${OLLAMA_MIN_MODEL_CONTEXT.toLocaleString('en-US')} (32,768 or more is better). Pick a model with a larger context.` };
   if (limit !== null && limit < 32768)
-    return { ok: true, message: `${reached.message} Note: ${model} holds ${limit} tokens of context, enough for short tasks; long ones may not fit (32,768 or more is better).` };
+    return { ok: true, message: `${reached.message} Note: ${model} holds ${limit.toLocaleString('en-US')} tokens of context, enough for short tasks; long ones may not fit (32,768 or more is better).` };
   return reached;
 }
 

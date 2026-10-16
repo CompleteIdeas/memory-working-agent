@@ -300,7 +300,8 @@ export async function ollamaModelInfo(host: string, model: string): Promise<Olla
     pending = (async (): Promise<OllamaModelInfo | null> => {
       try {
         const r = await fetch(`${host}/api/show`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model }), signal: AbortSignal.timeout(15_000) });
-        if (!r.ok) return { limit: null, thinking: false };
+        // Not remembered: a model that isn't pulled yet, or an Ollama having a bad moment, is asked again.
+        if (!r.ok) return null;
         const j: any = await r.json();
         const k = Object.keys(j.model_info ?? {}).find((x) => x.endsWith('.context_length'));
         return { limit: k ? positive(String(j.model_info[k])) : null, thinking: Array.isArray(j.capabilities) && j.capabilities.includes('thinking') };
@@ -315,6 +316,9 @@ export async function ollamaModelInfo(host: string, model: string): Promise<Olla
 
 /** The context size in use per Ollama host and model, shared by every provider in this process. */
 const contextInUse = new Map<string, number>();
+
+/** Errors that mean the connection was never made: retrying won't help. */
+const CONNECT_FAILURES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT', 'ETIMEDOUT']);
 
 /** Ollama's "this doesn't fit" refusal (truncate:false): the prompt's real size, or null when it's another error. */
 function contextRefusal(status: number, text: string): { prompt: number; ctx: number } | null {
@@ -360,14 +364,17 @@ export class OllamaProvider implements Provider {
       try {
         res = await fetch(`${this.host}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
       } catch (e) {
-        const err = e as Error & { cause?: { code?: string } };
-        // Nothing listening: retrying won't start it.
-        if (err.cause?.code === 'ECONNREFUSED') throw new Error(`${this.id}: nothing is answering at ${this.host} — is Ollama running?`);
+        const err = e as Error & { cause?: { code?: string; errors?: { code?: string }[] } };
         if (err.name === 'TimeoutError') throw new Error(`${this.id}: no answer within ${Math.round(timeoutMs / 1000)} s (MWA_OLLAMA_TIMEOUT_MS)`);
-        lastErr = `${this.id} network: ${err.message}`; continue;
+        // Can't connect at all (nothing listening, a name that doesn't resolve, no route): retrying won't fix it.
+        const code = err.cause?.code ?? err.cause?.errors?.[0]?.code ?? '';
+        if (CONNECT_FAILURES.has(code)) throw new Error(`${this.id}: can't reach Ollama at ${this.host} (${code}) — is it running, and is OLLAMA_BASE_URL right?`);
+        lastErr = `${this.id} network: ${err.message}${code ? ` (${code})` : ''}`; continue;
       }
       const text = await res.text();
-      if (res.ok || (res.status < 500 && res.status !== 429)) return { status: res.status, text };
+      // Only a busy or briefly unavailable server is worth asking again; another error ("requires more system
+      // memory") would just reload the model each time.
+      if (![429, 502, 503, 504].includes(res.status)) return { status: res.status, text };
       lastErr = `${this.id} ${res.status}: ${text.slice(0, 200)}`;
     }
     throw new Error(lastErr);
@@ -380,10 +387,15 @@ export class OllamaProvider implements Provider {
     const info = await ollamaModelInfo(this.host, this.model);
     const thinker = info ? info.thinking : /qwen3|deepseek-r|magistral|thinking|gpt-oss/i.test(this.model);
     // Room to think before answering, as for hosted thinkers; none when the caller asks for minimal effort.
-    let maxOut = maxTokens + (thinker && reasoningEffort !== 'minimal' ? 4000 : 0);
+    // A thinking model always gets room to think, even at minimal effort: told not to think (think:false),
+    // qwen3 just writes its reasoning into the answer instead (probed on Ollama 0.40.2), and without the room
+    // it spends the whole reply budget thinking and says nothing.
+    let maxOut = maxTokens + (thinker ? 4000 : 0);
     let numCtx = this.contextFor(ollamaTokensNeeded(chars, maxOut), info);
     for (let round = 0; ; round++) {
-      const body: Record<string, unknown> = { model: this.model, messages: msgs, stream: false, truncate: false, options: { num_ctx: numCtx, num_predict: maxOut } };
+      // truncate:false — refuse a prompt that doesn't fit instead of cutting it. shift:false — when the reply
+      // runs into the end of the context, stop there instead of dropping the start of the prompt to make room.
+      const body: Record<string, unknown> = { model: this.model, messages: msgs, stream: false, truncate: false, shift: false, options: { num_ctx: numCtx, num_predict: maxOut } };
       if (toolDefs) body.tools = toolDefs;
       const { status, text } = await this.post(body);
       const tooBig = contextRefusal(status, text);
@@ -408,7 +420,8 @@ export class OllamaProvider implements Provider {
         : undefined;
       if (!answer && !toolCalls && j.done_reason === 'length') {
         // It ran out of room before answering, usually while thinking. Once more with twice the room.
-        if (round < 2) { maxOut *= 2; numCtx = this.contextFor(ollamaTokensNeeded(chars, maxOut), info); continue; }
+        // The context stays as it is: growing it for a model that keeps thinking would hold that memory for good.
+        if (round < 2) { maxOut *= 2; continue; }
         throw new Error(`${this.id}: the model used its whole reply budget (${maxOut} tokens)${j.message.thinking ? ' thinking' : ''} without answering`);
       }
       return { text: answer, toolCalls, usage: { input: j.prompt_eval_count ?? 0, output: j.eval_count ?? 0 } };
