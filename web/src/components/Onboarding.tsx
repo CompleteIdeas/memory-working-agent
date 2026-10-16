@@ -139,9 +139,10 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
           {sel.id === 'ollama' ? (
             <p className="text-dim text-sm">
               No key needed — just have <a href="https://ollama.com" target="_blank" rel="noreferrer" className="text-signal underline">Ollama</a> running on your computer (e.g. <span className="mono">ollama run llama3.1</span>).
-              {' '}MWA's instructions take 16,000 tokens or more, so pick a model that holds at least that much, and a
-              computer with memory to spare; MWA sets the size itself. Small local models follow instructions, and
-              resist instructions hidden in emails or web pages, less reliably than hosted ones.
+              {' '}MWA's instructions and tools are about 11,000 tokens, so pick a model that holds at least 16,000
+              (32,000 or more is better) and a computer with memory to spare; MWA sets the size itself. Small local
+              models are worse than hosted ones at following MWA's instructions and at ignoring instructions hidden
+              in emails or web pages.
             </p>
           ) : (
             <p className="text-dim text-sm">

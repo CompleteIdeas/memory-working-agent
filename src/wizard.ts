@@ -12,7 +12,7 @@ import { createServer } from 'node:http';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { OPENAI_COMPAT } from './provider.js';
+import { OPENAI_COMPAT, ollamaModelInfo, ollamaHost, OLLAMA_MIN_MODEL_CONTEXT } from './provider.js';
 import { loadConfig } from './config.js';
 
 const ENV_PATH = process.env.MWA_ENV_PATH ?? resolve('.env');
@@ -108,7 +108,16 @@ export async function testProvider(provider: string, model: string, key?: string
   if (!oc) return { ok: false, message: `unknown provider "${provider}"` };
   if (!oc.keyless && !key) return { ok: false, message: 'a key is required for this provider' };
   const base = baseUrl || (oc.baseEnv && process.env[oc.baseEnv]) || oc.base;
-  return testOpenAICompat(base, oc.keyless ? undefined : key, model);
+  const reached = await testOpenAICompat(base, oc.keyless ? undefined : key, model);
+  if (!reached.ok || provider !== 'ollama') return reached;
+  // BL-20: a local model must hold MWA's prompts. Ask Ollama for the model's own limit.
+  const info = await ollamaModelInfo(ollamaHost(base), model);
+  const limit = info?.limit ?? null;
+  if (limit !== null && limit < OLLAMA_MIN_MODEL_CONTEXT)
+    return { ok: false, message: `${model} holds at most ${limit} tokens of context; MWA's instructions and tools alone are about 11,000, so it needs at least ${OLLAMA_MIN_MODEL_CONTEXT} (32,768 or more is better). Pick a model with a larger context.` };
+  if (limit !== null && limit < 32768)
+    return { ok: true, message: `${reached.message} Note: ${model} holds ${limit} tokens of context, enough for short tasks; long ones may not fit (32,768 or more is better).` };
+  return reached;
 }
 
 export function status() {
