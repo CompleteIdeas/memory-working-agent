@@ -73,7 +73,10 @@ in the background without stalling the app.
 A program a command names (`npm`, `git`, `node`) is always the one on your PATH, never a file of the
 same name in the folder the command runs in. MWA writes in that folder, and on Windows cmd.exe would
 otherwise run a `npm.cmd` it left there instead of the real npm. To run a script in the folder, name
-it with its folder: `.\build.bat` or `./build.sh`.
+it with its folder: `.\build.bat` or `./build.sh`. One exception: inside `npm run` and `npx`, npm puts
+the folder's `node_modules\.bin` first, so a test script runs whatever is there. That is the same
+"the tests run code MWA wrote" risk as above, but `node_modules` is usually ignored by git, so a file
+planted there won't show in the change you review.
 
 ## What you'll see
 

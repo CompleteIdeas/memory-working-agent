@@ -11,7 +11,7 @@
  * and replay the reviewer's attack end to end against a real local HTTP server.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
@@ -99,7 +99,15 @@ describe('the model’s shell gets no secrets', () => {
     expect(npm.stdout).not.toContain('PLANTED');
     expect(npm.stdout.trim()).toMatch(/^\d+\.\d+/);
     expect((await runCommandAsync('.\\mine.bat', dir, 30_000, scrubbedEnv())).stdout).toContain('MINE');
-  }, 90_000);
+    // After a cd into a folder that holds one too, and for a read-only command that runs with no card.
+    mkdirSync(join(dir, 'sub')); writeFileSync(join(dir, 'sub', 'npm.cmd'), '@echo PLANTED-SUB\r\n');
+    expect((await runCommandAsync('cd sub && npm --version', dir, 60_000, scrubbedEnv())).stdout).not.toContain('PLANTED');
+    writeFileSync(join(dir, 'where.bat'), '@echo PLANTED-WHERE\r\n');
+    const [run] = builtinTools(['run_command']);
+    const out = await run.handler({ command: 'where cmd' }, { sandboxDir: dir, interactive: true });
+    expect(out).not.toContain('PLANTED');
+    expect(out).toMatch(/cmd\.exe/i); // it ran directly, and it was the real `where`
+  }, 120_000);
 });
 
 describe('network guard', () => {
