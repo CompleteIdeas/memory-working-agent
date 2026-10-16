@@ -66,6 +66,11 @@ On the final images: planted instructions in tool output followed 0 of 8 times; 
   - Setup reads a local model's context limit: it refuses one that can't hold MWA's prompts and
     notes a small one.
   - New settings: `MWA_OLLAMA_NUM_CTX`, `MWA_OLLAMA_MAX_NUM_CTX`, `MWA_OLLAMA_TIMEOUT_MS`.
+- **MWA says which models resist instructions planted in what they read (BL-23).**
+  - `docs/models.md` gives the measurements: gpt-5.4-mini ignored them in 8 of 8 trials;
+    gemini-2.5-flash-lite followed them in 2 of 8 and deepseek-v3.2 in 4 of 8.
+  - MWA warns at startup, and under Connect → AI brain, when the configured model failed this test
+    or hasn't taken it. A result counts only for the provider it was measured on.
 
 ## 0.6.0 (2026-10-15) — approval only a person can give, fenced tool output, job contracts, autonomous Docker
 
