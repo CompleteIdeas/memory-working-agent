@@ -128,7 +128,9 @@ describe('BL-14a review fixes', () => {
   it('a failing check is recorded as FAILED, keeping the end of its output', async () => {
     const [run] = builtinTools(['run_command']);
     await withDir(async (dir) => {
-      const cmd = `node -e "for (let i = 0; i < 400; i++) console.log('line ' + i); console.log('SUMMARY: 3 failed'); process.exit(1)"`;
+      // exitCode, not exit(): Node warns that exit() can drop writes still pending on a pipe. CI on Linux
+      // (2026-10-16, run 38840242909) got this output only up to line 343, so the summary never arrived.
+      const cmd = `node -e "for (let i = 0; i < 400; i++) console.log('line ' + i); console.log('SUMMARY: 3 failed'); process.exitCode = 1"`;
       const out = await run.handler({ command: cmd }, { sandboxDir: dir, interactive: true });
       const id = /confirmation_id: (\S+)/.exec(out)![1];
       expect(await confirmPending(id, { sandboxDir: '.', interactive: true })).toMatch(/but it failed/);
