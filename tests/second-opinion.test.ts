@@ -321,8 +321,48 @@ describe('what the fifth review found', () => {
   });
 });
 
+describe('what the sixth review found', () => {
+  const env = { MWA_SECOND_OPINION: 'cloudflare:clef-flash', CLOUDFLARE_ACCOUNT_ID: 'a', CLOUDFLARE_API_TOKEN: 't' };
+  it('(1) an encoding attribute on a file whose bytes match HEAD is refused too', async () => {
+    writeFileSync(join(repo, 'lib.js'), '+AHIAZQBxAHUAaQByAGUAKAAn-\n'); git(repo, 'add', 'lib.js'); git(repo, 'commit', '-qm', 'lib');
+    writeFileSync(join(repo, '.gitattributes'), 'lib.js working-tree-encoding=UTF-7\n');
+    await expect(read('git add -A && git commit -m "add attributes"')).rejects.toThrow(/encoding/);
+  });
+
+  it('(2) an assume-unchanged entry is read from the index, as git commits it', async () => {
+    writeFileSync(join(repo, 'x.js'), 'ok\n'); git(repo, 'add', 'x.js'); git(repo, 'commit', '-qm', 'x');
+    writeFileSync(join(repo, 'x.js'), 'EVIL STAGED\n'); git(repo, 'add', 'x.js');
+    git(repo, 'update-index', '--assume-unchanged', 'x.js');
+    writeFileSync(join(repo, 'x.js'), 'ok\n');
+    expect((await read('git add -A && git commit -m y')).text).toContain('EVIL STAGED');
+  });
+
+  it('(2) a repository with core.fsmonitor gets no opinion', async () => {
+    git(repo, 'config', 'core.fsmonitor', 'hooks/fsmon.sh');
+    writeFileSync(join(repo, 'src', 'a.ts'), 'export const a = 2;\n');
+    const r = await secondOpinionForCommand('git commit -am x', repo, () => true, env);
+    expect(r!.lines[0]).toMatch(/not given — the repository uses a file-system monitor/);
+  });
+
+  it('(3) a submodule path that now holds a plain file is read and bound', async () => {
+    const sha = git(repo, 'rev-parse', 'HEAD');
+    git(repo, 'update-index', '--add', '--cacheinfo', `160000,${sha},sub`); git(repo, 'commit', '-qm', 'sub');
+    writeFileSync(join(repo, 'sub'), 'EVIL AS FILE\n');
+    const t = T('git add -A && git commit -m x');
+    const d = await collectCommitDiff(t);
+    expect(d.text).toContain('EVIL AS FILE');
+    writeFileSync(join(repo, 'sub'), 'SWAPPED\n');
+    expect((await collectCommitDiff(t)).fingerprint).not.toBe(d.fingerprint);
+  });
+
+  it('(4) --amend needs a message or --no-edit, or git would wait on an editor', () => {
+    expect(notGiven('git commit --amend')).toMatch(/editor/);
+    expect(T('git commit --amend --no-edit')).toMatchObject({ amend: true });
+  });
+});
+
 describe('the card', () => {
-  const env ={ MWA_SECOND_OPINION: 'cloudflare:clef-flash', CLOUDFLARE_ACCOUNT_ID: 'a', CLOUDFLARE_API_TOKEN: 't' };
+  const env = { MWA_SECOND_OPINION: 'cloudflare:clef-flash', CLOUDFLARE_ACCOUNT_ID: 'a', CLOUDFLARE_API_TOKEN: 't' };
   it('flags first and never says safe; every probability shown; partial coverage and failures said plainly', () => {
     expect(opinionLines('clef-flash', { dangerous: 0.93, weakens: 0.1, reachesOut: 0.9 }, [])).toEqual([
       expect.stringMatching(/^⚠ Second opinion from Cloudflare Clef-flash \(advisory.*flags this change: dangerous code; reaches outside the repository \(dangerous code 93%, weakens the checks 10%, reaches outside the repository 90%\)/),

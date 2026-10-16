@@ -170,7 +170,7 @@ export function commitTarget(command: string, cwd: string): CommitTarget | NotGi
   const [g, sub, ...rest] = w[w.length - 1];
   if (g !== 'git' || sub !== 'commit') return notGiven(MORE);
   const unclear: string[] = [];
-  let amend = false, message = false, afterDashes = false;
+  let amend = false, message = false, noEdit = false, afterDashes = false;
   const paths: string[] = [];
   for (let i = 0; i < rest.length; i++) {
     const x = rest[i];
@@ -185,12 +185,13 @@ export function commitTarget(command: string, cwd: string): CommitTarget | NotGi
       if (!COMMIT_FLAGS.has(x)) return notGiven('it uses a git commit option the second opinion does not model');
       if (x === '-a' || x === '--all') tracked.all = true;
       if (x === '--amend') amend = true;
+      if (x === '--no-edit') noEdit = true;
       continue;
     }
     if (!plainPath(x)) return notGiven('it uses pathspec magic');
     paths.push(x);
   }
-  if (!message && !amend) return notGiven('the commit has no message, so git would open an editor');
+  if (!message && !(amend && noEdit)) return notGiven('the commit has no message, so git would open an editor');
   if (paths.length) tracked.specs.push({ dir, paths }); // git takes them from the working tree
   return { dir, runDir: resolve(cwd), tracked, untracked, forced, amend, unclear };
 }
@@ -376,6 +377,8 @@ async function matching(specs: Specs[], extra: string[]): Promise<string[]> {
 
 /** A file in the change that git transforms on commit (a filter, an encoding, ident). */
 export class AttributeError extends Error { constructor() { super('a file in the change has a git filter, encoding or ident attribute'); } }
+/** The repository sets core.fsmonitor, so the commit may trust a monitor this check doesn't use. */
+export class FsmonitorError extends Error { constructor() { super('the repository uses a file-system monitor'); } }
 
 /**
  * Files in the folders the command runs in that the shell would run instead of git: on Windows cmd.exe
@@ -421,7 +424,16 @@ export async function collectCommitDiff(t: CommitTarget, topIn?: string): Promis
 
   // The files in scope to be taken from the working tree.
   const fromWorktree = new Set<string>(t.tracked.all ? index.map.keys() : await matching(t.tracked.specs, []));
-  if (fromWorktree.size) for (const rec of zlist(await gitOk(top, ['ls-files', '-v', '-z']))) if (/^S /.test(rec)) fromWorktree.delete(rec.slice(2)); // skip-worktree: taken from the index
+  // Skip-worktree (S) and assume-unchanged (a lowercase tag) entries are committed from the index, not
+  // the working tree (BL-24 round-6 review).
+  if (fromWorktree.size) for (const rec of zlist(await gitOk(top, ['ls-files', '-v', '-z']))) if (/^(S|[a-z]) /.test(rec)) fromWorktree.delete(rec.slice(2));
+  // An fsmonitor tells git which files changed; the check here doesn't use it, but the commit would,
+  // and a hook the repository names may live in the working tree. No opinion where one is set.
+  // Read from each config file: this module's own `-c core.fsmonitor=false` would mask a plain --get.
+  for (const scope of ['--system', '--global', '--local', '--worktree']) {
+    const fsmon = (await git(top, ['config', scope, '--includes', '--get', 'core.fsmonitor'])).out.toString('utf8').trim().toLowerCase();
+    if (fsmon && fsmon !== 'false' && fsmon !== '0' && fsmon !== 'no' && fsmon !== 'off') throw new FsmonitorError();
+  }
   const untracked = t.untracked.all ? zlist(await gitOk(top, ['ls-files', '-z', '--others', '--exclude-standard'])) : await matching(t.untracked.specs, ['--others', '--exclude-standard']);
   untracked.push(...(await matching(t.forced, ['--others'])));
   const unique = [...new Set(untracked)];
@@ -439,7 +451,18 @@ export async function collectCommitDiff(t: CommitTarget, topIn?: string): Promis
   for (const p of [...new Set([...index.map.keys(), ...head.map.keys(), ...fromWorktree])].sort()) {
     const h = head.map.get(p), ix = index.map.get(p);
     if (h?.mode === '160000' || ix?.mode === '160000') {
-      if (h?.id !== ix?.id || h?.mode !== ix?.mode || fromWorktree.has(p)) submodules++; // a new submodule commit isn't checked
+      // A submodule whose path now holds a plain file: git commits the file, so it is read and bound
+      // like any other (BL-24 round-6 review). Otherwise a submodule's new commit isn't checked.
+      const st = fromWorktree.has(p) ? await lstat(join(top, p)).catch(() => null) : null;
+      if (!st || st.isDirectory()) {
+        fp.update(`${p}\0submodule:${st ? 'dir' : 'missing'}\0`);
+        if (h?.id !== ix?.id || h?.mode !== ix?.mode || fromWorktree.has(p)) submodules++;
+        continue;
+      }
+      const now = await readInside(top, p, blobId);
+      fp.update(`${p}\0${now.kind === 'file' ? now.id : now.kind === 'skip' ? now.ident : 'missing'}\0`);
+      if (now.kind === 'file') changed.push({ path: p, before: undefined, after: now.bytes });
+      else skipped.set(now.kind === 'skip' ? now.why : 'missing', (skipped.get(now.kind === 'skip' ? now.why : 'missing') ?? 0) + 1);
       continue;
     }
     if (!fromWorktree.has(p)) {
@@ -463,7 +486,10 @@ export async function collectCommitDiff(t: CommitTarget, topIn?: string): Promis
   // A filter, an encoding or ident on a file read from the working tree makes git commit bytes other
   // than the file's (BL-24 round-5 review: working-tree-encoding=IBM037). git check-attr only reads
   // attributes; it runs nothing.
-  const fromDisk = changed.filter((c) => Buffer.isBuffer(c.after)).map((c) => c.path);
+  // EVERY path git may hash again from the working tree, not only the changed ones: a file whose bytes
+  // match HEAD is re-hashed under its current attributes (BL-24 round-6 review: an encoding attribute
+  // added next to unchanged UTF-7 bytes committed different content).
+  const fromDisk = [...fromWorktree];
   if (fromDisk.length) {
     const rec = zlist(await gitOk(top, ['check-attr', '-z', '--stdin', 'filter', 'working-tree-encoding', 'ident'], fromDisk.join('\0') + '\0'));
     for (let i = 0; i + 2 < rec.length; i += 3) if (rec[i + 2] !== 'unspecified' && rec[i + 2] !== 'unset') throw new AttributeError();
@@ -501,7 +527,7 @@ export async function collectCommitDiff(t: CommitTarget, topIn?: string): Promis
   let hooks = hooksPath.code === 0 && hooksPath.out.toString('utf8').trim() !== '';
   if (!hooks) {
     const dirs = zlist(Buffer.from((await gitOk(top, ['rev-parse', '--git-dir', '--git-common-dir'])).toString('utf8').trim().split(/\r?\n/).join('\0')));
-    for (const d of dirs) if ((await readdir(join(resolve(top, d), 'hooks')).catch(() => [] as string[])).some((f) => /^(pre-commit|prepare-commit-msg|commit-msg|post-commit)$/.test(f))) hooks = true;
+    for (const d of dirs) if ((await readdir(join(resolve(top, d), 'hooks')).catch(() => [] as string[])).some((f) => /^(pre-commit|prepare-commit-msg|commit-msg|post-commit|post-index-change|pre-auto-gc)$/.test(f))) hooks = true;
   }
   if (hooks) notes.push('commit hooks in this repository run and can change what is committed');
   const fingerprint = fp.digest('hex');
@@ -620,6 +646,7 @@ export async function secondOpinionForCommand(command: string, cwd: string, allo
   try { diff = await collectCommitDiff(target, top); }
   catch (e) {
     if (e instanceof AttributeError) return notGiven('a file in the change has a git filter, encoding or ident attribute, so git commits other bytes than the file holds');
+    if (e instanceof FsmonitorError) return notGiven('the repository uses a file-system monitor (core.fsmonitor), so git may not re-read every file this check reads');
     return notGiven("its change couldn't be read (a path outside the repository, or a file another program holds open)");
   }
   const reviewed = { target, top, fingerprint: diff.fingerprint };
