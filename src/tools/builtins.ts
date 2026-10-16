@@ -265,6 +265,9 @@ const httpRequestTool: RegisteredTool = {
   },
 };
 
+/** read_document's fetch timeout: MWA_DOCUMENT_TIMEOUT_MS when it is a positive number, else 60 s. */
+function documentTimeoutMs(): number { const n = Number(process.env.MWA_DOCUMENT_TIMEOUT_MS); return Number.isFinite(n) && n > 0 ? n : 60_000; }
+
 const readDocumentTool: RegisteredTool = {
   def: {
     name: 'read_document',
@@ -284,7 +287,7 @@ const readDocumentTool: RegisteredTool = {
         const firstHop = await urlRefusal(src);
         if (firstHop) throw new ToolRefusal(`(refused: ${firstHop})`);
         // A site that never answers must not hold the run: the connection has no timeout of its own.
-        const res = await guardedFetch(src, { headers: { 'user-agent': 'Mozilla/5.0 (MWA)' }, signal: AbortSignal.timeout(Number(process.env.MWA_DOCUMENT_TIMEOUT_MS ?? 60_000)) });
+        const res = await guardedFetch(src, { headers: { 'user-agent': 'Mozilla/5.0 (MWA)' }, signal: AbortSignal.timeout(documentTimeoutMs()) });
         if (typeof res === 'string') return res;
         if (!res.ok) return `(couldn't fetch ${src}: ${res.status})`;
         buf = Buffer.from(await res.arrayBuffer());

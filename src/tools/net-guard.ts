@@ -56,46 +56,72 @@ function trimUrl(raw: string): string {
   }
 }
 
+const LINK = /(?:https?|wss?|ftp):[\\/]+[^\s"'<>`]+/gi;
+
 /**
- * Every http(s) URL in a tool call's arguments, at any depth, including inside text. Slashes may be
- * odd (`http:\host`, `http:/host`): the URL parser reads those as `http://host`. `truncated` when there
- * were more than can be checked, or nesting deeper than is read — the caller must then refuse.
+ * Every link in a tool call's arguments — http(s), ws(s), ftp — at any depth, in keys and values,
+ * including inside text. Slashes may be odd (`http:\host`, `http:/host`), and the URL parser drops tabs
+ * and newlines, so each string is also read with them removed. Repeats count once. `truncated` when
+ * there were more than can be checked, or nesting deeper than is read — the caller must then refuse.
  */
 export function urlsIn(value: unknown): { urls: string[]; truncated: boolean } {
-  const urls: string[] = []; let truncated = false;
+  const seen = new Set<string>(); let truncated = false;
+  const scan = (str: string) => {
+    for (const text of /[\t\r\n]/.test(str) ? [str, str.replace(/[\t\r\n]/g, '')] : [str])
+      for (const m of text.matchAll(LINK)) { const u = trimUrl(m[0]); if (!seen.has(u)) { if (seen.size >= MAX_URLS) { truncated = true; return; } seen.add(u); } }
+  };
   const walk = (v: unknown, depth: number): void => {
     if (truncated) return;
     if (depth > MAX_DEPTH) { truncated = true; return; }
-    if (typeof v === 'string') {
-      for (const m of v.matchAll(/https?:[\\/]+[^\s"'<>`]+/gi)) { if (urls.length >= MAX_URLS) { truncated = true; return; } urls.push(trimUrl(m[0])); }
-    } else if (Array.isArray(v)) for (const x of v) walk(x, depth + 1);
-    else if (v && typeof v === 'object') for (const x of Object.values(v)) walk(x, depth + 1);
+    if (typeof v === 'string') scan(v);
+    else if (Array.isArray(v)) for (const x of v) walk(x, depth + 1);
+    else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) { scan(k); walk(x, depth + 1); }
   };
   walk(value, 0);
-  return { urls, truncated };
+  return { urls: [...seen], truncated };
+}
+
+const LOOKUP_MS = 3000;
+const LOOKUP_AT_ONCE = 8;
+
+/** The addresses a name resolves to, or null when it doesn't resolve in time. */
+async function addressesOf(host: string): Promise<string[] | null> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      lookup(host, { all: true }).then((a) => a.map((x) => x.address)),
+      new Promise<null>((r) => { timer = setTimeout(() => r(null), LOOKUP_MS); }),
+    ]);
+  } catch { return null; } finally { clearTimeout(timer); }
 }
 
 /**
  * Why an MCP call may not go ahead (BL-16c): it carries a link to this machine, the private network or
  * cloud metadata. Best effort — a server that fetches does so with its own code, and a host given
  * without a scheme, or as separate host and port, isn't seen. A link that doesn't parse or whose name
- * doesn't resolve is the server's problem, not a refusal: an email body full of links must still send.
+ * doesn't resolve (in 3 s) is the server's problem, not a refusal: an email full of links must still send.
  */
 export async function mcpUrlRefusal(args: unknown): Promise<string | null> {
   if (accessPolicy().preset === 'developer') return null;
   const { urls, truncated } = urlsIn(args);
   if (truncated) return `this call carries more than ${MAX_URLS} links, or nests deeper than ${MAX_DEPTH} levels, so its links can't all be checked`;
-  const verdicts = await Promise.all([...new Set(urls)].map(async (raw): Promise<string | null> => {
+  const names = new Set<string>();
+  for (const raw of urls) {
     let u: URL;
-    try { u = new URL(raw); } catch { return null; }
+    // Read ws(s)/ftp links as http, so the same host rules apply.
+    try { u = new URL(raw.replace(/^(?:wss?|ftp):/i, 'http:')); } catch { continue; }
     const early = hostRefusal(u);
     if (early) return early;
     const host = u.hostname.replace(/^\[|\]$/g, '');
-    if (isIP(host)) return null;
-    try {
-      const addrs = (await lookup(host, { all: true })).map((a) => a.address);
-      return addrs.some(isBlockedAddress) ? `${host} is on this machine or a private network, which this assistant may not reach (MWA's own controls live there)` : null;
-    } catch { return null; }
+    if (!isIP(host)) names.add(host);
+  }
+  const queue = [...names];
+  let refusal: string | null = null;
+  await Promise.all(Array.from({ length: Math.min(LOOKUP_AT_ONCE, queue.length) }, async () => {
+    for (let host = queue.shift(); host !== undefined && !refusal; host = queue.shift()) {
+      const addrs = await addressesOf(host);
+      if (addrs?.some(isBlockedAddress)) refusal = `${host} is on this machine or a private network, which this assistant may not reach (MWA's own controls live there)`;
+    }
   }));
-  return verdicts.find((v) => v !== null) ?? null;
+  return refusal;
 }

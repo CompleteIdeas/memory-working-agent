@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import { createServer, type Server, type IncomingHttpHeaders } from 'node:http';
+import { createServer as createTcpServer } from 'node:net';
 import { join } from 'node:path';
 
 const answers: Record<string, string[]> = {};
@@ -58,6 +59,7 @@ describe.skipIf(process.platform === 'darwin')('pinned to the connection', () =>
     if (req.url === '/post-redirect') { res.writeHead(302, { location: '/landed' }); return res.end(); }
     if (req.url === '/elsewhere') { res.writeHead(307, { location: `http://other.test:${port}/landed` }); return res.end(); }
     if (req.url === '/odd') { res.writeHead(600); return res.end('x'); }
+    if (req.url === '/not-modified') { res.writeHead(304, { location: '/landed' }); return res.end(); }
     res.writeHead(200, { 'content-type': 'text/plain', 'set-cookie': ['a=1', 'b=2'] }); res.end(`hello ${req.method}`);
   };
   beforeAll(async () => {
@@ -117,6 +119,25 @@ describe.skipIf(process.platform === 'darwin')('pinned to the connection', () =>
     answers['site.test'] = ['127.0.0.1'];
     await expect(pinnedFetch(`http://site.test:${port}/odd`, {}, 5, blocked)).rejects.toThrow(/status 600/);
   });
+
+  it('a site that answers 101 with upgrade headers is an error, not a request that never ends', async () => {
+    const raw = createTcpServer((sock) => sock.once('data', () => sock.write(['HTTP/1.1 101 Switching Protocols', 'Upgrade: websocket', 'Connection: Upgrade', '', ''].join('\r\n'))));
+    await new Promise<void>((r) => raw.listen(0, '127.0.0.1', r));
+    try {
+      answers['upgrade.test'] = ['127.0.0.1'];
+      const p = pinnedFetch(`http://upgrade.test:${(raw.address() as { port: number }).port}/`, {}, 5, blocked);
+      const outcome = await Promise.race([p.then(() => 'settled', (e: Error) => `rejected: ${e.message}`), new Promise((r) => setTimeout(() => r('HUNG'), 3000))]);
+      expect(outcome).toMatch(/^rejected: .*switch protocols/);
+    } finally { raw.close(); }
+  });
+
+  it('a 304 is not followed; a POST turned into a GET drops its content type', async () => {
+    answers['site.test'] = ['127.0.0.1'];
+    expect((await pinnedFetch(`http://site.test:${port}/not-modified`, {}, 5, blocked) as Response).status).toBe(304);
+    expect(hits).toEqual(['site GET /not-modified']);
+    await (await pinnedFetch(`http://site.test:${port}/post-redirect`, { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } }, 5, blocked) as Response).text();
+    expect([hits.at(-1), lastHeaders['content-type'], lastHeaders['content-length']]).toEqual(['site GET /landed', undefined, undefined]);
+  });
 });
 
 describe('MCP calls', () => {
@@ -125,6 +146,8 @@ describe('MCP calls', () => {
     expect(urlsIn({ url: 'http://127.0.0.1:7788/api', opts: { list: [`see https://a.example/x?y=1, and http:${bs}${bs}10.0.0.1/z.`, 3] }, v6: '(http://[::1]:7788/q)' }))
       .toEqual({ urls: ['http://127.0.0.1:7788/api', 'https://a.example/x?y=1', `http:${bs}${bs}10.0.0.1/z`, 'http://[::1]:7788/q'], truncated: false });
     expect(urlsIn({ links: Array.from({ length: 51 }, (_, i) => `https://e${i}.example/`) }).truncated).toBe(true);
+    // Repeats count once: sixty copies of one link are one link.
+    expect(urlsIn({ links: Array.from({ length: 60 }, () => 'https://same.example/') })).toEqual({ urls: ['https://same.example/'], truncated: false });
     let deep: unknown = 'http://127.0.0.1/';
     for (let i = 0; i < 20; i++) deep = { d: deep };
     expect(urlsIn(deep).truncated).toBe(true);
@@ -135,6 +158,12 @@ describe('MCP calls', () => {
     expect(await mcpUrlRefusal({ body: `please open http:${bs}${bs}127.0.0.1:7788/api/approvals` })).toMatch(/this machine or a private network/);
     expect(await mcpUrlRefusal({ to: 'a@b.c', body: 'Agenda: https://nonexistent.invalid/agenda, and [notes](https://also-missing.invalid/n).' })).toBeNull();
     expect(await mcpUrlRefusal({ links: Array.from({ length: 51 }, (_, i) => `https://e${i}.invalid/`) })).toMatch(/more than 50 links/);
+    // The URL parser drops tabs and newlines, so a link split by them still reaches its host.
+    for (const body of ['http://example.com\t@127.0.0.1:7788/', 'http:\t//127.0.0.1:7788/', 'h\nttp://127.0.0.1:7788/'])
+      expect([body, await mcpUrlRefusal({ body })]).toEqual([body, expect.stringMatching(/this machine or a private network/)]);
+    // Keys are read, and ws(s)/ftp links get the same host rules.
+    expect(await mcpUrlRefusal({ headers: { 'ws://127.0.0.1:7788/socket': 'x' } })).toMatch(/this machine/);
+    expect(await mcpUrlRefusal({ target: 'ftp://10.0.0.5/file' })).toMatch(/private network/);
   });
 
   it('the bundled fetch server refuses this machine and the private network itself', async () => {

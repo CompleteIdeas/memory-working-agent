@@ -106,7 +106,13 @@ function requestOnce(u, init, lookup) {
     const h0 = new Headers(init.headers ?? {});
     if (!h0.has('user-agent')) h0.set('user-agent', 'Mozilla/5.0 (MWA)');
     h0.set('accept-encoding', 'identity');
-    const body = init.body === undefined || init.body === null ? null : typeof init.body === 'string' ? Buffer.from(init.body) : Buffer.from(init.body);
+    const b = init.body;
+    const body = b === undefined || b === null ? null
+      : typeof b === 'string' ? Buffer.from(b)
+      : b instanceof URLSearchParams ? Buffer.from(b.toString())
+      : ArrayBuffer.isView(b) ? Buffer.from(b.buffer, b.byteOffset, b.byteLength)
+      : b instanceof ArrayBuffer ? Buffer.from(b) : Buffer.from(String(b));
+    if (b instanceof URLSearchParams && !h0.has('content-type')) h0.set('content-type', 'application/x-www-form-urlencoded;charset=UTF-8');
     if (body) h0.set('content-length', String(body.length));
     const headers = Object.fromEntries(h0);
     const req = mod.request(u, { method: init.method ?? 'GET', headers, agent: false, lookup, signal: init.signal }, (res) => {
@@ -118,10 +124,17 @@ function requestOnce(u, init, lookup) {
         for (const [k, v] of Object.entries(res.headers)) for (const one of Array.isArray(v) ? v : [v]) if (one !== undefined) { try { h.append(k, String(one)); } catch { /* an invalid header is dropped */ } }
         const empty = NO_BODY.has(status) || (init.method ?? 'GET').toUpperCase() === 'HEAD';
         if (empty) res.resume();
-        resolve(new Response(empty ? null : Readable.toWeb(res), { status, statusText: res.statusMessage ?? '', headers: h }));
+        // A status text with control characters is dropped rather than failing a readable page.
+        const statusText = /^[\t\x20-\x7e\x80-\xff]*$/.test(res.statusMessage ?? '') ? res.statusMessage ?? '' : '';
+        resolve(new Response(empty ? null : Readable.toWeb(res), { status, statusText, headers: h }));
       } catch (e) { res.destroy(); reject(e); }
     });
     req.on('error', reject);
+    // A 101 with upgrade headers never reaches the response callback and raises no error: without
+    // these, the promise would never settle (and abort wouldn't help). A reject after resolve is a no-op.
+    req.on('upgrade', (_res, socket) => { socket.destroy(); reject(new Error('the site tried to switch protocols, which this tool does not follow')); });
+    req.on('close', () => reject(new Error('the connection closed before the site answered')));
+    init.signal?.addEventListener('abort', () => { req.destroy(); reject(init.signal.reason ?? new Error('aborted')); }, { once: true });
     if (body) req.write(body);
     req.end();
   });
@@ -147,13 +160,16 @@ export async function pinnedFetch(url, init = {}, maxRedirects = 5, blocked = is
     try { res = await requestOnce(u, req, lookup); }
     catch (e) { if (e && e.code === 'EMWABLOCKED') return `(refused: ${e.message})`; throw e; }
     const loc = res.headers.get('location');
-    if (res.status >= 300 && res.status < 400 && loc) {
+    if ([301, 302, 303, 307, 308].includes(res.status) && loc) {
       try { await res.body?.cancel(); } catch { /* */ }
       const next = new URL(loc, u);
       // Like fetch: credentials never follow a redirect to another origin.
       if (next.origin !== u.origin && req.headers) { const h = new Headers(req.headers); for (const k of CREDENTIALS) h.delete(k); req = { ...req, headers: h }; }
       current = next.toString();
-      if (res.status === 303 || ((res.status === 301 || res.status === 302) && (req.method ?? 'GET').toUpperCase() === 'POST')) req = { ...req, method: 'GET', body: undefined };
+      if (res.status === 303 || ((res.status === 301 || res.status === 302) && (req.method ?? 'GET').toUpperCase() === 'POST')) {
+        const h = new Headers(req.headers ?? {}); h.delete('content-type'); h.delete('content-length');
+        req = { ...req, method: 'GET', body: undefined, headers: h };
+      }
       continue;
     }
     return res;
