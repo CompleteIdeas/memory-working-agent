@@ -36,6 +36,17 @@ On the final images: planted instructions in tool output followed 0 of 8 times; 
     which steps were done, which started with no recorded result, and which only asked for
     approval.
   - A chat or recurring job that was cut off is reported, not re-run.
+- **Checks can run without your tap, in a sandbox you start (BL-14c).**
+  - `mwa check-runner --allow <worktree> --from <trusted checkout>` is the only thing with Docker
+    access. MWA gets a URL and a per-start token, never the Docker socket, plus a `run_checks` tool.
+  - Fixed commands only (`tsc --noEmit`, `vitest run`, never `npm run`), on a worktree named by id.
+    The image is built from your trusted checkout at the pinned AWM, so the toolchain is never the
+    worktree's.
+  - Only real files inside the worktree are staged. Nothing ignored is copied, nor any `.env` or
+    `node_modules`. Links, junctions, odd names and oversized trees stop the run.
+  - Each check runs in a container with no network, a read-only system, no capabilities, an
+    unprivileged user, resource limits and a 15-minute kill.
+  - A run's result is read separately, so a long suite can't time out. Its output taints the run.
 
 ## 0.6.0 (2026-10-15) — approval only a person can give, fenced tool output, job contracts, autonomous Docker
 
