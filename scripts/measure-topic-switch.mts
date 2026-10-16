@@ -3,14 +3,17 @@
  * inside ONE run, across context loss, and coming back.
  *
  * One continuous run works three client accounts in turn, then returns to the first after one of its
- * facts changed. Work arrives through a `next_message` tool, one message per call:
+ * facts changed. Work arrives as message files in inbox/ (msg-1.txt, then msg-2.txt, ...): the next one
+ * appears once the current one has been read. Files, because a file read is local, trusted content: a
+ * custom tool would be classed external, fenced as untrusted (so anything remembered after it is
+ * too) and would spend the unattended run's 3-external-action budget (found in the first smoke run).
  *   1-3  a client brief (code word, contact, deadline, budget, and two rules for report lines), with
  *        the task: read that client's six item files and write <client>-report.txt;
  *   4    an update for the FIRST client (its deadline moved) and the task: write <client>-final.txt
  *        with the code word, the contact, the budget, the NEW deadline, and the item lines again.
  * The contact and budget appear only in that client's brief, three segments back.
  *
- *   --book closed  (primary) a message is given once; nothing on disk repeats it.
+ *   --book closed  (primary) a message file is deleted once it has been read; nothing repeats it.
  *   --book open    each brief is also saved as <client>/brief.txt, and re-reads are counted.
  *
  * Arms (one per process; the window is read when the agent module loads, so MWA_HIST_WINDOW must be
@@ -174,13 +177,22 @@ async function oneTrial(n: number) {
       if (book === 'open') writeFileSync(join(dir, c.key, 'brief.txt'), brief(c));
     }
     const queue = [...clients.map(brief), update(first)];
-    let delivered = 0;
+    mkdirSync(join(dir, 'inbox'));
+    let delivered = 0, readUpTo = 0; // messages put in the inbox / read so far
+    const reveal = () => { if (delivered < queue.length) { writeFileSync(join(dir, 'inbox', `msg-${delivered + 1}.txt`), queue[delivered]); delivered++; } };
+    reveal();
     const memory: any = memoryOn ? new MwaMemory(`bl30-${Date.now()}-${n}`, join(dir, '.mem', 'bl30.db')) : new NullMemory();
     const { registry } = await buildRegistry(loadConfig(), memoryOn ? memory : null);
-    registry.register({
-      def: { name: 'next_message', description: 'Get your next work message. Each message is given once.', parameters: { type: 'object', properties: {} } } as any,
-      handler: async () => (delivered < queue.length ? queue[delivered++] : '(no more messages — all work is assigned. When it is done, call done.)'),
-    });
+    let lastMsgSeen = 0; // the highest message number a main-loop step chose to read
+    // Before each main-loop step: once message k has been read, put k+1 in the inbox, and (closed book) delete k.
+    const inboxTurn = () => {
+      while (readUpTo < lastMsgSeen) {
+        readUpTo++;
+        if (book === 'closed') rmSync(join(dir, 'inbox', `msg-${readUpTo}.txt`), { force: true });
+        if (readUpTo === delivered) reveal();
+      }
+      if (readUpTo === queue.length && !existsSync(join(dir, 'inbox', 'no-more-messages.txt'))) writeFileSync(join(dir, 'inbox', 'no-more-messages.txt'), 'There are no more messages.');
+    };
 
     // The compaction arms: a model-written running summary, plus MEMORY.md for the OpenClaw arm.
     const summarizer = getProvider('brain');
@@ -206,15 +218,21 @@ async function oneTrial(n: number) {
     let finalPrompt: string | null = null;
     let briefReads = 0;
     const actions: Record<string, number> = {};
+    const trace: string[] = []; // each main-loop action, compact, for diagnosing a run
     const finalName = `${first.key}-final.txt`;
     const capture = (base: any) => ({
       id: base.id, model: base.model, price: base.price,
       chat: async (input: any) => {
+        const main = String(input.system ?? '').includes('TRUST BOUNDARY');
+        if (main) inboxTurn();
         const out = await base.chat(input);
-        if (!String(input.system ?? '').includes('TRUST BOUNDARY')) return out;
+        if (!main) return out;
         const a = chosen(out);
         if (!a) return out;
         actions[a.name] = (actions[a.name] ?? 0) + 1;
+        trace.push(`${a.name}${a.args.path ? `:${String(a.args.path).replace(/^.*[\/](?=[^\/]+[\/][^\/]+$)/, '')}` : a.args.concept ? `:${String(a.args.concept).slice(0, 30)}` : ''}`);
+        const msg = /msg-(\d+)\.txt/i.exec(JSON.stringify(a.args));
+        if (msg && /^(read|read_file|read_document)$/.test(a.name) && Number(msg[1]) <= delivered) lastMsgSeen = Math.max(lastMsgSeen, Number(msg[1]));
         if (/brief\.txt/i.test(JSON.stringify(a.args))) briefReads++;
         const writesFinal = (a.name === 'write_file' && String(a.args.path ?? '').endsWith(finalName)) || (a.name === 'dispatch' && String(a.args.instruction ?? '').includes(finalName));
         if (finalPrompt === null && writesFinal) finalPrompt = (input.messages ?? []).map((m: any) => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join('\n');
@@ -224,7 +242,7 @@ async function oneTrial(n: number) {
     const brain = new RoutedProvider(capture(getProvider('brain')) as any, capture(getProvider('high')) as any);
     const worker = new RoutedProvider(capture(getProvider('brain')) as any, capture(getProvider('high')) as any);
     const r = await runAgent({
-      instruction: 'Work through your messages from the account desk. Call next_message, do exactly what that message asks, and only then call next_message again. When it says there are no more messages and the work is done, call done.',
+      instruction: `Work through your messages from the account desk, in the inbox folder. Read inbox/msg-1.txt and do exactly what it asks; only then read the next message (inbox/msg-2.txt, and so on). ${book === 'closed' ? 'A message file is removed once it has been read, and the next appears.' : 'The next message appears once the current one has been read.'} When inbox/no-more-messages.txt appears and the work is done, call done.`,
       dir, memory, brain, worker, tools: registry, interactive: false, plan: false,
       budget: { maxSteps, maxWallMs: 40 * 60_000 },
       ...(compaction ? { compaction: { fold, block } } : {}),
@@ -247,11 +265,11 @@ async function oneTrial(n: number) {
     memory.close();
     return {
       arm, book, window: HIST_WINDOW, awm: awmVersion, trial: n, seed, order: clients.map((c) => c.key).join('>'),
-      steps: Number(r.steps ?? 0), maxSteps, reason: String(r.reason), messagesTaken: delivered,
+      steps: Number(r.steps ?? 0), maxSteps, reason: String(r.reason), messagesRead: readUpTo,
       primary: final.pass, checks: final.checks,
       itemLines: { right: lineScores.reduce((s, x) => s + x.right, 0), wrong: lineScores.reduce((s, x) => s + x.wrong, 0), bleed: lineScores.reduce((s, x) => s + x.bleed, 0), of: lineScores.length * 6 },
       reportsWritten: reports.filter((x) => x.text).length + (finalText ? 1 : 0),
-      source, briefReads, actions,
+      source, briefReads, actions, trace,
       costUsd: Number(r.costUsd ?? 0) + summarizerCost, summarizerCostUsd: summarizerCost,
     };
   } finally { rmSync(dir, { recursive: true, force: true }); }

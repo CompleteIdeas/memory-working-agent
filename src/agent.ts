@@ -277,6 +277,8 @@ function nextDailyAt(hhmm: string, nowMs: number): number {
 const PRICE_DIV = 1_000_000;
 // Only recent steps go in the prompt; recall covers the rest (anti-context-rot). MWA_HIST_WINDOW
 // overrides it, for measuring that bet (BL-09, scripts/measure-no-compaction.mts); 4..200.
+/** File tools whose every call names its own file: exempt from the 5-uses no-progress rule (BL-30). */
+const PER_FILE_TOOLS = new Set(['read_file', 'list_files', 'write_file']);
 export const HIST_WINDOW = Math.min(200, Math.max(4, Number(process.env.MWA_HIST_WINDOW) || 12));
 const MAX_READ_BYTES = 8_000;
 
@@ -1130,7 +1132,10 @@ export async function runAgent(opts: {
       // A refused/failed call, an EXACT-duplicate call, a same-as-last result, or a tool
       // hammered many times is not progress — steer to a different approach or to conclude
       // rather than retrying the same thing (e.g. re-running a refused command).
-      if (refused || dupCall || repeatedResult || uses >= 5) {
+      // The use count is for searching that goes nowhere. Reading, listing or writing a DIFFERENT file each
+      // time is the work itself (BL-30: a run reading 4 messages and 6 item files ended 'stuck' at step 15);
+      // an exact repeat is still caught by dupCall.
+      if (refused || dupCall || repeatedResult || (uses >= 5 && !PER_FILE_TOOLS.has(action.action))) {
         consecNoProgress++;
         nudge = refused
           ? `"${action.action}" was REFUSED — you did NOT get any result (${markToolOutput(action.action, result.slice(0, 90).replace(/\n/g, ' '), fence)}). Do NOT invent, guess, or state what the output "would be". Either do something genuinely different, or call done and tell the user plainly that you couldn't do it (and why).`

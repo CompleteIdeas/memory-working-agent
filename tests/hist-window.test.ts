@@ -100,3 +100,43 @@ describe('the experiment-only compaction hook (BL-30)', () => {
     }
   }, 60_000);
 });
+
+describe('the 5-uses no-progress rule (BL-30)', () => {
+  const runWith = async (toolName: string, calls: number) => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { runAgent } = await import('../src/agent.js');
+    const { NullMemory } = await import('../src/awm.js');
+    const { ToolRegistry } = await import('../src/tools/registry.js');
+    const tools = new ToolRegistry();
+    tools.register({ def: { name: toolName, description: 'x', parameters: { type: 'object', properties: { path: { type: 'string' } } } } as any, handler: async (a) => `contents of ${a.path}` });
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-uses-'));
+    const prompts: string[] = [];
+    let n = 0;
+    const brain = { id: 's', model: 's', price: [0, 0] as [number, number], chat: async (input: any) => {
+      if (!String(input.system ?? '').includes('TRUST BOUNDARY')) return { text: '{}', usage: { input: 1, output: 1 } };
+      prompts.push(String(input.messages?.[0]?.content ?? ''));
+      n++;
+      return { text: JSON.stringify(n <= calls ? { action: toolName, path: `file-${n}.txt` } : { action: 'done', summary: 'ok', outcome: 'no-change' }), usage: { input: 1, output: 1 } };
+    } };
+    const prev = process.env.MWA_FAST_CHAT; process.env.MWA_FAST_CHAT = '0';
+    try {
+      const r = await runAgent({ instruction: 'go through the files', dir, memory: new NullMemory() as any, brain, worker: brain, tools, interactive: false, plan: false, budget: { maxSteps: 30, maxWallMs: 30_000 } } as any);
+      return { reason: String(r.reason), prompts };
+    } finally { if (prev === undefined) delete process.env.MWA_FAST_CHAT; else process.env.MWA_FAST_CHAT = prev; rmSync(dir, { recursive: true, force: true }); }
+  };
+
+  it('reading twelve different files is not "stuck", and gets no stop nudge', async () => {
+    const { reason, prompts } = await runWith('read_file', 12);
+    expect(reason).not.toBe('stuck');
+    expect(prompts.length).toBeGreaterThan(12); // all twelve reads happened, then done
+    expect(prompts.join('\n')).not.toMatch(/You've used "read_file"/);
+  }, 60_000);
+
+  it('any other tool still gets the stop nudge from its fifth use, and twelve calls end the run as stuck', async () => {
+    const { reason, prompts } = await runWith('web_search', 12);
+    expect(prompts.join('\n')).toMatch(/You've used "web_search" 5 times/);
+    expect(reason).toBe('stuck');
+  }, 60_000);
+});
