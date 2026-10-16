@@ -249,6 +249,112 @@ class OpenAICompatProvider implements Provider {
   }
 }
 
+/**
+ * Ollama, through its native API (BL-20). Its OpenAI-compatible /v1 endpoint can't set the context
+ * size, so Ollama silently keeps only the last few thousand tokens of MWA's ~11k-token prompts, losing
+ * the system prompt and tool list. Measured 2026-10-16 on Ollama 0.40.2: a 67k-character prompt kept
+ * 2,050 tokens and the model missed an instruction placed at the start. /api/chat takes
+ * `options.num_ctx` per request.
+ *
+ * The context is sized from the prompt, cautiously (about 2.5 characters a token: prose runs near 4,
+ * JSON schemas and code lower), in 8k steps, and never shrinks within a process, because Ollama reloads
+ * the model whenever the size changes. A request that can't fit the model's own limit, or
+ * MWA_OLLAMA_MAX_NUM_CTX, is refused with both numbers instead of being cut. MWA_OLLAMA_NUM_CTX fixes the
+ * size outright.
+ */
+export const OLLAMA_CTX_STEP = 8192;
+export const OLLAMA_CTX_FLOOR = 16384;
+
+/** Tokens a request needs: a cautious estimate of the prompt, plus the reply, plus a margin. */
+export function ollamaTokensNeeded(promptChars: number, maxOut: number): number {
+  return Math.ceil(promptChars / 2.5) + maxOut + 256;
+}
+
+/** Ollama's own address from OLLAMA_BASE_URL, which may name the OpenAI-compatible /v1 path. */
+export function ollamaHost(base: string): string {
+  return base.replace(/\/+$/, '').replace(/\/v1$/i, '');
+}
+
+const positive = (v: string | undefined): number | null => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.floor(n) : null; };
+
+export class OllamaProvider implements Provider {
+  readonly id: string;
+  /** The context size in use; grows when a prompt needs more, never shrinks. */
+  private ctx = 0;
+  /** The model's own context limit from /api/show: undefined until asked, null when unknown. */
+  private modelLimit: number | null | undefined;
+  constructor(readonly model: string, readonly price: [number, number], private readonly host: string) {
+    this.id = `ollama:${model}`;
+  }
+
+  private async limit(): Promise<number | null> {
+    if (this.modelLimit !== undefined) return this.modelLimit;
+    try {
+      const r = await fetch(`${this.host}/api/show`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: this.model }), signal: AbortSignal.timeout(15_000) });
+      const j: any = r.ok ? await r.json() : {};
+      const key = Object.keys(j.model_info ?? {}).find((k) => k.endsWith('.context_length'));
+      this.modelLimit = key ? positive(String(j.model_info[key])) : null;
+    } catch { this.modelLimit = null; }
+    if (this.modelLimit === null) console.warn(`[ollama] couldn't read ${this.model}'s context limit; sizing the context from the prompt alone`);
+    return this.modelLimit;
+  }
+
+  /** The num_ctx for a request of `chars` characters and `maxOut` reply tokens. Throws when it can't fit. */
+  async contextFor(chars: number, maxOut: number): Promise<number> {
+    const fixed = positive(process.env.MWA_OLLAMA_NUM_CTX);
+    if (fixed) return fixed;
+    const need = ollamaTokensNeeded(chars, maxOut);
+    const modelLimit = await this.limit();
+    const ceiling = positive(process.env.MWA_OLLAMA_MAX_NUM_CTX);
+    const cap = Math.min(modelLimit ?? Infinity, ceiling ?? Infinity);
+    if (need > cap) {
+      const which = ceiling !== null && ceiling === cap ? `MWA_OLLAMA_MAX_NUM_CTX is ${ceiling}` : `${this.model} holds at most ${modelLimit}`;
+      throw new Error(`${this.id}: this request needs about ${need} tokens of context, but ${which}. Ollama would silently drop the start of the prompt (the instructions and tools), so MWA won't send it. Use a model with a larger context, or a hosted model.`);
+    }
+    const stepped = Math.max(OLLAMA_CTX_FLOOR, Math.ceil(need / OLLAMA_CTX_STEP) * OLLAMA_CTX_STEP);
+    this.ctx = Math.max(this.ctx, Math.min(stepped, cap));
+    return this.ctx;
+  }
+
+  async chat({ system, messages, maxTokens = 1500, tools }: ChatInput): Promise<ChatResult> {
+    const msgs = (system ? [{ role: 'system', content: system }, ...messages] : messages).map((m) => ({ role: m.role, content: m.content }));
+    const toolDefs = tools?.length ? tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })) : undefined;
+    // Models that think spend reply tokens before the answer: give them room, as for hosted thinkers.
+    const thinker = /qwen3|deepseek-r|magistral|thinking|gpt-oss/i.test(this.model);
+    const maxOut = maxTokens + (thinker ? 4000 : 0);
+    const numCtx = await this.contextFor(JSON.stringify(msgs).length + (toolDefs ? JSON.stringify(toolDefs).length : 0), maxOut);
+    const body: Record<string, unknown> = { model: this.model, messages: msgs, stream: false, options: { num_ctx: numCtx, num_predict: maxOut } };
+    if (toolDefs) body.tools = toolDefs;
+    let lastErr = `${this.id}: unknown error`;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      if (attempt) await new Promise((r) => setTimeout(r, Math.min(8000, 600 * attempt * attempt)));
+      let res: Response;
+      try {
+        res = await fetch(`${this.host}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      } catch (e) { lastErr = `${this.id} network: ${(e as Error).message} (is Ollama running at ${this.host}?)`; continue; }
+      if (res.ok) {
+        const j: any = await res.json();
+        if (typeof j.prompt_eval_count === 'number' && j.prompt_eval_count >= numCtx - 16)
+          console.warn(`[ollama] ${this.model} read ${j.prompt_eval_count} tokens with a ${numCtx}-token context: the start of the prompt may have been cut (set MWA_OLLAMA_NUM_CTX higher)`);
+        const msg = j.message ?? {};
+        // Reasoning a thinking model writes inline is not the answer.
+        const text = String(msg.content ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        const toolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length
+          ? msg.tool_calls.map((tc: any) => ({ name: tc.function?.name ?? '', args: typeof tc.function?.arguments === 'string' ? safeJson(tc.function.arguments) : (tc.function?.arguments ?? {}) }))
+          : undefined;
+        return { text, toolCalls, usage: { input: j.prompt_eval_count ?? 0, output: j.eval_count ?? 0 } };
+      }
+      const detail = (await res.text()).slice(0, 200);
+      if (res.status === 404 && !/model/i.test(detail)) {
+        throw new Error(`${this.id}: ${this.host} doesn't serve Ollama's /api/chat, so it isn't Ollama (or is a very old one). For LM Studio, llama.cpp or another OpenAI-compatible server, use openai:<model> with OPENAI_BASE_URL.`);
+      }
+      lastErr = `${this.id} ${res.status}: ${detail}`;
+      if (res.status !== 429 && res.status < 500) break;
+    }
+    throw new Error(lastErr);
+  }
+}
+
 export type ProviderRole = 'brain' | 'high';
 
 // Built-in OpenAI-compatible providers: default base URL + the env var holding the key.
@@ -283,6 +389,11 @@ export function resolveProvider(spec: string): Provider {
     const base = process.env.AZURE_GPT_BASE_URL, key = process.env.AZURE_GPT_API_KEY;
     if (base && key) return new AzureGptProvider(provider ? model : (process.env.AZURE_GPT_DEPLOYMENT ?? model), [0.75, 4.5], base, key);
     return anthropicFor('claude-haiku-4-5-20251001', ' (brain-fallback)'); // azure asked-for but unconfigured → still run
+  }
+  // Ollama's own API, not its /v1 shim: only the native API can set the context size (BL-20).
+  if (provider === 'ollama') {
+    const oc = OPENAI_COMPAT.ollama;
+    return new OllamaProvider(model, oc.price, ollamaHost((oc.baseEnv && process.env[oc.baseEnv]) || oc.base));
   }
   const oc = OPENAI_COMPAT[provider];
   if (oc) {

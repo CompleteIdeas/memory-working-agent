@@ -36,6 +36,8 @@ flagged identity before a sensitive confirm) are always on; they are not env-tog
 |---|---|---|
 | `MWA_MODEL` | from `mwa.config.json` | Override the conductor model (`<provider>:<model>`, e.g. `azure:gpt-5-4-mini`, `openrouter:…`, `ollama:llama3.1`). |
 | `MWA_MODEL_IMAGE` | from config | Override the image model. |
+| `MWA_OLLAMA_NUM_CTX` | sized per prompt | For `ollama:` models, a fixed context size in tokens. By default MWA sizes it from each prompt, in 8k steps from 16k, and never shrinks it while running, because Ollama reloads the model when the size changes. |
+| `MWA_OLLAMA_MAX_NUM_CTX` | the model's own limit | The largest context MWA may ask Ollama for, so it fits your memory. A request that needs more is refused with both numbers, rather than Ollama silently dropping the start of the prompt. |
 | `MWA_MAX_TOKENS` | `400000` | Hard per-run output-token ceiling (cost guard). |
 
 Provider API keys live in `.env` (never committed): `ANTHROPIC_API_KEY`, `AZURE_GPT_*`, `OPENAI_API_KEY`,
