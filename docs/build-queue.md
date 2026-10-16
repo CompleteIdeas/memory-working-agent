@@ -56,8 +56,8 @@ was written.
 **Delivery convergence.** At most **5 unmerged items** on the branch. At the cap, the next tick
 writes a ready-to-merge summary for Robert and stops building.
 
-**Cost cap.** **$20** of model spend (Azure e2e runs + coworker calls) for the loop, tracked
-below. Stop and report at the cap. (Raised from $10 by Robert on 2026-10-15.)
+**Cost cap.** **$30** of model spend (Azure e2e runs + coworker calls) for the loop, tracked
+below. Stop and report at the cap. (Raised from $10 to $20 by Robert on 2026-10-15, and to $30 on 2026-10-16.)
 
 **Stop when:** an item BLOCKs with nothing else ready; the stack cap or the cost cap is reached;
 two consecutive items REVISE; or Robert says stop.
@@ -137,6 +137,7 @@ publish 0.6.0, redeploy the dogfood. Calls 6 and 7 stay "not now".
 | 2026-10-16 | BL-24 | Rounds 7 and 8 were scoped as CONFIRMATION rounds: verify the previous fixes, check for regressions, report only a new medium+ class. | Not challenged. Recorded so it isn't read as a lighter gate: an open-ended adversarial hunt on an advisory feature always finds something more exotic; the residuals are listed in the row instead. |
 | 2026-10-16 | — | **Robert: "Merge"** — the fourth stack (BL-11, BL-12, BL-14c, BL-16c, BL-20, the BL-24 measurement) merged by fast-forward: `master` = `514445d` (was `57086e2`). Summary: `docs/merge-summary-2026-10-16.md`. The loop resumes with BL-23. | Robert's decision. |
 | 2026-10-15 | gates | **Robert raised the cost cap to $20** ("Raise it to 20"), answering the $15 question in the decision review. | Robert's decision; not challenged. |
+| 2026-10-16 | gates | **Robert raised the cost cap to $30** ("Make it 30"), answering the budget question for BL-25 and the AWM vs OpenClaw comparison. | Robert's decision; not challenged. |
 | 2026-10-15 | gates | Cheaper testing: only gpt-5.4-mini is deployed on the Azure resource (nano and seven others: DeploymentNotFound); the local GPU (4 GB) fits only 4B models. So: harnesses once per item on the final revision, nano for non-blocking smoke if Robert deploys it, mini stays the gate; proposed cap $15. | **Coworker:** nano in between and mini as the gate, with A's once-per-item rule; local models only as an "is it obviously broken" smoke. **Taken.** |
 | 2026-10-15 | BL-07 | Reworded to quiet hours only. The queue's old wording ("recurring tasks default to notifying only when something changed") contradicted BL-02's decision. | Follows BL-02's coworker challenge (the read-only report trap). |
 | 2026-10-15 | BL-05 | Structural fan-out budget (depth ≤ 2, ≤ 2 pending follow-ups per job, ≤ 3 per run, ≤ 5 per goal, no unattended/tainted scheduling at ≥ 50 of a person's pending jobs); goals as tagged AWM engrams mirrored to native task fields; only attended, clean chats create or change goals; only explicit "done" stops a job. | **Taken** from the coworker: per-parent child cap, goals only from attended clean chats, budget for tainted runs, blocked-goal backoff, structural not textual limits. **Not taken:** limits on attended chats (one owner scheduling their own jobs; each run schedules once) and daily spend budgets (with BL-13). |
@@ -184,7 +185,7 @@ publish 0.6.0, redeploy the dogfood. Calls 6 and 7 stay "not now".
 | 2026-10-15 | BL-13 | One gate round ($0.27 from the run log), the Telegram proof (two local jobs, ~$0.03), plus coworker | ≤ ~$0.32 |
 | 2026-10-15 | BL-08 | One gate round plus a scheduled-harness re-run ($0.49 from the run log), two live proofs ($0.28 for one that failed on its own setup, $0.05 for the pass), plus coworker | ≤ ~$0.85 |
 
-**Running total: ≤ ~$17.86 of $20.00** (Azure; the OpenRouter model evaluation is billed to that key and tracked separately). A BL-09 re-run (~$5–8) does not fit in what is left, nor does the AWM vs OpenClaw comparison Robert asked about on 2026-10-16. An upper bound: `runs.jsonl` logs a planned chat's sub-runs as separate entries whose cost the parent entry already includes, so summing it double-counts. All-time raw sum $4.81, of which ~$0.6 predates the loop.
+**Running total: ≤ ~$17.86 of $30.00** (cap raised from $20 on 2026-10-16) (Azure; the OpenRouter model evaluation is billed to that key and tracked separately). About $12 is left: room for BL-25 or the AWM vs OpenClaw comparison, not both alongside a BL-09 re-run (~$5–8). An upper bound: `runs.jsonl` logs a planned chat's sub-runs as separate entries whose cost the parent entry already includes, so summing it double-counts. All-time raw sum $4.81, of which ~$0.6 predates the loop.
 
 ## Decision log
 
