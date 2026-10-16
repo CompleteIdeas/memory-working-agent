@@ -124,7 +124,8 @@ const runCommandTool: RegisteredTool = {
     // A run nobody watches may stage only a few: a tainted job must not flood the approvals list.
     if (stageOnly && ctx.runId && pendingStagedBy(ctx.runId, 'tool').length >= 3) return '(refused: this run has already asked for 3 approvals — wait for the person, and say in your summary what is waiting)';
     // BL-24: a commit gets a second opinion on its change, at the top of the card (when configured).
-    const second = await secondOpinionForCommand(command, resolve(ctx.sandboxDir));
+    // Only within the folders this run may use (the job folder and those the person granted).
+    const second = await secondOpinionForCommand(command, resolve(ctx.sandboxDir), (dir) => realAllowed(ctx, dir));
     const id = stageAction({
       tool: 'run_command', ctx,
       // The card is now the last defense for anything not read-only (second BL-03 review): show the

