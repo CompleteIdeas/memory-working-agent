@@ -646,6 +646,7 @@ export async function runAgent(opts: {
   const toolUses = new Map<string, number>(); // tool name -> times called this run
   const lastToolResult = new Map<string, string>(); // tool name -> its previous result (detect no-new-info loops)
   const recalledQueries = new Set<string>(); // normalized recall queries this run — kills the re-ask-memory loop
+  let emptyRecalls = 0; // recalls in a row that found nothing new (BL-31: one rephrase is free)
   const rememberedConcepts = new Set<string>(); // normalized remember concepts this run — kills duplicate writes
   const toolSigs = new Set<string>(); // exact (tool+args) calls already made — kills identical retries
   const toolsUsed = new Set<string>(); // action/tool names invoked this run — feeds the substance gate
@@ -654,7 +655,7 @@ export async function runAgent(opts: {
   let productive = 0; // remembers/dispatches/acts — once high enough, prompt to consider done
   const doneThreshold = Math.min(5, Math.ceil(maxSteps * 0.35));
   const LONG_TASK_STEPS = 8; // a run this many conductor-steps deep = long-horizon → escalate
-  const GATHER_NUDGE = 'You have gathered information several times without recording anything. Call REMEMBER now with 1-2 specific facts from what you just read — do not read/list/recall again until you do.';
+  const GATHER_NUDGE = 'You have gathered information several times without recording anything. Call REMEMBER now with 1-2 specific facts from what you just read — do not read or list again until you do.';
   // Named output files the instruction asked the agent to PRODUCE (write/create/save … X.ext,
   // or "to X.ext") — verified to actually exist before we accept `done`, catching "it's ready"
   // claims with no file. Conservative: only filenames in a produce-context.
@@ -896,13 +897,14 @@ export async function runAgent(opts: {
     }
 
     if (action.action === 'recall' && action.query && memory.enabled) {
-      // Re-asking memory the same thing is the #1 thrash pattern — and recall looks
-      // "fresh" because the agent's OWN mid-run writes become recallable. Block repeats
-      // and push toward a real action. (Auto-prime already keeps memory in the prompt.)
-      const qsig = normSig(String(action.query));
+      // Re-asking memory the SAME thing is the #1 thrash pattern — and recall looks "fresh" because the
+      // agent's OWN mid-run writes become recallable. Block exact repeats. A different question is
+      // welcome: another wording or the exact identifier often surfaces more (BL-31, Robert: "not the
+      // same exact query, but rather additional context"). So the whole query is compared, not a prefix.
+      const qsig = String(action.query).toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
       if (recalledQueries.has(qsig)) {
         consecNoProgress++;
-        nudge = 'You already recalled that. Stop re-asking your memory — take a concrete action (web_search, read, draft) or call done with what you have.';
+        nudge = 'You already ran that exact recall. Ask for different context (another wording, or the exact name or identifier), or take a concrete action.';
         history.push(`(skipped repeat recall "${String(action.query).slice(0, 40)}")`);
         continue;
       }
@@ -917,10 +919,13 @@ export async function runAgent(opts: {
       emit('recall', { query: action.query.slice(0, 80), total: recalled.length });
       // Recall is gathering, NOT task progress — don't reset the no-progress counter, and
       // don't push the "call remember" nudge (that caused re-remembering the same fact).
+      // One recall that finds nothing new is free — the next, rephrased, may (BL-31). Two in a row count.
       if (fresh.length === 0) {
-        consecNoProgress++;
-        nudge = 'That recall turned up nothing new. Take a concrete action (web_search, read, draft), or call done with what you have.';
-      }
+        if (++emptyRecalls >= 2) consecNoProgress++;
+        nudge = emptyRecalls >= 2
+          ? 'Memory has nothing more on this. Take a concrete action (web_search, read, draft), or call done with what you have.'
+          : 'That recall turned up nothing new. If it matters, try once more with different wording or the exact name or identifier; otherwise take a concrete action.';
+      } else emptyRecalls = 0;
       continue;
     }
 

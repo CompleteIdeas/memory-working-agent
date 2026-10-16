@@ -78,7 +78,7 @@ const SYSTEM = [
 
 export const BRAIN_TOOLS: ToolDef[] = [
   { name: 'dispatch', description: 'Hand a precise, self-contained coding instruction to the worker, which writes code and runs the tests.', parameters: { type: 'object', properties: { instruction: { type: 'string', description: 'the concrete coding step' } }, required: ['instruction'] } },
-  { name: 'recall', description: 'Re-query memory for prior decisions/learnings, framed to the current sub-problem.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
+  { name: 'recall', description: 'Re-query memory for prior decisions/learnings, framed to the current sub-problem. Recall is cheap: when the first recall misses, one more with different wording or the exact name or identifier often finds more. Never repeat the same query.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
   { name: 'read', description: 'Read a file in the sandbox for ground truth when memory is silent or to verify a fact.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
   { name: 'supersede', description: 'Replace recalled memory #ref (1-based) with a corrected fact when a result proves it wrong.', parameters: { type: 'object', properties: { ref: { type: 'integer' }, fact: { type: 'string' } }, required: ['ref', 'fact'] } },
   { name: 'done', description: 'Finish the task. Only call after a dispatch produced passing tests this run.', parameters: { type: 'object', properties: { summary: { type: 'string' } }, required: [] } },
