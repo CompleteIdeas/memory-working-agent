@@ -17,7 +17,7 @@
  */
 
 import { existsSync, realpathSync } from 'node:fs';
-import { dirname, basename, sep } from 'node:path';
+import { dirname, basename, sep, resolve, isAbsolute } from 'node:path';
 
 export type ShellVerdict = { kind: 'read-only' } | { kind: 'needs-approval'; reason: string };
 
@@ -133,7 +133,27 @@ export function writeRefusal(full: string): string | null {
       probe = up;
     }
   } catch { return 'that path could not be checked'; }
+  if (onPath(dirname(full))) return 'that folder is on your PATH — a file written there would run in place of a program of the same name, in your own terminals too';
   return null;
+}
+
+/**
+ * Whether a folder is one the person's own PATH lists (BL-27). Programs are looked up directly in those
+ * folders, so a `pnpm.cmd` written into `AppData\Roaming\npm` or `~/.local/bin` would replace the real
+ * one everywhere — for MWA's commands and in the person's terminals. Compared as real paths where they
+ * exist, case-insensitively on Windows.
+ */
+export function onPath(dir: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const win = process.platform === 'win32';
+  const norm = (p: string) => {
+    let r = resolve(p);
+    try { r = realpathSync.native(r); } catch { /* not there yet: compare as written */ }
+    r = r.replace(/[\\/]+$/, '');
+    return win ? r.toLowerCase() : r;
+  };
+  const target = norm(dir);
+  const entries = String(env.PATH ?? env.Path ?? '').split(win ? ';' : ':').map((e) => e.trim().replace(/^"(.*)"$/, '$1')).filter((e) => isAbsolute(e));
+  return entries.some((e) => norm(e) === target);
 }
 
 /** The environment a model-run command gets: enough to find programs and a temp folder, none of

@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { classifyCommand, scrubbedEnv } from '../src/tools/shell-gate.js';
+import { classifyCommand, scrubbedEnv, onPath } from '../src/tools/shell-gate.js';
 import { isBlockedAddress, urlRefusal } from '../src/tools/net-guard.js';
 import { builtinTools } from '../src/tools/builtins.js';
 import { requireApproval, approvalTools, pendingMeta, confirmPending } from '../src/tools/approval.js';
@@ -87,6 +87,25 @@ describe('the model’s shell gets no secrets', () => {
     const win = scrubbedEnv({ Path: 'C:\\Windows;.;;tools;"C:\\Program Files\\Git\\cmd";\\\\srv\\share' }, 'win32');
     expect(win.Path).toBe('C:\\Windows;"C:\\Program Files\\Git\\cmd";\\\\srv\\share');
     expect(win.NoDefaultCurrentDirectoryInExePath).toBe('1');
+  });
+
+  it('BL-27: a file is never written straight into a folder on the person\'s PATH', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mwa-bl27-'));
+    const bin = join(root, 'bin'); mkdirSync(bin);
+    const sep = process.platform === 'win32' ? ';' : ':';
+    expect(onPath(bin, { PATH: `${bin}${sep}/usr/bin` })).toBe(true);
+    expect(onPath(join(bin, 'sub'), { PATH: bin })).toBe(false); // PATH folders aren't searched below themselves
+    expect(onPath(root, { PATH: `bin${sep}.` })).toBe(false); // relative entries don't count
+    if (process.platform === 'win32') expect(onPath(bin.toUpperCase(), { Path: `"${bin}\\"` })).toBe(true);
+    const saved = process.env.PATH;
+    process.env.PATH = `${bin}${sep}${saved ?? ''}`;
+    try {
+      const [write] = builtinTools(['write_file']);
+      expect(await write.handler({ path: 'bin/pnpm.cmd', content: '@echo planted' }, { sandboxDir: root, interactive: true })).toMatch(/on your PATH/);
+      expect(existsSync(join(bin, 'pnpm.cmd'))).toBe(false);
+      expect(await write.handler({ path: 'notes/a.txt', content: 'fine' }, { sandboxDir: root, interactive: true })).not.toMatch(/PATH/);
+      expect(existsSync(join(root, 'notes', 'a.txt'))).toBe(true);
+    } finally { process.env.PATH = saved; rmSync(root, { recursive: true, force: true }); }
   });
 
   it('BL-26: on Windows a planted npm.cmd in the folder does not replace npm; a script named with its folder still runs', async () => {
