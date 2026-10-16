@@ -57,6 +57,15 @@ On the final images: planted instructions in tool output followed 0 of 8 times; 
   - A site can no longer crash MWA with an odd status code, or hang a request with a "switch
     protocols" reply. Login headers don't follow a redirect to another site. `read_document` times
     out after 60 seconds.
+- **Local models through Ollama get their whole prompt (BL-20).**
+  - Ollama's OpenAI-compatible endpoint can't set the context size, so it had been keeping only
+    about 2,000 of MWA's tokens and dropping the instructions and tools, with no error. The
+    `ollama:` provider now uses Ollama's own API.
+  - MWA sizes the context to each prompt and asks Ollama to refuse rather than cut. A prompt that
+    can't fit the model is refused with both numbers. Thinking models get room to think.
+  - Setup reads a local model's context limit: it refuses one that can't hold MWA's prompts and
+    notes a small one.
+  - New settings: `MWA_OLLAMA_NUM_CTX`, `MWA_OLLAMA_MAX_NUM_CTX`, `MWA_OLLAMA_TIMEOUT_MS`.
 
 ## 0.6.0 (2026-10-15) — approval only a person can give, fenced tool output, job contracts, autonomous Docker
 
