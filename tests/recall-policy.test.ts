@@ -61,3 +61,49 @@ describe('the recall policy (BL-31)', () => {
     expect(d).toMatch(/Never repeat the same query/);
   });
 });
+
+describe('the primed pool can follow the topic (BL-31 experiment option, off by default)', () => {
+  it('primeDecayFrom accepts only a factor in (0, 1]; anything else is off', async () => {
+    const { primeDecayFrom } = await import('../src/agent.js');
+    expect(primeDecayFrom(undefined, undefined)).toBe(1);
+    expect(primeDecayFrom(undefined, '')).toBe(1);
+    expect(primeDecayFrom(undefined, '0.8')).toBe(0.8);
+    expect(primeDecayFrom(0.5, '0.8')).toBe(0.5); // the run option wins over the env
+    for (const bad of ['0', '-1', '1.5', 'abc']) expect(primeDecayFrom(undefined, bad)).toBe(1);
+  });
+
+  async function lastKnowledge(primeDecay?: number) {
+    const { runAgent } = await import('../src/agent.js');
+    const { MwaMemory } = await import('../src/awm.js');
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-decay-'));
+    const mem = new MwaMemory('prime-decay-test', join(dir, 'm.db'));
+    await mem.write('Apex account report deadline', 'The Apex account report is due on the 3rd; Dana Ruiz signs it off.');
+    await mem.write('Apex account budget', 'The Apex account budget for the report is 40,000.');
+    await mem.write('Borealis account main contact', 'The Borealis account main contact is Lee Okafor.');
+    await mem.write('Borealis account renewal date', 'The Borealis account renews on the 18th.');
+    const queries = ['who do we talk to over at the other client', 'when does the other client come up for renewal'];
+    const prompts: string[] = [];
+    let n = 0;
+    const brain = { id: 's', model: 's', price: [0, 0] as [number, number], chat: async (input: any) => {
+      if (!String(input.system ?? '').includes('TRUST BOUNDARY')) return { text: '{}', usage: { input: 1, output: 1 } };
+      prompts.push(String(input.messages?.[0]?.content ?? ''));
+      const q = queries[n++];
+      return { text: JSON.stringify(q !== undefined ? { action: 'recall', query: q } : { action: 'done', summary: 'ok', outcome: 'no-change' }), usage: { input: 1, output: 1 } };
+    } };
+    const prev = process.env.MWA_FAST_CHAT; process.env.MWA_FAST_CHAT = '0';
+    try {
+      await runAgent({ instruction: 'Apex account report deadline and Apex account budget', dir, memory: mem as any, brain, worker: brain, interactive: false, plan: false, primeCap: 2, primeDecay, budget: { maxSteps: 8, maxWallMs: 60_000 } } as any);
+      const last = prompts[prompts.length - 1];
+      return last.slice(last.indexOf('PRIOR KNOWLEDGE'));
+    } finally { if (prev === undefined) delete process.env.MWA_FAST_CHAT; else process.env.MWA_FAST_CHAT = prev; mem.close(); rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  it('with a fade, the pool moves to the topic the run moved to; without one it stays where it started', async () => {
+    const faded = await lastKnowledge(0.3);
+    expect(faded).toContain('Borealis account main contact');
+    expect(faded).toContain('Borealis account renewal date');
+    expect(faded).not.toContain('Apex account');
+    const sticky = await lastKnowledge(undefined);
+    expect(sticky).toContain('Apex account');
+  }, 120_000);
+});

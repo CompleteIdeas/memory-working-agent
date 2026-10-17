@@ -53,6 +53,12 @@ export { primeable } from './prime.js';
 import { primeable } from './prime.js';
 import { openTranscript, type Transcript } from './transcript.js';
 
+/** A per-step fade factor in (0, 1]; anything else (unset, 0, negative, > 1, not a number) is off. */
+export function primeDecayFrom(opt?: number, env?: string): number {
+  const v = opt ?? (env?.trim() ? Number(env) : NaN);
+  return Number.isFinite(v) && v > 0 && v <= 1 ? v : 1;
+}
+
 export function buildKnowledgeBlock(recalled: { concept: string; content: string; trust?: TrustTier }[]): string {
   if (!recalled.length) return 'No prior memory yet for this request.';
   const lines = recalled
@@ -376,6 +382,10 @@ export async function runAgent(opts: {
   /** cap on primed memories kept in the prompt (default 10, the anti-context-rot discipline).
    *  Raised only by the gauntlet's long-context baseline arm to let it dump the full store. */
   primeCap?: number;
+  /** BL-31 experiment: each step, the primed pool's ranking weights are multiplied by this
+   *  (0 < d < 1), so older context loses ground to fresh recalls and focus follows the current
+   *  topic. Off (1) unless set here or by MWA_PRIME_DECAY; BL-30 measures it before any default. */
+  primeDecay?: number;
   /** path to a domain pack (folder with AGENT.md + topics/*.md) — progressive-disclosure
    *  domain knowledge injected into the prompt. Lets a domain plug into MWA as a backend. */
   domainPackDir?: string;
@@ -489,6 +499,13 @@ export async function runAgent(opts: {
   }
 
   const PRIME_K = opts.primeCap ?? 10; // cap on primed memories kept in the prompt (anti-context-rot)
+  // Ranking weight per primed memory: its score, faded once per step when PRIME_DECAY < 1. Kept
+  // apart from `score`, which still feeds answer confidence. Off, the map stays empty and the
+  // pool ranks by score exactly as before.
+  const PRIME_DECAY = primeDecayFrom(opts.primeDecay, process.env.MWA_PRIME_DECAY);
+  const primeWeight = new Map<string, number>();
+  const weightOf = (m: RecalledMemory) => primeWeight.get(m.id) ?? m.score;
+  const byWeight = (a: RecalledMemory, b: RecalledMemory) => weightOf(b) - weightOf(a);
   // F3 governance: side-effecting actions taken THIS run — feeds the SPINE action log, the
   // "what I did" report, and the cumulative trajectory tripwire.
   const runActions: { verb: string; tool: string; effect: 'external' | 'local' | 'read' }[] = [];
@@ -599,7 +616,7 @@ export async function runAgent(opts: {
     const fresh = more.filter((m) => primeable(m) && !recalled.some((r) => r.id === m.id));
     if (fresh.length) {
       recalled.push(...fresh);
-      recalled.sort((a, b) => b.score - a.score);
+      recalled.sort(byWeight);
       if (recalled.length > PRIME_K) recalled.length = PRIME_K;
     }
     return fresh.length;
@@ -675,6 +692,7 @@ export async function runAgent(opts: {
   let steps = 0;
 
   for (; steps < maxSteps; steps++) {
+    if (PRIME_DECAY < 1) for (const r of recalled) primeWeight.set(r.id, weightOf(r) * PRIME_DECAY);
     if (now() - start > maxWallMs) { reason = 'budget'; finalSummary = 'wall-clock budget reached'; break; }
     if (maxTokens && usage.brainIn + usage.brainOut + usage.workerIn + usage.workerOut >= maxTokens) {
       reason = 'budget'; finalSummary = 'token budget reached'; break;
@@ -914,7 +932,7 @@ export async function runAgent(opts: {
       // An EXPLICIT recall returns untrusted skills/lessons too — rendered with their \u26a0 flag.
       const fresh = more.filter((m) => !recalled.some((r) => r.id === m.id));
       recalled.push(...fresh);
-      if (recalled.length > PRIME_K) { recalled.sort((a, b) => b.score - a.score); recalled.length = PRIME_K; }
+      if (recalled.length > PRIME_K) { recalled.sort(byWeight); recalled.length = PRIME_K; }
       history.push(`recall("${action.query.slice(0, 56)}") -> +${fresh.length} (total ${recalled.length})`);
       emit('recall', { query: action.query.slice(0, 80), total: recalled.length });
       // Recall is gathering, NOT task progress — don't reset the no-progress counter, and
