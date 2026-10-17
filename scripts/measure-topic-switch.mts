@@ -101,14 +101,14 @@ const qty = (ci: number, i: number) => 17 + ci * 40 + i * 7;
 const caseWord: Record<Case, string> = { upper: 'in CAPITAL LETTERS', lower: 'in lowercase', title: 'in Title Case (each word capitalized)' };
 const applyCase = (s: string, c: Case) => c === 'upper' ? s.toUpperCase() : c === 'lower' ? s.toLowerCase() : s.replace(/\b\w/g, (m) => m.toUpperCase());
 
-function brief(c: Client): string {
+function brief(c: Client, next: number): string {
   return [
     `Message from the account desk — client ${c.name}.`,
     `Client code word: ${c.code}. Main contact: ${c.contact}. Deadline: ${c.deadline}. Budget: ${c.budget}.`,
     `Rules for every ${c.name} item line: write the item name ${caseWord[c.case]}, then a colon, a space, the quantity as a number, a space, and the tag ${c.tag}.`,
     `Task now: read ${c.key}/item-1.txt to ${c.key}/item-6.txt one at a time, then write ${c.key}-report.txt — its first line is the client code word, then one item line per item, in order.`,
     'Keep these details: this client may come up again later.',
-    `Finish this before the next message: read all six item files, then write the whole report (the code word and all six item lines). When ${c.key}-report.txt is written, the next message appears in inbox/.`,
+    `Finish this before the next message: read all six item files, then write the whole report (the code word and all six item lines). When ${c.key}-report.txt is written, the next message appears: read inbox/msg-${next}.txt.`,
   ].join('\n');
 }
 function update(c: Client): string {
@@ -185,7 +185,7 @@ async function oneTrial(n: number) {
       c.items.forEach((item, i) => writeFileSync(join(dir, c.key, `item-${i + 1}.txt`), `${item}: ${qty(ci, i)} units`));
       if (book === 'open') writeFileSync(join(dir, c.key, 'brief.txt'), brief(c));
     }
-    const queue = [...clients.map(brief), update(first)];
+    const queue = [...clients.map((c, i) => brief(c, i + 2)), update(first)];
     // The file each message's task produces. The next message appears only once it exists: revealed on
     // reading instead, it showed up in a listing mid-task and the agent left a client half-read for it,
     // and a run that saw no next message assumed the first task was the whole job (pilot, 2026-10-17).
@@ -201,7 +201,12 @@ async function oneTrial(n: number) {
     const inboxTurn = () => {
       while (readUpTo < lastMsgSeen) {
         readUpTo++;
-        if (book === 'closed') rmSync(join(dir, 'inbox', `msg-${readUpTo}.txt`), { force: true });
+        // Closed book: the brief is gone, but a stub says where to go next. A run that found only a
+        // missing file kept re-reading msg-1 and never looked for msg-2 (ceiling calibration). It
+        // carries none of the brief's facts.
+        if (book === 'closed') writeFileSync(join(dir, 'inbox', `msg-${readUpTo}.txt`), readUpTo < queue.length
+          ? `This message was read and removed. The next one is inbox/msg-${readUpTo + 1}.txt; it appears once the file this message asked for is written.`
+          : 'This message was read and removed. It was the last message.');
       }
       if (readUpTo === delivered && delivered < queue.length && existsSync(join(dir, outputs[delivered - 1]))) reveal();
       if (readUpTo === queue.length && !existsSync(join(dir, 'inbox', 'no-more-messages.txt'))) writeFileSync(join(dir, 'inbox', 'no-more-messages.txt'), 'There are no more messages.');
