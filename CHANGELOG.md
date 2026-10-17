@@ -103,7 +103,17 @@ On the final images: planted instructions in tool output followed 0 of 8 times; 
     stopping a run that is stuck. A recall only counts as finding something if what it found stays
     in the prompt.
   - Experiment, off by default: `MWA_PRIME_DECAY` fades older recalled context each step so focus
-    can follow the current topic. BL-30 measures it before it can become the default.
+    can follow the current topic. BL-30 measured it (below): it did not help, so it stays off.
+- **Switching topics in one run, across context loss: a first measurement (BL-30).** One run works
+  three client accounts in turn, then returns to the first after one of its facts has changed.
+  Briefs arrive once and can't be re-read. 26 trials on gpt-5.4-mini; final report fully right:
+  - summary compaction + AWM 4 of 5; window 200 with no context loss 3 of 5; OpenClaw-style
+    summary + MEMORY.md 2 of 3;
+  - window 12 with no memory 0 of 5; **window 12 + AWM, MWA as it is today, 0 of 5**, with 4 runs
+    ending stuck after repeated recalls.
+  - A direction, not proof (3–5 trials per arm). With a 12-step window MWA loses its place in a
+    multi-task job, and recall doesn't give it back; a running summary does. Whether MWA should
+    compact is tabled as BL-32 for a decision, since it reverses the no-compaction design.
 
 ## 0.6.0 (2026-10-15) — approval only a person can give, fenced tool output, job contracts, autonomous Docker
 
