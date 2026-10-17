@@ -53,11 +53,18 @@ const book = arg('book', 'closed');
 const trials = Number(arg('trials', '2'));
 const seed0 = Number(arg('seed', '1'));
 const maxSteps = Number(arg('steps', '140'));
+// BL-31's experiment: a per-step fade of the primed pool (0 < d < 1). Passed per run, never through
+// MWA_PRIME_DECAY, so it cannot leak into another arm's process.
+const primeDecay = Number(arg('prime-decay', '1'));
+if (!(primeDecay > 0 && primeDecay <= 1)) { console.error('--prime-decay must be in (0, 1]'); process.exit(2); }
+if (primeDecay < 1 && !memoryOnFor(arm)) { console.error('--prime-decay needs a memory arm'); process.exit(2); }
+delete process.env.MWA_PRIME_DECAY;
 if (!ARMS.includes(arm)) { console.error(`--arm must be one of ${ARMS.join(', ')}`); process.exit(2); }
 if (book !== 'closed' && book !== 'open') { console.error('--book must be closed or open'); process.exit(2); }
 const wantWindow = arm === 'w200-off' ? 200 : 12;
 if (Number(process.env.MWA_HIST_WINDOW) !== wantWindow) { console.error(`arm ${arm} needs MWA_HIST_WINDOW=${wantWindow} in the process environment`); process.exit(2); }
-const memoryOn = arm === 'w12-awm' || arm === 'compact-awm';
+function memoryOnFor(a: string) { return a === 'w12-awm' || a === 'compact-awm'; }
+const memoryOn = memoryOnFor(arm);
 const compaction = arm === 'openclaw' || arm === 'compact-awm';
 
 if (process.env.MWA_ENV_FILE) {
@@ -245,6 +252,7 @@ async function oneTrial(n: number) {
       instruction: `Work through your messages from the account desk, in the inbox folder. Read inbox/msg-1.txt and do exactly what it asks; only then read the next message (inbox/msg-2.txt, and so on). ${book === 'closed' ? 'A message file is removed once it has been read, and the next appears.' : 'The next message appears once the current one has been read.'} When inbox/no-more-messages.txt appears and the work is done, call done.`,
       dir, memory, brain, worker, tools: registry, interactive: false, plan: false,
       budget: { maxSteps, maxWallMs: 40 * 60_000 },
+      ...(primeDecay < 1 ? { primeDecay } : {}),
       ...(compaction ? { compaction: { fold, block } } : {}),
     } as any);
 
@@ -264,7 +272,7 @@ async function oneTrial(n: number) {
     }
     memory.close();
     return {
-      arm, book, window: HIST_WINDOW, awm: awmVersion, trial: n, seed, order: clients.map((c) => c.key).join('>'),
+      arm, book, primeDecay, window: HIST_WINDOW, awm: awmVersion, trial: n, seed, order: clients.map((c) => c.key).join('>'),
       steps: Number(r.steps ?? 0), maxSteps, reason: String(r.reason), messagesRead: readUpTo,
       primary: final.pass, checks: final.checks,
       itemLines: { right: lineScores.reduce((s, x) => s + x.right, 0), wrong: lineScores.reduce((s, x) => s + x.wrong, 0), bleed: lineScores.reduce((s, x) => s + x.bleed, 0), of: lineScores.length * 6 },

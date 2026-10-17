@@ -506,6 +506,27 @@ export async function runAgent(opts: {
   const primeWeight = new Map<string, number>();
   const weightOf = (m: RecalledMemory) => primeWeight.get(m.id) ?? m.score;
   const byWeight = (a: RecalledMemory, b: RecalledMemory) => weightOf(b) - weightOf(a);
+  /**
+   * Merge recall results into the primed pool and return the new memories still in it after the
+   * cap. With a fade on, every memory the recall returned gets its current score back as its
+   * weight (it is on topic again, whether new or already held), and a memory cut from the pool
+   * forgets its weight, so one that comes back later is ranked by its new score, not a stale fade.
+   * `sortWhen` keeps each caller's original ordering rule, so with the fade off nothing changes.
+   */
+  const mergeIntoPool = (more: RecalledMemory[], sortWhen: 'fresh' | 'over-cap'): RecalledMemory[] => {
+    const fresh = more.filter((m, i) => !recalled.some((r) => r.id === m.id) && more.findIndex((x) => x.id === m.id) === i);
+    if (PRIME_DECAY < 1) for (const m of more) primeWeight.set(m.id, m.score);
+    recalled.push(...fresh);
+    if (sortWhen === 'fresh' ? fresh.length > 0 : recalled.length > PRIME_K) {
+      recalled.sort(byWeight);
+      if (recalled.length > PRIME_K) recalled.length = PRIME_K;
+    }
+    if (primeWeight.size) {
+      const kept = new Set(recalled.map((r) => r.id));
+      for (const id of [...primeWeight.keys()]) if (!kept.has(id)) primeWeight.delete(id);
+    }
+    return fresh.filter((m) => recalled.includes(m));
+  };
   // F3 governance: side-effecting actions taken THIS run — feeds the SPINE action log, the
   // "what I did" report, and the cumulative trajectory tripwire.
   const runActions: { verb: string; tool: string; effect: 'external' | 'local' | 'read' }[] = [];
@@ -612,14 +633,10 @@ export async function runAgent(opts: {
   // Expansion's recall boost is kept where it matters: task-start prime + the explicit recall tool.
   async function prime(ctx: string): Promise<number> {
     if (!memory.enabled) return 0;
-    const more = await memory.recall(ctx, { limit: 6, full: true, rerank: true, expand: false, workspace: opts.workspace });
-    const fresh = more.filter((m) => primeable(m) && !recalled.some((r) => r.id === m.id));
-    if (fresh.length) {
-      recalled.push(...fresh);
-      recalled.sort(byWeight);
-      if (recalled.length > PRIME_K) recalled.length = PRIME_K;
-    }
-    return fresh.length;
+    const more = (await memory.recall(ctx, { limit: 6, full: true, rerank: true, expand: false, workspace: opts.workspace })).filter(primeable);
+    const freshCount = more.filter((m) => !recalled.some((r) => r.id === m.id)).length;
+    mergeIntoPool(more, 'fresh');
+    return freshCount;
   }
 
   // MULTI-HOP BRIDGE — AWM nails SINGLE-hop recall but a 2-hop query ("codename for my main
@@ -787,6 +804,8 @@ export async function runAgent(opts: {
     }
 
     toolsUsed.add(action.action); // track what the agent actually invoked (for the substance gate)
+    // "Two empty recalls in a row" means in a row: any other action in between starts the count over.
+    if (action.action !== 'recall') emptyRecalls = 0;
 
     // Anti-redundancy: skip an immediate exact-repeat action (the explore-loop trap)
     // and nudge toward a NEW move. done is never skipped.
@@ -930,9 +949,9 @@ export async function runAgent(opts: {
       reRecalls++;
       const more = await memory.recall(action.query, { limit: 5, full: true, workspace: opts.workspace });
       // An EXPLICIT recall returns untrusted skills/lessons too — rendered with their \u26a0 flag.
-      const fresh = more.filter((m) => !recalled.some((r) => r.id === m.id));
-      recalled.push(...fresh);
-      if (recalled.length > PRIME_K) { recalled.sort(byWeight); recalled.length = PRIME_K; }
+      // Only what survives the cap is new to the agent: a memory the cap cuts again is not progress,
+      // or a run alternating recalls that re-find cut memories would never count as stuck.
+      const fresh = mergeIntoPool(more, 'over-cap');
       history.push(`recall("${action.query.slice(0, 56)}") -> +${fresh.length} (total ${recalled.length})`);
       emit('recall', { query: action.query.slice(0, 80), total: recalled.length });
       // Recall is gathering, NOT task progress — don't reset the no-progress counter, and

@@ -4,7 +4,7 @@
  * skipped; one empty recall is free, and the nudges no longer tell the agent to stop recalling.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -72,38 +72,93 @@ describe('the primed pool can follow the topic (BL-31 experiment option, off by 
     for (const bad of ['0', '-1', '1.5', 'abc']) expect(primeDecayFrom(undefined, bad)).toBe(1);
   });
 
-  async function lastKnowledge(primeDecay?: number) {
+  /**
+   * A run with a scripted memory: recall answers by query from a fixed table, so every score is
+   * known and nothing depends on the models. The model's moves are scripted too.
+   */
+  type Mem = { id: string; concept: string; content: string; score: number };
+  const mem = (id: string, score: number): Mem => ({ id, concept: `${id} fact`, content: `the ${id} fact`, score });
+  async function scripted(o: { start: Mem[]; byQuery: Record<string, Mem[]>; moves: any[]; primeDecay?: number; primeCap?: number; files?: Record<string, string>; maxSteps?: number }) {
     const { runAgent } = await import('../src/agent.js');
     const { MwaMemory } = await import('../src/awm.js');
-    const dir = mkdtempSync(join(tmpdir(), 'mwa-decay-'));
-    const mem = new MwaMemory('prime-decay-test', join(dir, 'm.db'));
-    await mem.write('Apex account report deadline', 'The Apex account report is due on the 3rd; Dana Ruiz signs it off.');
-    await mem.write('Apex account budget', 'The Apex account budget for the report is 40,000.');
-    await mem.write('Borealis account main contact', 'The Borealis account main contact is Lee Okafor.');
-    await mem.write('Borealis account renewal date', 'The Borealis account renews on the 18th.');
-    const queries = ['who do we talk to over at the other client', 'when does the other client come up for renewal'];
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-pool-'));
+    for (const [f, t] of Object.entries(o.files ?? {})) writeFileSync(join(dir, f), t);
+    const m = new MwaMemory('pool-test', join(dir, 'm.db'));
+    const INSTR = 'work the account desk';
+    (m as any).recall = async (q: string) => (q === INSTR ? o.start : o.byQuery[q] ?? []).map((x) => ({ ...x }));
     const prompts: string[] = [];
     let n = 0;
     const brain = { id: 's', model: 's', price: [0, 0] as [number, number], chat: async (input: any) => {
       if (!String(input.system ?? '').includes('TRUST BOUNDARY')) return { text: '{}', usage: { input: 1, output: 1 } };
       prompts.push(String(input.messages?.[0]?.content ?? ''));
-      const q = queries[n++];
-      return { text: JSON.stringify(q !== undefined ? { action: 'recall', query: q } : { action: 'done', summary: 'ok', outcome: 'no-change' }), usage: { input: 1, output: 1 } };
+      const mv = o.moves[n++] ?? { action: 'done', summary: 'ok', outcome: 'no-change' };
+      return { text: JSON.stringify(mv), usage: { input: 1, output: 1 } };
     } };
-    const prev = process.env.MWA_FAST_CHAT; process.env.MWA_FAST_CHAT = '0';
+    const prev = { fast: process.env.MWA_FAST_CHAT, bridge: process.env.MWA_ENTITY_BRIDGE };
+    process.env.MWA_FAST_CHAT = '0'; process.env.MWA_ENTITY_BRIDGE = '0';
     try {
-      await runAgent({ instruction: 'Apex account report deadline and Apex account budget', dir, memory: mem as any, brain, worker: brain, interactive: false, plan: false, primeCap: 2, primeDecay, budget: { maxSteps: 8, maxWallMs: 60_000 } } as any);
-      const last = prompts[prompts.length - 1];
-      return last.slice(last.indexOf('PRIOR KNOWLEDGE'));
-    } finally { if (prev === undefined) delete process.env.MWA_FAST_CHAT; else process.env.MWA_FAST_CHAT = prev; mem.close(); rmSync(dir, { recursive: true, force: true }); }
+      const r = await runAgent({ instruction: INSTR, dir, memory: m as any, brain, worker: brain, interactive: false, plan: false, primeCap: o.primeCap ?? 2, primeDecay: o.primeDecay, budget: { maxSteps: o.maxSteps ?? 12, maxWallMs: 60_000 } } as any);
+      const pool = (p: string) => p.slice(p.indexOf('PRIOR KNOWLEDGE'), p.indexOf('PRIOR KNOWLEDGE') >= 0 ? undefined : 0);
+      return { pools: prompts.map(pool), reason: String(r.reason), prompts };
+    } finally {
+      for (const [k, v] of [['MWA_FAST_CHAT', prev.fast], ['MWA_ENTITY_BRIDGE', prev.bridge]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+      m.close(); rmSync(dir, { recursive: true, force: true });
+    }
   }
 
-  it('with a fade, the pool moves to the topic the run moved to; without one it stays where it started', async () => {
-    const faded = await lastKnowledge(0.3);
-    expect(faded).toContain('Borealis account main contact');
-    expect(faded).toContain('Borealis account renewal date');
-    expect(faded).not.toContain('Apex account');
-    const sticky = await lastKnowledge(undefined);
-    expect(sticky).toContain('Apex account');
-  }, 120_000);
+  // Account A at task start; the run moves to B, then back to A (BL-30's return-to-first-account).
+  const switching = {
+    start: [mem('alpha-deadline', 0.9), mem('alpha-budget', 0.8)],
+    byQuery: {
+      'beta contact': [mem('beta-contact', 0.5), mem('beta-renewal', 0.4)],
+      'beta renewal': [mem('beta-renewal', 0.5)],
+      'alpha deadline again': [mem('alpha-deadline', 0.6), mem('alpha-budget', 0.55)],
+    },
+    // A is worked for three steps first, so with a fade its weights are tiny by the time B pushes it
+    // out: a memory that kept that stale weight could never come back on its fresh score.
+    files: { 'a1.txt': 'item one', 'a2.txt': 'item two', 'a3.txt': 'item three' },
+    moves: [
+      { action: 'read', path: 'a1.txt' }, { action: 'read', path: 'a2.txt' }, { action: 'read', path: 'a3.txt' },
+      { action: 'recall', query: 'beta contact' }, { action: 'recall', query: 'beta renewal' }, { action: 'recall', query: 'alpha deadline again' },
+    ],
+  };
+
+  it('with a fade, the pool follows the run to B and comes back to A, ranked by fresh scores, not stale fades', async () => {
+    const { pools } = await scripted({ ...switching, primeDecay: 0.3 });
+    // After the first B recall (move 4), B holds the pool.
+    expect(pools[4]).toContain('beta-contact fact');
+    expect(pools[4]).not.toContain('alpha-deadline fact');
+    // Back on A: its memories return by their new scores. A stale fade would keep B in the pool.
+    const last = pools[pools.length - 1];
+    expect(last).toContain('alpha-deadline fact');
+    expect(last).toContain('alpha-budget fact');
+    expect(last).not.toContain('beta-');
+  }, 60_000);
+
+  it('without a fade, ranking is by score as before: the higher-scored start-of-task memories never leave', async () => {
+    const { pools } = await scripted(switching);
+    for (const p of pools) {
+      expect(p).toContain('alpha-deadline fact');
+      expect(p).toContain('alpha-budget fact');
+      expect(p).not.toContain('beta-');
+    }
+  }, 60_000);
+
+  it('recalls that only re-find memories the cap cuts are not progress: the run still ends stuck', async () => {
+    const byQuery: Record<string, Mem[]> = {};
+    const moves: any[] = [];
+    for (let i = 0; i < 10; i++) { byQuery[`question ${i}`] = [mem(`minor-${i}`, 0.1)]; moves.push({ action: 'recall', query: `question ${i}` }); }
+    const { reason, prompts } = await scripted({ start: [mem('alpha-deadline', 0.9), mem('alpha-budget', 0.8)], byQuery, moves, maxSteps: 12 });
+    expect(reason).toBe('stuck');
+    expect(prompts.join('\n')).toMatch(/recall\("question 0"\) -> \+0/);
+  }, 60_000);
+
+  it('"two empty recalls in a row" means in a row: another action in between starts the count over', async () => {
+    const { prompts } = await scripted({
+      start: [], byQuery: {}, files: { 'notes.txt': 'nothing here' },
+      moves: [{ action: 'recall', query: 'first question' }, { action: 'read', path: 'notes.txt' }, { action: 'recall', query: 'second question' }],
+    });
+    expect(prompts[3]).toMatch(/try once more with different wording/);
+    expect(prompts[3]).not.toMatch(/Memory has nothing more on this/);
+  }, 60_000);
 });
