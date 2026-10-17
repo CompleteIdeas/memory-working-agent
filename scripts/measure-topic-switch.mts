@@ -108,6 +108,7 @@ function brief(c: Client): string {
     `Rules for every ${c.name} item line: write the item name ${caseWord[c.case]}, then a colon, a space, the quantity as a number, a space, and the tag ${c.tag}.`,
     `Task now: read ${c.key}/item-1.txt to ${c.key}/item-6.txt one at a time, then write ${c.key}-report.txt — its first line is the client code word, then one item line per item, in order.`,
     'Keep these details: this client may come up again later.',
+    `This is not the last message: when ${c.key}-report.txt is written, the next one appears in inbox/.`,
   ].join('\n');
 }
 function update(c: Client): string {
@@ -115,6 +116,7 @@ function update(c: Client): string {
     `Message from the account desk — client ${c.name} again.`,
     `Update: ${c.name}'s deadline has moved to ${NEW_DEADLINE}.`,
     `Task now: write ${c.key}-final.txt. First line: the ${c.name} code word. Then three lines: "Contact: <main contact>", "Budget: <budget>", "Deadline: <deadline>". Then the ${c.name} item lines again, in order, following ${c.name}'s rules.`,
+    `This is the last message. When ${c.key}-final.txt is written, call done.`,
   ].join('\n');
 }
 
@@ -184,6 +186,10 @@ async function oneTrial(n: number) {
       if (book === 'open') writeFileSync(join(dir, c.key, 'brief.txt'), brief(c));
     }
     const queue = [...clients.map(brief), update(first)];
+    // The file each message's task produces. The next message appears only once it exists: revealed on
+    // reading instead, it showed up in a listing mid-task and the agent left a client half-read for it,
+    // and a run that saw no next message assumed the first task was the whole job (pilot, 2026-10-17).
+    const outputs = [...clients.map((c) => `${c.key}-report.txt`), `${first.key}-final.txt`];
     mkdirSync(join(dir, 'inbox'));
     let delivered = 0, readUpTo = 0; // messages put in the inbox / read so far
     const reveal = () => { if (delivered < queue.length) { writeFileSync(join(dir, 'inbox', `msg-${delivered + 1}.txt`), queue[delivered]); delivered++; } };
@@ -196,8 +202,8 @@ async function oneTrial(n: number) {
       while (readUpTo < lastMsgSeen) {
         readUpTo++;
         if (book === 'closed') rmSync(join(dir, 'inbox', `msg-${readUpTo}.txt`), { force: true });
-        if (readUpTo === delivered) reveal();
       }
+      if (readUpTo === delivered && delivered < queue.length && existsSync(join(dir, outputs[delivered - 1]))) reveal();
       if (readUpTo === queue.length && !existsSync(join(dir, 'inbox', 'no-more-messages.txt'))) writeFileSync(join(dir, 'inbox', 'no-more-messages.txt'), 'There are no more messages.');
     };
 
