@@ -90,6 +90,20 @@ On the final images: planted instructions in tool output followed 0 of 8 times; 
     could a read-only command that runs without a card.
   - Every command MWA runs now finds programs on PATH only, on every platform. To run a script in
     the folder, name it with its folder: `.\build.bat`, `./build.sh`.
+- **MWA never writes a file straight into a folder on your PATH (BL-27).**
+  - Granting your home folder also granted the PATH folders inside it (`AppData\Roaming\npm`,
+    `.local/bin`, Python's `Scripts`), so a planted `pnpm.cmd` could replace the real one in your own
+    terminals. `write_file` and the coding worker now refuse a file whose folder is on PATH.
+  - Folders are compared as real paths, so a short name like `CARGO~1` or a junction doesn't get
+    around it. On Windows your live PATH is read from the registry, not the one MWA started with.
+- **MWA recalls the way you would (BL-31).**
+  - A different question is always welcome; only an exact repeat is skipped, and the whole query
+    decides that (it used to be the first 40 characters).
+  - One recall that finds nothing is free and invites another wording; two in a row count toward
+    stopping a run that is stuck. A recall only counts as finding something if what it found stays
+    in the prompt.
+  - Experiment, off by default: `MWA_PRIME_DECAY` fades older recalled context each step so focus
+    can follow the current topic. BL-30 measures it before it can become the default.
 
 ## 0.6.0 (2026-10-15) — approval only a person can give, fenced tool output, job contracts, autonomous Docker
 
