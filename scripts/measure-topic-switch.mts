@@ -252,7 +252,9 @@ async function oneTrial(n: number) {
       instruction: `Work through your messages from the account desk, in the inbox folder. Read inbox/msg-1.txt and do exactly what it asks; only then read the next message (inbox/msg-2.txt, and so on). ${book === 'closed' ? 'A message file is removed once it has been read, and the next appears.' : 'The next message appears once the current one has been read.'} When inbox/no-more-messages.txt appears and the work is done, call done.`,
       dir, memory, brain, worker, tools: registry, interactive: false, plan: false,
       budget: { maxSteps, maxWallMs: 40 * 60_000 },
-      ...(primeDecay < 1 ? { primeDecay } : {}),
+      // Always passed, 1 included: the run option beats MWA_PRIME_DECAY, which a provider's .env load
+      // could otherwise bring back into a baseline arm after it was cleared above.
+      primeDecay,
       ...(compaction ? { compaction: { fold, block } } : {}),
     } as any);
 

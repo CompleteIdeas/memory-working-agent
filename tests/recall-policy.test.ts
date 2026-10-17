@@ -135,6 +135,21 @@ describe('the primed pool can follow the topic (BL-31 experiment option, off by 
     expect(last).not.toContain('beta-');
   }, 60_000);
 
+  it('a recall that returns a memory the pool already holds gives it its weight back, so it is not the one evicted', async () => {
+    // Faded once (x0.3): alpha-deadline 0.27, alpha-budget 0.24. The recall returns alpha-budget
+    // again at 0.7 and a new beta-contact at 0.25. Refreshed, alpha-budget (0.7) and alpha-deadline
+    // (0.27) keep the two places; without the refresh alpha-budget (0.24) would lose to beta (0.25).
+    const { pools } = await scripted({
+      start: [mem('alpha-deadline', 0.9), mem('alpha-budget', 0.8)],
+      byQuery: { 'alpha budget and the new contact': [mem('alpha-budget', 0.7), mem('beta-contact', 0.25)] },
+      moves: [{ action: 'recall', query: 'alpha budget and the new contact' }],
+      primeDecay: 0.3,
+    });
+    expect(pools[1]).toContain('alpha-budget fact');
+    expect(pools[1]).toContain('alpha-deadline fact');
+    expect(pools[1]).not.toContain('beta-contact fact');
+  }, 60_000);
+
   it('without a fade, ranking is by score as before: the higher-scored start-of-task memories never leave', async () => {
     const { pools } = await scripted(switching);
     for (const p of pools) {

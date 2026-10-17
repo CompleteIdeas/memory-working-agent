@@ -508,14 +508,16 @@ export async function runAgent(opts: {
   const byWeight = (a: RecalledMemory, b: RecalledMemory) => weightOf(b) - weightOf(a);
   /**
    * Merge recall results into the primed pool and return the new memories still in it after the
-   * cap. With a fade on, every memory the recall returned gets its current score back as its
-   * weight (it is on topic again, whether new or already held), and a memory cut from the pool
-   * forgets its weight, so one that comes back later is ranked by its new score, not a stale fade.
+   * cap. With a fade on, a memory cut from the pool forgets its weight, so one that comes back later
+   * is ranked by its new score, not a stale fade. Only the model's own recalls (`refresh`) give a
+   * held memory its current score back: they say what the run is on now. Auto-prime does not,
+   * because its query is mostly the instruction, the same every step, and refreshing from it would
+   * pull the pool back to the instruction instead of following the topic.
    * `sortWhen` keeps each caller's original ordering rule, so with the fade off nothing changes.
    */
-  const mergeIntoPool = (more: RecalledMemory[], sortWhen: 'fresh' | 'over-cap'): RecalledMemory[] => {
+  const mergeIntoPool = (more: RecalledMemory[], sortWhen: 'fresh' | 'over-cap', refresh: boolean): RecalledMemory[] => {
     const fresh = more.filter((m, i) => !recalled.some((r) => r.id === m.id) && more.findIndex((x) => x.id === m.id) === i);
-    if (PRIME_DECAY < 1) for (const m of more) primeWeight.set(m.id, m.score);
+    if (PRIME_DECAY < 1 && refresh) for (const m of more) primeWeight.set(m.id, m.score);
     recalled.push(...fresh);
     if (sortWhen === 'fresh' ? fresh.length > 0 : recalled.length > PRIME_K) {
       recalled.sort(byWeight);
@@ -635,7 +637,7 @@ export async function runAgent(opts: {
     if (!memory.enabled) return 0;
     const more = (await memory.recall(ctx, { limit: 6, full: true, rerank: true, expand: false, workspace: opts.workspace })).filter(primeable);
     const freshCount = more.filter((m) => !recalled.some((r) => r.id === m.id)).length;
-    mergeIntoPool(more, 'fresh');
+    mergeIntoPool(more, 'fresh', false);
     return freshCount;
   }
 
@@ -951,7 +953,7 @@ export async function runAgent(opts: {
       // An EXPLICIT recall returns untrusted skills/lessons too — rendered with their \u26a0 flag.
       // Only what survives the cap is new to the agent: a memory the cap cuts again is not progress,
       // or a run alternating recalls that re-find cut memories would never count as stuck.
-      const fresh = mergeIntoPool(more, 'over-cap');
+      const fresh = mergeIntoPool(more, 'over-cap', true);
       history.push(`recall("${action.query.slice(0, 56)}") -> +${fresh.length} (total ${recalled.length})`);
       emit('recall', { query: action.query.slice(0, 80), total: recalled.length });
       // Recall is gathering, NOT task progress — don't reset the no-progress counter, and
