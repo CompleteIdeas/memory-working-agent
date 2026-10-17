@@ -22,4 +22,12 @@ jobs:
       - run: npm install
       - run: npm run build       # build:awm (vendor dist) + tsc + vite UI — tests import vendor dist
       - run: npm run typecheck
+      # Download the three ONNX models once, in one process, before the suite. Test files load them
+      # in parallel, and two first-time downloads of the same file can leave a half-written
+      # model.onnx ("Protobuf parsing failed"), which failed four tests on 2026-10-17.
+      - name: Warm the AWM models
+        run: >-
+          node --input-type=module -e "const d='./vendor/agent-working-memory/dist/core/';
+          for (const [f, g] of [['embeddings.js', 'getEmbedder'], ['reranker.js', 'getReranker'], ['query-expander.js', 'getExpander']])
+          await (await import(d + f))[g]();"
       - run: npm test
