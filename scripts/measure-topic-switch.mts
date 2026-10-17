@@ -108,7 +108,7 @@ function brief(c: Client): string {
     `Rules for every ${c.name} item line: write the item name ${caseWord[c.case]}, then a colon, a space, the quantity as a number, a space, and the tag ${c.tag}.`,
     `Task now: read ${c.key}/item-1.txt to ${c.key}/item-6.txt one at a time, then write ${c.key}-report.txt — its first line is the client code word, then one item line per item, in order.`,
     'Keep these details: this client may come up again later.',
-    `This is not the last message: when ${c.key}-report.txt is written, the next one appears in inbox/.`,
+    `Finish this before the next message: read all six item files, then write the whole report (the code word and all six item lines). When ${c.key}-report.txt is written, the next message appears in inbox/.`,
   ].join('\n');
 }
 function update(c: Client): string {
@@ -255,7 +255,9 @@ async function oneTrial(n: number) {
     const brain = new RoutedProvider(capture(getProvider('brain')) as any, capture(getProvider('high')) as any);
     const worker = new RoutedProvider(capture(getProvider('brain')) as any, capture(getProvider('high')) as any);
     const r = await runAgent({
-      instruction: `Work through your messages from the account desk, in the inbox folder. Read inbox/msg-1.txt and do exactly what it asks; only then read the next message (inbox/msg-2.txt, and so on). ${book === 'closed' ? 'A message file is removed once it has been read, and the next appears.' : 'The next message appears once the current one has been read.'} When inbox/no-more-messages.txt appears and the work is done, call done.`,
+      // The protocol is stated up front (coworker challenge after the pilot): with no count given, a run
+      // that saw no next message took the first task for the whole job. Stating it leaks no fact.
+      instruction: `Work through your messages from the account desk, in the inbox folder. There are exactly 4 messages, inbox/msg-1.txt to inbox/msg-4.txt, and each one appears only once the file the previous message asked for is written. For each message: read it, do all of what it asks, and write the file it names in full; only then read the next one. ${book === 'closed' ? 'A message file is removed once it has been read.' : 'Each brief is also saved in its client folder.'} Call done only after the file message 4 asks for is written.`,
       dir, memory, brain, worker, tools: registry, interactive: false, plan: false,
       budget: { maxSteps, maxWallMs: 40 * 60_000 },
       // Always passed, 1 included: the run option beats MWA_PRIME_DECAY, which a provider's .env load
