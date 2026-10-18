@@ -22,7 +22,7 @@ import { loadDomainPack, buildDomainContext } from './domain-pack.js';
 import { ONBOARD_PROTOCOL } from './onboard.js';
 import type { Memory, RecalledMemory, TrustTier } from './awm.js';
 import { effectOf, isSensitive, classifyTool, buildDoneReport, checkTripwires, readsUntrustedContent, markToolOutput, newFenceCode, outputSource } from './tools/governance.js';
-import { unbackedClaims, unbackedNote, unbackedNudge } from './claim-check.js';
+import { unbackedClaims, unbackedNote, unbackedNudge, type ClaimKind } from './claim-check.js';
 import { answerConfidence, type Confidence } from './tools/honesty.js';
 import { isRoutineWorthy, scanPolicy } from './tools/routines.js';
 import { BRAIN_TOOLS } from './brain.js';
@@ -119,6 +119,9 @@ export interface AgentResult {
   /** a job this run wanted to schedule was refused by the fan-out budget (BL-05) — the scheduler
    *  tells the person once per job, so a quiet monitor doesn't hide it. */
   budgetRefusal?: string;
+  /** the reply claimed work of these kinds that nothing in the run backs (BL-36). In the default shadow
+   *  mode this is only recorded; with MWA_CLAIM_CHECK=enforce the run is also could-not and says so. */
+  unbackedClaims?: ClaimKind[];
   summary: string;
   steps: number;
   dispatches: number;
@@ -540,7 +543,8 @@ export async function runAgent(opts: {
   // and channel boilerplate), and not at all in a plan step or a resume, which report on work an earlier
   // run did.
   const claimRequest = opts.userMessage ?? instruction;
-  const checkClaims = !opts.planStep && !opts.resumeAttempt;
+  const claimMode = process.env.MWA_CLAIM_CHECK === 'enforce' ? 'enforce' : process.env.MWA_CLAIM_CHECK === 'off' ? 'off' : 'shadow';
+  const checkClaims = claimMode !== 'off' && !opts.planStep && !opts.resumeAttempt;
   // Refused tool calls this run (a path outside the allowed roots, an unknown tool, a policy gate).
   // Recorded so a run that finishes with nothing to show explains itself in the run log.
   // Keep up to four, with the argument that was refused: a measured failure logged only its first
@@ -913,10 +917,11 @@ export async function runAgent(opts: {
       // acting). One re-prompt, conservative (defaults to pass), never spins.
       if (substanceRejections < 1) {
         const sv = validateSubstance({ instruction, summary: summ, toolsUsed: [...toolsUsed] });
-        // The gate above passes a run that used ANY tool; a claim also needs the matching KIND of action
-        // (BL-36: "I've scheduled it" after only listing the schedule).
-        const missing = sv.ok && checkClaims ? unbackedClaims(summ, actedAtAll(), claimRequest) : [];
-        const fix = !sv.ok && sv.fix ? sv.fix : missing.length ? unbackedNudge(missing) : undefined;
+        // The gate above passes a run that used ANY tool, and its own re-prompt ("perform it now or say it
+        // has NOT been done") has no room for work done earlier. When BL-36's conditions hold, its
+        // re-prompt goes instead: correct the answer, and say when if it was done before (review 3).
+        const missing = checkClaims ? unbackedClaims(summ, actedAtAll(), claimRequest) : [];
+        const fix = missing.length ? unbackedNudge(missing) : !sv.ok && sv.fix ? sv.fix : undefined;
         if (fix) {
           substanceRejections++;
           consecNoProgress = 0; // it's being corrected, not stalling
@@ -1279,12 +1284,16 @@ export async function runAgent(opts: {
   // the outcome — so none of them takes the claim at its word.
   // Also not when the run ended by asking the person, or has an action waiting for their approval: that
   // run is `blocked` on them, and its reply may well describe the staged action.
-  const unbacked = reason === 'done' && checkClaims && !askedUser && pendingStagedBy(runId, 'tool').length === 0
+  // SHADOW by default: three isolated reviews each found true replies the rule misread, so a hit is only
+  // recorded (`unbackedClaims` in the result and the run log) until real runs show it is right; the
+  // person-facing note and the could-not follow only with MWA_CLAIM_CHECK=enforce.
+  const claimedUnbacked = reason === 'done' && checkClaims && !askedUser && pendingStagedBy(runId, 'tool').length === 0
     ? unbackedClaims(finalSummary, actedAtAll(), claimRequest) : [];
+  const unbacked = claimMode === 'enforce' ? claimedUnbacked : [];
   if (unbacked.length) {
     finalSummary = `${finalSummary}\n\n${unbackedNote(unbacked)}`;
     history.push(`(the reply claims ${unbacked.join('/')} but this run did none — marked could-not)`);
-  }
+  } else if (claimedUnbacked.length) history.push(`(claim check, shadow: the reply claims ${claimedUnbacked.join('/')} but this run did none)`);
 
   // SUPERSEDE-AS-TRANSITION — when this run learned that a PRIOR fact's VALUE changed, record the
   // update as a transition-with-reason ("X moved from <old> to <new> because <why>") written with
@@ -1610,6 +1619,7 @@ export async function runAgent(opts: {
     ts: start, session: opts.session ?? '', instruction: instruction.slice(0, 160), reason, outcome, ...(opts.jobId ? { job: opts.jobId } : {}),
     steps, dispatches, toolCalls, reRecalls, supersedes, consolidations, refusals,
     ...(refusalLog.length ? { refusalLog } : {}),
+    ...(claimedUnbacked.length ? { unbackedClaims: claimedUnbacked, claimCheck: claimMode } : {}),
     learned: learnedFacts, skills: skillsDerived, questions: openQuestions, frictions: frictionsLearned, policies: policiesLearned, transitions: transitionsRecorded,
     durationMs: now() - start, costUsd: Number((brainCost + workerCost).toFixed(4)), summary: finalSummary.slice(0, 200),
   });
@@ -1620,6 +1630,7 @@ export async function runAgent(opts: {
     ...(doneOutcome !== undefined && doneOutcome === outcome ? { outcomeDeclared: true } : {}),
     ...(staged.length ? { staged } : {}),
     ...(budgetRefusal ? { budgetRefusal } : {}),
+    ...(claimedUnbacked.length ? { unbackedClaims: claimedUnbacked } : {}),
     reason, summary: finalSummary, steps, dispatches, toolCalls, reRecalls, supersedes, consolidations,
     durationMs: now() - start, usage, costUsd: Number((brainCost + workerCost).toFixed(6)), history,
   };

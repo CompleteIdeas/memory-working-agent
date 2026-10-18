@@ -38,7 +38,11 @@ const clauses = (sentence: string) => sentence.split(/[;—–]|:\s+|,\s+|\s+(?:
 const NEGATED = /\b(not|never|no|nothing|none|unable|cannot|failed|without)\b|n['’]t\b/i;
 // Earlier work, described — tested on the whole SENTENCE, since "Yesterday, I sent …" puts the anchor
 // in another clause.
-const PAST = /\b(yesterday|earlier|previously|already|ago|overnight|this (?:morning|afternoon)|last (?:night|week|month|time|mon|tues|wednes|thurs|fri|satur|sun)(?:day)?|on (?:mon|tues|wednes|thurs|fri|satur|sun)day|on \d{4}-\d{2}-\d{2}|on (?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.? \d{1,2}(?:st|nd|rd|th)?)\b/i;
+const MONTH = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?';
+const PAST = new RegExp(String.raw`\b(yesterday|earlier|previously|already|ago|overnight|this (?:morning|afternoon)|last (?:night|week|month|time|mon|tues|wednes|thurs|fri|satur|sun)(?:day)?|on (?:mon|tues|wednes|thurs|fri|satur|sun)day|on \d{4}-\d{2}-\d{2}|on ${MONTH} \d{1,2}(?:st|nd|rd|th)?|on \d{1,2}(?:st|nd|rd|th)? ${MONTH}|on \d{1,2}/\d{1,2}|(?:after|once|when) you approved|in my (?:previous|last|earlier) (?:reply|message|answer))\b`, 'i');
+// When a send or a write happened ("I sent the invoice at 9:14 today") — but a schedule claim names a
+// time as a matter of course ("for tomorrow at 9am"), so these don't apply to it.
+const PAST_WHEN = /\b(today|tonight|this evening|\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm))\b/i;
 // Content shown in the reply itself: "I created a `useFetch` hook below".
 const INLINE = /\b(below|above|following|in this (?:message|reply))\b/i;
 const ME = String.raw`^I(?:['’]ve| have)?\s+(?:now\s+|also\s+|just\s+)?`;
@@ -65,9 +69,11 @@ export function claimsIn(reply: string): Set<ClaimKind> {
   const found = new Set<ClaimKind>();
   for (const s of sentences(reply)) {
     if (PAST.test(s) || /\?\s*$/.test(s)) continue;
+    const timed = PAST_WHEN.test(s);
     for (const c of clauses(s)) {
       if (NEGATED.test(c)) continue;
       if (SCHEDULE.some((r) => r.test(c))) found.add('schedule');
+      if (timed) continue;
       if ((WRITE.test(c) || WROTE_FILE.test(c)) && NAMED_FILE.test(c) && !INLINE.test(c)) found.add('write');
       if (SEND.some((r) => r.test(c))) found.add('send');
     }
@@ -87,10 +93,14 @@ export function requestedKinds(message: string): Set<ClaimKind> {
 
 /** A request that only asks a question ("What do I have scheduled?", "What did you do overnight?"):
  *  the answer describes work, it doesn't claim to have done it now. "Can you schedule …?" asks for work. */
-export function asksOnly(instruction: string): boolean {
-  const t = instruction.trim();
+export function asksOnly(message: string): boolean {
+  const t = message.trim();
   if (/^(can|could|would|will|please)\b/i.test(t)) return false;
-  return /^(what|when|which|who|whom|whose|where|why|how)\b/i.test(t) || /\?\s*$/.test(t);
+  // Yes/no questions too, with or without a "?" ("did you send dana the invoice"), and a "?" anywhere
+  // ("Did you send it? She says she never got it.") — review 3.
+  return /^(what|when|which|who|whom|whose|where|why|how|did|does|is|are|was|were|has|have|had)\b/i.test(t)
+    || /^do (you|i|we|they|it|he|she)\b/i.test(t)
+    || t.includes('?');
 }
 
 /**

@@ -79,6 +79,13 @@ describe('what counts as a claim', () => {
       'When you asked on Tuesday, I scheduled the reminder.',
       'Last Friday I emailed the venue.',
       'This morning I saved `notes.md`.',
+      // Third review: earlier work, said with a time or an approval.
+      'Yes — I sent Dana the invoice; it went out after you approved it.',
+      'I sent the invoice to dana@acme.com at 9:14 today, after you approved it.',
+      'I sent it this evening.',
+      'I emailed the venue on 16 October.',
+      'I sent the reply on 10/16.',
+      'I wrote `plan.md` in my previous reply.',
       // A code answer is not a file write.
       'I created a `useFetch` hook below.',
       'I created `useFetch` for you:\n```ts\nexport function useFetch() {}\n```',
@@ -116,8 +123,10 @@ describe('when a claim is judged at all', () => {
   });
 
   it('a request that only asks a question is not checked; one that asks for work is', () => {
-    for (const q of ['What do I have scheduled?', 'What did you do overnight?', 'When is the reminder set for', 'Is the report done?']) expect(asksOnly(q), q).toBe(true);
-    for (const q of ['Can you schedule a reminder for 9am?', 'Schedule a reminder for 9am.', 'Email Dana the agenda', 'Find the invoice and email it to Dana.']) expect(asksOnly(q), q).toBe(false);
+    for (const q of ['What do I have scheduled?', 'What did you do overnight?', 'When is the reminder set for', 'Is the report done?',
+      'did you send dana the invoice', 'Did you send the invoice to Dana? She says she never got it.', 'Has the reminder been scheduled', 'Do you have the agenda']) expect(asksOnly(q), q).toBe(true);
+    for (const q of ['Can you schedule a reminder for 9am?', 'Schedule a reminder for 9am.', 'Email Dana the agenda', 'Find the invoice and email it to Dana.', 'Do the weekly report']) expect(asksOnly(q), q).toBe(false);
+    expect([...claimsIn("I've scheduled it for tomorrow at 9am.")]).toEqual(['schedule']); // a time in a schedule claim is its due time
   });
 });
 
@@ -151,10 +160,25 @@ const prev = process.env.MWA_FAST_CHAT;
 beforeAll(() => { process.env.MWA_FAST_CHAT = '0'; });
 afterAll(() => { if (prev === undefined) delete process.env.MWA_FAST_CHAT; else process.env.MWA_FAST_CHAT = prev; });
 
-describe('a run whose reply claims work it never did (BL-36)', () => {
-  // No file name in the request: a named output file trips the separate "missing output file" check.
-  const REMIND = 'Schedule a reminder for tomorrow at 9am to call Dana about the venue.';
-  const CLAIM = { action: 'done', summary: "I've scheduled it for tomorrow at 9am, as you asked.", outcome: 'changed' };
+// No file name in the request: a named output file trips the separate "missing output file" check.
+const REMIND = 'Schedule a reminder for tomorrow at 9am to call Dana about the venue.';
+const CLAIM = { action: 'done', summary: "I've scheduled it for tomorrow at 9am, as you asked.", outcome: 'changed' };
+
+describe('by default the check is a shadow: it corrects in the loop and records, nothing more', () => {
+  it('the e2e-k5ncb-3 shape: pushed back once, then recorded — no note, no could-not', async () => {
+    const r = await run(REMIND, [{ action: 'schedule_list' }, CLAIM, CLAIM], { schedule_list: '(nothing scheduled)' });
+    expect(r.history.join('\n')).toMatch(/substance gate: Your answer says you scheduled something in this run/);
+    expect(r.unbackedClaims).toEqual(['schedule']);
+    expect(r.history.join('\n')).toMatch(/claim check, shadow: the reply claims schedule/);
+    expect(r.summary).not.toMatch(/Not done/);
+    expect(r.outcome).not.toBe('could-not');
+  }, 30_000);
+});
+
+describe('a run whose reply claims work it never did, enforced (BL-36, MWA_CLAIM_CHECK=enforce)', () => {
+  const prevMode = process.env.MWA_CLAIM_CHECK;
+  beforeAll(() => { process.env.MWA_CLAIM_CHECK = 'enforce'; });
+  afterAll(() => { if (prevMode === undefined) delete process.env.MWA_CLAIM_CHECK; else process.env.MWA_CLAIM_CHECK = prevMode; });
 
   it('the e2e-k5ncb-3 shape: listed the schedule, said it scheduled — pushed back once, then could-not and the person is told', async () => {
     const r = await run(REMIND, [{ action: 'schedule_list' }, CLAIM, CLAIM], { schedule_list: '(nothing scheduled)' });

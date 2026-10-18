@@ -176,6 +176,9 @@ export async function processInbox(opts: {
         const beat = setInterval(() => { try { const t = new Date(); utimesSync(claimed, t, t); } catch { /* */ } }, HEARTBEAT_MS);
         const r = await runAgent({
           instruction: `${instruction}\n\n(Write any deliverable files into your working directory — they are collected as this task's outputs.)`,
+          // The person's own words, without MWA's line above — which asks for files, and would make every
+          // inbox task read as a request to write (BL-36 review 3).
+          userMessage: instruction,
           dir: workDir, memory, brain, worker, tools: registry,
           workspace: opts.config.awm.workspace,
           session: `task-${id}`,
