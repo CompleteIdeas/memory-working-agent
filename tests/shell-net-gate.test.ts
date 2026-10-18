@@ -132,6 +132,50 @@ describe('the model’s shell gets no secrets', () => {
     } finally { process.env.PATH = saved; rmSync(home, { recursive: true, force: true }); }
   });
 
+  it('BL-28: no file lands where it runs at login or in a new terminal, however it is spelled', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'mwa-bl28-'));
+    try {
+      const [write] = builtinTools(['write_file']);
+      const ctx = { sandboxDir: home, interactive: true };
+      const refused: Array<[string, RegExp]> = [
+        ['AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/run.cmd', /runs at login/],
+        ['ProgramData/Microsoft/Windows/Start Menu/Programs/StartUp/run.lnk', /runs at login/],
+        ['.config/autostart/run.desktop', /runs at login/], ['.xprofile', /runs at login/], ['.xsessionrc', /runs at login/],
+        // Files the standard profiles load, and Windows Terminal's settings (BL-28 review, each one written before).
+        ['.bash_aliases', /shell profile/], ['.bashrc.d/x.sh', /shell profile/], ['.oh-my-zsh/custom/x.zsh', /shell profile/],
+        ['.config/fish/functions/fish_greeting.fish', /shell profile/], ['.config/nushell/config.nu', /shell profile/],
+        ['AppData/Local/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json', /Windows Terminal/],
+        ['AppData/Local/Microsoft/Windows Terminal/settings.json', /Windows Terminal/],
+        ['Program Files/PowerShell/7/profile.ps1', /shell profile/],
+        ['.bashrc', /shell profile/], ['.BASH_PROFILE', /shell profile/], ['.profile', /shell profile/],
+        ['.zshrc', /shell profile/], ['.zshenv', /shell profile/], ['projects/x/.bashrc', /shell profile/],
+        ['Documents/PowerShell/Microsoft.PowerShell_profile.ps1', /shell profile/],
+        ['Documents/WindowsPowerShell/profile.ps1', /shell profile/],
+        ['OneDrive/Documents/PowerShell/Microsoft.VSCode_profile.ps1', /shell profile/],
+        ['.config/powershell/Microsoft.PowerShell_profile.ps1', /shell profile/],
+        ['.config/fish/config.fish', /shell profile/], ['.config/fish/conf.d/x.fish', /shell profile/],
+      ];
+      for (const [path, why] of refused) {
+        expect(await write.handler({ path, content: 'planted' }, ctx), path).toMatch(why);
+        expect(existsSync(join(home, path)), path).toBe(false);
+      }
+      // Near misses are ordinary files.
+      for (const path of ['notes/bashrc.md', 'scripts/build-profile.ps1', 'Start Menu/Programs/readme.txt', 'docs/.profile.example', 'scripts/profile.ps1', 'perf/Profile.ps1', 'app/settings.json', '.config/nushell/plugins.nu']) {
+        expect(await write.handler({ path, content: 'fine' }, ctx), path).toMatch(/^wrote /);
+      }
+      if (process.platform === 'win32') {
+        // A junction to a Startup folder, and the folder's 8.3 short name, both reach it without spelling it.
+        const startup = join(home, 'Start Menu', 'Programs', 'Startup'); mkdirSync(startup, { recursive: true });
+        symlinkSync(startup, join(home, 'link'), 'junction');
+        expect(await write.handler({ path: 'link/run.cmd', content: '@echo planted' }, ctx)).toMatch(/runs at login/);
+        writeFileSync(join(home, '.bashrc'), 'original');
+        const short = execFileSync('powershell', ['-NoProfile', '-Command', `(New-Object -ComObject Scripting.FileSystemObject).GetFile('${join(home, '.bashrc')}').ShortName`], { encoding: 'utf8' }).trim();
+        if (short && short !== '.bashrc') expect(await write.handler({ path: short, content: 'planted' }, ctx)).toMatch(/shell profile/);
+        expect(existsSync(join(startup, 'run.cmd'))).toBe(false);
+      }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   it('BL-26: on Windows a planted npm.cmd in the folder does not replace npm; a script named with its folder still runs', async () => {
     if (process.platform !== 'win32') return;
     const { runCommandAsync } = await import('../src/util.js');

@@ -100,14 +100,31 @@ export function inGitControlPath(p: string): boolean {
   return /(^|[\\/])(\.git|\.husky|\.githooks|\.vscode)([\\/]|$)/i.test(p);
 }
 
-/**
- * Whether the agent may write to `full` (an absolute path already inside an allowed root). Text
- * checks alone are bypassable on Windows (BL-14a review, verified): an 8.3 short name (`GIT~1`), an
- * NTFS stream (`.git::$INDEX_ALLOCATION`), a trailing dot or space, or a symlink all reach `.git`
- * without spelling it. So: refuse `:` after the drive, refuse segments ending in a dot or space, and
- * check the REAL path of the deepest part that already exists (realpath expands short names and
- * follows links). Returns a refusal reason, or null when the write may go ahead.
- */
+/** Why a path would run as the person later, outside MWA, or null (BL-28): a login Startup folder, a
+ *  shell profile or a file one loads, or Windows Terminal's settings (which name the command a new tab
+ *  starts). Shell profiles are refused by name at any depth, the way `.git` is: the home folder isn't
+ *  always the one a shell reads (Git Bash, WSL, a redirected Documents), and a project rarely holds a
+ *  real `.bashrc`. A PowerShell profile only inside a PowerShell folder, since `profile.ps1` is also a
+ *  plausible profiling script. Case-insensitive, as on Windows the file system is. */
+export function runsLaterReason(p: string): string | null {
+  const name = basename(p);
+  if (/(^|[\\/])start menu[\\/]programs[\\/]startup([\\/]|$)/i.test(p) || /(^|[\\/])\.config[\\/]autostart([\\/]|$)/i.test(p)
+    || /^\.(xprofile|xsessionrc|xinitrc)$/i.test(name)) {
+    return 'that runs at login — anything written there runs as you the next time you sign in';
+  }
+  if (/^\.(bashrc|bash_profile|bash_login|bash_logout|bash_aliases|profile|zshrc|zshenv|zprofile|zlogin|zlogout|kshrc|cshrc|tcshrc|login|logout)$/i.test(name)
+    || /(^|[\\/])(\.bashrc\.d|\.zshrc\.d|\.oh-my-zsh[\\/]custom)[\\/]/i.test(p)
+    || (/^(microsoft\.[\w.]+_)?profile\.ps1$/i.test(name) && /(^|[\\/])(windows)?powershell[\\/]/i.test(p))
+    || /(^|[\\/])fish[\\/](config\.fish$|conf\.d[\\/]|functions[\\/])/i.test(p)
+    || /(^|[\\/])nushell[\\/](config|env|login)\.nu$/i.test(p)) {
+    return 'that is a shell profile, or a file one loads — it runs as you the next time you open a terminal';
+  }
+  if (/(^|[\\/])(microsoft\.windowsterminal[^\\/]*[\\/]localstate|microsoft[\\/]windows terminal)[\\/]settings\.json$/i.test(p)) {
+    return 'that is Windows Terminal\'s settings file — it names the command each new terminal runs';
+  }
+  return null;
+}
+
 /** The real path of the deepest part of `full` that already exists (short names expanded, links
  *  followed), with the not-yet-existing remainder appended. */
 export function realPathOf(full: string): string {
@@ -120,20 +137,25 @@ export function realPathOf(full: string): string {
   }
 }
 
+/**
+ * Whether the agent may write to `full` (an absolute path already inside an allowed root). Text
+ * checks alone are bypassable on Windows (BL-14a review, verified): an 8.3 short name (`GIT~1`), an
+ * NTFS stream (`.git::$INDEX_ALLOCATION`), a trailing dot or space, or a symlink all reach `.git`
+ * without spelling it. So: refuse `:` after the drive, refuse segments ending in a dot or space, and
+ * check the REAL path too (realpath expands short names and follows links). Returns a refusal
+ * reason, or null when the write may go ahead.
+ */
 export function writeRefusal(full: string): string | null {
   const rest = /^[A-Za-z]:/.test(full) ? full.slice(2) : full;
   if (rest.includes(':')) return 'that path names a file stream, not a file';
   if (full.split(/[\\/]/).some((seg) => seg.length > 0 && /[. ]$/.test(seg) && seg !== '.' && seg !== '..')) return 'a path segment ends in a dot or a space';
-  if (inGitControlPath(full)) return 'never write inside a .git or git-hooks folder — files there run as code on the next git command';
-  try {
-    let probe = full;
-    for (;;) {
-      if (existsSync(probe)) { if (inGitControlPath(realpathSync.native(probe))) return 'that path leads into a .git or git-hooks folder — files there run as code on the next git command'; break; }
-      const up = dirname(probe);
-      if (up === probe) break;
-      probe = up;
-    }
-  } catch { return 'that path could not be checked'; }
+  let real: string;
+  try { real = realPathOf(full); } catch { return 'that path could not be checked'; }
+  for (const p of [full, real]) {
+    if (inGitControlPath(p)) return 'never write inside a .git or git-hooks folder — files there run as code on the next git command';
+    const later = runsLaterReason(p);
+    if (later) return later;
+  }
   if (onPath(dirname(full))) return 'that folder is on your PATH — a file written there would run in place of a program of the same name, in your own terminals too';
   return null;
 }
