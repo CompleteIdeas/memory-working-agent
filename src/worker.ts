@@ -10,7 +10,7 @@ import { mkdirSync, writeFileSync, readdirSync, readFileSync, statSync } from 'n
 import { resolve, join, dirname } from 'node:path';
 import type { Provider } from './provider.js';
 import { parseJsonLoose, runCommand } from './util.js';
-import { writeRefusal } from './tools/shell-gate.js';
+import { writeRefusal, insideReal } from './tools/shell-gate.js';
 import { markToolOutput, newFenceCode } from './tools/governance.js';
 
 export interface CodegenInstruction {
@@ -111,12 +111,16 @@ export async function runWorker(
   for (const f of files) {
     if (!f.path || typeof f.content !== 'string') continue;
     if (protect.includes(f.path) || protect.includes(f.path.replace(/^\.\//, ''))) continue; // never overwrite the grader
-    // path-traversal guard
+    // Inside the sandbox by REAL path, with a separator: `sandbox-x` is a sibling, and a link inside the
+    // sandbox must not carry the write elsewhere (BL-29) — the same check write_file makes.
     const target = resolve(sandboxDir, f.path);
-    if (!target.startsWith(resolve(sandboxDir))) continue;
+    if (!insideReal(sandboxDir, target)) continue;
     if (writeRefusal(target)) continue; // .git / hooks, streams, short names (BL-14a)
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, f.content, 'utf8');
+    // A path naming a folder (the sandbox itself, `src`) or under a dangling link is skipped, not fatal.
+    try {
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, f.content, 'utf8');
+    } catch { continue; }
     written.push(f.path);
   }
 

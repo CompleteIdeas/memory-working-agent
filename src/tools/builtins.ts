@@ -7,12 +7,12 @@
  * guarded), mirroring the worker. http_request is network egress — opt-in.
  */
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
-import { resolve, join, dirname, basename, sep } from 'node:path';
+import { resolve, join, dirname, basename } from 'node:path';
 import { runCommand, runCommandAsync } from '../util.js';
 import { resolveAllowed, runCommandAllowed, allowedRoots, accessPolicy } from './access.js';
 import { loadConfig } from '../config.js';
 import { ToolRefusal, type RegisteredTool, type ToolContext } from './registry.js';
-import { classifyCommand, scrubbedEnv, writeRefusal, realPathOf } from './shell-gate.js';
+import { classifyCommand, scrubbedEnv, writeRefusal, insideReal } from './shell-gate.js';
 import { guardedFetch, urlRefusal } from './net-guard.js';
 import { stageAction, registerExecutor, pendingStagedBy } from './approval.js';
 import { secondOpinionForCommand, changedSinceReview, type Reviewed } from '../second-opinion.js';
@@ -69,20 +69,13 @@ function allowed(ctx: ToolContext, p: string): string | null {
 /** The REAL path (short names expanded, links followed) lands inside an allowed folder's REAL path —
  *  both sides resolved, so a short-name temp folder (C:\Users\ROBERT~1) doesn't refuse ordinary writes. */
 function realAllowed(ctx: ToolContext, full: string): boolean {
-  const norm = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
-  const real = (p: string) => { try { return norm(realPathOf(resolve(p))); } catch { return norm(resolve(p)); } };
-  const target = real(full);
-  const roots = [ctx.sandboxDir, ...(ctx.extraRoots ?? []), ...allowedRoots(ctx.sandboxDir)].map(real);
-  return roots.some((r) => target === r || target.startsWith(r.endsWith(sep) ? r : r + sep));
+  return [ctx.sandboxDir, ...(ctx.extraRoots ?? []), ...allowedRoots(ctx.sandboxDir)].some((r) => insideReal(r, full));
 }
 
 /** The mailbox folders (<workspace>/inbox, outbox, done), compared by real path. */
 function inMailbox(full: string): boolean {
   const ws = process.env.MWA_WORKSPACE ?? loadConfig().workspace ?? './mwa-workspace';
-  const norm = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
-  const real = (p: string) => { try { return norm(realPathOf(resolve(p))); } catch { return norm(resolve(p)); } };
-  const target = real(full);
-  return ['inbox', 'outbox', 'done'].map((d) => real(join(ws, d))).some((r) => target === r || target.startsWith(r + sep));
+  return ['inbox', 'outbox', 'done'].some((d) => insideReal(join(ws, d), full));
 }
 
 /** Strip HTML to readable text — so read_document on a web page returns prose, not markup. */

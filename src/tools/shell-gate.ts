@@ -16,7 +16,7 @@
  * interpreter (node, python, sh), package managers, and network tools.
  */
 
-import { existsSync, realpathSync } from 'node:fs';
+import { lstatSync, realpathSync } from 'node:fs';
 import { dirname, basename, sep, resolve, isAbsolute, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -126,15 +126,36 @@ export function runsLaterReason(p: string): string | null {
 }
 
 /** The real path of the deepest part of `full` that already exists (short names expanded, links
- *  followed), with the not-yet-existing remainder appended. */
+ *  followed), with the not-yet-existing remainder appended. A link counts as existing even when what it
+ *  points to doesn't (lstat, not exists): realpath then throws, and callers refuse — otherwise a link to
+ *  a missing file outside would read as a new file inside, and the write would follow it (BL-29 review). */
 export function realPathOf(full: string): string {
   let probe = full; const rest: string[] = [];
   for (;;) {
-    if (existsSync(probe)) return [realpathSync.native(probe), ...rest.reverse()].join(sep);
+    let found = false;
+    try { lstatSync(probe); found = true; } catch { /* not there (or unreadable): look one level up */ }
+    if (found) return [realpathSync.native(probe), ...rest.reverse()].join(sep);
     const up = dirname(probe);
     if (up === probe) return full;
     rest.push(basename(probe)); probe = up;
   }
+}
+
+/** Whether `full` sits inside `root` (or is `root`) once both are real paths — short names expanded,
+ *  links followed, case-insensitive on Windows — with a separator after the root, so `sandbox-x` is
+ *  not inside `sandbox`. */
+export function insideReal(root: string, full: string): boolean {
+  const real = (p: string) => {
+    let r: string;
+    try { r = realPathOf(resolve(p)); } catch { r = resolve(p); }
+    return process.platform === 'win32' ? r.toLowerCase() : r;
+  };
+  // A target whose real path can't be worked out (a dangling link) is not inside anything.
+  let t: string;
+  try { t = realPathOf(resolve(full)); } catch { return false; }
+  if (process.platform === 'win32') t = t.toLowerCase();
+  const r = real(root);
+  return t === r || t.startsWith(r.endsWith(sep) ? r : r + sep);
 }
 
 /**
