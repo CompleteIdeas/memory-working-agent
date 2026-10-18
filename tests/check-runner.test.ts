@@ -112,12 +112,14 @@ describe('the sandbox', () => {
   it('a check that won’t stop is answered anyway: timed out, the process killed', async () => {
     const child = spawn(process.execPath, ['-e', 'console.log("started"); setInterval(() => {}, 1000)']);
     let asked = false;
-    const r = await supervise(child, 300, () => { asked = true; /* a docker kill that does nothing */ }, 300);
+    // 1.5 s each way, not 0.3: under a full parallel run a cold `node` took longer than 0.6 s to print
+    // "started", so it was killed first and the output check failed (BL-33).
+    const r = await supervise(child, 1_500, () => { asked = true; /* a docker kill that does nothing */ }, 1_500);
     expect(asked).toBe(true);
     expect([r.timedOut, r.exitCode]).toEqual([true, null]);
     expect(r.outputTail).toMatch(/started[\s\S]*did not stop/);
     expect(child.killed).toBe(true);
-  });
+  }, 20_000);
   it('the worktree and the trusted checkout must be separate, either way round', () => {
     const outer = tmp('mwa-cr-outer-'); mkdirSync(join(outer, 'inner'));
     expect([overlaps(join(outer, 'inner'), outer), overlaps(outer, join(outer, 'inner')), overlaps(outer, outer), overlaps(outer, repo)]).toEqual([true, true, true, false]);

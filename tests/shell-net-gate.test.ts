@@ -130,7 +130,7 @@ describe('the model’s shell gets no secrets', () => {
       }
       expect(existsSync(join(cargoBin, 'cargo.cmd'))).toBe(false);
     } finally { process.env.PATH = saved; rmSync(home, { recursive: true, force: true }); }
-  });
+  }, 30_000); // starts PowerShell for the short name: slow under a full parallel run (BL-33)
 
   it('BL-28: no file lands where it runs at login or in a new terminal, however it is spelled', async () => {
     const home = mkdtempSync(join(tmpdir(), 'mwa-bl28-'));
@@ -174,7 +174,7 @@ describe('the model’s shell gets no secrets', () => {
         expect(existsSync(join(startup, 'run.cmd'))).toBe(false);
       }
     } finally { rmSync(home, { recursive: true, force: true }); }
-  });
+  }, 30_000); // starts PowerShell for the short name (BL-33)
 
   it('BL-26: on Windows a planted npm.cmd in the folder does not replace npm; a script named with its folder still runs', async () => {
     if (process.platform !== 'win32') return;

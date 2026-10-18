@@ -47,7 +47,9 @@ describe('scoring a dry run', () => {
 // The watched state is an env var the test flips; the check prints it.
 const CHECK = 'node -e "process.stdout.write(process.env.DETVAL||\'\')"';
 
-describe('the scheduler runs a dry-run detector without ever skipping', () => {
+// Every tick runs the check as a real `node` process — about ten per test. Under a full parallel run
+// that alone passed vitest's 5 s default (BL-33: 1 to 7 failures a run, every one passing alone).
+describe('the scheduler runs a dry-run detector without ever skipping', { timeout: 30_000 }, () => {
   let dir = ''; let mem: MwaMemory; let clock = 0;
   let ran: string[] = []; let delivered: string[] = []; let nextOutcome = 'changed'; let declared = true;
   let during: (() => Promise<void>) | null = null; let throwRun = false;
@@ -172,7 +174,7 @@ describe('the scheduler runs a dry-run detector without ever skipping', () => {
   });
 });
 
-describe('the schedule_detector tool', () => {
+describe('the schedule_detector tool', { timeout: 30_000 }, () => {
   let dir = ''; let mem: MwaMemory;
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'mwa-det-tool-')); mem = new MwaMemory('det-tool', join(dir, 'a.db')); });
   afterEach(() => { mem.close(); rmSync(dir, { recursive: true, force: true }); });

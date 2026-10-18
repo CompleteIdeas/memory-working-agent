@@ -47,7 +47,7 @@ describe('never write where git runs code', () => {
       expect(existsSync(join(dir, '.git', 'hooks', 'post-checkout'))).toBe(false);
       expect(await write.handler({ path: 'src/fix.ts', content: 'export {}' }, { sandboxDir: dir, interactive: true })).toMatch(/^wrote/);
     } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
+  }, 30_000); // the first write reads the person's PATH with reg.exe (BL-27): slow under a full parallel run (BL-33)
 });
 
 describe('approval_results: a later run sees what its staged gates did', () => {
