@@ -124,7 +124,7 @@ describe('when a claim is judged at all', () => {
 
   it('a request that only asks a question is not checked; one that asks for work is', () => {
     for (const q of ['What do I have scheduled?', 'What did you do overnight?', 'When is the reminder set for', 'Is the report done?',
-      'did you send dana the invoice', 'Did you send the invoice to Dana? She says she never got it.', 'Has the reminder been scheduled', 'Do you have the agenda']) expect(asksOnly(q), q).toBe(true);
+      'did you send dana the invoice', 'Did you send the invoice to Dana? She says she never got it.', 'Has the reminder been scheduled', 'Do you have the agenda', 'Can you check the reminder for tomorrow is set?']) expect(asksOnly(q), q).toBe(true);
     for (const q of ['Can you schedule a reminder for 9am?', 'Schedule a reminder for 9am.', 'Email Dana the agenda', 'Find the invoice and email it to Dana.', 'Do the weekly report']) expect(asksOnly(q), q).toBe(false);
     expect([...claimsIn("I've scheduled it for tomorrow at 9am.")]).toEqual(['schedule']); // a time in a schedule claim is its due time
   });
@@ -169,7 +169,7 @@ describe('by default the check is a shadow: it corrects in the loop and records,
     const r = await run(REMIND, [{ action: 'schedule_list' }, CLAIM, CLAIM], { schedule_list: '(nothing scheduled)' });
     expect(r.history.join('\n')).toMatch(/substance gate: Your answer says you scheduled something in this run/);
     expect(r.unbackedClaims).toEqual(['schedule']);
-    expect(r.history.join('\n')).toMatch(/claim check, shadow: the reply claims schedule/);
+    expect(r.history.join('\n')).not.toMatch(/did none/); // recorded in the run log only: end-of-run passes read history
     expect(r.summary).not.toMatch(/Not done/);
     expect(r.outcome).not.toBe('could-not');
   }, 30_000);

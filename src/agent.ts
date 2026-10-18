@@ -1290,10 +1290,12 @@ export async function runAgent(opts: {
   const claimedUnbacked = reason === 'done' && checkClaims && !askedUser && pendingStagedBy(runId, 'tool').length === 0
     ? unbackedClaims(finalSummary, actedAtAll(), claimRequest) : [];
   const unbacked = claimMode === 'enforce' ? claimedUnbacked : [];
+  // In shadow mode nothing goes into `history` either: the end-of-run passes below (facts, skills, open
+  // questions) and the inbox report read it, and would take a false positive as fact. The run log has it.
   if (unbacked.length) {
     finalSummary = `${finalSummary}\n\n${unbackedNote(unbacked)}`;
     history.push(`(the reply claims ${unbacked.join('/')} but this run did none — marked could-not)`);
-  } else if (claimedUnbacked.length) history.push(`(claim check, shadow: the reply claims ${claimedUnbacked.join('/')} but this run did none)`);
+  }
 
   // SUPERSEDE-AS-TRANSITION — when this run learned that a PRIOR fact's VALUE changed, record the
   // update as a transition-with-reason ("X moved from <old> to <new> because <why>") written with

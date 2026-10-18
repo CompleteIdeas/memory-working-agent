@@ -95,6 +95,8 @@ export function requestedKinds(message: string): Set<ClaimKind> {
  *  the answer describes work, it doesn't claim to have done it now. "Can you schedule …?" asks for work. */
 export function asksOnly(message: string): boolean {
   const t = message.trim();
+  // "Can you check / confirm …?" asks about work; "Can you send …?" asks for it (confirmation review).
+  if (/^(can|could|would) you (check|confirm|verify|see|tell me|let me know|find out)\b/i.test(t)) return true;
   if (/^(can|could|would|will|please)\b/i.test(t)) return false;
   // Yes/no questions too, with or without a "?" ("did you send dana the invoice"), and a "?" anywhere
   // ("Did you send it? She says she never got it.") — review 3.
