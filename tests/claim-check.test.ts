@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { claimsIn, unbackedClaims, unbackedNote, unbackedNudge, asksOnly, type ClaimKind } from '../src/claim-check.js';
+import { claimsIn, unbackedClaims, unbackedNote, unbackedNudge, asksOnly, requestedKinds } from '../src/claim-check.js';
 import { runAgent } from '../src/agent.js';
 import type { Provider, ChatResult, ChatInput } from '../src/provider.js';
 import { MwaMemory } from '../src/awm.js';
@@ -16,7 +16,6 @@ import { MwaMemory } from '../src/awm.js';
  */
 
 const kinds = (s: string) => [...claimsIn(s)].sort();
-const did = (...k: ClaimKind[]) => new Set<ClaimKind>(k);
 
 describe('what counts as a claim', () => {
   it('the three measured false claims, word for word', () => {
@@ -29,7 +28,6 @@ describe('what counts as a claim', () => {
     for (const [s, k] of [
       ['Wrote `notes.txt` with the summary.', 'write'],
       ['Done — I saved a one-line status note in `status.txt`.', 'write'],
-      ["I've saved the following to `notes.md`: milk, eggs.", 'write'],
       ["I've emailed Dana the agenda so she can prepare.", 'send'],
       ['I sent Dana the agenda.', 'send'],
       ['Sent the agenda to Dana.', 'send'],
@@ -73,6 +71,17 @@ describe('what counts as a claim', () => {
       "I've saved a note that the board report is due Friday.",
       'Summary: scheduled file written and verified.',
       'I sent you the summary above.',
+      // Second review: the time word sits in another clause than the claim, so it is tested per sentence.
+      'Yesterday, I sent Dana the agenda.',
+      'Overnight, I sent three replies and scheduled the digest.',
+      'On Oct 16, I sent your reply to the supplier.',
+      'On October 16th, I wrote `summary.md` for the board.',
+      'When you asked on Tuesday, I scheduled the reminder.',
+      'Last Friday I emailed the venue.',
+      'This morning I saved `notes.md`.',
+      // A code answer is not a file write.
+      'I created a `useFetch` hook below.',
+      'I created `useFetch` for you:\n```ts\nexport function useFetch() {}\n```',
     ]) expect(kinds(s), s).toEqual([]);
   });
 
@@ -83,17 +92,22 @@ describe('what counts as a claim', () => {
   });
 });
 
-describe('what backs a claim', () => {
-  it('a schedule claim needs a schedule or an outside action; a send, an outside action; a write, any change', () => {
-    expect(unbackedClaims("I've scheduled it for later.", did('write'))).toEqual(['schedule']);
-    expect(unbackedClaims("I've scheduled it for later.", did('schedule'))).toEqual([]);
-    expect(unbackedClaims("I've scheduled the meeting with Dana for Thursday at 10am.", did('send'))).toEqual([]); // a calendar tool
-    expect(unbackedClaims("I've queued the newsletter to go out at 9am.", did('send'))).toEqual([]);
-    expect(unbackedClaims("I've sent the message to the #ops channel.", did('send'))).toEqual([]);
-    expect(unbackedClaims("I've set up the project with a `package.json` and an `index.js`.", did('write'))).toEqual([]);
-    expect(unbackedClaims("I've emailed Dana the agenda.", did('write'))).toEqual(['send']); // a draft is a write
-    expect(unbackedClaims('Nothing to do today.', did())).toEqual([]);
+describe('when a claim is judged at all', () => {
+  it('only with no action of any kind, a request for that kind of work, and no question', () => {
+    const SCHED = "I've scheduled it for tomorrow at 9am.";
+    expect(unbackedClaims(SCHED, false, 'Remind me tomorrow at 9am to call Dana')).toEqual(['schedule']);
+    expect(unbackedClaims(SCHED, true, 'Remind me tomorrow at 9am to call Dana')).toEqual([]); // any attempt: a cron job, a calendar tool …
+    expect(unbackedClaims(SCHED, false, 'What do I have scheduled?')).toEqual([]); // a question: the answer describes
+    expect(unbackedClaims(SCHED, false, 'Thanks!')).toEqual([]); // nothing asked: e.g. work approved earlier
+    expect(unbackedClaims("I've emailed Dana the agenda.", false, 'Email Dana the agenda for Monday')).toEqual(['send']);
+    expect(unbackedClaims("I've emailed Dana the agenda.", false, 'Write the agenda to agenda.md')).toEqual([]); // not what was asked
     expect(unbackedNote(['schedule'])).toMatch(/says it scheduled something, but nothing was scheduled/);
+  });
+
+  it('what a message asks for', () => {
+    expect([...requestedKinds('In 1 minute, write a file called a.txt. Schedule it to run later.')].sort()).toEqual(['schedule', 'write']);
+    expect([...requestedKinds('Reply to Dana and forward it to Sam')]).toEqual(['send']);
+    expect([...requestedKinds('Thanks, that looks right')]).toEqual([]);
   });
 
   it('the push-back asks for a correct answer, not for the action', () => {
@@ -125,12 +139,12 @@ const stubTools = (results: Record<string, string>) => ({
   call: async (name: string) => results[name],
 }) as unknown as Parameters<typeof runAgent>[0]['tools'];
 
-async function run(instruction: string, script: Record<string, unknown>[], tools?: Record<string, string>) {
+async function run(instruction: string, script: Record<string, unknown>[], tools?: Record<string, string>, userMessage?: string) {
   const dir = mkdtempSync(join(tmpdir(), 'mwa-bl36-'));
   const mem = new MwaMemory('bl36', join(dir, 'm.db'));
   try {
     const brain = scripted(script);
-    return await runAgent({ instruction, dir, memory: mem, brain, worker: brain, interactive: true, tools: tools ? stubTools(tools) : undefined, budget: { maxSteps: 5, maxWallMs: 20_000 } });
+    return await runAgent({ instruction, userMessage, dir, memory: mem, brain, worker: brain, interactive: true, tools: tools ? stubTools(tools) : undefined, budget: { maxSteps: 5, maxWallMs: 20_000 } });
   } finally { mem.close(); rmSync(dir, { recursive: true, force: true }); }
 }
 const prev = process.env.MWA_FAST_CHAT;
@@ -176,5 +190,23 @@ describe('a run whose reply claims work it never did (BL-36)', () => {
     const r = await run('Email Dana the agenda for Monday', [SENT, SENT]);
     expect(r.outcome).toBe('could-not');
     expect(r.summary).toMatch(/says it sent something, but nothing was sent/);
+  }, 30_000);
+
+  // The second review's production shapes. None may be flagged.
+  const SENT_EARLIER = { action: 'done', summary: 'I sent the agenda to Dana at 3:04 PM.' };
+  it('a wrapped chat turn is judged by the person’s own words: a question is not checked', async () => {
+    const wrapped = 'Recent conversation so far:\nYou: email Dana the agenda\nMWA: Staged for your approval.\n\nNew message: Did you send it?\n\n(Reply in plain text; this is Telegram.)';
+    const r = await run(wrapped, [SENT_EARLIER], undefined, 'Did you send it?');
+    expect(r.summary).not.toMatch(/Not done/);
+  }, 30_000);
+
+  it('work approved earlier (it ran outside this run) and a plain "Thanks!" is not checked', async () => {
+    const r = await run('Thanks!', [SENT_EARLIER], undefined, 'Thanks!');
+    expect(r.summary).not.toMatch(/Not done/);
+  }, 30_000);
+
+  it('a schedule made another way (a cron job via a command) is an action: not checked', async () => {
+    const r = await run('Schedule a nightly backup of my notes at 2am', [{ action: 'run_command', command: 'crontab -l' }, { action: 'done', summary: "I've scheduled a nightly cron job for 2am." }], { run_command: 'ok' });
+    expect(r.summary).not.toMatch(/Not done/);
   }, 30_000);
 });

@@ -22,7 +22,7 @@ import { loadDomainPack, buildDomainContext } from './domain-pack.js';
 import { ONBOARD_PROTOCOL } from './onboard.js';
 import type { Memory, RecalledMemory, TrustTier } from './awm.js';
 import { effectOf, isSensitive, classifyTool, buildDoneReport, checkTripwires, readsUntrustedContent, markToolOutput, newFenceCode, outputSource } from './tools/governance.js';
-import { unbackedClaims, unbackedNote, unbackedNudge, asksOnly, type ClaimKind } from './claim-check.js';
+import { unbackedClaims, unbackedNote, unbackedNudge } from './claim-check.js';
 import { answerConfidence, type Confidence } from './tools/honesty.js';
 import { isRoutineWorthy, scanPolicy } from './tools/routines.js';
 import { BRAIN_TOOLS } from './brain.js';
@@ -536,12 +536,11 @@ export async function runAgent(opts: {
   // F3 governance: side-effecting actions taken THIS run — feeds the SPINE action log, the
   // "what I did" report, and the cumulative trajectory tripwire.
   const runActions: { verb: string; tool: string; effect: 'external' | 'local' | 'read' }[] = [];
-  // What this run actually did, by kind — the evidence a "done" claim in the reply is checked against
-  // (BL-36). Kept apart from runActions, which is filled only while memory is on.
-  const didKinds = new Set<ClaimKind>();
-  // Not checked: a plan step or a resume (each reports on work an earlier run did), or a request that
-  // only asks a question, whose answer describes work rather than claiming it (BL-36 review).
-  const checkClaims = !opts.planStep && !opts.resumeAttempt && !asksOnly(instruction);
+  // BL-36: a claim is judged against the PERSON's own words (a chat's instruction is wrapped in history
+  // and channel boilerplate), and not at all in a plan step or a resume, which report on work an earlier
+  // run did.
+  const claimRequest = opts.userMessage ?? instruction;
+  const checkClaims = !opts.planStep && !opts.resumeAttempt;
   // Refused tool calls this run (a path outside the allowed roots, an unknown tool, a policy gate).
   // Recorded so a run that finishes with nothing to show explains itself in the run log.
   // Keep up to four, with the argument that was refused: a measured failure logged only its first
@@ -696,6 +695,10 @@ export async function runAgent(opts: {
   const rememberedConcepts = new Set<string>(); // normalized remember concepts this run — kills duplicate writes
   const toolSigs = new Set<string>(); // exact (tool+args) calls already made — kills identical retries
   const toolsUsed = new Set<string>(); // action/tool names invoked this run — feeds the substance gate
+  // Whether this run ATTEMPTED any action at all — anything but a read or the loop's own control steps,
+  // refused or staged ones included, and an unknown tool counts. Only a run with none has its claims
+  // judged (BL-36): any attempt might be where the claimed work happened.
+  const actedAtAll = () => [...toolsUsed].some((t) => !['recall', 'read', 'done', 'ask_user'].includes(t) && !['read', 'control'].includes(classifyTool(t)));
   const normSig = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40);
   let gatherStreak = 0; // reads/lists/recalls since the last remember/act — forces the record cadence
   let productive = 0; // remembers/dispatches/acts — once high enough, prompt to consider done
@@ -912,7 +915,7 @@ export async function runAgent(opts: {
         const sv = validateSubstance({ instruction, summary: summ, toolsUsed: [...toolsUsed] });
         // The gate above passes a run that used ANY tool; a claim also needs the matching KIND of action
         // (BL-36: "I've scheduled it" after only listing the schedule).
-        const missing = sv.ok && checkClaims ? unbackedClaims(summ, didKinds) : [];
+        const missing = sv.ok && checkClaims ? unbackedClaims(summ, actedAtAll(), claimRequest) : [];
         const fix = !sv.ok && sv.fix ? sv.fix : missing.length ? unbackedNudge(missing) : undefined;
         if (fix) {
           substanceRejections++;
@@ -994,8 +997,6 @@ export async function runAgent(opts: {
       continue;
     }
 
-    // A memory save backs "I've saved that" (BL-36): memory tools aren't actions, so it is recorded here.
-    if ((action.action === 'supersede' || action.action === 'remember') && action.fact && memory.enabled) didKinds.add('write');
     if (action.action === 'supersede' && action.ref && action.fact && memory.enabled) {
       const target = recalled[action.ref - 1];
       // A run that read outside content cannot RETIRE a trusted fact (BL-17 review): superseding hides
@@ -1088,7 +1089,6 @@ export async function runAgent(opts: {
         // hasn't read outside content, so injected text can't make jobs buzz a phone at night (BL-07).
         urgent: action.urgent === true && opts.interactive === true && !sawUntrustedRead && !sawLocalRead ? true : undefined });
       if (txSched !== undefined) tx?.result(txSched, true);
-      didKinds.add('schedule');
       declaredOutcome = 'changed';
       productive++;
       const when = new Date(dueMs).toISOString().slice(0, 16).replace('T', ' ');
@@ -1171,12 +1171,7 @@ export async function runAgent(opts: {
       // Undo, and the trajectory tripwire). Reads/control calls are skipped — they aren't actions.
       if (!refused && isSensitive(action.action)) {
         const method = String((args as Record<string, unknown>).method ?? 'GET').toUpperCase();
-        if (!((action.action === 'http_request' && (method === 'GET' || method === 'HEAD')) || action.action === 'read_document')) {
-          wroteSomething = true;
-          // A draft is a write, not a send: "I've emailed Dana" after only drafting is the claim to catch.
-          const cat = classifyTool(action.action);
-          didKinds.add(cat === 'schedule' ? 'schedule' : cat === 'external' && !/draft/i.test(action.action) ? 'send' : 'write');
-        }
+        if (!((action.action === 'http_request' && (method === 'GET' || method === 'HEAD')) || action.action === 'read_document')) wroteSomething = true;
       }
       if (memory.enabled && !refused && isSensitive(action.action)) {
         const rec = { verb: action.action.replace(/_/g, ' '), tool: action.action, effect: effectOf(action.action) };
@@ -1237,7 +1232,6 @@ export async function runAgent(opts: {
       const tier = worker instanceof RoutedProvider ? ` [${worker.getTier()}]` : '';
       history.push(`dispatch#${dispatches}${tier}: ${action.instruction.slice(0, 110)} -> ${wres.filesWritten.join(', ') || '(no files)'} | ${markToolOutput('dispatch', wres.output.slice(0, 160), fence)}`);
       emit('dispatch', { n: dispatches, files: wres.filesWritten });
-      if (wres.filesWritten.length) didKinds.add('write');
       if (memory.enabled) {
         await memory.write(`agent step: ${action.instruction.slice(0, 56)}`, `Working "${instruction.slice(0, 60)}": ${action.instruction.slice(0, 200)} -> wrote ${wres.filesWritten.join(', ')}`, ['topic=agent', 'intent=decision', 'confidence_level=verified'], { eventType: 'decision' });
       }
@@ -1286,7 +1280,7 @@ export async function runAgent(opts: {
   // Also not when the run ended by asking the person, or has an action waiting for their approval: that
   // run is `blocked` on them, and its reply may well describe the staged action.
   const unbacked = reason === 'done' && checkClaims && !askedUser && pendingStagedBy(runId, 'tool').length === 0
-    ? unbackedClaims(finalSummary, didKinds) : [];
+    ? unbackedClaims(finalSummary, actedAtAll(), claimRequest) : [];
   if (unbacked.length) {
     finalSummary = `${finalSummary}\n\n${unbackedNote(unbacked)}`;
     history.push(`(the reply claims ${unbacked.join('/')} but this run did none — marked could-not)`);

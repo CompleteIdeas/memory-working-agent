@@ -7,32 +7,40 @@
  * third of honest runs as well.
  *
  * Built for precision: a missed claim leaves today's behaviour, a false one tells the person a finished
- * job failed. The first version read passive sentences ("the reminder is scheduled for 9", "the file
- * was updated by the nightly export") and "I've set up the project" as claims; the review proved each
- * one end to end. So now:
- *   - only the agent speaking of itself, in the past: "I scheduled / wrote / sent …";
- *   - not a clause anchored in the past ("yesterday", "on Oct 16", "already"), which is earlier work;
- *   - a file claim names a file (a known extension or a `backticked` name), so "dana@acme.com" isn't one;
- *   - the caller skips requests that only ask a question, plan steps and resumes (see `claimsApply`).
+ * job failed. Two isolated reviews proved that reading arbitrary replies has a long tail of false flags
+ * (recaps, other people's actions, work approved earlier that ran outside the run, a cron job made with a
+ * shell command, a code answer). So the rule only judges the case the measured failures share — total
+ * evidence of absence (decided 2026-10-18, with a second-model challenge):
+ *   - the PERSON's own message asked for that kind of work, and is not a question;
+ *   - the run attempted no action of any kind (anything but reads: a write, a command, a send, a
+ *     schedule, a memory save, a coding-worker file);
+ *   - the reply says, of this run, "I scheduled / wrote / sent …": first person, no negation, no
+ *     past-time anchor in the sentence ("Yesterday, I sent …"), and a write names a file.
  */
 
 export type ClaimKind = 'schedule' | 'write' | 'send';
 
-/** Clauses: sentences, then commas / semicolons / colons / dashes / "and" / "but", so "I scheduled it,
- *  and I did not create the file now" keeps its claim and drops the negated half. */
-function clauses(text: string): string[] {
+/** Sentences, minus quoted material (someone else's words, e.g. an email being summarized) and code
+ *  blocks (an answer that shows code is not a file write). */
+function sentences(text: string): string[] {
   return text
-    // Quoted material is someone else's words (an email being summarized), not the agent's claim.
+    .replace(/```[\s\S]*?```/g, ' ')
     .replace(/^\s*>.*$/gm, ' ')
     .replace(/“[^”]*”|"[^"\n]*"/g, ' ')
-    .split(/(?<=[.!?])\s+|\n+|[;—–]|:\s+|,\s+|\s+(?:and|but|so|then)\s+/i)
-    .map((c) => c.trim())
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
     .filter(Boolean);
 }
+/** Clauses of a sentence: commas / semicolons / colons / dashes / "and" / "but", so "I scheduled it,
+ *  and I did not create the file now" keeps its claim and drops the negated half. */
+const clauses = (sentence: string) => sentence.split(/[;—–]|:\s+|,\s+|\s+(?:and|but|so|then)\s+/i).map((c) => c.trim()).filter(Boolean);
 
 const NEGATED = /\b(not|never|no|nothing|none|unable|cannot|failed|without)\b|n['’]t\b/i;
-// Earlier work, described: "I created `report.md` yesterday", "I've already scheduled the digest".
-const PAST = /\b(yesterday|earlier|previously|already|ago|overnight|last (?:night|week|month|time)|on (?:mon|tues|wednes|thurs|fri|satur|sun)day|on \d{4}-\d{2}-\d{2}|on (?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.? \d{1,2})\b/i;
+// Earlier work, described — tested on the whole SENTENCE, since "Yesterday, I sent …" puts the anchor
+// in another clause.
+const PAST = /\b(yesterday|earlier|previously|already|ago|overnight|this (?:morning|afternoon)|last (?:night|week|month|time|mon|tues|wednes|thurs|fri|satur|sun)(?:day)?|on (?:mon|tues|wednes|thurs|fri|satur|sun)day|on \d{4}-\d{2}-\d{2}|on (?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.? \d{1,2}(?:st|nd|rd|th)?)\b/i;
+// Content shown in the reply itself: "I created a `useFetch` hook below".
+const INLINE = /\b(below|above|following|in this (?:message|reply))\b/i;
 const ME = String.raw`^I(?:['’]ve| have)?\s+(?:now\s+|also\s+|just\s+)?`;
 
 const SCHEDULE = [
@@ -42,7 +50,8 @@ const SCHEDULE = [
   new RegExp(`${ME}set up (?:a |an |the |your )?(?:(?:later|delayed|scheduled|timed|recurring|future|one-time|daily|weekly|hourly)\\s+)?(?:reminder|timer|run|job)\\b`, 'i'),
 ];
 // A named file: a `backticked` name, or a name with a file extension (not a domain or an email address).
-const NAMED_FILE = /`[^`]+`|\b[\w-]+\.(?:txt|md|markdown|csv|tsv|json|jsonl|ya?ml|xml|html?|css|m?js|cjs|tsx?|jsx|py|rb|go|rs|java|c|cpp|h|sh|ps1|bat|sql|ini|toml|cfg|conf|log|pdf|docx?|xlsx?|pptx?|png|jpe?g|gif|svg)\b/i;
+// A name with a file extension, backticked or not — not `useFetch`, a domain or an email address.
+const NAMED_FILE = /\b[\w-]+\.(?:txt|md|markdown|csv|tsv|json|jsonl|ya?ml|xml|html?|css|m?js|cjs|tsx?|jsx|py|rb|go|rs|java|c|cpp|h|sh|ps1|bat|sql|ini|toml|cfg|conf|log|pdf|docx?|xlsx?|pptx?|png|jpe?g|gif|svg)\b/i;
 const WRITE = new RegExp(`${ME}(?:wrote|written|created|saved|updated|edited|added|appended|overwrote|overwritten)\\b`, 'i');
 const WROTE_FILE = /^(?:wrote|created|saved|updated)\s+\S/i; // "Wrote `notes.txt` …" — needs a named file too
 const SEND = [
@@ -54,13 +63,26 @@ const SEND = [
 /** The kinds of work the reply says this run did. */
 export function claimsIn(reply: string): Set<ClaimKind> {
   const found = new Set<ClaimKind>();
-  for (const c of clauses(reply)) {
-    if (NEGATED.test(c) || PAST.test(c) || /\?\s*$/.test(c)) continue;
-    if (SCHEDULE.some((r) => r.test(c))) found.add('schedule');
-    if ((WRITE.test(c) || WROTE_FILE.test(c)) && NAMED_FILE.test(c)) found.add('write');
-    if (SEND.some((r) => r.test(c))) found.add('send');
+  for (const s of sentences(reply)) {
+    if (PAST.test(s) || /\?\s*$/.test(s)) continue;
+    for (const c of clauses(s)) {
+      if (NEGATED.test(c)) continue;
+      if (SCHEDULE.some((r) => r.test(c))) found.add('schedule');
+      if ((WRITE.test(c) || WROTE_FILE.test(c)) && NAMED_FILE.test(c) && !INLINE.test(c)) found.add('write');
+      if (SEND.some((r) => r.test(c))) found.add('send');
+    }
   }
   return found;
+}
+
+/** The kinds of work the person's message asks for. Loose on purpose: it only decides whether a claim
+ *  is checked at all, and the other conditions carry the precision. */
+export function requestedKinds(message: string): Set<ClaimKind> {
+  const k = new Set<ClaimKind>();
+  if (/\b(schedule|reschedule|remind|reminder|later|tomorrow|tonight|every|daily|weekly|hourly|monthly|recurring|in \d+\s*(?:min|mins|minutes?|hours?|days?|weeks?))\b/i.test(message)) k.add('schedule');
+  if (/\b(e-?mail|send|reply|respond|forward|message|invite|notify)\b/i.test(message)) k.add('send');
+  if (/\b(write|save|create|make|generate|put|store|export|update|edit|append|add)\b/i.test(message)) k.add('write');
+  return k;
 }
 
 /** A request that only asks a question ("What do I have scheduled?", "What did you do overnight?"):
@@ -72,17 +94,14 @@ export function asksOnly(instruction: string): boolean {
 }
 
 /**
- * The claims this run's own record does not back. A write is backed by any change at all (a command
- * that wrote a file, a memory save); a schedule by a schedule or an outside action (a calendar tool's
- * event); a send only by an outside action.
+ * The claims nothing in this run backs: only when the run attempted no action of any kind (`acted` —
+ * the caller counts every tool that isn't a read, staged or refused ones too), the person's message
+ * asked for that kind of work, and isn't a question.
  */
-export function unbackedClaims(reply: string, did: ReadonlySet<ClaimKind>): ClaimKind[] {
-  const out: ClaimKind[] = [];
-  for (const k of claimsIn(reply)) {
-    const backed = k === 'write' ? did.size > 0 : k === 'schedule' ? did.has('schedule') || did.has('send') : did.has('send');
-    if (!backed) out.push(k);
-  }
-  return out;
+export function unbackedClaims(reply: string, acted: boolean, request: string): ClaimKind[] {
+  if (acted || asksOnly(request)) return [];
+  const asked = requestedKinds(request);
+  return [...claimsIn(reply)].filter((k) => asked.has(k));
 }
 
 const VERB: Record<ClaimKind, [string, string]> = {
