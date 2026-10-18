@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, symlinkSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runWorker } from '../src/worker.js';
@@ -45,6 +45,17 @@ describe('the coding worker stays in its sandbox (BL-29)', () => {
       expect(existsSync(join(box, 'src', 'ok.mjs'))).toBe(true);
       expect(r.filesWritten).toEqual(['src/ok.mjs']);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 30_000);
+
+  it('the grader is never overwritten, however its path is spelled', async () => {
+    const box = mkdtempSync(join(tmpdir(), 'mwa-bl29g-'));
+    try {
+      writeFileSync(join(box, 'test.mjs'), 'GRADER');
+      const spellings = ['test.mjs', './test.mjs', 'src/../test.mjs', ...(process.platform === 'win32' ? ['TEST.MJS'] : [])];
+      const r = await runWorker(writes(spellings.map((path) => ({ path, content: 'process.exit(0)' }))), { instruction: 'x', testCmd: 'node -e "0"' }, box);
+      expect(readFileSync(join(box, 'test.mjs'), 'utf8')).toBe('GRADER');
+      expect(r.filesWritten).toEqual([]);
+    } finally { rmSync(box, { recursive: true, force: true }); }
   }, 30_000);
 
   it('a link to a file not made yet outside the sandbox carries no write — worker or write_file (BL-29 review)', async () => {

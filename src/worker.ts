@@ -110,11 +110,12 @@ export async function runWorker(
   const written: string[] = [];
   for (const f of files) {
     if (!f.path || typeof f.content !== 'string') continue;
-    if (protect.includes(f.path) || protect.includes(f.path.replace(/^\.\//, ''))) continue; // never overwrite the grader
     // Inside the sandbox by REAL path, with a separator: `sandbox-x` is a sibling, and a link inside the
     // sandbox must not carry the write elsewhere (BL-29) — the same check write_file makes.
     const target = resolve(sandboxDir, f.path);
     if (!insideReal(sandboxDir, target)) continue;
+    // Never overwrite the grader — by real path too, so `src/../test.mjs`, `TEST.MJS` or a link to it can't.
+    if (protect.some((p) => insideReal(resolve(sandboxDir, p), target))) continue;
     if (writeRefusal(target)) continue; // .git / hooks, streams, short names (BL-14a)
     // A path naming a folder (the sandbox itself, `src`) or under a dangling link is skipped, not fatal.
     try {
