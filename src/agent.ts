@@ -21,7 +21,8 @@ import { validateSubstance } from './substance.js';
 import { loadDomainPack, buildDomainContext } from './domain-pack.js';
 import { ONBOARD_PROTOCOL } from './onboard.js';
 import type { Memory, RecalledMemory, TrustTier } from './awm.js';
-import { effectOf, isSensitive, buildDoneReport, checkTripwires, readsUntrustedContent, markToolOutput, newFenceCode, outputSource } from './tools/governance.js';
+import { effectOf, isSensitive, classifyTool, buildDoneReport, checkTripwires, readsUntrustedContent, markToolOutput, newFenceCode, outputSource } from './tools/governance.js';
+import { unbackedClaims, unbackedNote, unbackedNudge, asksOnly, type ClaimKind } from './claim-check.js';
 import { answerConfidence, type Confidence } from './tools/honesty.js';
 import { isRoutineWorthy, scanPolicy } from './tools/routines.js';
 import { BRAIN_TOOLS } from './brain.js';
@@ -379,6 +380,9 @@ export async function runAgent(opts: {
   /** true when this run is one isolated sub-task spawned by the planner — suppresses
    *  re-planning and self-scheduled resumes (the planner owns retries). */
   subRun?: boolean;
+  /** true for one step of a multi-step plan (not the single-step fallback, which is a whole run). Its
+   *  answer reports on work earlier steps did, so it is not checked for unbacked claims (BL-36). */
+  planStep?: boolean;
   /** cap on primed memories kept in the prompt (default 10, the anti-context-rot discipline).
    *  Raised only by the gauntlet's long-context baseline arm to let it dump the full store. */
   primeCap?: number;
@@ -532,6 +536,12 @@ export async function runAgent(opts: {
   // F3 governance: side-effecting actions taken THIS run — feeds the SPINE action log, the
   // "what I did" report, and the cumulative trajectory tripwire.
   const runActions: { verb: string; tool: string; effect: 'external' | 'local' | 'read' }[] = [];
+  // What this run actually did, by kind — the evidence a "done" claim in the reply is checked against
+  // (BL-36). Kept apart from runActions, which is filled only while memory is on.
+  const didKinds = new Set<ClaimKind>();
+  // Not checked: a plan step or a resume (each reports on work an earlier run did), or a request that
+  // only asks a question, whose answer describes work rather than claiming it (BL-36 review).
+  const checkClaims = !opts.planStep && !opts.resumeAttempt && !asksOnly(instruction);
   // Refused tool calls this run (a path outside the allowed roots, an unknown tool, a policy gate).
   // Recorded so a run that finishes with nothing to show explains itself in the run log.
   // Keep up to four, with the argument that was refused: a measured failure logged only its first
@@ -900,11 +910,15 @@ export async function runAgent(opts: {
       // acting). One re-prompt, conservative (defaults to pass), never spins.
       if (substanceRejections < 1) {
         const sv = validateSubstance({ instruction, summary: summ, toolsUsed: [...toolsUsed] });
-        if (!sv.ok && sv.fix) {
+        // The gate above passes a run that used ANY tool; a claim also needs the matching KIND of action
+        // (BL-36: "I've scheduled it" after only listing the schedule).
+        const missing = sv.ok && checkClaims ? unbackedClaims(summ, didKinds) : [];
+        const fix = !sv.ok && sv.fix ? sv.fix : missing.length ? unbackedNudge(missing) : undefined;
+        if (fix) {
           substanceRejections++;
           consecNoProgress = 0; // it's being corrected, not stalling
-          nudge = sv.fix;
-          history.push(`(substance gate: ${sv.fix.slice(0, 90)})`);
+          nudge = fix;
+          history.push(`(substance gate: ${fix.slice(0, 90)})`);
           emit('verify', { ok: false });
           continue;
         }
@@ -980,6 +994,8 @@ export async function runAgent(opts: {
       continue;
     }
 
+    // A memory save backs "I've saved that" (BL-36): memory tools aren't actions, so it is recorded here.
+    if ((action.action === 'supersede' || action.action === 'remember') && action.fact && memory.enabled) didKinds.add('write');
     if (action.action === 'supersede' && action.ref && action.fact && memory.enabled) {
       const target = recalled[action.ref - 1];
       // A run that read outside content cannot RETIRE a trusted fact (BL-17 review): superseding hides
@@ -1072,6 +1088,7 @@ export async function runAgent(opts: {
         // hasn't read outside content, so injected text can't make jobs buzz a phone at night (BL-07).
         urgent: action.urgent === true && opts.interactive === true && !sawUntrustedRead && !sawLocalRead ? true : undefined });
       if (txSched !== undefined) tx?.result(txSched, true);
+      didKinds.add('schedule');
       declaredOutcome = 'changed';
       productive++;
       const when = new Date(dueMs).toISOString().slice(0, 16).replace('T', ' ');
@@ -1154,7 +1171,12 @@ export async function runAgent(opts: {
       // Undo, and the trajectory tripwire). Reads/control calls are skipped — they aren't actions.
       if (!refused && isSensitive(action.action)) {
         const method = String((args as Record<string, unknown>).method ?? 'GET').toUpperCase();
-        if (!((action.action === 'http_request' && (method === 'GET' || method === 'HEAD')) || action.action === 'read_document')) wroteSomething = true;
+        if (!((action.action === 'http_request' && (method === 'GET' || method === 'HEAD')) || action.action === 'read_document')) {
+          wroteSomething = true;
+          // A draft is a write, not a send: "I've emailed Dana" after only drafting is the claim to catch.
+          const cat = classifyTool(action.action);
+          didKinds.add(cat === 'schedule' ? 'schedule' : cat === 'external' && !/draft/i.test(action.action) ? 'send' : 'write');
+        }
       }
       if (memory.enabled && !refused && isSensitive(action.action)) {
         const rec = { verb: action.action.replace(/_/g, ' '), tool: action.action, effect: effectOf(action.action) };
@@ -1215,6 +1237,7 @@ export async function runAgent(opts: {
       const tier = worker instanceof RoutedProvider ? ` [${worker.getTier()}]` : '';
       history.push(`dispatch#${dispatches}${tier}: ${action.instruction.slice(0, 110)} -> ${wres.filesWritten.join(', ') || '(no files)'} | ${markToolOutput('dispatch', wres.output.slice(0, 160), fence)}`);
       emit('dispatch', { n: dispatches, files: wres.filesWritten });
+      if (wres.filesWritten.length) didKinds.add('write');
       if (memory.enabled) {
         await memory.write(`agent step: ${action.instruction.slice(0, 56)}`, `Working "${instruction.slice(0, 60)}": ${action.instruction.slice(0, 200)} -> wrote ${wres.filesWritten.join(', ')}`, ['topic=agent', 'intent=decision', 'confidence_level=verified'], { eventType: 'decision' });
       }
@@ -1254,6 +1277,19 @@ export async function runAgent(opts: {
       usage.brainIn += fin.usage.input; usage.brainOut += fin.usage.output;
       if (fin.text?.trim()) finalSummary = fin.text.trim();
     } catch { /* keep the terse summary */ }
+  }
+
+  // A CLAIM WITH NO ACTION BEHIND IT (BL-36): the reply says it scheduled / wrote / sent something this
+  // run never did. Checked on the model's own words, here, before MWA appends its report (which names
+  // only real actions) and before anything below reads the summary — the run memory, the lesson pass,
+  // the outcome — so none of them takes the claim at its word.
+  // Also not when the run ended by asking the person, or has an action waiting for their approval: that
+  // run is `blocked` on them, and its reply may well describe the staged action.
+  const unbacked = reason === 'done' && checkClaims && !askedUser && pendingStagedBy(runId, 'tool').length === 0
+    ? unbackedClaims(finalSummary, didKinds) : [];
+  if (unbacked.length) {
+    finalSummary = `${finalSummary}\n\n${unbackedNote(unbacked)}`;
+    history.push(`(the reply claims ${unbacked.join('/')} but this run did none — marked could-not)`);
   }
 
   // SUPERSEDE-AS-TRANSITION — when this run learned that a PRIOR fact's VALUE changed, record the
@@ -1391,7 +1427,7 @@ export async function runAgent(opts: {
   // recalls it before similar future tasks, so the agent stops repeating the same dead end.
   // The failure counterpart of the skill derivation above — harness-owned, run-end only, so it
   // never changes the live loop's dynamics (the lesson from the plan-and-execute regression).
-  const failedRun = reason === 'stuck' || reason === 'error' || reason === 'budget'
+  const failedRun = reason === 'stuck' || reason === 'error' || reason === 'budget' || unbacked.length > 0
     || /refused|could ?n.?t|couldn|unable|\bfail|\berror\b|not found|no files|gave up/i.test(history.slice(-20).join('\n'));
   if (memory.enabled && toolCalls > 0 && !askedUser && failedRun) {
     try {
@@ -1486,7 +1522,7 @@ export async function runAgent(opts: {
 
   // record the run outcome
   if (memory.enabled) {
-    await memory.write(`agent run: ${instruction.slice(0, 56)}`, `Instruction "${instruction.slice(0, 240)}" ended: ${reason} after ${steps} steps, ${dispatches} dispatches. ${finalSummary}`, ['topic=agent', 'kind=run-outcome', 'intent=decision', 'confidence_level=verified', ...(opts.jobId ? [`job=${opts.jobId.slice(0, 8)}`] : [])], { eventType: 'decision', canonical: reason === 'done' && !sawUntrustedRead, ...(sawUntrustedRead ? { provenance: 'ingested' as const } : {}) });
+    await memory.write(`agent run: ${instruction.slice(0, 56)}`, `Instruction "${instruction.slice(0, 240)}" ended: ${reason} after ${steps} steps, ${dispatches} dispatches. ${finalSummary}`, ['topic=agent', 'kind=run-outcome', 'intent=decision', 'confidence_level=verified', ...(opts.jobId ? [`job=${opts.jobId.slice(0, 8)}`] : [])], { eventType: 'decision', canonical: reason === 'done' && !sawUntrustedRead && !unbacked.length, ...(sawUntrustedRead ? { provenance: 'ingested' as const } : {}) });
   }
 
   // SCHEDULER-DRIVEN RESUME — a long task that ran out of budget (or got stuck) AFTER doing
@@ -1550,6 +1586,9 @@ export async function runAgent(opts: {
   // Defensive in shipped wiring: since BL-03 unattended writes are STAGED (blocked via pendingStagedBy),
   // and this phrase comes only from confirm_action, which an embedding app's human channel registers.
   else if (approvalRefused && !wroteSomething && declaredOutcome !== 'could-not') outcome = 'blocked';
+  // The reply says it scheduled / wrote / sent something this run never did (BL-36): whatever it
+  // declared, the work isn't there. could-not is always delivered, so the person hears about it.
+  else if (unbacked.length) outcome = 'could-not';
   // Failures AND first-party refusals count (the unattended-write gate, the path gate): a job refused on
   // every fire must not go quiet. Nothing exempts `complete`: a broken tracker API must not be able to
   // stop a job. "Achieved" includes successful reads, so one transient failure then a good answer is fine.
@@ -1691,7 +1730,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     // The caller's carried context (a tainted earlier chat turn) plus, once the chain is tainted, the
     // earlier steps' output. Dropping the caller's half lost the conversation for every step.
     const carried = [opts.carried, chainTainted && chain.length ? chain.slice(-3).join('\n\n') : ''].filter(Boolean).join('\n\n') || undefined;
-    const stepWords = { userMessage: opts.userMessage ?? opts.instruction, capturePolicy: i === 0, rootRunId: planRunId };
+    const stepWords = { userMessage: opts.userMessage ?? opts.instruction, capturePolicy: i === 0, rootRunId: planRunId, planStep: true };
     let sub = await runAgent({ ...opts, ...stepWords, instruction: ctx, subRun: true, plan: false, budget: subBudget, now: opts.now, onEvent: emit, startTainted: chainTainted, carried });
     let attemptTainted = sub.tainted === true;
     if (sub.reason !== 'done' && now() - start < maxWallMs) {
