@@ -242,7 +242,11 @@ class OpenAICompatProvider implements Provider {
           : undefined;
         return { text, toolCalls, usage: { input: j.usage?.prompt_tokens ?? 0, output: j.usage?.completion_tokens ?? 0 } };
       }
-      lastErr = `${this.id} ${res.status}: ${(await res.text()).slice(0, 200)}`;
+      const errText = await res.text();
+      lastErr = `${this.id} ${res.status}: ${errText.slice(0, 200)}`;
+      // Newer Gemini endpoints (gemini-3.8-flash) refuse a request that turns reasoning off: "Reasoning is
+      // mandatory for this endpoint and cannot be disabled" — every call failed (BL-35). Send it without.
+      if (res.status === 400 && body.reasoning && /reasoning is mandatory/i.test(errText)) { delete body.reasoning; continue; }
       if (res.status !== 429 && res.status < 500) break;
     }
     throw new Error(lastErr);

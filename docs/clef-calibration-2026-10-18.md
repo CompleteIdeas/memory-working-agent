@@ -30,7 +30,10 @@ already know.
   - 3 failures outside the agent's control;
   - 2 junk.
 - **Models:** `clef-flash` and `clef`, the same 874 calls each, with 3–4 questions per call.
-  - Cost: 554,610 input tokens per model, **$0.27 in all**, billed by Cloudflare.
+  - Usage: 554,610 input tokens per model. **No charge:** the account is on Workers AI's free plan, and
+    this run fit within the 10,000-neuron daily allowance (the list price, $0.24 per million input
+    tokens, would have been about $0.27). It also nearly used the day's allowance up: the BL-35 study's
+    first calls that evening were refused with "you have used up your daily free allocation".
   - Median latency: 225 ms (`clef`) and 409 ms (`clef-flash`).
 
 Scripts: `scripts/clef-calibration/` (extract → run → analyze). The data and raw answers are written to

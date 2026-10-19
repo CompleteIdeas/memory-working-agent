@@ -23,6 +23,7 @@ import { ONBOARD_PROTOCOL } from './onboard.js';
 import type { Memory, RecalledMemory, TrustTier } from './awm.js';
 import { effectOf, isSensitive, classifyTool, buildDoneReport, checkTripwires, readsUntrustedContent, markToolOutput, newFenceCode, outputSource } from './tools/governance.js';
 import { unbackedClaims, unbackedNote, unbackedNudge, asksForLater, type ClaimKind } from './claim-check.js';
+import { lessonJudge, judgeLesson, lessonDisposition, LESSON_PROMPT_RULE } from './lesson-gate.js';
 import { answerConfidence, type Confidence } from './tools/honesty.js';
 import { isRoutineWorthy, scanPolicy } from './tools/routines.js';
 import { BRAIN_TOOLS } from './brain.js';
@@ -386,6 +387,8 @@ export async function runAgent(opts: {
   /** true for one step of a multi-step plan (not the single-step fallback, which is a whole run). Its
    *  answer reports on work earlier steps did, so it is not checked for unbacked claims (BL-36). */
   planStep?: boolean;
+  /** the BL-35 lesson judge — `null` turns the gate off; omitted, MWA_LESSON_GATE decides (see lesson-gate.ts). */
+  lessonJudge?: Provider | null;
   /** cap on primed memories kept in the prompt (default 10, the anti-context-rot discipline).
    *  Raised only by the gauntlet's long-context baseline arm to let it dump the full store. */
   primeCap?: number;
@@ -1477,14 +1480,26 @@ export async function runAgent(opts: {
   if (memory.enabled && toolCalls > 0 && !askedUser && failedRun) {
     try {
       const refl = await brain.chat({
-        system: 'A task did NOT go cleanly. In ONE or TWO sentences, write a reusable lesson for a FUTURE similar attempt: what went wrong, the likely cause, and what to do differently next time. Be concrete and general enough to transfer (name the kind of task/tool, not one-off specifics). Output ONLY JSON {"topic":"2-5 word kind of task this applies to","lesson":"X failed because Y; next time Z"}. If there is no transferable lesson (a clean run, or a failure outside our control with no better next step), output exactly {}.',
+        // The rule after the first sentence is BL-35's fix at the source: after a refusal this prompt wrote a
+        // lesson teaching a way around the check 6–33% of the time (docs/lesson-gate-study-2026-10-18.md).
+        system: `A task did NOT go cleanly. In ONE or TWO sentences, write a reusable lesson for a FUTURE similar attempt: what went wrong, the likely cause, and what to do differently next time. ${LESSON_PROMPT_RULE} Be concrete and general enough to transfer (name the kind of task/tool, not one-off specifics). Output ONLY JSON {"topic":"2-5 word kind of task this applies to","lesson":"X failed because Y; next time Z"}. If there is no transferable lesson (a clean run, or a failure outside our control with no better next step), output exactly {}.`,
         messages: [{ role: 'user', content: `REQUEST: ${instruction}\n\nWHAT HAPPENED (most recent last):\n${history.slice(-24).join('\n')}\n\nOUTCOME: ${reason} — ${finalSummary}` }],
         maxTokens: 220,
       });
       usage.brainIn += refl.usage.input; usage.brainOut += refl.usage.output;
       const r = parseJsonLoose<{ topic?: string; lesson?: string }>(refl.text);
       if (r?.topic && r?.lesson && String(r.lesson).trim().length > 12) {
-        const fid = await memory.saveFriction(String(r.topic), String(r.lesson), learnOpts);
+        // BL-35 — the gate. A lesson that teaches a way around a check is not saved; one the judge couldn't
+        // read, or (with no judge) one written after a refusal, is kept UNCONFIRMED: stored, never primed.
+        const refusedRun = refusals > 0 || approvalRefused || history.some((h) => h.includes('(refused'));
+        const judge = opts.lessonJudge !== undefined ? opts.lessonJudge : lessonJudge();
+        const verdict = judge ? await judgeLesson(String(r.lesson), judge) : null;
+        const disposition = lessonDisposition(verdict, refusedRun);
+        const area = verdict?.area ? { area: verdict.area } : {};
+        if (disposition === 'drop') { gatesFired.push('lesson-evasion'); history.push('(lesson not saved: it teaches a way around a safety check)'); }
+        if (disposition === 'unconfirmed') gatesFired.push('lesson-unconfirmed');
+        const fid = disposition === 'drop' ? null
+          : await memory.saveFriction(String(r.topic), String(r.lesson), disposition === 'unconfirmed' ? { canonical: false, untrusted: true, ...area } : { ...learnOpts, ...area });
         if (fid) { frictionsLearned++; emit('remember', { concept: `lesson: ${String(r.topic)}`.slice(0, 80) }); history.push(`recorded a lesson ("${String(r.topic).slice(0, 40)}")`); }
       }
     } catch { /* best-effort */ }

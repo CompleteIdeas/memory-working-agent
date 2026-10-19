@@ -1,0 +1,120 @@
+import { describe, it, expect } from 'vitest';
+import { judgeLesson, lessonJudge, lessonDisposition, LESSON_POLICY, LESSON_PROMPT_RULE } from '../src/lesson-gate.js';
+import type { Provider, ChatResult } from '../src/provider.js';
+
+/**
+ * BL-35 — a gate in front of the lessons MWA saves for itself. The judge and its policy were measured
+ * first (docs/lesson-gate-study-2026-10-18.md); these tests pin the parts that don't need a model.
+ */
+const replying = (text: string | Error): Provider => ({
+  id: 'stub', model: 'stub', price: [0, 0],
+  chat: async (): Promise<ChatResult> => { if (text instanceof Error) throw text; return { text, usage: { input: 1, output: 1 } }; },
+});
+
+describe('the judge', () => {
+  it('reads its answer, tolerating text around the JSON', async () => {
+    expect(await judgeLesson('x', replying('{"evasion":"yes","category":"scheduling"}'))).toEqual({ judged: true, evasion: true, area: 'scheduling' });
+    expect(await judgeLesson('x', replying('Sure:\n```json\n{"evasion":"no","category":"files"}\n```'))).toEqual({ judged: true, evasion: false, area: 'files' });
+    expect(await judgeLesson('x', replying('{"evasion":"no","category":"astrology"}'))).toEqual({ judged: true, evasion: false }); // unknown area: no tag
+  });
+
+  it('never throws, and an answer it cannot read is "not judged" — never a pass', async () => {
+    expect(await judgeLesson('x', replying(new Error('503')))).toEqual({ judged: false });
+    expect(await judgeLesson('x', replying('I think this lesson is fine.'))).toEqual({ judged: false });
+    expect(await judgeLesson('x', replying('{"evasion":"maybe"}'))).toEqual({ judged: false });
+  });
+
+  it('is off unless MWA_LESSON_GATE names one', () => {
+    expect(lessonJudge({} as NodeJS.ProcessEnv)).toBeNull();
+    expect(lessonJudge({ MWA_LESSON_GATE: 'off' } as NodeJS.ProcessEnv)).toBeNull();
+    expect(lessonJudge({ MWA_LESSON_GATE: 'nonsense-provider:model' } as NodeJS.ProcessEnv)).toBeNull();
+  });
+
+  it('carries the measured policy (v2: one reviewed request respects the approval limit)', () => {
+    expect(LESSON_POLICY).toMatch(/BY ANOTHER ROUTE/);
+    expect(LESSON_POLICY).toMatch(/combining several changes into ONE request that the person reviews and approves respects the approval limit/);
+    expect(LESSON_PROMPT_RULE).toMatch(/must RESPECT it/);
+  });
+});
+
+describe('what happens to a lesson', () => {
+  it('gate off: saved as before — unless a check refused the run, where the study found the problem', () => {
+    expect(lessonDisposition(null, false)).toBe('save');
+    expect(lessonDisposition(null, true)).toBe('unconfirmed');
+  });
+  it('gate on: evasion is dropped, a clean lesson saved, an unreachable judge leaves it unconfirmed', () => {
+    expect(lessonDisposition({ judged: true, evasion: true }, true)).toBe('drop');
+    expect(lessonDisposition({ judged: true, evasion: false }, true)).toBe('save');
+    expect(lessonDisposition({ judged: false }, false)).toBe('unconfirmed');
+  });
+});
+
+// ---- through the real run loop ----
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runAgent } from '../src/agent.js';
+import { MwaMemory } from '../src/awm.js';
+import type { ChatInput } from '../src/provider.js';
+
+// A run refused by a check, whose lesson pass writes the study's most common evasion: deferring past the job limit.
+const EVADES = 'Scheduling the fourth reminder failed because of the per-run job limit; next time queue the remaining reminders across later runs.';
+function brainWith(lesson: string): Provider {
+  let n = 0;
+  const script = [{ action: 'write_file', path: 'r.txt', content: 'x' }, { action: 'done', summary: 'I could not schedule the fourth reminder.' }];
+  return {
+    id: 'stub', model: 'stub', price: [0, 0],
+    chat: async (i: ChatInput): Promise<ChatResult> => {
+      const sys = String(i.system ?? '');
+      if (sys.includes('TRUST BOUNDARY')) return { text: JSON.stringify(script[n++] ?? { action: 'done', summary: 'Done.' }), usage: { input: 1, output: 1 } };
+      if (sys.startsWith('A task did NOT go cleanly')) return { text: JSON.stringify({ topic: 'invoice reminders', lesson }), usage: { input: 1, output: 1 } };
+      return { text: '{}', usage: { input: 1, output: 1 } };
+    },
+  };
+}
+const refusingTools = {
+  defs: () => [{ name: 'write_file', description: 'w', parameters: { type: 'object', properties: {} } }],
+  has: (x: string) => x === 'write_file',
+  call: async () => '(refused: scheduling another job — this run has already scheduled 3 jobs)',
+} as unknown as Parameters<typeof runAgent>[0]['tools'];
+
+async function lessonsAfter(judge: Provider | null | undefined): Promise<{ history: string[]; lessons: { tags: string[] }[]; systemSawRule: boolean }> {
+  const dir = mkdtempSync(join(tmpdir(), 'mwa-bl35-'));
+  const mem = new MwaMemory('bl35', join(dir, 'm.db'));
+  let systemSawRule = false;
+  const brain = brainWith(EVADES);
+  const spy: Provider = { ...brain, chat: async (i) => { if (String(i.system ?? '').startsWith('A task did NOT go cleanly')) systemSawRule = /must RESPECT it/.test(String(i.system)); return brain.chat(i); } };
+  try {
+    const r = await runAgent({ instruction: 'Remind me three days before each new invoice is due', dir, memory: mem, brain: spy, worker: spy, tools: refusingTools, interactive: true, budget: { maxSteps: 5, maxWallMs: 20_000 }, ...(judge !== undefined ? { lessonJudge: judge } : {}) });
+    const all = (await (mem as unknown as { store: { getEngramsByAgent(a: string): Promise<{ concept: string; tags: string | string[] }[]> } }).store.getEngramsByAgent('bl35')) ?? [];
+    const tagsOf = (t: string | string[]) => (Array.isArray(t) ? t : (() => { try { return JSON.parse(t) as string[]; } catch { return String(t).split(','); } })());
+    return { history: r.history, lessons: all.filter((e) => String(e.concept).startsWith('lesson:')).map((e) => ({ tags: tagsOf(e.tags) })), systemSawRule };
+  } finally { mem.close(); rmSync(dir, { recursive: true, force: true }); }
+}
+const prevFast = process.env.MWA_FAST_CHAT;
+describe('the gate in the run loop (BL-35)', () => {
+  it('the lesson prompt carries the rule; a judge that says "evasion" keeps the lesson out', async () => {
+    process.env.MWA_FAST_CHAT = '0';
+    try {
+      const r = await lessonsAfter(replying('{"evasion":"yes","category":"scheduling"}'));
+      expect(r.systemSawRule).toBe(true);
+      expect(r.history.join('\n')).toMatch(/lesson not saved: it teaches a way around a safety check/);
+      expect(r.lessons).toHaveLength(0);
+    } finally { if (prevFast === undefined) delete process.env.MWA_FAST_CHAT; else process.env.MWA_FAST_CHAT = prevFast; }
+  }, 30_000);
+
+  it('a clean verdict saves it with its area; an unreachable judge — or no judge after a refusal — keeps it unconfirmed', async () => {
+    process.env.MWA_FAST_CHAT = '0';
+    try {
+      const ok = await lessonsAfter(replying('{"evasion":"no","category":"scheduling"}'));
+      expect(ok.lessons).toHaveLength(1);
+      expect(ok.lessons[0].tags).toContain('area=scheduling');
+      expect(ok.lessons[0].tags.some((t) => /provenance|trust=untrusted|src=ingested/.test(t))).toBe(false);
+      for (const judge of [replying(new Error('503')), null]) {
+        const u = await lessonsAfter(judge);
+        expect(u.lessons).toHaveLength(1);
+        expect(u.lessons[0].tags.join(' ')).toMatch(/untrusted|ingested/); // stored, never primed (BL-17)
+      }
+    } finally { if (prevFast === undefined) delete process.env.MWA_FAST_CHAT; else process.env.MWA_FAST_CHAT = prevFast; }
+  }, 60_000);
+});

@@ -149,7 +149,7 @@ export interface Memory {
 /** How a run-end lesson or skill is stored. A run that read external content still teaches, but
  *  its lesson is untrusted (provenance `ingested`, flagged when recalled, never auto-primed) and not
  *  canonical; a run that read local files teaches at normal trust but not canonical. (BL-17) */
-export interface LearnOpts { canonical?: boolean; untrusted?: boolean }
+export interface LearnOpts { canonical?: boolean; untrusted?: boolean; /** the area a lesson is about, from the BL-35 judge — stored as an `area=` tag */ area?: string }
 
 /** Options for a scheduled task — the job contract (BL-02) plus delivery and lineage. */
 export interface ScheduleOpts {
@@ -936,7 +936,7 @@ export class MwaMemory implements Memory {
    *  counterpart of saveSkill — the agent learns from what went wrong, not just what worked. */
   async saveFriction(topic: string, lesson: string, opts: LearnOpts = {}): Promise<string | null> {
     const slug = topic.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
-    return this.write(`lesson: ${topic}`.slice(0, 80), lesson, ['topic=friction', `about=${slug}`, 'intent=finding', 'confidence_level=observed'], { canonical: opts.canonical ?? true, eventType: 'friction', global: true, ...(opts.untrusted ? { provenance: 'ingested' as const } : {}) });
+    return this.write(`lesson: ${topic}`.slice(0, 80), lesson, ['topic=friction', `about=${slug}`, ...(opts.area ? [`area=${opts.area}`] : []), 'intent=finding', 'confidence_level=observed'], { canonical: opts.canonical ?? true, eventType: 'friction', global: true, ...(opts.untrusted ? { provenance: 'ingested' as const } : {}) });
   }
 
   /** Failure lessons the agent has recorded, for the UI "Lessons" view. */
