@@ -21,7 +21,7 @@ import { validateSubstance } from './substance.js';
 import { loadDomainPack, buildDomainContext } from './domain-pack.js';
 import { ONBOARD_PROTOCOL } from './onboard.js';
 import type { Memory, RecalledMemory, TrustTier } from './awm.js';
-import { isReservedConcept, unreservedConcept } from './reserved-concept.js';
+import { isReservedConcept, unreservedConcept, isStoreConcept } from './reserved-concept.js';
 import { effectOf, isSensitive, classifyTool, buildDoneReport, checkTripwires, readsUntrustedContent, markToolOutput, newFenceCode, outputSource } from './tools/governance.js';
 import { unbackedClaims, unbackedNote, unbackedNudge, asksForLater, type ClaimKind } from './claim-check.js';
 import { lessonJudge, judgeLesson, lessonDisposition, LESSON_PROMPT_RULE, MAX_LESSON_CHARS } from './lesson-gate.js';
@@ -1065,7 +1065,7 @@ export async function runAgent(opts: {
       if (target) {
         const id = await memory.supersede(target.id, target.concept, action.fact, ['topic=agent', 'intent=finding', 'confidence_level=verified'],
           { canonical: !sawUntrustedRead && !sawLocalRead, provenance: sawUntrustedRead ? 'ingested' : 'inferred' });
-        if (!id && isReservedConcept(target.concept)) {
+        if (!id && isStoreConcept(target.concept)) {
           // Said, and counted: a silent no let a model retry it forever (BL-38 review).
           refusals++; checkRefused = true;
           history.push('(refused: a lesson or skill is not rewritten by a run — it changes only through the lesson check)');
@@ -1382,7 +1382,7 @@ export async function runAgent(opts: {
         if (!prior || !t?.statement || String(t.statement).trim().length < 12) continue;
         // Not a lesson or skill: they change only through their own gated stores (BL-38 review — written
         // under the stripped concept, the change superseded a person's fact of that name).
-        if (isReservedConcept(prior.concept)) continue;
+        if (isStoreConcept(prior.concept)) continue;
         // SAME concept as the prior + eventType=surprise → R3 supersede with the transition text.
         // F2: a transition DERIVED from an untrusted prior stays untrusted (no trust-laundering
         // of inbox content into a medium-trust fact via supersede-detection).

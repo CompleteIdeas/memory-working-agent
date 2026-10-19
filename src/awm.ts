@@ -99,6 +99,8 @@ export interface WriteOpts {
   /** INTERNAL — the lesson and skill stores' own writes (saveFriction, saveSkill, promoteRoutine): only
    *  these may use a `lesson:` / `skill:` concept (BL-38). */
   reservedConcept?: boolean;
+  /** the PERSON named this memory themselves (onboarding): their concept is kept as written (BL-38). */
+  ownName?: boolean;
 }
 
 export { isReservedConcept, unreservedConcept } from './reserved-concept.js';
@@ -378,8 +380,9 @@ export class MwaMemory implements Memory {
   async write(concept: string, content: string, tags: string[] = [], opts: WriteOpts = {}): Promise<string | null> {
     // Every model-chosen write comes through here (remember, auto-learn, recorded changes, the MCP memory
     // tools): none may land under a lesson or skill concept (BL-38).
-    // Not the person's own words (provenance 'user'): "Skills: React" from onboarding is theirs to name.
-    if (!opts.reservedConcept && opts.provenance !== 'user' && isReservedConcept(concept)) concept = unreservedConcept(concept);
+    // Not a name the person chose themselves (ownName: onboarding) — "Skills: React" is theirs. Not keyed on
+    // provenance 'user': a scheduled run's teach capture stamps that on model-written text (BL-38 review 3).
+    if (!opts.reservedConcept && !opts.ownName && isReservedConcept(concept)) concept = unreservedConcept(concept);
     try {
       await this.init();
       // SPINE: stamp provenance + trust OUT OF BAND. Strip any reserved tags a caller (or the
@@ -539,7 +542,7 @@ export class MwaMemory implements Memory {
       if (old && this.parseTags(old.tags).some((t: string) => String(t).startsWith('promoted='))) return null;
       // A lesson or skill is the gated stores' own — a run can't rewrite one in place (BL-38 review: a refused
       // run superseded a trusted lesson with "queue the rest across later runs", and it stayed trusted).
-      if (old && isReservedConcept(String(old.concept ?? '')) && !opts.reservedConcept) return null;
+      if (old && this.parseTags(old.tags).some((t: string) => t === 'topic=friction' || t === 'topic=skill') && !opts.reservedConcept) return null; // by the store's own tags, not the concept text: a person's "Skills: React" fact still updates (review 3)
     } catch { /* fall through: the write below is guarded again */ }
     // The caller's canonical/provenance win: a tainted run must not be able to replace a trusted fact
     // with a canonical one (BL-17 review). Canonical stays the default for ordinary corrections.

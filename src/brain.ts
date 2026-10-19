@@ -232,6 +232,8 @@ export async function runBrain(opts: {
       const target = recalled[action.ref - 1];
       if (target) {
         const newId = await memory.supersede(target.id, target.concept, action.fact, ['topic=coding', `task=${goal.id}`]);
+        // A lesson or skill is not rewritten by a run (BL-38): said, not silent.
+        if (!newId && /^(?:lesson|skill): /.test(target.concept)) history.push('(refused: a lesson or skill is not rewritten by a run — it changes only through the lesson check)');
         if (newId) {
           supersedes++;
           recalled[action.ref - 1] = { id: newId, concept: target.concept, content: action.fact, score: 1 };

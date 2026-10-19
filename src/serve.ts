@@ -651,7 +651,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
             const content = String(it.content ?? '').trim();
             if (!concept || content.length < 4) continue;
             const tags = Array.isArray(it.tags) ? it.tags.map(String) : [];
-            const id = await m.write(concept, content, [...tags, 'src=onboarding', 'intent=context'], { provenance: 'user', canonical: true, origin: 'onboarding' });
+            const id = await m.write(concept, content, [...tags, 'src=onboarding', 'intent=context'], { provenance: 'user', ownName: true, canonical: true, origin: 'onboarding' });
             if (id) saved++;
           }
           m.close();
