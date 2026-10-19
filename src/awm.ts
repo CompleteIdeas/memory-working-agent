@@ -18,6 +18,7 @@
 import { loadEngines, loadSqliteStore, loadPGliteStore, loadPostgresStore, type AwmEngines } from './awm-api.js';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { isReservedConcept, unreservedConcept } from './reserved-concept.js';
 import { scanRoutine, nextVersion } from './tools/routines.js';
 import { normalizePersonId, type PersonNote, type PersonNoteKind } from './person.js';
 import { parseEvidence, formatEvidence, evidenceAfter, readyToArm, type DetectorEvidence, type DryScore } from './detector.js';
@@ -100,18 +101,7 @@ export interface WriteOpts {
   reservedConcept?: boolean;
 }
 
-/** A concept the lesson or skill store owns, however it is spelled: "lesson:", "Lessons -", "SKILL：", with
- *  a zero-width character in front, stacked ("lesson: lesson: x"). Auto-prime treats these as lessons and
- *  skills, so a model-chosen write under one would skip the BL-35 gate (BL-38 review). */
-const RESERVED_CONCEPT = /^(?:lessons?|skills?)\s*[:：\-–—]/i;
-const normConcept = (c: string) => String(c).normalize('NFKC').replace(/[​-‍⁠﻿]/g, '').trim();
-export function isReservedConcept(concept: string): boolean { return RESERVED_CONCEPT.test(normConcept(concept)); }
-/** The concept without any reserved prefix, however many are stacked. */
-export function unreservedConcept(concept: string): string {
-  let c = normConcept(concept);
-  while (RESERVED_CONCEPT.test(c)) c = c.replace(RESERVED_CONCEPT, '').trim();
-  return c || 'note';
-}
+export { isReservedConcept, unreservedConcept } from './reserved-concept.js';
 
 /** One recorded action the agent took (the "what it did" history + undo substrate). */
 export interface ActionRecord {
@@ -388,7 +378,8 @@ export class MwaMemory implements Memory {
   async write(concept: string, content: string, tags: string[] = [], opts: WriteOpts = {}): Promise<string | null> {
     // Every model-chosen write comes through here (remember, auto-learn, recorded changes, the MCP memory
     // tools): none may land under a lesson or skill concept (BL-38).
-    if (!opts.reservedConcept && isReservedConcept(concept)) concept = unreservedConcept(concept);
+    // Not the person's own words (provenance 'user'): "Skills: React" from onboarding is theirs to name.
+    if (!opts.reservedConcept && opts.provenance !== 'user' && isReservedConcept(concept)) concept = unreservedConcept(concept);
     try {
       await this.init();
       // SPINE: stamp provenance + trust OUT OF BAND. Strip any reserved tags a caller (or the

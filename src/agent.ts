@@ -21,6 +21,7 @@ import { validateSubstance } from './substance.js';
 import { loadDomainPack, buildDomainContext } from './domain-pack.js';
 import { ONBOARD_PROTOCOL } from './onboard.js';
 import type { Memory, RecalledMemory, TrustTier } from './awm.js';
+import { isReservedConcept, unreservedConcept } from './reserved-concept.js';
 import { effectOf, isSensitive, classifyTool, buildDoneReport, checkTripwires, readsUntrustedContent, markToolOutput, newFenceCode, outputSource } from './tools/governance.js';
 import { unbackedClaims, unbackedNote, unbackedNudge, asksForLater, type ClaimKind } from './claim-check.js';
 import { lessonJudge, judgeLesson, lessonDisposition, LESSON_PROMPT_RULE, MAX_LESSON_CHARS } from './lesson-gate.js';
@@ -1064,6 +1065,11 @@ export async function runAgent(opts: {
       if (target) {
         const id = await memory.supersede(target.id, target.concept, action.fact, ['topic=agent', 'intent=finding', 'confidence_level=verified'],
           { canonical: !sawUntrustedRead && !sawLocalRead, provenance: sawUntrustedRead ? 'ingested' : 'inferred' });
+        if (!id && isReservedConcept(target.concept)) {
+          // Said, and counted: a silent no let a model retry it forever (BL-38 review).
+          refusals++; checkRefused = true;
+          history.push('(refused: a lesson or skill is not rewritten by a run — it changes only through the lesson check)');
+        }
         if (id) { supersedes++; productive++; recalled[action.ref - 1] = { id, concept: target.concept, content: action.fact, score: 1 }; history.push(`superseded #${action.ref}`); emit('supersede', { ref: action.ref }); }
       }
       consecNoProgress = 0;
@@ -1168,7 +1174,8 @@ export async function runAgent(opts: {
       // text — stamp it ingested (untrusted) rather than the agent's own medium-trust inference.
       // 'lesson:' and 'skill:' concepts are the lesson and skill stores' own: a remembered note under one would
       // be primed as a lesson, past the BL-35 gate (BL-38). A note keeps its words without the prefix.
-      const noteConcept = String(action.concept).replace(/^\s*(?:lesson|skill)\s*:\s*/i, '').trim() || 'note';
+      // As MwaMemory.write maps it — "note: …", never the bare rest, which merged into a person's own fact.
+      const noteConcept = isReservedConcept(String(action.concept)) ? unreservedConcept(String(action.concept)) : String(action.concept);
       await memory.write(noteConcept, String(action.fact), ['topic=project-understanding', 'intent=finding', 'confidence_level=observed'], { canonical: !sawUntrustedRead && !sawLocalRead, eventType: 'observation', provenance: sawUntrustedRead ? 'ingested' : 'inferred' });
       history.push(`remember [${noteConcept.slice(0, 50)}]`);
       emit('remember', { concept: noteConcept.slice(0, 80) });
@@ -1373,6 +1380,9 @@ export async function runAgent(opts: {
       for (const t of parseJsonLoose<{ transitions?: { ref?: number; statement?: string }[] }>(tr.text)?.transitions ?? []) {
         const prior = recalled[Number(t?.ref) - 1];
         if (!prior || !t?.statement || String(t.statement).trim().length < 12) continue;
+        // Not a lesson or skill: they change only through their own gated stores (BL-38 review — written
+        // under the stripped concept, the change superseded a person's fact of that name).
+        if (isReservedConcept(prior.concept)) continue;
         // SAME concept as the prior + eventType=surprise → R3 supersede with the transition text.
         // F2: a transition DERIVED from an untrusted prior stays untrusted (no trust-laundering
         // of inbox content into a medium-trust fact via supersede-detection).
