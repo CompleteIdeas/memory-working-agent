@@ -81,12 +81,20 @@ export function claimsIn(reply: string): Set<ClaimKind> {
   return found;
 }
 
-/** The person's message asks for work to happen LATER ("In 1 minute, write …", "remind me tomorrow at
- *  9", "every morning …"), not a question about the schedule (BL-19). Explicit timing only — "later" on
- *  its own is too loose to act on. */
+/** The person's message asks for work to be SET UP to happen later (BL-19). Only a request — the review
+ *  of the first version proved "remind me what we decided", "the schedule for the conference",
+ *  "schedule.md", a time inside a pasted email and "cancel the reminder for tomorrow at 9" all read as
+ *  one. It is still only a hint: the push also needs the run's own evidence (it listed the schedule). */
 export function asksForLater(message: string): boolean {
-  if (asksOnly(message)) return false;
-  return /\b(schedule|remind me|set a reminder|in \d+\s*(?:min|mins|minutes?|hours?|days?|weeks?)|every (?:day|morning|evening|night|week|hour|weekday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d+)|daily at|weekly on|tomorrow at|tonight at|at \d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i.test(message);
+  // The person's own words only: quoted and pasted material (an email being summarized) is not a request.
+  const own = message.replace(/^\s*>.*$/gm, ' ').replace(/“[^”]*”|"[^"\n]*"|'[^'\n]{12,}'/g, ' ');
+  if (asksOnly(own)) return false;
+  if (/\b(cancel|stop|delete|remove|turn off|disable|unschedule|pause)\b/i.test(own)) return false;
+  return /\bschedule (?:it|this|that|them|a|an|the|my|me|one|two|three|\d+)\b/i.test(own)
+    || /\b(?:remind me|set a reminder|add a reminder)\b(?= (?:to|at|in|on|tomorrow|tonight|every|next))/i.test(own)
+    || /\bin \d+\s*(?:min|mins|minutes?|hours?|days?|weeks?)\b/i.test(own)
+    || /\bevery (?:day|morning|evening|night|week|weekday|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(own)
+    || /\b(?:daily at|weekly on)\b/i.test(own);
 }
 
 /** The kinds of work the person's message asks for. Loose on purpose: it only decides whether a claim

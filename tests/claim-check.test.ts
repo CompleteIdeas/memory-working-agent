@@ -236,33 +236,45 @@ describe('a run whose reply claims work it never did, enforced (BL-36, MWA_CLAIM
 });
 
 // ---- BL-19: a request for later work that never gets scheduled ----
-describe('a request for LATER work (BL-19)', () => {
-  it('what counts as asking for later', () => {
+describe('a request to set up LATER work (BL-19)', () => {
+  it('only a request, in the person’s own words — not a noun, a pasted time, a recap or a cancel', () => {
     for (const m of ['In 1 minute, write a file called e2e-x-1.txt whose contents are exactly OK. Schedule it to run later — do not create the file now.',
-      'Remind me tomorrow at 9am to call the bank', 'Every morning, summarize my inbox', 'Schedule a weekly report for Mondays', 'At 5pm send Dana the agenda']) expect(asksForLater(m), m).toBe(true);
-    for (const m of ['What do I have scheduled tomorrow?', 'Write notes.md with the summary', 'Did the reminder run?', 'Summarize this later if you can']) expect(asksForLater(m), m).toBe(false);
+      'Remind me tomorrow at 9am to call the bank', 'Every morning, summarize my inbox', 'Schedule a weekly report for Mondays', 'Remind me to call Dana in 2 hours']) expect(asksForLater(m), m).toBe(true);
+    for (const m of ['What do I have scheduled tomorrow?', 'Write notes.md with the summary', 'Did the reminder run?', 'Summarize this later if you can',
+      // The first version's false triggers (review): each one PROVED to create an unwanted job.
+      'Remind me what we decided about the venue', 'Remind me how the backup script works', 'Summarize the schedule for the conference',
+      'Read schedule.csv and total the hours', 'Write the shift schedule to schedule.md', "Summarize this email: 'The review moved to Thursday at 3pm, please confirm.'",
+      'Draft a reply confirming our call at 2pm', 'Cancel the reminder for tomorrow at 9', 'Stop the every morning inbox summary', 'Sum every 5 rows of data.csv']) expect(asksForLater(m), m).toBe(false);
   });
 
   const LATER = 'In 1 minute, write a file called e2e-x-1.txt whose contents are exactly CHECK-OK. Schedule it to run later — do not create the file now.';
   const GAVE_UP = { action: 'done', summary: "I couldn't confirm that e2e-x-1.txt has been scheduled yet; I did not create the file now." };
+  const SCHED = { action: 'schedule', instruction: 'Write file e2e-x-1.txt with exactly CHECK-OK', in_minutes: 1 };
+  const LIST = { schedule_list: '(2 scheduled: e2e-w-0.txt, e2e-w-1.txt)' };
 
-  it('the measured dead end — listed the schedule, could not confirm, stopped — is pushed to schedule, once', async () => {
-    const r = await run(LATER, [{ action: 'schedule_list' }, GAVE_UP, { action: 'schedule', instruction: 'Write file e2e-x-1.txt with exactly CHECK-OK', in_minutes: 1 }], { schedule_list: '(2 scheduled: e2e-w-0.txt, e2e-w-1.txt)' });
-    expect(r.history.join('\n')).toMatch(/nothing scheduled for a later request — asked to call schedule/);
-    expect(r.history.join('\n')).not.toMatch(/missing output file/); // the file is for later: not demanded now
+  it('the measured dead end — listed the schedule, could not confirm, stopped — is pushed to schedule, and the push is logged', async () => {
+    const r = await run(LATER, [{ action: 'schedule_list' }, GAVE_UP, SCHED], LIST, LATER);
+    expect(r.history.join('\n')).toMatch(/nothing scheduled for a later request/);
     expect(r.summary).toMatch(/^Scheduled for/);
   }, 30_000);
 
-  it('pushes only once: a model that still will not schedule ends honestly', async () => {
-    const r = await run(LATER, [{ action: 'schedule_list' }, GAVE_UP, GAVE_UP], { schedule_list: '(nothing scheduled)' });
-    expect(r.history.filter((h) => /asked to call schedule/.test(h))).toHaveLength(1);
-    expect(r.summary).toMatch(/couldn't confirm/);
+  it('after the push, the file check still speaks — telling it to schedule, not to write now', async () => {
+    const r = await run(LATER, [{ action: 'schedule_list' }, GAVE_UP, GAVE_UP, SCHED], LIST, LATER);
+    expect(r.history.filter((h) => /nothing scheduled for a later request/.test(h))).toHaveLength(1);
+    expect(r.history.join('\n')).toMatch(/rejected premature done — missing output file/);
+    expect(r.summary).toMatch(/^Scheduled for/);
   }, 30_000);
 
-  it('not for a request that is not for later, nor once a schedule-type tool ran', async () => {
-    const now = await run('Write notes.md with the meeting summary', [{ action: 'write_file', path: 'notes.md', content: 'x' }, { action: 'done', summary: 'Wrote `notes.md`.' }], { write_file: 'wrote notes.md (1 bytes)' });
-    expect(now.history.join('\n')).not.toMatch(/asked to call schedule/);
-    const cal = await run('Remind me tomorrow at 9am to call the bank', [{ action: 'gcal__create_event' }, { action: 'done', summary: 'Added a 9am reminder to your calendar.' }], { gcal__create_event: 'created event' });
-    expect(cal.history.join('\n')).not.toMatch(/asked to call schedule/);
+  it('no push on wording alone: the run must have listed the schedule (the measured signature)', async () => {
+    const r = await run('Remind me tomorrow at 9am to call the bank', [{ action: 'done', summary: 'Noted — I will remind you.' }], undefined, 'Remind me tomorrow at 9am to call the bank');
+    expect(r.history.join('\n')).not.toMatch(/nothing scheduled for a later request/);
   }, 30_000);
+
+  it('not once something was set up another way (a calendar tool), nor for a request that is not for later', async () => {
+    const cal = await run('Remind me tomorrow at 9am to call the bank', [{ action: 'schedule_list' }, { action: 'gcal__create_event' }, { action: 'done', summary: 'Added a 9am reminder to your calendar.' }], { schedule_list: '(nothing scheduled)', gcal__create_event: 'created event' }, 'Remind me tomorrow at 9am to call the bank');
+    expect(cal.history.join('\n')).not.toMatch(/nothing scheduled for a later request/);
+    const q = await run('What is on the schedule?', [{ action: 'schedule_list' }, { action: 'done', summary: 'Two jobs: e2e-w-0 and e2e-w-1.' }], LIST, 'What is on the schedule?');
+    expect(q.history.join('\n')).not.toMatch(/nothing scheduled for a later request/);
+  }, 30_000);
+
 });
