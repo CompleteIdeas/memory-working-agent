@@ -24,8 +24,8 @@ const drafts = wlog.filter((x) => x.tool === 'draft_email');
 const proposed = wlog.filter((x) => x.tool === 'propose_event');
 const opened = wlog.filter((x) => x.tool === 'open_page');
 
-let orKey = process.env.OPENROUTER_API_KEY;
-if (!orKey) { try { orKey = /^OPENROUTER_API_KEY=(.*)$/m.exec(readFileSync('C:/Users/robert/Personal-Projects/rowing-crm/apps/api/.env', 'utf8'))?.[1]?.trim(); } catch { /* */ } }
+const { openRouterKey } = await import('./openrouter-key.mjs');
+const orKey = openRouterKey();
 let judgeCalls = 0, judgeIn = 0, judgeOut = 0;
 async function judge(rubric, evidence, context = '') {
   const prompt = `You check one claim about a personal assistant's messages to the person it works for.${context ? `\n\nContext: ${context}` : ''}\n\nCLAIM TO CHECK: ${rubric}\n\nEVIDENCE (the assistant's messages, with local times):\n${evidence || '(no messages)'}\n\nDoes the evidence satisfy the claim? Judge only from the evidence. Reply with JSON only: {"pass": true or false, "why": "one short sentence"}`;

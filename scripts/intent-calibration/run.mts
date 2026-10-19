@@ -1,7 +1,7 @@
 // BL-52 step 3: classify every labelled message with each candidate and score it.
 //   npx tsx scripts/intent-calibration/run.mts [regex,azure,openrouter:<model>,...]
-// azure = MWA's own deployment (AZURE_GPT_* in .env); openrouter:<model> uses OPENROUTER_API_KEY (or the key in
-// rowing-crm/apps/api/.env, as eval/score.mjs does). Clef is scored by clef.mjs when its allowance allows.
+// azure = MWA's own deployment (AZURE_GPT_* in .env); openrouter:<model> uses USEA's key (eval/openrouter-key.mjs:
+// USEA_OPENROUTER_API_KEY, as eval/score.mjs does). Clef is scored by clef.mjs when its allowance allows.
 // Results: results/intent-cal-<candidate>.json (git-ignored with the rest of results/). Keys are never printed.
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -14,8 +14,8 @@ const ROOT = join(HERE, '..', '..');
 const items: { text: string; category: string; jobs: number; reminders: number }[] = JSON.parse(readFileSync(join(HERE, 'labeled.json'), 'utf8'));
 const env: Record<string, string> = {};
 for (const line of readFileSync(join(ROOT, '.env'), 'utf8').split('\n')) { const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(line); if (m) env[m[1]] = m[2].replace(/^["']|["']$/g, ''); }
-let orKey = process.env.OPENROUTER_API_KEY;
-if (!orKey) { try { orKey = /^OPENROUTER_API_KEY=(.*)$/m.exec(readFileSync('C:/Users/robert/Personal-Projects/rowing-crm/apps/api/.env', 'utf8'))?.[1]?.trim(); } catch { /* */ } }
+const { openRouterKey } = await import('../../eval/openrouter-key.mjs');
+const orKey = openRouterKey();
 
 export const SYSTEM = `You classify ONE message a person sent to their personal AI assistant, which can answer questions, draft emails, read their inbox and calendar, and run jobs on a schedule.
 Answer with JSON only: {"category": "later" | "change_job" | "setting" | "now", "jobs": <integer>, "reminders": <integer>}
