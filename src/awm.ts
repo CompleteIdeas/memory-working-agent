@@ -145,6 +145,8 @@ export interface Memory {
   addScheduledTask(instruction: string, dueMs: number, opts?: ScheduleOpts): Promise<string | null>;
   /** All pending scheduled tasks — the fan-out budget counts them (BL-05). Absent when AWM is off. */
   pendingScheduled?(): Promise<ScheduledTask[]>;
+  /** BL-56: changes recurring jobs' sources announced, for one person, newest first. Absent when AWM is off. */
+  listChanges?(opts: { sinceMs: number; person: string; limit?: number }): Promise<{ content: string; at: number }[]>;
   /** BL-44: keep what a job's last good run reported. Absent when AWM is off. */
   setJobLastRun?(id: string, rec: JobLastRun): Promise<void>;
   /** BL-51: how many fires of this job in a row could not finish. Absent when AWM is off. */
@@ -1117,6 +1119,33 @@ export class MwaMemory implements Memory {
   }
 
   /** All standing preferences/policies (content), newest-first, deduped — always-primed. */
+  /**
+   * BL-56: what recurring jobs' sources announced had changed (tagged kind=change and for=<person> when learned),
+   * newest first, written since `sinceMs`, one per change (the same change re-learned keeps its newest copy). Listed,
+   * not recalled: a morning plan's recall runs on "create a daily plan…" and never met "Max's dentist moved".
+   */
+  async listChanges(opts: { sinceMs: number; person: string; limit?: number }): Promise<{ content: string; at: number }[]> {
+    try {
+      await this.init();
+      const all: any[] = (await this.store.getEngramsByAgent(this.agentId)) ?? [];
+      const out: { content: string; at: number }[] = [];
+      const seen = new Set<string>();
+      const rows = all
+        .filter((e) => !e.retracted && !e.supersededBy)
+        .filter((e) => { const t = this.parseTags(e.tags); return t.includes('kind=change') && t.includes(`for=${opts.person}`); })
+        .map((e) => ({ content: String(e.content ?? '').trim(), at: e.createdAt ? new Date(e.createdAt).getTime() : 0 }))
+        .filter((c) => c.content && c.at >= opts.sinceMs)
+        .sort((a, b) => b.at - a.at);
+      for (const c of rows) {
+        const key = c.content.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 80);
+        if (seen.has(key)) continue;
+        seen.add(key); out.push(c);
+        if (out.length >= (opts.limit ?? 8)) break;
+      }
+      return out;
+    } catch { return []; }
+  }
+
   async listPolicies(): Promise<string[]> {
     try {
       await this.init();
