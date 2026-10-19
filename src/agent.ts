@@ -473,6 +473,19 @@ export async function runAgent(opts: {
   // a run log that shows "2 steps" can't otherwise say whether one fired (BL-19).
   const gatesFired: string[] = [];
   const actionTrail: string[] = []; // every action the model took, by name — a push or a refused schedule leaves no other trace
+  // The BL-19 push: a request to set up later work, the run has LISTED the schedule, and nothing has been
+  // set up (no schedule, schedule-type tool or calendar/reminder tool). Once per run. Used where a run can
+  // end — at `done`, and where repeating the listing would conclude it — and returns whether it pushed.
+  const pushLater = (): boolean => {
+    const setSomethingUp = [...toolsUsed].some((t) => t === 'schedule' || classifyTool(t) === 'schedule' || /calendar|event|remind/i.test(t));
+    if (!forLater || laterRejections >= 1 || !toolsUsed.has('schedule_list') || setSomethingUp || now() - start >= maxWallMs * 0.8) return false;
+    laterRejections++; gatesFired.push('later');
+    consecNoProgress = 0;
+    nudge = 'This request is for LATER, and nothing has been scheduled in this run. If a job in the list already IS this same request (same task, same time), say so plainly and stop. '
+      + 'Otherwise call `schedule` now with the instruction to carry out at that time (in_minutes / daily_at / every_minutes as asked) — and do not do the later part of the work now.';
+    history.push('(nothing scheduled for a later request — asked to schedule it, or name the job that already is)');
+    return true;
+  };
   let verifyRejections = 0, verified = false; // verify-before-done: one numeric re-check, no spinning
   let substanceRejections = 0; // substance gate: one re-prompt on a fabricated/punted done
   const MAX_FETCH_FAILS = 2;
@@ -840,6 +853,10 @@ export async function runAgent(opts: {
     if (sig === lastSig && action.action !== 'done') {
       consecNoProgress++;
       history.push(`(skipped redundant ${action.action})`);
+      // BL-19, measured with the action trail: the dead end is usually not a `done` at all — the model
+      // lists the schedule again and again, and the shortcut below ("repeating after producing output ⇒
+      // finished") ends the run, past every done-gate. Push first, here too.
+      if (pushLater()) continue;
       // Repeating after already producing output ⇒ effectively finished — conclude
       // as done rather than burning steps into "stuck".
       if (productive > 0 && consecNoProgress >= 2) {
@@ -871,15 +888,7 @@ export async function runAgent(opts: {
       // Only on the measured signature, not on wording alone (review): the run LISTED the schedule and
       // set nothing up — no schedule, no schedule-type tool, no calendar/reminder tool. The push leaves
       // room for a duplicate: a job the list already shows for this same request is the right answer.
-      const setSomethingUp = [...toolsUsed].some((t) => t === 'schedule' || classifyTool(t) === 'schedule' || /calendar|event|remind/i.test(t));
-      if (forLater && laterRejections < 1 && toolsUsed.has('schedule_list') && !setSomethingUp && now() - start < maxWallMs * 0.8) {
-        laterRejections++; gatesFired.push('later');
-        consecNoProgress = 0;
-        nudge = 'This request is for LATER, and nothing has been scheduled in this run. If a job in the list already IS this same request (same task, same time), say so plainly and stop. '
-          + 'Otherwise call `schedule` now with the instruction to carry out at that time (in_minutes / daily_at / every_minutes as asked) — and do not do the later part of the work now.';
-        history.push('(nothing scheduled for a later request — asked to schedule it, or name the job that already is)');
-        continue;
-      }
+      if (pushLater()) continue;
       // Reject a "done" whose OWN summary admits unfinished work ("I didn't finish X",
       // "the next step is to add Y") — the model stopping short of a requested deliverable.
       // Normalize markdown first (summaries use **bold**). Cap rejections to avoid spinning.

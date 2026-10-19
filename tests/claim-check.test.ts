@@ -258,6 +258,13 @@ describe('a request to set up LATER work (BL-19)', () => {
     expect(r.summary).toMatch(/^Scheduled for/);
   }, 30_000);
 
+  it('the dead end as measured with the action trail — listing again and again, never `done` — is pushed too', async () => {
+    // e2e-j1gxe-1: ["schedule_list","schedule_list","schedule_list"], ended by the "repeating after output ⇒ finished" shortcut.
+    const r = await run(LATER, [{ action: 'schedule_list' }, { action: 'schedule_list' }, { action: 'schedule_list' }, SCHED], LIST, LATER);
+    expect(r.history.join('\n')).toMatch(/nothing scheduled for a later request/);
+    expect(r.summary).toMatch(/^Scheduled for/);
+  }, 30_000);
+
   it('after the push, the file check still speaks — telling it to schedule, not to write now', async () => {
     const r = await run(LATER, [{ action: 'schedule_list' }, GAVE_UP, GAVE_UP, SCHED], LIST, LATER);
     expect(r.history.filter((h) => /nothing scheduled for a later request/.test(h))).toHaveLength(1);
