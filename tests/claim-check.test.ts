@@ -239,12 +239,15 @@ describe('a run whose reply claims work it never did, enforced (BL-36, MWA_CLAIM
 describe('a request to set up LATER work (BL-19)', () => {
   it('only a request, in the person’s own words — not a noun, a pasted time, a recap or a cancel', () => {
     for (const m of ['In 1 minute, write a file called e2e-x-1.txt whose contents are exactly OK. Schedule it to run later — do not create the file now.',
-      'Remind me tomorrow at 9am to call the bank', 'Every morning, summarize my inbox', 'Schedule a weekly report for Mondays', 'Remind me to call Dana in 2 hours']) expect(asksForLater(m), m).toBe(true);
+      'Remind me tomorrow at 9am to call the bank', 'Every morning, summarize my inbox', 'Schedule a weekly report for Mondays', 'Remind me to call Dana in 2 hours',
+      // Review 2's misses: a job that deletes, "stop" inside the task, hourly, "in an hour", an apostrophe, "set a reminder for".
+      'Every day at 9, delete old files from Downloads', 'Remind me to stop by the store at 5', 'Remind me every hour to stretch', 'Remind me in an hour to call Sam', "I'd like you to schedule it in 5 minutes, that's all", 'Set a reminder for 5pm to call Dana']) expect(asksForLater(m), m).toBe(true);
     for (const m of ['What do I have scheduled tomorrow?', 'Write notes.md with the summary', 'Did the reminder run?', 'Summarize this later if you can',
       // The first version's false triggers (review): each one PROVED to create an unwanted job.
       'Remind me what we decided about the venue', 'Remind me how the backup script works', 'Summarize the schedule for the conference',
       'Read schedule.csv and total the hours', 'Write the shift schedule to schedule.md', "Summarize this email: 'The review moved to Thursday at 3pm, please confirm.'",
-      'Draft a reply confirming our call at 2pm', 'Cancel the reminder for tomorrow at 9', 'Stop the every morning inbox summary', 'Sum every 5 rows of data.csv']) expect(asksForLater(m), m).toBe(false);
+      'Draft a reply confirming our call at 2pm', 'Cancel the reminder for tomorrow at 9', 'Stop the every morning inbox summary', 'Sum every 5 rows of data.csv',
+      'Look at the schedule my coach made and list conflicts', 'Email Dana my schedule this week']) expect(asksForLater(m), m).toBe(false);
   });
 
   const LATER = 'In 1 minute, write a file called e2e-x-1.txt whose contents are exactly CHECK-OK. Schedule it to run later — do not create the file now.';
@@ -270,6 +273,19 @@ describe('a request to set up LATER work (BL-19)', () => {
     expect(r.history.filter((h) => /nothing scheduled for a later request/.test(h))).toHaveLength(1);
     expect(r.history.join('\n')).toMatch(/rejected premature done — missing output file/);
     expect(r.summary).toMatch(/^Scheduled for/);
+  }, 30_000);
+
+  it('a repeated read elsewhere does not spend the push (review 2)', async () => {
+    const r = await run(LATER, [{ action: 'read_file', path: 'a.txt' }, { action: 'read_file', path: 'a.txt' }, { action: 'schedule_list' }, GAVE_UP, SCHED], { ...LIST, read_file: '(no such file yet)' }, LATER);
+    expect(r.history.join('\n')).toMatch(/nothing scheduled for a later request/);
+    expect(r.summary).toMatch(/^Scheduled for/);
+  }, 30_000);
+
+  it('naming the job that already is this request is accepted — not pushed twice toward a duplicate (review 2)', async () => {
+    const DUP = { action: 'done', summary: 'Job e2e-x-1 at 00:31 in the list already is this request; nothing new to schedule.' };
+    const r = await run(LATER, [{ action: 'schedule_list' }, DUP, DUP, DUP], LIST, LATER);
+    expect(r.history.filter((h) => /rejected premature done|nothing scheduled for a later request/.test(h))).toHaveLength(2); // the push, then one file check
+    expect(r.summary).toMatch(/already is this request/);
   }, 30_000);
 
   it('no push on wording alone: the run must have listed the schedule (the measured signature)', async () => {

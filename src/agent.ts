@@ -477,8 +477,9 @@ export async function runAgent(opts: {
   // set up (no schedule, schedule-type tool or calendar/reminder tool). Once per run. Used where a run can
   // end — at `done`, and where repeating the listing would conclude it — and returns whether it pushed.
   const pushLater = (): boolean => {
-    const setSomethingUp = [...toolsUsed].some((t) => t === 'schedule' || classifyTool(t) === 'schedule' || /calendar|event|remind/i.test(t));
-    if (!forLater || laterRejections >= 1 || !toolsUsed.has('schedule_list') || setSomethingUp || now() - start >= maxWallMs * 0.8) return false;
+    // A calendar or reminder tool that WRITES counts as setting something up; listing events does not (review 2).
+    const setSomethingUp = [...toolsUsed].some((t) => t === 'schedule' || classifyTool(t) === 'schedule' || (/calendar|event|remind/i.test(t) && classifyTool(t) !== 'read' && !/(^|[_-])(list|get|search|read|find|query)/i.test(t)));
+    if (!forLater || laterRejections >= 1 || !toolsUsed.has('schedule_list') || setSomethingUp || now() - start >= maxWallMs * 0.8 || steps >= maxSteps - 1) return false;
     laterRejections++; gatesFired.push('later');
     consecNoProgress = 0;
     nudge = 'This request is for LATER, and nothing has been scheduled in this run. If a job in the list already IS this same request (same task, same time), say so plainly and stop. '
@@ -856,7 +857,7 @@ export async function runAgent(opts: {
       // BL-19, measured with the action trail: the dead end is usually not a `done` at all — the model
       // lists the schedule again and again, and the shortcut below ("repeating after producing output ⇒
       // finished") ends the run, past every done-gate. Push first, here too.
-      if (pushLater()) continue;
+      if (action.action === 'schedule_list' && pushLater()) continue; // only the listing loop (review 2: any repeat spent the push)
       // Repeating after already producing output ⇒ effectively finished — conclude
       // as done rather than burning steps into "stuck".
       if (productive > 0 && consecNoProgress >= 2) {
@@ -897,13 +898,15 @@ export async function runAgent(opts: {
       // Requested output files that don't actually exist → the agent claimed completion
       // ("the output is ready") without producing the file. Make it really write them.
       const missingOutputs = expectedOutputs.filter((f) => { try { return !existsSync(join(dir, f)); } catch { return false; } });
-      if ((admitsUnfinished || missingOutputs.length) && incompleteRejections < 2 && now() - start < maxWallMs * 0.8) {
+      // Once, not twice, for a request that sets up later work: a model that rightly says a listed job already
+      // IS this request must not be pushed twice toward a duplicate (BL-19 review 2).
+      if ((admitsUnfinished || missingOutputs.length) && incompleteRejections < (forLater ? 1 : 2) && now() - start < maxWallMs * 0.8) {
         incompleteRejections++; gatesFired.push(missingOutputs.length ? 'missing-output' : 'unfinished');
         consecNoProgress = 0; // it IS progressing, just stopping short — don't trip the stuck guard
         // A request that sets up later work names its file too ("In 1 minute, write a.txt …"): "produce it
         // now" alone pushed the premature write (BL-19). Say which way to go; a mixed request keeps its
         // check for the part that is due now (review: exempting it lost that check).
-        nudge = (forLater ? 'If this part is due LATER, call `schedule` for it now instead of doing it. Otherwise: ' : '') + (missingOutputs.length
+        nudge = (forLater ? 'If a job in the list already IS this request, say so plainly and stop. If this part is due LATER, call `schedule` for it now instead of doing it. Otherwise: ' : '') + (missingOutputs.length
           ? `You called done but did NOT create the file(s) asked for: ${missingOutputs.join(', ')}. STOP gathering — call write_file RIGHT NOW to write ${missingOutputs.length > 1 ? 'them' : 'it'} with what you already have (it's fine if not perfect), THEN done. A summary is not the deliverable.`
           : `Your summary admits work is still unfinished ("${norm.slice(0, 80)}…"). Do NOT call done while a requested part remains — take that next step now and actually produce it. Only call done once everything the instruction asked for truly exists.`);
         history.push(`(rejected premature done — ${missingOutputs.length ? 'missing output file(s): ' + missingOutputs.join(',') : 'admitted unfinished work'})`);

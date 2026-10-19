@@ -87,13 +87,17 @@ export function claimsIn(reply: string): Set<ClaimKind> {
  *  one. It is still only a hint: the push also needs the run's own evidence (it listed the schedule). */
 export function asksForLater(message: string): boolean {
   // The person's own words only: quoted and pasted material (an email being summarized) is not a request.
-  const own = message.replace(/^\s*>.*$/gm, ' ').replace(/“[^”]*”|"[^"\n]*"|'[^'\n]{12,}'/g, ' ');
+  // Double quotes only: single quotes are apostrophes too ("I'd like … that's all" read as a quote).
+  const own = message.replace(/^\s*>.*$/gm, ' ').replace(/“[^”]*”|"[^"\n]*"/g, ' ');
   if (asksOnly(own)) return false;
-  if (/\b(cancel|stop|delete|remove|turn off|disable|unschedule|pause)\b/i.test(own)) return false;
-  return /\bschedule (?:it|this|that|them|a|an|the|my|me|one|two|three|\d+)\b/i.test(own)
-    || /\b(?:remind me|set a reminder|add a reminder)\b(?= (?:to|at|in|on|tomorrow|tonight|every|next))/i.test(own)
-    || /\bin \d+\s*(?:min|mins|minutes?|hours?|days?|weeks?)\b/i.test(own)
-    || /\bevery (?:day|morning|evening|night|week|weekday|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(own)
+  // A request to cancel or stop a job LEADS with it; "Every day at 9, delete old files" is a job (review 2).
+  if (/^\s*(?:please\s+)?(?:cancel|stop|delete|remove|turn off|disable|unschedule|pause)\b/i.test(own) || /\b(?:cancel|unschedule|turn off|stop) (?:the|my|that|this) (?:reminder|job|schedule|task)\b/i.test(own)) return false;
+  // "schedule" as a verb: leading a sentence or after please / and / then / to / can you — not "the
+  // schedule my coach made" or "my schedule this week" (review 2).
+  return /(?:^|[.!;]\s*|\b(?:please|and|then|to|can you|could you|would you)\s+)schedule (?:it|this|that|them|a|an|one|two|three|\d+)\b/im.test(own)
+    || /\b(?:remind me|set a reminder|add a reminder)\b(?= (?:to|at|in|on|for|tomorrow|tonight|every|next))/i.test(own)
+    || /\bin (?:\d+|an?|one|two|three)\s*(?:min|mins|minutes?|hours?|days?|weeks?)\b/i.test(own)
+    || /\bevery (?:day|morning|evening|night|week|weekday|hour|\d+\s*(?:minutes?|hours?|days?)|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(own)
     || /\b(?:daily at|weekly on)\b/i.test(own);
 }
 
