@@ -1943,7 +1943,9 @@ export async function runAgent(opts: {
   const MAX_RESUMES = 2;
   const RESUME_DELAY_MS = 60_000; // next scheduler tick
   const attempt = opts.resumeAttempt ?? 0;
-  if (memory.enabled && !opts.subRun && !askedUser && (reason === 'budget' || reason === 'stuck') && (toolCalls > 0 || dispatches > 0) && attempt < MAX_RESUMES) {
+  // Not a recurring job's fire (BL-46): its next fire does the same work, and in BL-40 a broken price watch's
+  // resumes cost as much as its fires — like an interrupted recurring job (BL-10), it is left to the next fire.
+  if (memory.enabled && !opts.subRun && !askedUser && !opts.jobRecur && (reason === 'budget' || reason === 'stuck') && (toolCalls > 0 || dispatches > 0) && attempt < MAX_RESUMES) {
     const cont = `Resume and finish this task — an earlier attempt ran out of time before completing it (resume ${attempt + 1} of ${MAX_RESUMES}). FIRST recall what you already did and check the files already in the working folder; then do ONLY the remaining work and finish. Do not start over.\n\nTHE TASK: ${instruction}`;
     const dueMs = now() + RESUME_DELAY_MS;
     // person: a resume inherits the owner of the run it continues. Without it the resumed run is

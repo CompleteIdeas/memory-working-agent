@@ -22,6 +22,10 @@ import { claimInterrupted, describeSteps, startHeartbeat, STALE_MS } from './tra
 
 export interface InterruptedRun { runId: string; instruction: string; session?: string; personId?: string; jobId?: string; recurring: boolean; resumed: boolean; steps: number; unfinished: number }
 
+/** BL-46: steps for one fire of a recurring job. A brief is about eight (calendar, a search, a few emails, done);
+ *  BL-40's broken price watch spent 13 to 26 a morning hunting for a page, at up to $0.25 a fire. */
+export const RECURRING_MAX_STEPS = 16;
+
 /** Mirrors agent.ts's cap: a job is resumed at most twice in all, whatever stopped it. */
 const MAX_RESUMES = 2;
 
@@ -272,7 +276,7 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       // dueNow: tell the run the timing is already settled (a resume carries its own framing, and
       // "do only the remaining work" must not be overridden by "do it all now").
       // extraRoots: the folder the task was created in, so a baked-in absolute path still resolves.
-      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt || task.recur ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
+      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt || task.recur ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: { maxSteps: task.recur ? Math.min(deps.maxSteps ?? 30, RECURRING_MAX_STEPS) : deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
       ranOk = true;
     } catch (e) {
       r = { summary: `failed: ${(e as Error).message.slice(0, 120)}`, reason: 'error', steps: 0, toolCalls: 0, costUsd: 0, durationMs: 0 } as any;
