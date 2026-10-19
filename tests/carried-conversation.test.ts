@@ -61,6 +61,24 @@ describe('in a conversation that carried outside content', () => {
   }, 60_000);
 });
 
+describe('the person\'s own words set what the model leaves out (BL-53 pilot 2)', () => {
+  it('"only alert me if it changes" is a changes-only job', async () => {
+    const { asksChangesOnly } = await import('../src/schedule-request.js');
+    for (const m of ['Set a daily 7:00 AM check of https://bloomfield-wholesale.example/prices. Alert me only if the standard rose price changes. No message if it doesn’t.',
+      "Only notify me if the standard rose price changes. No message if it's unchanged.", 'Set a daily check at 6pm. Only message me if the status changes.', "Tell me only when it's back in stock, nothing otherwise."])
+      expect(asksChangesOnly(m), m).toBe(true);
+    for (const m of ['Send me a short plan every morning at 7:00', 'Only the wedding ones matter to me', 'Alert me at 9am to call the bank'])
+      expect(asksChangesOnly(m), m).toBe(false);
+  });
+
+  it('a long carried conversation does not make a short message "complex"', async () => {
+    const { isComplexTask } = await import('../src/model-router.js');
+    const carried = `Recent conversation so far:\n${'(1) Set a weekday brief → Done, scheduled for weekdays at 8:00 AM. '.repeat(8)}\n\nNew request: Thanks!`;
+    expect(isComplexTask(carried)).toBe(true); // what every chat turn looked like with the carry on
+    expect(isComplexTask('Thanks!')).toBe(false); // what is now judged: the person's message
+  });
+});
+
 describe('a job\'s sources and outcomes', () => {
   const TOOLS = ['gmail__search_email', 'calendar__list_events', 'web__open_page'];
   it('drafting an email is not reading one', () => {

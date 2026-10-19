@@ -107,6 +107,11 @@ export function groundedInMessage(text: string, message: string): boolean {
 }
 const GROUND_STOP = new Set(['the', 'and', 'for', 'you', 'your', 'about', 'with', 'this', 'that', 'remind', 'reminder', 'remember', 'please', 'today', 'tomorrow', 'tonight', 'time', 'call', 'get', 'make', 'sure']);
 
+/** The person asks to hear only about changes: "Only alert me if the price changes. No message if it doesn't." */
+export function asksChangesOnly(message: string): boolean {
+  return /\bonly\s+(?:alert|tell|notify|message|ping|text|email|warn)\s+me\b|\b(?:alert|tell|notify|message|ping|text|email|warn)\s+me\s+only\b|\bno (?:message|alert|ping|text)s? (?:if|when|otherwise)\b|\bnothing otherwise\b|\b(?:don'?t|do not) (?:message|tell|ping|bother|alert) me (?:if|unless|otherwise)\b/i.test(message);
+}
+
 /** How schedule_list marks a job set up after reading outside content. A listing with none of them shows only
  *  instructions the person's own clean chats wrote, so it does not taint the run that reads it (BL-52 review:
  *  listing first — as the push to schedule asks — turned every reminder after it into a task). */

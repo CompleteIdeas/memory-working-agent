@@ -142,7 +142,9 @@ export async function scanSources(sandboxDir: string, paths: string[]): Promise<
  * chat system prompt; the agent runs it conversationally.
  */
 export const ONBOARD_PROTOCOL = [
-  'WARM-START (cold store): if your memory is empty or the user asks to set you up / learn about their project, run this before other work:',
+  // BL-53 pilot: a first message of "FYI, my account number is BF-20417" got "What should I get good at?" and the
+  // fact was never acknowledged. The person's own request or fact comes first; the interview is offered after.
+  'WARM-START (cold store): if your memory is empty or the user asks to set you up / learn about their project, run this — but if their message asks for something or tells you a fact, do THAT first (save a stated fact with remember, in their words) and offer the setup interview in one line at the end instead of starting it:',
   '1. Briefly interview the user — start with "What should I get good at / what is the goal here?", then a few of the onboarding questions (call onboard_questions). Ask ONE at a time; keep it short.',
   '2. Offer to learn from their material: point you at a folder or files (call onboard_scan with the paths) and/or connect a service (email inbox) to ingest. onboard_scan returns CANDIDATE memories — it does not save anything.',
   '3. Refine each candidate into an atomic memory: lead with the fact, one idea, include concrete identifiers (names, paths, terms). Drop noise. Merge duplicates.',

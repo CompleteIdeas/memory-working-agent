@@ -29,7 +29,7 @@ import { TAINTED_JOB_MARK, parseLocalAt, ownWords, groundedInMessage } from './s
 import { MAX_PENDING_TAINTED_CHAT } from './fanout.js';
 // Moved to schedule-request.ts (the work tools use them too); exported here as before.
 export { parseLocalAt, ownWords };
-import { expectedJobCount, ampmMismatch, clock12, friendlySchedule, friendlyWhen, unreadSources, asksToChangeJob, parseDaysArg, nextDailyDue } from './schedule-request.js';
+import { expectedJobCount, ampmMismatch, clock12, friendlySchedule, friendlyWhen, unreadSources, asksToChangeJob, parseDaysArg, nextDailyDue, asksChangesOnly } from './schedule-request.js';
 import { lessonJudge, judgeLesson, lessonDisposition, LESSON_PROMPT_RULE, MAX_LESSON_CHARS } from './lesson-gate.js';
 import { COMPACTION_MODE, summaryCompaction, type Compaction } from './compaction.js';
 import { answerConfidence, type Confidence } from './tools/honesty.js';
@@ -546,7 +546,10 @@ export async function runAgent(opts: {
   const intentP: Promise<RequestIntent | null> | null = classify ? classify(intentMsg) : null;
   // The planner decision waits for the reading at most 2 s, then goes by the patterns.
   const laterRequest = async () => (intentP ? (await Promise.race([intentP, new Promise<null>((r) => { const t = setTimeout(() => r(null), 2_000); (t as { unref?: () => void }).unref?.(); })]))?.later : undefined) ?? asksForLater(intentMsg);
-  if (!opts.subRun && harnessOn && process.env.MWA_PLAN !== 'off' && (opts.plan ?? (isComplexTask(instruction) && (opts.jobId !== undefined || !(await laterRequest()))))) {
+  // Complexity and tier are judged on the person's own message: carried conversation made every chat
+  // instruction long, so every turn was planned and started on the strong tier (BL-53 pilot).
+  const judged = opts.userMessage ?? instruction;
+  if (!opts.subRun && harnessOn && process.env.MWA_PLAN !== 'off' && (opts.plan ?? (isComplexTask(judged) && (opts.jobId !== undefined || !(await laterRequest()))))) {
     return runPlanned(opts);
   }
 
@@ -611,8 +614,8 @@ export async function runAgent(opts: {
   // Cheap-first for ordinary work; complex/long tasks start the conductor on the strong
   // tier (the cheap tier under-delivers / quits early on long-horizon work), and the
   // worker follows its own intent classification. Escalation below still earns upgrades.
-  if (worker instanceof RoutedProvider) worker.reset(classifyIntent(instruction));
-  const brainStart = startTier(instruction);
+  if (worker instanceof RoutedProvider) worker.reset(classifyIntent(judged));
+  const brainStart = startTier(judged);
   if (brain instanceof RoutedProvider) brain.reset(brainStart);
 
   // FAST PATH — a conversational/meta turn ("hi", "what can you do", "do you have a scheduler")
@@ -1423,7 +1426,10 @@ export async function runAgent(opts: {
       await memory.addScheduledTask(String(action.instruction), dueMs, { recur, notify: opts.session, check, person: opts.personId, origin: dir, tainted: sawUntrustedRead || sawLocalRead,
         until: typeof action.until === 'string' && action.until.trim() ? action.until.trim().slice(0, 400) : undefined,
         limits: typeof action.limits === 'string' && action.limits.trim() ? action.limits.trim().slice(0, 600) : undefined,
-        deliver: action.deliver === 'changed' || action.deliver === 'never' ? action.deliver : undefined,
+        // The person's "only alert me if it changes" sets it when the model leaves it out (BL-53 pilot: a price watch
+        // told to stay quiet otherwise messaged its first reading, as "always").
+        deliver: action.deliver === 'changed' || action.deliver === 'never' ? action.deliver
+          : action.deliver === undefined && recur && opts.jobId === undefined && asksChangesOnly(personWords) ? 'changed' : undefined,
         depth, parent: isFire ? lineage : undefined, goal: goal?.id, byRun: runId,
         // Skipping quiet hours is the person's call: honored only from an attended conversation that
         // hasn't read outside content, so injected text can't make jobs buzz a phone at night (BL-07).
