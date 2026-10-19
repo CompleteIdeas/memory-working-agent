@@ -1211,7 +1211,10 @@ export async function runAgent(opts: {
       if (called.failed) failedCalls++;
       else if (!(refusedShape && outputSource(action.action) !== 'external')) succeededCalls++;
       const refused = called.failed || (refusedShape && outputSource(action.action) !== 'external');
-      if (!called.failed && outputSource(action.action) !== 'external' && /^(\(refused:|\[APPROVAL REQUIRED\])/.test(result.trimStart())) checkRefused = true;
+      // Also a check that refuses by throwing (the network guard in http_request / read_document, an MCP
+      // refusal): only ever stricter for the lessons that follow (confirmation review).
+      if ((!called.failed && outputSource(action.action) !== 'external' && /^(\(refused:|\[APPROVAL REQUIRED\])/.test(result.trimStart()))
+        || (called.failed && /\brefused\b/i.test(result))) checkRefused = true;
       // Keep refusals as EVIDENCE, not just as a nudge signal: a run that produced nothing needs to
       // say why in the run log, or the next identical failure is just as opaque as the last.
       if (refused && result.includes('confirming a write needs a human present')) approvalRefused = true;
@@ -1501,7 +1504,8 @@ export async function runAgent(opts: {
         // Exactly the text that is judged is the text that is saved (review: a judged prefix let a tail through).
         const lessonText = String(r.lesson).trim().slice(0, MAX_LESSON_CHARS);
         const judge = opts.lessonJudge !== undefined ? opts.lessonJudge : lessonJudge();
-        const verdict = judge ? await judgeLesson(lessonText, judge) : null;
+        // The topic is saved too (in the concept), so it is judged with the lesson.
+        const verdict = judge ? await judgeLesson(`${String(r.topic).slice(0, 72)}: ${lessonText}`, judge) : null;
         const disposition = lessonDisposition(verdict, refusedRun);
         const area = verdict?.area ? { area: verdict.area } : {};
         if (disposition === 'drop') {
@@ -1513,7 +1517,7 @@ export async function runAgent(opts: {
           : await memory.saveFriction(String(r.topic), lessonText, disposition === 'unconfirmed' ? { canonical: false, untrusted: true, ...area } : { ...learnOpts, ...area });
         if (fid) {
           frictionsLearned++; emit('remember', { concept: `lesson: ${String(r.topic)}`.slice(0, 80) });
-          history.push(`recorded a lesson ("${String(r.topic).slice(0, 40)}")${disposition === 'unconfirmed' ? ' — unconfirmed: kept, not used until confirmed' : ''}`);
+          history.push(`recorded a lesson ("${String(r.topic).slice(0, 40)}")${disposition === 'unconfirmed' ? ' — unconfirmed: kept, not used in runs' : ''}`);
         }
       }
     } catch { /* best-effort */ }

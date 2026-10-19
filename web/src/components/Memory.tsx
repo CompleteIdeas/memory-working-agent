@@ -216,7 +216,7 @@ export function Memory() {
           <div className="space-y-2">
             {lessons.map((l, i) => (
               <div key={i} className="rounded-[4px] border border-line bg-surface px-4 py-3">
-                <div className="font-medium text-[15px]">{l.topic}{l.unconfirmed && <span className="mono text-[11px] text-dim ml-2" title="Kept, but not used in runs: it was written after a safety check refused something, or the lesson check could not clear it.">unconfirmed — not used</span>}</div>
+                <div className="font-medium text-[15px]">{l.topic}{l.unconfirmed && <span className="mono text-[11px] text-dim ml-2" title="Kept, but not used in runs: it was written after a safety check refused something, or the lesson check could not clear it.">unconfirmed — not used in runs</span>}</div>
                 <div className="text-dim text-[13px] leading-snug whitespace-pre-wrap">{l.content}</div>
               </div>
             ))}
