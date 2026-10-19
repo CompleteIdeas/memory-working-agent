@@ -24,6 +24,17 @@ describe('prior knowledge carries its date', () => {
     expect(block).toContain('1. ⚠UNTRUSTED [flight] (noted Tue 10 Nov 2026) departs 8:40 AM');
     expect(block).toContain('2. [old] no date known');
   });
+
+  it('two memories AWM marks as different values of one thing are said by number, with which is newer (BL-55)', () => {
+    const block = buildKnowledgeBlock([
+      { id: 'a', concept: 'Flight departure', content: 'departs 10:15 AM', conflicts: [{ id: 'b', newer: false, slot: 'time' }] },
+      { id: 'b', concept: 'Flight change', content: 'now departs 8:40 AM', conflicts: [{ id: 'a', newer: true, slot: 'time' }] },
+      { id: 'c', concept: 'Gate', content: 'gate B7', conflicts: [{ id: 'not-shown', newer: true, slot: 'status' }] },
+    ]);
+    expect(block).toContain('1. [Flight departure] ⚠ DIFFERS from #2 on a time — this one is OLDER departs 10:15 AM');
+    expect(block).toContain('2. [Flight change] ⚠ DIFFERS from #1 on a time — this one is NEWER now departs 8:40 AM');
+    expect(block).toContain('3. [Gate] gate B7'); // a mark on a memory not shown is not said
+  });
 });
 
 describe('what a watch saw comes back when asked', () => {

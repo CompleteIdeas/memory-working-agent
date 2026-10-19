@@ -33,6 +33,9 @@ export interface RecalledMemory {
   trust?: TrustTier;
   /** BL-48: when the memory was written (epoch ms), shown with it so newer can beat older. */
   at?: number;
+  /** BL-55 (AWM 0.18): another returned memory about the same thing with a different time, date, amount, number or
+   *  status — and whether THIS one is the newer. Under 0.18's default rerank the order no longer says which is newer. */
+  conflicts?: { id: string; newer: boolean; slot: string }[];
 }
 
 /**
@@ -276,6 +279,12 @@ export interface ScheduledTask {
   fails?: number;
 }
 
+// BL-55: AWM 0.18 turned its second-stage rerank on by default, which orders the final window by the cross-encoder
+// score alone — recency no longer breaks a tie, and "the newest of three same-topic facts ranks first" (F4) stopped
+// holding. MWA's newer-beats-older behaviour, and every assessment result so far, rest on the blended order, so MWA
+// keeps it unless an operator sets AWM_RERANK2 themselves. 0.18's supersede, expiry and conflict marks still apply.
+if (process.env.AWM_RERANK2 === undefined) process.env.AWM_RERANK2 = '0';
+
 export class MwaMemory implements Memory {
   readonly enabled = true;
   private store: any;
@@ -415,6 +424,7 @@ export class MwaMemory implements Memory {
         trust: this.trustOf(r.engram),
         // BL-48: when it was noted, so an answer can tell the newer of two disagreeing facts.
         ...(r.engram.createdAt ? { at: new Date(r.engram.createdAt).getTime() } : {}),
+        ...(Array.isArray(r.conflictsWith) && r.conflictsWith.length ? { conflicts: r.conflictsWith.map((c: any) => ({ id: String(c.id), newer: c.newer === true, slot: String(c.slot) })) } : {}),
       }));
     } catch (err) {
       console.error('[awm] recall error:', (err as Error).message);
