@@ -82,6 +82,8 @@ two consecutive items REVISE; or Robert says stop.
 
 ## Queue
 
+**Merged a sixth time 2026-10-19** (`master` = `43d327d`, a fast-forward of 29 commits; Robert: "Merge"): BL-28, BL-29, BL-33, BL-34, BL-36 (shadow mode), BL-19, BL-35, BL-38 — all done. Master CI green (run 39192757422). The AWM submodule pin is unchanged. The stack is reset to 0 unmerged. Still Robert's: rotate the npm token and the Cloudflare token pasted 10-16, publish, redeploy; turn on the lesson gate (MWA_LESSON_GATE) where wanted; promote BL-36 to enforce once its shadow log reads right. **Next:** BL-25 (scorecard); BL-37 and BL-32 wait on Robert.
+
 **Merged a fifth time 2026-10-16** (`master` = `8335df7`, a fast-forward; Robert: "Go ahead and merge"): BL-23, BL-24, BL-26 done, plus two items still in progress — **BL-27** (all gates passed except the final image rebuild and harnesses, stopped for low memory) and **BL-30** (the experiment and its 5-uses product fix are in, with tests; no measurement yet). Their remaining work continues on build-loop: 2 unmerged items. Still Robert's: rotate the npm token, publish, redeploy.
 
 **Merged a third time 2026-10-15** (`master` = `57086e2`, a fast-forward Robert chose): BL-08, BL-13, BL-16a/b, BL-09 (revise), BL-10. The stack is reset to 0 unmerged. Still Robert's: rotate the npm token, publish 0.6.0, redeploy. **Next up, in order:** BL-11, BL-12, BL-14c, BL-16c, BL-19, BL-20, then the BL-09 re-run; BL-14b (a live self-build) waits for Robert to be present.
