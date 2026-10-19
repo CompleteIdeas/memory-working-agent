@@ -147,6 +147,18 @@ on short windows. The bars, probes and verdict rule are unchanged. Instrument fi
 4. **Arm B ran the warm-start interview on every turn.** That interview exists to fill memory, and with
    memory off the store always looks empty, so MWA_MEMORY=off now drops it (a confound, not memory).
 5. A per-run spending guard ($12) so the six runs stay inside the $50.
+6. **The first full run was discarded** (kept in `results/assessment-invalid-search/`, $7.00). The
+   simulated mailbox took every search word as required, so the Gmail-style queries both arms wrote —
+   `(bill OR due OR payment) newer_than:7d`, `from:(school OR teacher)` — found nothing: Sam's MWA run
+   made 12 searches and all 12 came back empty, and the inbox and memory probes failed for every arm
+   alike. The mailbox now answers Gmail syntax (OR binding tighter than AND, parentheses, phrases,
+   exclusions, field groups, dates; `eval/world.test.mjs`); replayed on that run's real queries, the
+   empty results fell from 27 of 35 to 10. Spotted by reading the evidence behind the judge's verdicts —
+   the scores alone looked plausible. The same six runs were then repeated unchanged.
+7. **Baseline disclosure.** The plan promised the cron arm a `message_person` tool. It was built instead
+   so that a scheduled task's reply is sent unless it is exactly NOTHING (so a watch can stay quiet).
+   In the discarded run the plain model sometimes answered NOTHING to a daily plan the person had asked
+   for; that counts against arm C, and it is reported, not corrected.
 
 Product findings the pilot already showed (reported with the results, not fixed before the runs):
 - `schedule` has no weekday-only repeat, so a "weekday brief" runs every day.
