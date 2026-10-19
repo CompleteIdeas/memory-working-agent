@@ -4,7 +4,7 @@
  * they are the cron, not memory. Nothing is recalled or remembered; there are no standing preferences,
  * no person profile and no learning, and the memory and preference tools are not offered.
  */
-import type { Memory, MwaMemory, RecalledMemory, ScheduleOpts, ScheduledTask, Goal, TrustTier } from './awm.js';
+import type { Memory, MwaMemory, RecalledMemory, ScheduleOpts, ScheduledTask, Goal, TrustTier, JobLastRun } from './awm.js';
 
 export const MEMORY_OFF = String(process.env.MWA_MEMORY ?? '').toLowerCase() === 'off';
 
@@ -18,6 +18,7 @@ export class SchedulesOnlyMemory implements Memory {
   // The jobs — kept in the real store, where the scheduler reads them.
   addScheduledTask(instruction: string, dueMs: number, opts: ScheduleOpts = {}): Promise<string | null> { return this.real.addScheduledTask(instruction, dueMs, opts); }
   pendingScheduled(): Promise<ScheduledTask[]> { return this.real.pendingScheduled(); }
+  setJobLastRun(id: string, rec: JobLastRun): Promise<void> { return this.real.setJobLastRun(id, rec); }
   getGoal(idOrPrefix: string): Promise<Goal | null> { return this.real.getGoal(idOrPrefix); }
   logAction(a: { verb: string; summary: string; effect: 'external' | 'local' | 'read'; tool?: string; namespace?: string; undo?: string }): Promise<string | null> { return this.real.logAction(a); }
   // Knowledge — none.

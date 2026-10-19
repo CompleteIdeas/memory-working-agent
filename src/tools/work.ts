@@ -53,6 +53,9 @@ const MAX_INSTRUCTION_CHARS = 160;
 /** Short enough to type back, long enough not to collide across a realistic task list. */
 const HANDLE_LEN = 8;
 
+/** Said after every listing: the list never creates anything, and a job not in it is not a reason to stop. */
+const LIST_ONLY = '(This only lists jobs. If the person asked for one that is not here, call `schedule` to create it — one call per job.)';
+
 function clip(s: unknown, n: number): string {
   const t = String(s ?? '').replace(/\s+/g, ' ').trim();
   return t.length > n ? `${t.slice(0, n)}…` : t;
@@ -132,7 +135,7 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
     handler: async (_args, ctx) => {
       const { mine, resumes } = await myTasks(ctx);
       const tail = resumes ? `\n(plus ${resumes} internal resume task${resumes > 1 ? 's' : ''} — the harness finishing its own earlier work; not yours to cancel)` : '';
-      if (!mine.length) return `(nothing scheduled)${tail}`;
+      if (!mine.length) return `(nothing scheduled)${tail}\n${LIST_ONLY}`;
       const now = Date.now();
       const receipts = readReceipts(); // BL-13: did each job's last result reach the person?
       const rows = mine.slice(0, MAX_LIST).map((t) => {
@@ -140,10 +143,11 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
         // The job contract (BL-02): a person checking what is scheduled sees what bounds each job.
         const contract = [t.until ? `stops when: ${clip(t.until, 80)}` : '', t.limits ? `limits: ${clip(t.limits, 80)}` : '', t.deliver && t.deliver !== 'always' ? `tells you: ${t.deliver === 'changed' ? 'only when something changes' : 'only if it fails'}` : '', t.pendingComplete ? 'looks finished — confirming' : '', t.goal ? `for goal ${t.goal.slice(0, HANDLE_LEN)}` : '', t.depth ? `created by another job (level ${t.depth})` : ''].filter(Boolean).join(' · ');
         const delivery = deliveryLine(t.resumeOf ?? t.id, receipts);
-        return `${t.id.slice(0, HANDLE_LEN)} — ${whenLabel(t.due, now)} — ${recurLabel(t.recur)}\n    "${clip(t.instruction, MAX_INSTRUCTION_CHARS)}"${contract ? `\n    ${contract}` : ''}${gate}${delivery ? `\n    ${delivery}` : ''}`;
+        return `${t.id.slice(0, HANDLE_LEN)} — ${whenLabel(t.due, now)} — ${recurLabel(t.recur)}${t.kind === 'reminder' ? ' — reminder' : ''}\n    "${clip(t.instruction, MAX_INSTRUCTION_CHARS)}"${contract ? `\n    ${contract}` : ''}${gate}${delivery ? `\n    ${delivery}` : ''}`;
       });
       const more = mine.length > MAX_LIST ? `\n(+${mine.length - MAX_LIST} more)` : '';
-      return `SCHEDULED (${mine.length}):\n${rows.join('\n')}${more}${tail}`;
+      // BL-43: four BL-40 runs listed the schedule three times and stopped, never creating the job asked for.
+      return `SCHEDULED (${mine.length}):\n${rows.join('\n')}${more}${tail}\n${LIST_ONLY}`;
     },
   };
 

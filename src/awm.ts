@@ -140,6 +140,8 @@ export interface Memory {
   addScheduledTask(instruction: string, dueMs: number, opts?: ScheduleOpts): Promise<string | null>;
   /** All pending scheduled tasks — the fan-out budget counts them (BL-05). Absent when AWM is off. */
   pendingScheduled?(): Promise<ScheduledTask[]>;
+  /** BL-44: keep what a job's last good run reported. Absent when AWM is off. */
+  setJobLastRun?(id: string, rec: JobLastRun): Promise<void>;
   /** A goal by id or short id (BL-05). Absent when AWM is off. */
   getGoal?(idOrPrefix: string): Promise<Goal | null>;
   /** Persist a reusable procedure ("skill") recalled on similar future tasks. */
@@ -187,6 +189,23 @@ export interface ScheduleOpts {
   budgetNotified?: boolean;
   /** skips quiet hours (BL-07) — set only from an attended, untainted conversation. */
   urgent?: boolean;
+  /** BL-43: a reminder is DELIVERED as written when it fires — no run, nothing carried out. */
+  kind?: 'reminder';
+  /** BL-44: the person's own message that set the job up, verbatim — every fire sees their words and sources. */
+  request?: string;
+}
+
+/** BL-44: what a job's last good run reported, kept on the job itself — deterministic, per job, not recall.
+ *  A watch keeps its last value and a short history of changes; a brief keeps when it last ran and what it said. */
+export interface JobLastRun {
+  at: number;
+  summary: string;
+  value?: string;
+  valueAt?: number;
+  /** each value this job has seen change to, oldest first (capped) */
+  history?: { at: number; value: string }[];
+  /** the memory holding this job's latest observation, superseded on the next change (BL-48) */
+  obs?: string;
 }
 
 /** A goal (BL-05): an AWM task that owns scheduled jobs. Its status is the source of truth for
@@ -242,6 +261,11 @@ export interface ScheduledTask {
   resumeOf?: string;
   budgetNotified?: boolean;
   urgent?: boolean;
+  /** BL-43: delivered as written when due — see ScheduleOpts.kind. */
+  kind?: 'reminder';
+  /** BL-44 — see ScheduleOpts.request and JobLastRun. */
+  request?: string;
+  lastRun?: JobLastRun;
 }
 
 export class MwaMemory implements Memory {
@@ -649,6 +673,8 @@ export class MwaMemory implements Memory {
     if (opts.byRun) tags.push(`byrun=${opts.byRun.slice(0, 8)}`);
     if (opts.resumeOf) tags.push(`resumeof=${opts.resumeOf.slice(0, 8)}`);
     if (opts.urgent) tags.push('urgent=1');
+    if (opts.kind === 'reminder') tags.push('kind=reminder');
+    if (opts.request) tags.push(`request64=${Buffer.from(opts.request.slice(0, 2000), 'utf8').toString('base64')}`);
     // Base64 the check command so an arbitrary shell string (spaces, commas, pipes, '=') survives
     // both tag serializations (JSON array or comma-split). No commas in base64 → comma-split is safe.
     if (opts.check) tags.push(`check64=${Buffer.from(opts.check, 'utf8').toString('base64')}`, 'checkmode=dry'); // BL-08: starts disabled
@@ -666,7 +692,8 @@ export class MwaMemory implements Memory {
         const tag = (p: string) => st.find((t) => t.startsWith(p)) ?? '';
         const b64 = (v?: string) => (v ? Buffer.from(v, 'utf8').toString('base64') : '');
         const sameContract = tag('until64=').slice(8) === b64(opts.until) && tag('limits64=').slice(9) === b64(opts.limits)
-          && (tag('deliver=').slice(8) || 'always') === (opts.deliver ?? 'always') && tag('check64=').slice(8) === b64(opts.check);
+          && (tag('deliver=').slice(8) || 'always') === (opts.deliver ?? 'always') && tag('check64=').slice(8) === b64(opts.check)
+          && st.includes('kind=reminder') === (opts.kind === 'reminder');
         if (same && sameContract && same.content === instruction && st.includes(`recur=${opts.recur}`)
           && st.includes(`person=${normalizePersonId(opts.person)}`) && st.includes('tainted=1') === Boolean(opts.tainted)) {
           const had = tag('goal=').slice(5) || undefined;
@@ -699,7 +726,10 @@ export class MwaMemory implements Memory {
         const check64 = get('check64=');
         out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, origin: get('origin=') || undefined, tainted: tags.includes('tainted=1') || undefined, until: get('until64=') ? Buffer.from(get('until64='), 'base64').toString('utf8') : undefined, limits: get('limits64=') ? Buffer.from(get('limits64='), 'base64').toString('utf8') : undefined, deliver: (get('deliver=') || undefined) as ScheduledTask['deliver'], pendingComplete: tags.includes('pendingcomplete=1') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined, person: get('person=') || undefined, depth: Number(get('depth=')) || undefined, parent: get('parent=') || undefined, goal: get('goal=') || undefined, byRun: get('byrun=') || undefined, resumeOf: get('resumeof=') || undefined, budgetNotified: tags.includes('budgetnotified=1') || undefined, urgent: tags.includes('urgent=1') || undefined,
           checkMode: (get('checkmode=') || undefined) as ScheduledTask['checkMode'], checkArm: get('checkarm=') || undefined, checkEv: get('checkev=') ? parseEvidence(get('checkev=')) : undefined, checkReady: tags.includes('checkready=1') || undefined, checkMissed: tags.includes('checkmissed=1') || undefined,
-          task: get('task64=') ? Buffer.from(get('task64='), 'base64').toString('utf8') : undefined });
+          task: get('task64=') ? Buffer.from(get('task64='), 'base64').toString('utf8') : undefined,
+          ...(tags.includes('kind=reminder') ? { kind: 'reminder' as const } : {}),
+          ...(get('request64=') ? { request: Buffer.from(get('request64='), 'base64').toString('utf8') } : {}),
+          ...(get('lastrun64=') ? { lastRun: parseLastRun(get('lastrun64=')) } : {}) });
       }
       return out.sort((a, b) => a.due - b.due);
     } catch (err) { console.error('[awm] pendingScheduled error:', (err as Error).message); return []; }
@@ -769,6 +799,10 @@ export class MwaMemory implements Memory {
         && !(mode === 'dry' && (t.startsWith('checkev=') || t === 'checkready=1' || t === 'checkmissed=1'))),
       `checkmode=${mode}`, ...(mode === 'armed' && arm ? [`checkarm=${arm}`] : []),
     ]);
+  }
+  /** BL-44: what this job's last good run reported (replaces the previous record). */
+  async setJobLastRun(id: string, rec: JobLastRun): Promise<void> {
+    await this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('lastrun64=')), `lastrun64=${Buffer.from(JSON.stringify(rec), 'utf8').toString('base64')}`]);
   }
   /** Record the change-detection signature (sha1 hex) captured at the last actual fire, so the next
    *  tick can skip the (expensive) agent run when nothing has changed. */
@@ -1298,4 +1332,19 @@ export class NullMemory implements Memory {
   close(): void {
     /* no-op */
   }
+}
+
+/** BL-44: a job's last-run record from its tag; a damaged tag reads as no record rather than failing the job. */
+function parseLastRun(b64: string): JobLastRun | undefined {
+  try {
+    const o = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
+    if (!o || typeof o.at !== 'number' || typeof o.summary !== 'string') return undefined;
+    return {
+      at: o.at, summary: o.summary,
+      ...(typeof o.value === 'string' ? { value: o.value } : {}),
+      ...(typeof o.valueAt === 'number' ? { valueAt: o.valueAt } : {}),
+      ...(Array.isArray(o.history) ? { history: o.history.filter((h: { at?: unknown; value?: unknown }) => typeof h?.at === 'number' && typeof h?.value === 'string').slice(-20) } : {}),
+      ...(typeof o.obs === 'string' ? { obs: o.obs } : {}),
+    };
+  } catch { return undefined; }
 }

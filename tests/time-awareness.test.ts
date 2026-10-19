@@ -59,7 +59,8 @@ describe('scheduling at a date and time in a run', () => {
     expect(systems[0]).toContain('NOW: Monday, October 19, 2026 (2026-10-19), 09:00, time zone America/New_York.');
     expect(jobs).toHaveLength(1);
     expect(jobs[0].due).toBe(Date.UTC(2026, 9, 22, 19, 0));
-    expect(r.summary).toContain('Scheduled for 2026-10-22 15:00');
+    // BL-43: read back with the weekday and a 12-hour clock, the way the person asked.
+    expect(r.summary).toContain('Scheduled for Thu 22 Oct 2026 at 3:00 PM (America/New_York)');
   }, 60_000);
 
   it('a past or malformed `at` goes back to the model with NOW, and the corrected retry is not skipped as a repeat', async () => {

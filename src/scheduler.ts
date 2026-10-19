@@ -12,7 +12,8 @@ import { exec } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { runCommandAllowed } from './tools/access.js';
 import type { Provider } from './provider.js';
-import type { MwaMemory, ScheduledTask } from './awm.js';
+import type { MwaMemory, ScheduledTask, JobLastRun } from './awm.js';
+import { friendlyWhen } from './schedule-request.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { runAgent } from './agent.js';
 import { detectorArmed, scoreDryRun } from './detector.js';
@@ -124,6 +125,34 @@ export interface SchedulerDeps {
   onInterrupted?: (info: InterruptedRun) => void | Promise<void>;
 }
 
+/** Two readings of a watched value are the same when they differ only in case, spacing or end punctuation. */
+export function sameReading(a: string, b: string): boolean {
+  const n = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').replace(/[.;,!]+$/, '').trim();
+  return n(a) === n(b);
+}
+
+/**
+ * BL-48: a watch that reads a new value writes it to memory as an observation, superseding its previous one,
+ * so a later question ("when does my flight leave?") recalls what MWA itself saw — BL-40's flight watch saw
+ * 8:40 on Nov 10, and on Nov 12 the answer came from the calendar's stale 10:15. Written to the RUN's memory
+ * (none when memory is off) and marked ingested: it was read from an outside source.
+ */
+async function recordObservation(deps: SchedulerDeps, task: ScheduledTask, value: string, prev: JobLastRun | undefined, at: number): Promise<string | undefined> {
+  const mem = deps.agentMemory ?? deps.memory;
+  if (!mem.enabled) return undefined;
+  const what = (task.task ?? task.instruction).replace(/\s+/g, ' ').slice(0, 160);
+  const concept = `observed: ${what.slice(0, 60)}`;
+  const content = `${friendlyWhen(at)}: the scheduled job "${what}" read its source and found: ${value}.`
+    + (prev?.value !== undefined ? ` Before that, on ${friendlyWhen(prev.valueAt ?? prev.at)}, it was ${prev.value}.` : '')
+    + ' This was read from the source itself, so it is newer than a calendar entry, note or older email that says otherwise.';
+  const tags = ['topic=observation', `job=${(task.resumeOf ?? task.id).slice(0, 8)}`, 'confidence_level=verified'];
+  const opts = { eventType: 'surprise' as const, provenance: 'ingested' as const, origin: 'scheduled job', global: true };
+  try {
+    if (prev?.obs) { const id = await mem.supersede(prev.obs, concept, content, tags, opts); if (id) return id; }
+    return (await mem.write(concept, content, tags, { ...opts, noMerge: true })) ?? undefined;
+  } catch { return undefined; }
+}
+
 /** Next due (epoch ms) for a recurring spec ("every:<min>" or "daily:HH:MM"). */
 function nextRecur(recur: string, fromMs: number): number {
   if (recur.startsWith('every:')) return fromMs + Number(recur.slice(6)) * 60_000;
@@ -202,6 +231,18 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       }
     }
 
+    // A REMINDER (BL-43) is a message to the person, not work to carry out: BL-40's "Sign Lily's permission
+    // slip." fired as a task and the run answered "I can't sign the slip". Delivered as written, no run.
+    if (task.kind === 'reminder') {
+      if (task.recur) await deps.memory.rescheduleTask(task.id, nextRecur(task.recur, now()));
+      else await deps.memory.completeScheduled(task.id);
+      fired++;
+      const job = task.resumeOf ?? task.id;
+      await deps.onFire(task, { job, fire: `${job.slice(0, 8)}-${now()}`, outcome: 'changed', summary: `Reminder: ${task.instruction}`, files: [], dir: '', reason: 'done', steps: 0, toolCalls: 0, costUsd: 0, durationMs: 0 })
+        .catch((e) => log(`onFire failed: ${(e as Error).message.slice(0, 80)}`));
+      log(`⏰ reminder sent: ${task.instruction.slice(0, 50)}`);
+      continue;
+    }
     log(`⏰ firing: ${task.instruction.slice(0, 50)}${task.resumeAttempt ? ` (resume ${task.resumeAttempt})` : ''}`);
     // `origin` is honored only when it is a run SANDBOX inside the workspace (outRoot's parent):
     // serve sessions, Telegram chats and mailbox runs all are. `mwa run` is not — it passes the
@@ -229,7 +270,7 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       // dueNow: tell the run the timing is already settled (a resume carries its own framing, and
       // "do only the remaining work" must not be overridden by "do it all now").
       // extraRoots: the folder the task was created in, so a baked-in absolute path still resolves.
-      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, extraRoots: origin ? [origin] : undefined, transcript: true, budget: { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
+      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
       ranOk = true;
     } catch (e) {
       r = { summary: `failed: ${(e as Error).message.slice(0, 120)}`, reason: 'error', steps: 0, toolCalls: 0, costUsd: 0, durationMs: 0 } as any;
@@ -246,9 +287,36 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // one is delivered as a candidate and the job keeps running; it stops only when the NEXT fire
     // confirms — one hallucinated "complete" cannot silently end a monitor (second-model challenge).
     // No outcome (a thrown run, an older runner) derives from `reason` — never defaults to success.
-    const outcome = String((r as { outcome?: string }).outcome ?? (r.reason === 'done' ? 'changed' : 'could-not'));
+    let outcome = String((r as { outcome?: string }).outcome ?? (r.reason === 'done' ? 'changed' : 'could-not'));
     let completion: 'candidate' | 'stopped' | undefined;
     let summary = r.summary;
+    // BL-44: the job's own record of its last good run — a watch's value and its changes, a brief's "since".
+    // A failed run keeps the last good record: "couldn't open the page" is not a new reading.
+    if (ranOk && !task.resumeAttempt && outcome !== 'could-not' && outcome !== 'blocked' && deps.memory.setJobLastRun) {
+      const prev = task.lastRun;
+      const val = (r as { watchValue?: string }).watchValue;
+      const rec: JobLastRun = { at: now(), summary: String(summary ?? '').slice(0, 600),
+        ...(prev?.value !== undefined ? { value: prev.value, valueAt: prev.valueAt } : {}), ...(prev?.history ? { history: prev.history } : {}), ...(prev?.obs ? { obs: prev.obs } : {}) };
+      if (val) {
+        const changed = prev?.value !== undefined && sameReading(prev.value, val) === false;
+        if (prev?.value === undefined || changed) rec.history = [...(prev?.history ?? []), { at: now(), value: val }].slice(-20);
+        rec.value = val; rec.valueAt = now();
+        if (changed) {
+          // The change is news whatever the run called it, and it is said with both values (BL-40: "no change"
+          // the day roses went from $1.10 to $1.45).
+          if (outcome === 'no-change') outcome = 'changed';
+          if (!String(summary).includes(prev!.value!)) summary += `\n\n(Changed since ${friendlyWhen(prev!.valueAt ?? prev!.at)}: it was ${prev!.value}; it is now ${val}.)`;
+        } else if (prev?.value !== undefined && (task.deliver ?? 'always') === 'changed' && outcome === 'changed') {
+          // The same reading as last time, for a job told to report only changes: quiet.
+          outcome = 'no-change';
+        }
+        if (prev?.value === undefined || changed) {
+          const obs = await recordObservation(deps, task, val, changed ? prev : undefined, now());
+          if (obs) rec.obs = obs;
+        }
+      }
+      await deps.memory.setJobLastRun(task.id, rec);
+    }
     // A follow-up the fan-out budget refused (BL-05): tell the person ONCE per job, even under
     // deliver=changed/never — "let the person decide" needs the person to hear it — then stay quiet.
     const budgetNews = (r as { budgetRefusal?: string }).budgetRefusal && !task.budgetNotified ? (r as { budgetRefusal?: string }).budgetRefusal : undefined;
