@@ -225,6 +225,15 @@ function setImageModel(provider: string, model: string): void {
 // runAgent's `carried`, instead of being pasted into the next instruction as if the person said it.
 interface Session { dir: string; history: { instruction: string; summary: string; tainted?: boolean }[]; lastUsed: number; topicStart: number; }
 const sessions = new Map<string, Session>();
+// How much of the conversation a turn carries (BL-53). The product carries the last 3 turns of the current topic;
+// the fair rerun of the promise assessment gives every arm the same window as its plain-loop arm — one long
+// conversation, scheduled results included — so memory is measured on top of a window, not instead of one.
+//   MWA_CARRY_TURNS        turns carried (default 3)
+//   MWA_CARRY_ALL=1        carry the last N turns whatever the topic (no continue/fresh classification)
+//   MWA_CARRY_JOB_RESULTS=1  a delivered scheduled result joins its session's conversation (fenced: outside content)
+const CARRY_TURNS = Math.max(1, Math.min(60, Number(process.env.MWA_CARRY_TURNS) || 3));
+const CARRY_ALL = process.env.MWA_CARRY_ALL === '1';
+const CARRY_JOB_RESULTS = process.env.MWA_CARRY_JOB_RESULTS === '1';
 const SERVER_START = Date.now();
 let activeRuns = 0;          // in-flight agent runs — capped to protect the box
 let lastSchedulerTick = 0;   // scheduler liveness heartbeat (for /api/health)
@@ -362,13 +371,13 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
 
     // AUTO-CHAIN, but know when to stop: continue the current topic, start a new one, or ask.
     const topicTurns = s.history.slice(s.topicStart);
-    const relation = await classifyContinuity(brain, topicTurns, message, idleMs);
+    const relation = CARRY_ALL ? (s.history.length ? 'continue' as const : 'fresh' as const) : await classifyContinuity(brain, topicTurns, message, idleMs);
     const hadContext = topicTurns.length > 0;
     if (relation === 'fresh') s.topicStart = s.history.length;
     // F5: topic-scoped memory is OPT-IN (MWA_TOPIC_NAMESPACE=1). Default OFF preserves cross-session continuity.
     if (process.env.MWA_TOPIC_NAMESPACE === '1') memory.setNamespace(`${sessionId}-t${s.topicStart}`);
     send('topic', { relation, hadContext });
-    const carriedTurns = relation === 'continue' ? s.history.slice(Math.max(s.topicStart, s.history.length - 3)) : [];
+    const carriedTurns = relation === 'continue' ? s.history.slice(Math.max(CARRY_ALL ? 0 : s.topicStart, s.history.length - CARRY_TURNS)) : [];
     const ctx = carriedTurns.map((h, i) => `(${i + 1}) ${h.instruction} → ${h.summary}`).join('\n');
     // If any carried turn read external content, its replies may quote that content: send the whole
     // context fenced through `carried` (with this run starting tainted), not inside the instruction.
@@ -1164,6 +1173,8 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           // BL-13: saved in the app's feed (or not). Whether an open tab is handed it is recorded when one is.
           if (r.job && r.fire) recordReceipt({ job: r.job, fire: r.fire, channel: 'app', status: saved ? 'stored' : 'failed', ...(saved ? {} : { detail: 'could not write the app feed' }) });
           console.log(`  ⏰ fired: ${task.instruction.slice(0, 60)} → ${r.summary.slice(0, 80)}`);
+          // BL-53: in a carried conversation the person saw this result, so later turns may refer to it.
+          if (CARRY_JOB_RESULTS && task.notify) { const sess = sessions.get(task.notify); if (sess) sess.history.push({ instruction: `(scheduled result: ${task.instruction.slice(0, 120)})`, summary: r.summary.slice(0, 1500), tainted: true }); }
         },
         // BL-10: a chat or job cut off by a restart and not resumed — say so in the app's feed.
         onInterrupted: (x) => { appendNotification({ ts: Date.now(), instruction: `Interrupted by a restart: ${x.instruction}`, summary: x.jobId ? `This scheduled job was cut off ${x.steps ? `after ${x.steps} step(s)` : 'before it did anything'}. ${x.recurring ? 'Its next scheduled run will pick the work up.' : 'It has used its resumes, so it was not started again.'}` : `This request was cut off ${x.steps ? `after ${x.steps} step(s)` : 'before it did anything'} by a restart. It was not started again — ask again if you still want it.${x.unfinished ? ` ${x.unfinished} step(s) had started without a recorded result: check whether they happened.` : ''}`, reason: 'interrupted', outcome: 'could-not' }); },
