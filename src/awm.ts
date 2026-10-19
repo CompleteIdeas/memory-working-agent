@@ -31,6 +31,8 @@ export interface RecalledMemory {
   /** SPINE trust tier of the source engram. F2 reads this to isolate untrusted (inbox/web-mined)
    *  facts in the prompt so they can't be obeyed as instructions. Absent on non-AWM arms. */
   trust?: TrustTier;
+  /** BL-48: when the memory was written (epoch ms), shown with it so newer can beat older. */
+  at?: number;
 }
 
 /**
@@ -397,6 +399,8 @@ export class MwaMemory implements Memory {
         content: opts.full ? r.engram.content : (r.summary ?? r.engram.content),
         score: r.score,
         trust: this.trustOf(r.engram),
+        // BL-48: when it was noted, so an answer can tell the newer of two disagreeing facts.
+        ...(r.engram.createdAt ? { at: new Date(r.engram.createdAt).getTime() } : {}),
       }));
     } catch (err) {
       console.error('[awm] recall error:', (err as Error).message);

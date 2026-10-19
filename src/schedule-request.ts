@@ -50,6 +50,26 @@ export function ampmMismatch(message: string, hour: number, minute: number): str
   return flipped ? flipped.text : null;
 }
 
+/**
+ * BL-49: the sources a scheduled job depends on that this run has not read — only sources a connected tool
+ * can read. With memory on, BL-40's morning plan searched email on 4 of 14 mornings and missed the failed
+ * autopay; a price watch answered 4 of 15 checks without opening the page. A brief or plan ("what came in",
+ * "bills due this week", "anything that needs me") lives in the inbox even when the person never says "email".
+ */
+export function unreadSources(jobText: string, available: string[], used: Set<string>): string[] {
+  const has = (re: RegExp) => available.some((t) => re.test(t));
+  const did = (re: RegExp) => [...used].some((t) => re.test(t));
+  const EMAIL = /mail|inbox/i;
+  const CAL = /calendar|event/i;
+  const PAGE = /open_page|fetch_url|http_request|read_document|browse/i;
+  const briefLike = /\b(?:brief|briefing|plan|digest|catch me up|came in|needs? me|my attention|bills?|renew\w*|auto-?renew\w*|charges?|due this week)\b/i.test(jobText);
+  const out: string[] = [];
+  if (has(EMAIL) && !did(EMAIL) && (/\b(?:e-?mails?|inbox|mail|messages?)\b/i.test(jobText) || briefLike)) out.push('email');
+  if (has(CAL) && !did(CAL) && /\b(?:calendar|appointments?|meetings?|events?|schedule today)\b/i.test(jobText)) out.push('the calendar');
+  if (has(PAGE) && !did(PAGE) && /https?:\/\/\S+/i.test(jobText)) out.push('the page it watches');
+  return out;
+}
+
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
 /** "7:00 PM" — the person's own clock, the way they wrote it. */

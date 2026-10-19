@@ -146,7 +146,9 @@ async function recordObservation(deps: SchedulerDeps, task: ScheduledTask, value
     + (prev?.value !== undefined ? ` Before that, on ${friendlyWhen(prev.valueAt ?? prev.at)}, it was ${prev.value}.` : '')
     + ' This was read from the source itself, so it is newer than a calendar entry, note or older email that says otherwise.';
   const tags = ['topic=observation', `job=${(task.resumeOf ?? task.id).slice(0, 8)}`, 'confidence_level=verified'];
-  const opts = { eventType: 'surprise' as const, provenance: 'ingested' as const, origin: 'scheduled job', global: true };
+  // canonical is the salience FLOOR, not trust (as for scheduled tasks): the observation reads much like the
+  // job's own stored instruction, and the novelty filter discarded it as a near-duplicate. Trust stays ingested.
+  const opts = { eventType: 'surprise' as const, provenance: 'ingested' as const, origin: 'scheduled job', global: true, canonical: true };
   try {
     if (prev?.obs) { const id = await mem.supersede(prev.obs, concept, content, tags, opts); if (id) return id; }
     return (await mem.write(concept, content, tags, { ...opts, noMerge: true })) ?? undefined;
