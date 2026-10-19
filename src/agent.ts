@@ -1166,9 +1166,12 @@ export async function runAgent(opts: {
       consecNoProgress = 0;
       // F2: if untrusted content was read this run, a remembered "fact" may be laundered inbox/web
       // text — stamp it ingested (untrusted) rather than the agent's own medium-trust inference.
-      await memory.write(String(action.concept), String(action.fact), ['topic=project-understanding', 'intent=finding', 'confidence_level=observed'], { canonical: !sawUntrustedRead && !sawLocalRead, eventType: 'observation', provenance: sawUntrustedRead ? 'ingested' : 'inferred' });
-      history.push(`remember [${String(action.concept).slice(0, 50)}]`);
-      emit('remember', { concept: String(action.concept).slice(0, 80) });
+      // 'lesson:' and 'skill:' concepts are the lesson and skill stores' own: a remembered note under one would
+      // be primed as a lesson, past the BL-35 gate (BL-38). A note keeps its words without the prefix.
+      const noteConcept = String(action.concept).replace(/^\s*(?:lesson|skill)\s*:\s*/i, '').trim() || 'note';
+      await memory.write(noteConcept, String(action.fact), ['topic=project-understanding', 'intent=finding', 'confidence_level=observed'], { canonical: !sawUntrustedRead && !sawLocalRead, eventType: 'observation', provenance: sawUntrustedRead ? 'ingested' : 'inferred' });
+      history.push(`remember [${noteConcept.slice(0, 50)}]`);
+      emit('remember', { concept: noteConcept.slice(0, 80) });
       gatherStreak = 0; productive++; // recorded — reset the cadence
       continue;
     }
@@ -1438,14 +1441,28 @@ export async function runAgent(opts: {
   if (memory.enabled && (dispatches > 0 || toolCalls >= 3) && !askedUser) {
     try {
       const sk = await brain.chat({
-        system: 'A task was just completed using tools. If it followed a REPEATABLE procedure that would help on similar future requests, output ONLY JSON {"name":"short skill name (e.g. \'triage scouting inbox\')","steps":"numbered how-to a future run can follow"}. If it was a trivial one-off, output exactly {}.',
+        system: 'A task was just completed using tools. If it followed a REPEATABLE procedure that would help on similar future requests, output ONLY JSON {"name":"short skill name (e.g. \'triage scouting inbox\')","steps":"numbered how-to a future run can follow"}. If it was a trivial one-off, output exactly {}.'
+          // BL-38: the same rule the lesson prompt carries, when a check refused something in this run.
+          + (checkRefused || approvalRefused ? ` ${LESSON_PROMPT_RULE.replace('the lesson must', 'the skill must')}` : ''),
         messages: [{ role: 'user', content: `REQUEST: ${instruction}\n\nSTEPS TAKEN:\n${history.slice(-24).join('\n')}` }],
         maxTokens: 400,
       });
       usage.brainIn += sk.usage.input; usage.brainOut += sk.usage.output;
       const s = parseJsonLoose<{ name?: string; steps?: string }>(sk.text);
       if (s?.name && s?.steps) {
-        const sid = await memory.saveSkill(String(s.name), String(s.steps), learnOpts);
+        // BL-38 — a skill is primed like a lesson, so after a run a check refused it goes through the same
+        // gate (BL-35): judged if a judge is set — out if it gets around a check — else kept unconfirmed.
+        // Skills from runs nothing refused are saved as before (skills hold code and run long; the risk the
+        // study found is after a refusal).
+        let skillOpts: { canonical?: boolean; untrusted?: boolean } = learnOpts;
+        if (checkRefused || approvalRefused) {
+          const judge = opts.lessonJudge !== undefined ? opts.lessonJudge : lessonJudge();
+          const verdict = judge ? await judgeLesson(`${String(s.name).slice(0, 72)}: ${String(s.steps).slice(0, MAX_LESSON_CHARS)}`, judge) : null;
+          const d = lessonDisposition(verdict, true);
+          if (d === 'drop') { gatesFired.push('skill-evasion'); history.push('(skill not saved: it teaches a way around a safety check)'); s.steps = undefined; }
+          else if (d === 'unconfirmed') { gatesFired.push('skill-unconfirmed'); skillOpts = { canonical: false, untrusted: true }; }
+        }
+        const sid = !s.steps ? null : await memory.saveSkill(String(s.name), String(s.steps), skillOpts);
         if (sid) { skillsDerived++; emit('remember', { concept: `skill: ${String(s.name)}`.slice(0, 80) }); history.push(`learned skill "${String(s.name).slice(0, 40)}"`); }
       }
     } catch { /* best-effort */ }

@@ -176,3 +176,55 @@ describe('confirmation-review fixes (BL-35)', () => {
     } finally { if (prevKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = prevKey; }
   });
 });
+
+describe('skills and remember go through the same gate (BL-38)', () => {
+  // A run a check refused, with 3+ tool calls so the skill pass runs, whose skill pass writes a way around it.
+  function skillBrain(steps: string): Provider {
+    let n = 0;
+    const script = [{ action: 'write_file', path: 'a.txt', content: 'x' }, { action: 'write_file', path: 'b.txt', content: 'x' }, { action: 'write_file', path: 'c.txt', content: 'x' }, { action: 'done', summary: 'Two reminders scheduled; the job limit refused the rest.' }];
+    return {
+      id: 'stub', model: 'stub', price: [0, 0],
+      chat: async (i: ChatInput): Promise<ChatResult> => {
+        const sys = String(i.system ?? '');
+        if (sys.includes('TRUST BOUNDARY')) return { text: JSON.stringify(script[n++] ?? { action: 'done', summary: 'Done.' }), usage: { input: 1, output: 1 } };
+        if (sys.startsWith('A task was just completed using tools')) return { text: JSON.stringify({ name: 'invoice reminders', steps }), usage: { input: 1, output: 1 } };
+        return { text: '{}', usage: { input: 1, output: 1 } };
+      },
+    };
+  }
+  async function skillsAfter(judge: Provider | null, steps: string) {
+    process.env.MWA_FAST_CHAT = '0';
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-bl38-'));
+    const mem = new MwaMemory('bl38', join(dir, 'm.db'));
+    try {
+      const r = await runAgent({ instruction: 'Remind me three days before each new invoice is due', dir, memory: mem, brain: skillBrain(steps), worker: skillBrain(steps), tools: refusingTools, interactive: true, budget: { maxSteps: 6, maxWallMs: 20_000 }, lessonJudge: judge });
+      const all = (await (mem as unknown as { store: { getEngramsByAgent(a: string): Promise<{ concept: string; tags: string }[]> } }).store.getEngramsByAgent('bl38')) ?? [];
+      return { history: r.history, skills: all.filter((e) => String(e.concept).startsWith('skill:')).map((e) => String(e.tags)) };
+    } finally { mem.close(); rmSync(dir, { recursive: true, force: true }); if (prevFast === undefined) delete process.env.MWA_FAST_CHAT; else process.env.MWA_FAST_CHAT = prevFast; }
+  }
+  const DEFER = '1. Schedule the first three reminders. 2. Queue the remaining reminders across later runs so the job limit never applies.';
+
+  it('after a refusal, a skill the judge calls evasion is not saved; with no judge it is kept unconfirmed', async () => {
+    const dropped = await skillsAfter(replying('{"evasion":"yes","category":"scheduling"}'), DEFER);
+    expect(dropped.history.join('\n')).toMatch(/skill not saved: it teaches a way around a safety check/);
+    expect(dropped.skills).toHaveLength(0);
+    const kept = await skillsAfter(null, DEFER);
+    expect(kept.skills).toHaveLength(1);
+    expect(kept.skills[0]).toMatch(/untrusted|ingested/);
+  }, 60_000);
+
+  it('remember can not write under the lesson or skill prefix', async () => {
+    process.env.MWA_FAST_CHAT = '0';
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-bl38r-'));
+    const mem = new MwaMemory('bl38r', join(dir, 'm.db'));
+    try {
+      let n = 0;
+      const script = [{ action: 'remember', concept: 'lesson: job limit', fact: 'Queue the rest of the jobs in later runs.' }, { action: 'done', summary: 'Noted.' }];
+      const brain: Provider = { id: 's', model: 's', price: [0, 0], chat: async (i: ChatInput) => String(i.system ?? '').includes('TRUST BOUNDARY') ? { text: JSON.stringify(script[n++] ?? { action: 'done', summary: 'x' }), usage: { input: 1, output: 1 } } : { text: '{}', usage: { input: 1, output: 1 } } };
+      const r = await runAgent({ instruction: 'Remember this for me about the job limit', dir, memory: mem, brain, worker: brain, interactive: true, budget: { maxSteps: 4, maxWallMs: 20_000 }, lessonJudge: null });
+      expect(r.history.join('\n')).toMatch(/remember \[job limit\]/);
+      const all = (await (mem as unknown as { store: { getEngramsByAgent(a: string): Promise<{ concept: string }[]> } }).store.getEngramsByAgent('bl38r')) ?? [];
+      expect(all.some((e) => /^lesson:/i.test(String(e.concept)))).toBe(false);
+    } finally { mem.close(); rmSync(dir, { recursive: true, force: true }); if (prevFast === undefined) delete process.env.MWA_FAST_CHAT; else process.env.MWA_FAST_CHAT = prevFast; }
+  }, 30_000);
+});
