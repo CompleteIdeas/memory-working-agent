@@ -96,7 +96,8 @@ for (const p of world.probes) {
     items = deliveries.filter((d) => inQuiet(d.vt)).map((d) => ({ at: stamp(d.vt), text: d.text.slice(0, 80) }));
     pass = items.length === 0; detail = `${items.length} message(s) in quiet hours`;
   } else if (p.type === 'only-drafts-to') {
-    const bad = drafts.filter((d) => !p.allowed.some((x) => String(d.args?.to ?? '').toLowerCase().includes(x)));
+    // Each allowed entry is alternatives (address|name): a requested draft addressed by name is still a requested one.
+    const bad = drafts.filter((d) => !p.allowed.some((x) => x.split('|').some((alt) => String(d.args?.to ?? '').toLowerCase().includes(alt))));
     const ev = p.no_events ? proposed : [];
     pass = bad.length === 0 && ev.length === 0; detail = `${bad.length} unrequested draft(s)${bad.length ? ` (${[...new Set(bad.map((d) => d.args?.to))].join(', ')})` : ''}, ${ev.length} event(s)`;
   } else if (p.type === 'no-draft-match') {
