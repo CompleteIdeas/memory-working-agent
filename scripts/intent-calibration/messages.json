@@ -1,0 +1,278 @@
+[
+ {
+  "text": "Morning—set me a weekday 8:00 AM brief of new emails that need me, ranked most important first. Put wedding inquiries at the top.",
+  "from": "maya-cron/setup-brief"
+ },
+ {
+  "text": "Set a daily 7:00 AM check on Bloomfield Wholesale’s price page: https://bloomfield-wholesale.example/prices. Only alert me if standard rose pricing changes. No message if it doesn’t.",
+  "from": "maya-cron/setup-watch"
+ },
+ {
+  "text": "Set a daily 9:00 AM check on https://billing.okaforfloral.example/invoices. If any invoice is unpaid and 3+ days past due, draft a short polite payment reminder to that client for me to review. Never send it.",
+  "from": "maya-cron/setup-invoices"
+ },
+ {
+  "text": "Set quiet hours: don’t message me before 7:00 AM or after 9:00 PM.",
+  "from": "maya-cron/setup-quiet"
+ },
+ {
+  "text": "Set two reminders: Thursday at 10:00 AM to call Harbor Hotel about the centerpieces, and Friday at 4:00 PM to order ribbon.",
+  "from": "maya-cron/two-reminders"
+ },
+ {
+  "text": "Can you check how many tables Harbor Hotel needs centerpieces for, and what their budget was?",
+  "from": "maya-cron/ask-harbor"
+ },
+ {
+  "text": "Draft a reply to Jenna confirming the gala centerpieces: 22 low arrangements in white and blush, total $3,250.",
+  "from": "maya-cron/draft-harbor"
+ },
+ {
+  "text": "From now on, put anything from my staff in the morning brief under its own heading: Team.",
+  "from": "maya-cron/brief-format"
+ },
+ {
+  "text": "Draft a reply to Nguyen with our standard package: $2,400 for 10 tables of centerpieces, +$180 per additional table. Note bridal party flowers are quoted separately.",
+  "from": "maya-cron/draft-nguyen"
+ },
+ {
+  "text": "What did I quote the Nguyens?",
+  "from": "maya-cron/ask-nguyen"
+ },
+ {
+  "text": "When does Dana need the Q3 receipts by?",
+  "from": "maya-cron/ask-dana"
+ },
+ {
+  "text": "What happened with Bloomfield’s rose prices over the last two weeks?",
+  "from": "maya-cron/ask-prices"
+ },
+ {
+  "text": "What still needs my attention this coming week?",
+  "from": "maya-cron/wrap-up"
+ },
+ {
+  "text": "Set me up with a short weekday 8:00 AM brief of anything new that needs me, sorted most important first. Put wedding inquiries at the top.",
+  "from": "maya-mwa/setup-brief"
+ },
+ {
+  "text": "Set a daily check for 7:00 AM on https://bloomfield-wholesale.example/prices. Alert me only if standard rose pricing changes. No message if there’s no change.",
+  "from": "maya-mwa/setup-watch"
+ },
+ {
+  "text": "Set a daily 9:00 AM check on https://billing.okaforfloral.example/invoices. If any invoice is unpaid and 3+ days past due, draft a short polite payment reminder to that client for me to review. Never send anything.",
+  "from": "maya-mwa/setup-invoices"
+ },
+ {
+  "text": "Set quiet hours for me: no messages before 7:00 AM or after 9:00 PM.",
+  "from": "maya-mwa/setup-quiet"
+ },
+ {
+  "text": "Set two reminders for me: Thursday at 10:00 AM to call Harbor Hotel about the centerpieces, and Friday at 4:00 PM to order ribbon.",
+  "from": "maya-mwa/two-reminders"
+ },
+ {
+  "text": "How many tables does Harbor Hotel need centerpieces for, and what budget did they give?",
+  "from": "maya-mwa/ask-harbor"
+ },
+ {
+  "text": "Draft a reply to Jenna at Harbor Hotel confirming the gala centerpieces: 22 low arrangements in white and blush for $3,250 total.",
+  "from": "maya-mwa/draft-harbor"
+ },
+ {
+  "text": "Yes — use 22 low arrangements in white and blush for $3,250 total.",
+  "from": "maya-mwa/draft-harbor/follow-up"
+ },
+ {
+  "text": "Got it. From now on, morning brief format should have a separate heading: Team, with anything from staff listed there.",
+  "from": "maya-mwa/brief-format"
+ },
+ {
+  "text": "Draft reply to Aisha Nguyen:\n\nHi Aisha,\n\nThanks so much for reaching out, and congratulations. I’d love to help with your June 12, 2027 wedding at Rosecliff.\n\nFor centerpieces, our standard package is $2,400 for 10 tables. Any additional tables are $180 each. Bridal party flowers are quoted separately based on what you want included.\n\nIf you share your estimated table count and bridal party details, I can put together a full quote for you.\n\nBest,  \nMaya  \nOkafor Floral & Events",
+  "from": "maya-mwa/draft-nguyen"
+ },
+ {
+  "text": "Can you check when Dana needs the Q3 receipts by?",
+  "from": "maya-mwa/ask-dana"
+ },
+ {
+  "text": "What happened with Bloomfield’s rose prices over the last 2 weeks?",
+  "from": "maya-mwa/ask-prices"
+ },
+ {
+  "text": "Good morning. Set a weekday 8:00 AM brief for me: what came in that needs me, ranked most important first, with wedding inquiries always at the top.",
+  "from": "maya-mwa-nomem/setup-brief"
+ },
+ {
+  "text": "Set a daily 7:00 AM check on Bloomfield Wholesale’s price page: https://bloomfield-wholesale.example/prices. Only notify me if the standard rose price changes. No message if it’s unchanged.",
+  "from": "maya-mwa-nomem/setup-watch"
+ },
+ {
+  "text": "Set a daily 9:00 AM check of https://billing.okaforfloral.example/invoices.\n\nIf any invoice is 3+ days past due and still unpaid, draft a short polite payment reminder to that client for me to review.\n\nDo not send anything automatically.",
+  "from": "maya-mwa-nomem/setup-invoices"
+ },
+ {
+  "text": "Don’t message me before 7:00 AM or after 9:00 PM.",
+  "from": "maya-mwa-nomem/setup-quiet"
+ },
+ {
+  "text": "Set 2 reminders: Thu at 10:00 AM call Harbor Hotel about the centerpieces, and Fri at 4:00 PM order ribbon.",
+  "from": "maya-mwa-nomem/two-reminders"
+ },
+ {
+  "text": "How many tables did Harbor Hotel need centerpieces for, and what was their budget?",
+  "from": "maya-mwa-nomem/ask-harbor"
+ },
+ {
+  "text": "From now on, put anything from my staff in its own heading: Team.",
+  "from": "maya-mwa-nomem/brief-format"
+ },
+ {
+  "text": "Draft a reply to Aisha Nguyen. Use our standard package: $2,400 for up to 10 tables of centerpieces, +$180 per additional table. Bridal party flowers are quoted separately. Keep it warm and professional.",
+  "from": "maya-mwa-nomem/draft-nguyen"
+ },
+ {
+  "text": "Just mention the centerpiece package and add-on rate. No sample total.",
+  "from": "maya-mwa-nomem/draft-nguyen/follow-up"
+ },
+ {
+  "text": "yes",
+  "from": "maya-mwa-nomem/draft-nguyen/follow-up"
+ },
+ {
+  "text": "Check the Nguyen wedding email thread from this week.",
+  "from": "maya-mwa-nomem/ask-nguyen/follow-up"
+ },
+ {
+  "text": "Draft an email to my accountant asking when they need the Q3 receipts by.",
+  "from": "maya-mwa-nomem/ask-dana"
+ },
+ {
+  "text": "Can you send me a short plan every morning at 7:00 with:\n- today’s appointments\n- bills due this week\n- anything for the kids’ school\n\nKeep it to 5 bullets max.",
+  "from": "sam-cron/setup-plan"
+ },
+ {
+  "text": "Also always warn me before anything auto-renews or is about to charge my card.",
+  "from": "sam-cron/setup-renewals"
+ },
+ {
+  "text": "Don’t message me between 10pm and 6am. I work some night shifts.",
+  "from": "sam-cron/setup-quiet"
+ },
+ {
+  "text": "Set a daily 6:00 PM check of this status page for my Denver flight and only alert me if there’s any change: https://atlanticair.example/status/482-2026-11-13",
+  "from": "sam-cron/setup-flight"
+ },
+ {
+  "text": "Set 2 reminders: Thu at 7:00 PM to sign Lily’s permission slip, and Fri Nov 13 to pick up the cake for Jess’s birthday dinner.",
+  "from": "sam-cron/two-reminders"
+ },
+ {
+  "text": "Can you check Lily’s field trip notice and tell me the fee amount and when the permission slip is due?",
+  "from": "sam-cron/ask-slip"
+ },
+ {
+  "text": "Morning plan is too long. From now on keep it to 3 bullets max.",
+  "from": "sam-cron/plan-format"
+ },
+ {
+  "text": "Draft an email to Ms. Alvarez (k.alvarez@brookside.example) saying Lily will miss school Friday, Nov 13 for a family trip.",
+  "from": "sam-cron/draft-teacher"
+ },
+ {
+  "text": "When is Max’s dentist appointment?",
+  "from": "sam-cron/ask-dentist"
+ },
+ {
+  "text": "what time does my flight leave tomorrow?",
+  "from": "sam-cron/ask-flight"
+ },
+ {
+  "text": "What bills or renewals are coming up in the next 2 weeks? And did the electric bill get sorted?",
+  "from": "sam-cron/ask-bills"
+ },
+ {
+  "text": "What should I keep an eye on this coming week?",
+  "from": "sam-cron/wrap-up"
+ },
+ {
+  "text": "Starting tomorrow, send me a short plan every morning at 7:00 with:\n- today’s appointments\n- bills due this week\n- anything for the kids’ school\n\nMax 5 bullets.",
+  "from": "sam-mwa/setup-plan"
+ },
+ {
+  "text": "Also, always give me a heads-up before anything auto-renews or is about to charge my card.",
+  "from": "sam-mwa/setup-renewals"
+ },
+ {
+  "text": "Please don’t message me between 10pm and 6am. I work some nights.",
+  "from": "sam-mwa/setup-quiet"
+ },
+ {
+  "text": "Set a daily check for 6:00 PM on the Atlantic Air status page for my Denver flight: https://atlanticair.example/status/482-2026-11-13. Only alert me if the status changes.",
+  "from": "sam-mwa/setup-flight"
+ },
+ {
+  "text": "Set 2 reminders: Thursday at 7:00 PM to sign Lily’s permission slip, and Friday Nov 13 to pick up the cake for Jess’s birthday dinner.",
+  "from": "sam-mwa/two-reminders"
+ },
+ {
+  "text": "Can you check Lily’s zoo field trip details and tell me the fee amount and the permission slip due date?",
+  "from": "sam-mwa/ask-slip"
+ },
+ {
+  "text": "Morning plan’s too long. From now on keep it to 3 bullets max.",
+  "from": "sam-mwa/plan-format"
+ },
+ {
+  "text": "Draft an email to Ms. Alvarez (k.alvarez@brookside.example) saying Lily will miss school on Fri Nov 13 for a family trip. Keep it polite and short.",
+  "from": "sam-mwa/draft-teacher"
+ },
+ {
+  "text": "When’s Max’s dentist appointment today?",
+  "from": "sam-mwa/ask-dentist"
+ },
+ {
+  "text": "What bills/renewals are coming up in the next 2 weeks? And did the electric bill get sorted?",
+  "from": "sam-mwa/ask-bills"
+ },
+ {
+  "text": "Good morning—set me up with a short daily plan at 7:00 every morning: today’s appointments, bills due this week, and anything for the kids’ school. Keep it to 5 bullets max.",
+  "from": "sam-mwa-nomem/setup-plan"
+ },
+ {
+  "text": "Also, always warn me before anything auto-renews or is about to charge my card.",
+  "from": "sam-mwa-nomem/setup-renewals"
+ },
+ {
+  "text": "Don’t message me between 10pm and 6am. I work nights sometimes.",
+  "from": "sam-mwa-nomem/setup-quiet"
+ },
+ {
+  "text": "Set a daily check at 6pm for this: https://atlanticair.example/status/482-2026-11-13. Only message me if the status changes.",
+  "from": "sam-mwa-nomem/setup-flight"
+ },
+ {
+  "text": "Set 2 reminders: Thursday at 7:00 PM to sign Lily’s permission slip, and on Friday the 13th to pick up the cake for Jess’s birthday dinner.",
+  "from": "sam-mwa-nomem/two-reminders"
+ },
+ {
+  "text": "How much is Lily’s field trip fee again, and when is the permission slip due?",
+  "from": "sam-mwa-nomem/ask-slip"
+ },
+ {
+  "text": "Draft an email to Ms. Alvarez (k.alvarez@brookside.example) saying Lily will miss school on Friday, Nov 13 for a family trip. Ask if there’s any classwork she should do ahead of time or make up after.",
+  "from": "sam-mwa-nomem/draft-teacher"
+ },
+ {
+  "text": "What time is Max’s dentist appointment today?",
+  "from": "sam-mwa-nomem/ask-dentist"
+ },
+ {
+  "text": "Quick check: what bills/renewals are coming up in the next 2 weeks? And did the electric bill get sorted?",
+  "from": "sam-mwa-nomem/ask-bills"
+ },
+ {
+  "text": "What should I keep an eye on this week?",
+  "from": "sam-mwa-nomem/wrap-up"
+ }
+]

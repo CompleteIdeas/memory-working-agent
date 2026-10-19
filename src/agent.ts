@@ -24,6 +24,7 @@ import type { Memory, RecalledMemory, TrustTier } from './awm.js';
 import { isReservedConcept, unreservedConcept, isStoreConcept } from './reserved-concept.js';
 import { effectOf, isSensitive, classifyTool, buildDoneReport, checkTripwires, readsUntrustedContent, markToolOutput, newFenceCode, outputSource } from './tools/governance.js';
 import { unbackedClaims, unbackedNote, unbackedNudge, asksForLater, type ClaimKind } from './claim-check.js';
+import { intentClassifier, type IntentClassifier, type RequestIntent } from './request-intent.js';
 import { expectedJobCount, ampmMismatch, clock12, friendlySchedule, friendlyWhen, unreadSources, asksToChangeJob, parseDaysArg, nextDailyDue } from './schedule-request.js';
 import { lessonJudge, judgeLesson, lessonDisposition, LESSON_PROMPT_RULE, MAX_LESSON_CHARS } from './lesson-gate.js';
 import { COMPACTION_MODE, summaryCompaction, type Compaction } from './compaction.js';
@@ -457,6 +458,9 @@ export async function runAgent(opts: {
   /** BL-44: the person's own words that set the job up, and what its last good run reported. */
   jobRequest?: string;
   jobLastRun?: import('./awm.js').JobLastRun;
+  /** BL-52: reads what the person's message asks for (later work, job count, reminders, a job correction).
+   *  Omitted: MWA_INTENT decides; null: off, the patterns decide. */
+  intent?: IntentClassifier | null;
   /** extra folders the file tools may touch for THIS run only, on top of the sandbox + granted
    *  roots. The scheduler passes the folder the task was created in, so an instruction that baked an
    *  absolute path in at schedule time still resolves when it fires in a fresh per-fire folder. */
@@ -538,7 +542,13 @@ export async function runAgent(opts: {
   // Not a request to set up later work: it needs a `schedule` call, and the fired job plans its own work if
   // it must. Planned, BL-40's 3-line "set a daily 9:00 check of the invoices…" became a coding project
   // (write the check logic, test it, dry-run it) and the job itself was never created (BL-43).
-  if (!opts.subRun && harnessOn && process.env.MWA_PLAN !== 'off' && (opts.plan ?? (isComplexTask(instruction) && (opts.jobId !== undefined || !asksForLater(opts.userMessage ?? instruction))))) {
+  // BL-52: the person's message, read by the classifier when one is set — started now, awaited only where a
+  // scheduling check needs its answer, so a model's latency mostly hides behind the run's first step.
+  const intentMsg = opts.userMessage ?? instruction;
+  const classify = opts.jobId === undefined && !opts.planStep && !opts.subRun ? (opts.intent !== undefined ? opts.intent : intentClassifier()) : null;
+  const intentP: Promise<RequestIntent | null> | null = classify ? classify(intentMsg) : null;
+  const laterRequest = async () => (intentP ? (await intentP)?.later : undefined) ?? asksForLater(intentMsg);
+  if (!opts.subRun && harnessOn && process.env.MWA_PLAN !== 'off' && (opts.plan ?? (isComplexTask(instruction) && (opts.jobId !== undefined || !(await laterRequest()))))) {
     return runPlanned(opts);
   }
 
@@ -864,7 +874,15 @@ export async function runAgent(opts: {
   // claims with no file. Conservative: only filenames in a produce-context.
   // A request to set up LATER work (BL-19). Not on a job's own fire (jobId) or one step of a plan (each
   // step carries the whole message: the review saw a 2-step plan make two daily jobs).
-  const forLater = !opts.jobId && !opts.planStep && asksForLater(opts.userMessage ?? instruction);
+  let forLater = !opts.jobId && !opts.planStep && asksForLater(intentMsg);
+  // BL-52: once the classifier has answered (or failed), its reading replaces the patterns' for this run.
+  let intent = (intentP ? undefined : null) as RequestIntent | null | undefined; // set in settleIntent: no narrowing
+  const settleIntent = async () => {
+    if (intent !== undefined) return;
+    intent = await intentP;
+    if (intent) forLater = !opts.jobId && !opts.planStep && intent.later;
+  };
+  const wantedJobs = () => (intent ? (intent.later ? intent.jobs : 0) : expectedJobCount(intentMsg));
   const expectedOutputs = (() => {
     const ext ='(?:md|json|jsonl|csv|html?|txt|js|mjs|cjs|ts|tsx|py|css|ya?ml|xml|svg)';
     const fileRe = new RegExp(`\\b([\\w][\\w.-]*\\.${ext})\\b`, 'gi');
@@ -981,6 +999,7 @@ export async function runAgent(opts: {
       continue;
     }
 
+    if (action.action === 'done' || action.action === 'schedule' || action.action === 'schedule_list') await settleIntent();
     toolsUsed.add(action.action); // track what the agent actually invoked (for the substance gate)
     if (actionTrail.length < 20) actionTrail.push(action.action); // names only, in order, for the run log (BL-19)
     // "Two empty recalls in a row" means in a row: any other action in between starts the count over.
@@ -1044,7 +1063,7 @@ export async function runAgent(opts: {
       // a person present in a clean conversation (schedule_update refuses otherwise) who has a job it could be.
       if (opts.interactive === true && opts.jobId === undefined && changeRejections < 1 && !sawUntrustedRead && opts.tools?.has('schedule_update')
           && ![...toolsUsed].some((t) => t === 'schedule' || t === 'schedule_update' || t === 'schedule_cancel')
-          && asksToChangeJob(opts.userMessage ?? instruction) && memory.pendingScheduled) {
+          && (intent ? intent.category === 'change_job' : asksToChangeJob(intentMsg)) && memory.pendingScheduled) {
         const me = normalizePersonId(opts.personId);
         const jobs = (await memory.pendingScheduled()).filter((t) => normalizePersonId(t.person) === me && !t.resumeAttempt);
         if (jobs.length) {
@@ -1056,7 +1075,7 @@ export async function runAgent(opts: {
       }
       // BL-43: "Set two reminders" with one set. Once — the model may have a reason, and must then say it.
       if (opts.jobId === undefined && !opts.planStep && countRejections < 1 && jobsCreated.length > 0) {
-        const wanted = expectedJobCount(opts.userMessage ?? instruction);
+        const wanted = wantedJobs();
         if (wanted > jobsCreated.length) {
           countRejections++; gatesFired.push('job-count'); consecNoProgress = 0;
           nudge = `The person asked for ${wanted}; this run has set ${jobsCreated.length}: ${jobsCreated.map((j) => `"${j.instruction.slice(0, 50)}" (${friendlySchedule(j.dueMs, j.recur)})`).join('; ')}. Call schedule for the rest now — pick a sensible time if they gave none, and say which — or say plainly in your answer which one is not set and why.`;
@@ -1356,7 +1375,11 @@ export async function runAgent(opts: {
       // message). A message asking for a reminder with no kind given is asked once which it is: guessing from
       // the instruction's first verb turned "Tell me the weather" into a reminder and "Email Bob" into a task.
       const personClean = opts.interactive === true && opts.jobId === undefined && !sawUntrustedRead && !sawLocalRead;
-      if (action.kind === undefined && personClean && kindRejections < 1 && /\bremind(?:er|ers)?\b/i.test(personWords)) {
+      // With a classifier's reading the kind is settled when it is clear-cut — every job asked for is a reminder,
+      // or none is — and asked only when the message mixes them (BL-52).
+      const clearKind = intent && intent.later ? (intent.reminders >= intent.jobs ? 'reminder' : intent.reminders === 0 ? 'task' : undefined) : undefined;
+      if (action.kind === undefined && clearKind) action.kind = clearKind;
+      if (action.kind === undefined && personClean && kindRejections < 1 && (intent ? intent.reminders > 0 : /\bremind(?:er|ers)?\b/i.test(personWords))) {
         kindRejections++; consecNoProgress++; gatesFired.push('kind'); lastSig = '';
         history.push('(schedule: reminder or task? asked once)');
         nudge = 'Say which this is with kind: "reminder" if the person will do it themselves and just wants to be told at that time (they get your instruction text word for word), or "task" if you are to do the work then and report. Call schedule again with kind.';
@@ -1398,7 +1421,7 @@ export async function runAgent(opts: {
       // stopping early loses one ("Remind me Thursday at 10 and Friday at 4" counts as nothing in words). It
       // still ends here when the message named a count and all are set, and for one step of a plan (the
       // plan owns the rest). A job's own fire goes on to finish its work.
-      const wanted = expectedJobCount(personWords);
+      const wanted = wantedJobs();
       if (opts.planStep || (opts.jobId === undefined && wanted > 0 && jobsCreated.length >= wanted)) { reason = 'done'; break; }
       consecNoProgress = 0;
       nudge = opts.jobId !== undefined

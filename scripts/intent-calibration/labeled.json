@@ -1,0 +1,905 @@
+[
+ {
+  "text": "Morning—set me a weekday 8:00 AM brief of new emails that need me, ranked most important first. Put wedding inquiries at the top.",
+  "from": "maya-cron/setup-brief",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Set a daily 7:00 AM check on Bloomfield Wholesale’s price page: https://bloomfield-wholesale.example/prices. Only alert me if standard rose pricing changes. No message if it doesn’t.",
+  "from": "maya-cron/setup-watch",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Set a daily 9:00 AM check on https://billing.okaforfloral.example/invoices. If any invoice is unpaid and 3+ days past due, draft a short polite payment reminder to that client for me to review. Never send it.",
+  "from": "maya-cron/setup-invoices",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Set quiet hours: don’t message me before 7:00 AM or after 9:00 PM.",
+  "from": "maya-cron/setup-quiet",
+  "category": "setting",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Set two reminders: Thursday at 10:00 AM to call Harbor Hotel about the centerpieces, and Friday at 4:00 PM to order ribbon.",
+  "from": "maya-cron/two-reminders",
+  "category": "later",
+  "jobs": 2,
+  "reminders": 2
+ },
+ {
+  "text": "Can you check how many tables Harbor Hotel needs centerpieces for, and what their budget was?",
+  "from": "maya-cron/ask-harbor",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Draft a reply to Jenna confirming the gala centerpieces: 22 low arrangements in white and blush, total $3,250.",
+  "from": "maya-cron/draft-harbor",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "From now on, put anything from my staff in the morning brief under its own heading: Team.",
+  "from": "maya-cron/brief-format",
+  "category": "change_job",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Draft a reply to Nguyen with our standard package: $2,400 for 10 tables of centerpieces, +$180 per additional table. Note bridal party flowers are quoted separately.",
+  "from": "maya-cron/draft-nguyen",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "What did I quote the Nguyens?",
+  "from": "maya-cron/ask-nguyen",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "When does Dana need the Q3 receipts by?",
+  "from": "maya-cron/ask-dana",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "What happened with Bloomfield’s rose prices over the last two weeks?",
+  "from": "maya-cron/ask-prices",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "What still needs my attention this coming week?",
+  "from": "maya-cron/wrap-up",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Set me up with a short weekday 8:00 AM brief of anything new that needs me, sorted most important first. Put wedding inquiries at the top.",
+  "from": "maya-mwa/setup-brief",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Set a daily check for 7:00 AM on https://bloomfield-wholesale.example/prices. Alert me only if standard rose pricing changes. No message if there’s no change.",
+  "from": "maya-mwa/setup-watch",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Set a daily 9:00 AM check on https://billing.okaforfloral.example/invoices. If any invoice is unpaid and 3+ days past due, draft a short polite payment reminder to that client for me to review. Never send anything.",
+  "from": "maya-mwa/setup-invoices",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Set quiet hours for me: no messages before 7:00 AM or after 9:00 PM.",
+  "from": "maya-mwa/setup-quiet",
+  "category": "setting",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Set two reminders for me: Thursday at 10:00 AM to call Harbor Hotel about the centerpieces, and Friday at 4:00 PM to order ribbon.",
+  "from": "maya-mwa/two-reminders",
+  "category": "later",
+  "jobs": 2,
+  "reminders": 2
+ },
+ {
+  "text": "How many tables does Harbor Hotel need centerpieces for, and what budget did they give?",
+  "from": "maya-mwa/ask-harbor",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Draft a reply to Jenna at Harbor Hotel confirming the gala centerpieces: 22 low arrangements in white and blush for $3,250 total.",
+  "from": "maya-mwa/draft-harbor",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Yes — use 22 low arrangements in white and blush for $3,250 total.",
+  "from": "maya-mwa/draft-harbor/follow-up",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Got it. From now on, morning brief format should have a separate heading: Team, with anything from staff listed there.",
+  "from": "maya-mwa/brief-format",
+  "category": "change_job",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Draft reply to Aisha Nguyen:\n\nHi Aisha,\n\nThanks so much for reaching out, and congratulations. I’d love to help with your June 12, 2027 wedding at Rosecliff.\n\nFor centerpieces, our standard package is $2,400 for 10 tables. Any additional tables are $180 each. Bridal party flowers are quoted separately based on what you want included.\n\nIf you share your estimated table count and bridal party details, I can put together a full quote for you.\n\nBest,  \nMaya  \nOkafor Floral & Events",
+  "from": "maya-mwa/draft-nguyen",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Can you check when Dana needs the Q3 receipts by?",
+  "from": "maya-mwa/ask-dana",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "What happened with Bloomfield’s rose prices over the last 2 weeks?",
+  "from": "maya-mwa/ask-prices",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Good morning. Set a weekday 8:00 AM brief for me: what came in that needs me, ranked most important first, with wedding inquiries always at the top.",
+  "from": "maya-mwa-nomem/setup-brief",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Set a daily 7:00 AM check on Bloomfield Wholesale’s price page: https://bloomfield-wholesale.example/prices. Only notify me if the standard rose price changes. No message if it’s unchanged.",
+  "from": "maya-mwa-nomem/setup-watch",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Set a daily 9:00 AM check of https://billing.okaforfloral.example/invoices.\n\nIf any invoice is 3+ days past due and still unpaid, draft a short polite payment reminder to that client for me to review.\n\nDo not send anything automatically.",
+  "from": "maya-mwa-nomem/setup-invoices",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Don’t message me before 7:00 AM or after 9:00 PM.",
+  "from": "maya-mwa-nomem/setup-quiet",
+  "category": "setting",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Set 2 reminders: Thu at 10:00 AM call Harbor Hotel about the centerpieces, and Fri at 4:00 PM order ribbon.",
+  "from": "maya-mwa-nomem/two-reminders",
+  "category": "later",
+  "jobs": 2,
+  "reminders": 2
+ },
+ {
+  "text": "How many tables did Harbor Hotel need centerpieces for, and what was their budget?",
+  "from": "maya-mwa-nomem/ask-harbor",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "From now on, put anything from my staff in its own heading: Team.",
+  "from": "maya-mwa-nomem/brief-format",
+  "category": "change_job",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Draft a reply to Aisha Nguyen. Use our standard package: $2,400 for up to 10 tables of centerpieces, +$180 per additional table. Bridal party flowers are quoted separately. Keep it warm and professional.",
+  "from": "maya-mwa-nomem/draft-nguyen",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Just mention the centerpiece package and add-on rate. No sample total.",
+  "from": "maya-mwa-nomem/draft-nguyen/follow-up",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "yes",
+  "from": "maya-mwa-nomem/draft-nguyen/follow-up",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Check the Nguyen wedding email thread from this week.",
+  "from": "maya-mwa-nomem/ask-nguyen/follow-up",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Draft an email to my accountant asking when they need the Q3 receipts by.",
+  "from": "maya-mwa-nomem/ask-dana",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Can you send me a short plan every morning at 7:00 with:\n- today’s appointments\n- bills due this week\n- anything for the kids’ school\n\nKeep it to 5 bullets max.",
+  "from": "sam-cron/setup-plan",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Also always warn me before anything auto-renews or is about to charge my card.",
+  "from": "sam-cron/setup-renewals",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Don’t message me between 10pm and 6am. I work some night shifts.",
+  "from": "sam-cron/setup-quiet",
+  "category": "setting",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Set a daily 6:00 PM check of this status page for my Denver flight and only alert me if there’s any change: https://atlanticair.example/status/482-2026-11-13",
+  "from": "sam-cron/setup-flight",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Set 2 reminders: Thu at 7:00 PM to sign Lily’s permission slip, and Fri Nov 13 to pick up the cake for Jess’s birthday dinner.",
+  "from": "sam-cron/two-reminders",
+  "category": "later",
+  "jobs": 2,
+  "reminders": 2
+ },
+ {
+  "text": "Can you check Lily’s field trip notice and tell me the fee amount and when the permission slip is due?",
+  "from": "sam-cron/ask-slip",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Morning plan is too long. From now on keep it to 3 bullets max.",
+  "from": "sam-cron/plan-format",
+  "category": "change_job",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Draft an email to Ms. Alvarez (k.alvarez@brookside.example) saying Lily will miss school Friday, Nov 13 for a family trip.",
+  "from": "sam-cron/draft-teacher",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "When is Max’s dentist appointment?",
+  "from": "sam-cron/ask-dentist",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "what time does my flight leave tomorrow?",
+  "from": "sam-cron/ask-flight",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "What bills or renewals are coming up in the next 2 weeks? And did the electric bill get sorted?",
+  "from": "sam-cron/ask-bills",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "What should I keep an eye on this coming week?",
+  "from": "sam-cron/wrap-up",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Starting tomorrow, send me a short plan every morning at 7:00 with:\n- today’s appointments\n- bills due this week\n- anything for the kids’ school\n\nMax 5 bullets.",
+  "from": "sam-mwa/setup-plan",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Also, always give me a heads-up before anything auto-renews or is about to charge my card.",
+  "from": "sam-mwa/setup-renewals",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Please don’t message me between 10pm and 6am. I work some nights.",
+  "from": "sam-mwa/setup-quiet",
+  "category": "setting",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Set a daily check for 6:00 PM on the Atlantic Air status page for my Denver flight: https://atlanticair.example/status/482-2026-11-13. Only alert me if the status changes.",
+  "from": "sam-mwa/setup-flight",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Set 2 reminders: Thursday at 7:00 PM to sign Lily’s permission slip, and Friday Nov 13 to pick up the cake for Jess’s birthday dinner.",
+  "from": "sam-mwa/two-reminders",
+  "category": "later",
+  "jobs": 2,
+  "reminders": 2
+ },
+ {
+  "text": "Can you check Lily’s zoo field trip details and tell me the fee amount and the permission slip due date?",
+  "from": "sam-mwa/ask-slip",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Morning plan’s too long. From now on keep it to 3 bullets max.",
+  "from": "sam-mwa/plan-format",
+  "category": "change_job",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Draft an email to Ms. Alvarez (k.alvarez@brookside.example) saying Lily will miss school on Fri Nov 13 for a family trip. Keep it polite and short.",
+  "from": "sam-mwa/draft-teacher",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "When’s Max’s dentist appointment today?",
+  "from": "sam-mwa/ask-dentist",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "What bills/renewals are coming up in the next 2 weeks? And did the electric bill get sorted?",
+  "from": "sam-mwa/ask-bills",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Good morning—set me up with a short daily plan at 7:00 every morning: today’s appointments, bills due this week, and anything for the kids’ school. Keep it to 5 bullets max.",
+  "from": "sam-mwa-nomem/setup-plan",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Also, always warn me before anything auto-renews or is about to charge my card.",
+  "from": "sam-mwa-nomem/setup-renewals",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Don’t message me between 10pm and 6am. I work nights sometimes.",
+  "from": "sam-mwa-nomem/setup-quiet",
+  "category": "setting",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Set a daily check at 6pm for this: https://atlanticair.example/status/482-2026-11-13. Only message me if the status changes.",
+  "from": "sam-mwa-nomem/setup-flight",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Set 2 reminders: Thursday at 7:00 PM to sign Lily’s permission slip, and on Friday the 13th to pick up the cake for Jess’s birthday dinner.",
+  "from": "sam-mwa-nomem/two-reminders",
+  "category": "later",
+  "jobs": 2,
+  "reminders": 2
+ },
+ {
+  "text": "How much is Lily’s field trip fee again, and when is the permission slip due?",
+  "from": "sam-mwa-nomem/ask-slip",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Draft an email to Ms. Alvarez (k.alvarez@brookside.example) saying Lily will miss school on Friday, Nov 13 for a family trip. Ask if there’s any classwork she should do ahead of time or make up after.",
+  "from": "sam-mwa-nomem/draft-teacher",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "What time is Max’s dentist appointment today?",
+  "from": "sam-mwa-nomem/ask-dentist",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Quick check: what bills/renewals are coming up in the next 2 weeks? And did the electric bill get sorted?",
+  "from": "sam-mwa-nomem/ask-bills",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "What should I keep an eye on this week?",
+  "from": "sam-mwa-nomem/wrap-up",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "In 1 minute, write a file called e2e-x-1.txt whose contents are exactly OK. Schedule it to run later — do not create the file now.",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Remind me tomorrow at 9am to call the bank",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 1
+ },
+ {
+  "text": "Every morning, summarize my inbox",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Schedule a weekly report for Mondays",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Remind me to call Dana in 2 hours",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 1
+ },
+ {
+  "text": "Every day at 9, delete old files from Downloads",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Remind me to stop by the store at 5",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 1
+ },
+ {
+  "text": "Remind me every hour to stretch",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 1
+ },
+ {
+  "text": "Remind me in an hour to call Sam",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 1
+ },
+ {
+  "text": "I'd like you to schedule it in 5 minutes, that's all",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Set a reminder for 5pm to call Dana",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 1
+ },
+ {
+  "text": "What do I have scheduled tomorrow?",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Write notes.md with the summary",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Did the reminder run?",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Summarize this later if you can",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Remind me what we decided about the venue",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Remind me how the backup script works",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Summarize the schedule for the conference",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Read schedule.csv and total the hours",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Write the shift schedule to schedule.md",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Summarize this email: 'The review moved to Thursday at 3pm, please confirm.'",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Draft a reply confirming our call at 2pm",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Cancel the reminder for tomorrow at 9",
+  "from": "written",
+  "category": "change_job",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Stop the every morning inbox summary",
+  "from": "written",
+  "category": "change_job",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Sum every 5 rows of data.csv",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Look at the schedule my coach made and list conflicts",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Email Dana my schedule this week",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Refactor utils.ts and tell me when you are done",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Tell me when the Battle of Hastings happened",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Tell me when the store closes today",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Count errors for each hour in server.log",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Make a plan for Thursday's board meeting",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Create a daily meal plan as meal-plan.md",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Create a weekly report template",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Make a list of my Google alerts",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Add a section about smoke alarms to the safety doc",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Create a summary of the 9:30 standup notes",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Tell me if anything changed in this diff",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Tell me if the meeting was cancelled",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Watch for typos while you edit",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Keep an eye on the tone",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Make a watch list of these five stocks",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Email me before you send anything",
+  "from": "written",
+  "category": "setting",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Keep the morning plan to 3 bullets from now on.",
+  "from": "written",
+  "category": "change_job",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Can you keep the plan to three bullets?",
+  "from": "written",
+  "category": "change_job",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Put wedding inquiries first in the daily brief.",
+  "from": "written",
+  "category": "change_job",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Going forward, skip the weather in my morning summary.",
+  "from": "written",
+  "category": "change_job",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Move my morning brief to 7:30.",
+  "from": "written",
+  "category": "change_job",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Summarize this report",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "What was in this morning's brief?",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Add a heading to notes.md",
+  "from": "written",
+  "category": "now",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "From now on call me Rob",
+  "from": "written",
+  "category": "setting",
+  "jobs": 0,
+  "reminders": 0
+ },
+ {
+  "text": "Remind me Thursday at 10 to call the bank and Friday at 4 to order ribbon",
+  "from": "written",
+  "category": "later",
+  "jobs": 2,
+  "reminders": 2
+ },
+ {
+  "text": "Every weekday at 8 send me my calendar, and remind me Friday to call mom",
+  "from": "written",
+  "category": "later",
+  "jobs": 2,
+  "reminders": 1
+ },
+ {
+  "text": "Summarize my inbox now and every morning at 8",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Tell me the moment the package shows delivered",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Text me if the flight gets delayed",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Can you check the invoices every Monday?",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 0
+ },
+ {
+  "text": "Ping me in 20 minutes to take the bread out",
+  "from": "written",
+  "category": "later",
+  "jobs": 1,
+  "reminders": 1
+ },
+ {
+  "text": "Set four reminders: 9am stretch, noon lunch, 3pm walk, 6pm call mom",
+  "from": "written",
+  "category": "later",
+  "jobs": 4,
+  "reminders": 4
+ }
+]
