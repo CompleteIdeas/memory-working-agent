@@ -472,6 +472,7 @@ export async function runAgent(opts: {
   // The done-gates that pushed back this run, in order — logged, because a push leaves no step behind and
   // a run log that shows "2 steps" can't otherwise say whether one fired (BL-19).
   const gatesFired: string[] = [];
+  const actionTrail: string[] = []; // every action the model took, by name — a push or a refused schedule leaves no other trace
   let verifyRejections = 0, verified = false; // verify-before-done: one numeric re-check, no spinning
   let substanceRejections = 0; // substance gate: one re-prompt on a fabricated/punted done
   const MAX_FETCH_FAILS = 2;
@@ -829,6 +830,7 @@ export async function runAgent(opts: {
     }
 
     toolsUsed.add(action.action); // track what the agent actually invoked (for the substance gate)
+    if (actionTrail.length < 20) actionTrail.push(action.action); // names only, in order, for the run log (BL-19)
     // "Two empty recalls in a row" means in a row: any other action in between starts the count over.
     if (action.action !== 'recall') emptyRecalls = 0;
 
@@ -1649,6 +1651,7 @@ export async function runAgent(opts: {
     ...(refusalLog.length ? { refusalLog } : {}),
     ...(claimedUnbacked.length ? { unbackedClaims: claimedUnbacked, claimCheck: claimMode } : {}),
     ...(gatesFired.length ? { gates: gatesFired } : {}),
+    ...(actionTrail.length ? { actions: actionTrail } : {}),
     learned: learnedFacts, skills: skillsDerived, questions: openQuestions, frictions: frictionsLearned, policies: policiesLearned, transitions: transitionsRecorded,
     durationMs: now() - start, costUsd: Number((brainCost + workerCost).toFixed(4)), summary: finalSummary.slice(0, 200),
   });
