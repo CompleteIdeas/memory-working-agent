@@ -20,7 +20,10 @@ function envFrom(file) {
   return out;
 }
 
-export async function makeCronArm({ worldFile, logFile, runLog, persona, envFile }) {
+// freshJobs (BL-53, arm C2 "cron-fresh"): a scheduled task runs with only its own instruction — no running
+// conversation — while chats keep the thread and the task's reply still joins it. Tests whether the plain loop's
+// invented details came from re-reading its own thread.
+export async function makeCronArm({ worldFile, logFile, runLog, persona, envFile, freshJobs = false }) {
   const { nowLine, parseLocalAt, localStamp } = await import('../src/agent.ts');
   const env = envFrom(envFile);
   const base = env.AZURE_GPT_BASE_URL, key = env.AZURE_GPT_API_KEY, model = env.AZURE_GPT_DEPLOYMENT || 'gpt-5-4-mini';
@@ -81,7 +84,8 @@ export async function makeCronArm({ worldFile, logFile, runLog, persona, envFile
 
   async function loop(input, label) {
     const t0 = Date.now(); let cost = 0; const used = [];
-    const msgs = [{ role: 'system', content: system() }, ...thread.slice(-THREAD_MAX), { role: 'user', content: input }];
+    const history = freshJobs && label.startsWith('job:') ? [] : thread.slice(-THREAD_MAX);
+    const msgs = [{ role: 'system', content: system() }, ...history, { role: 'user', content: input }];
     for (let step = 0; step < MAX_STEPS; step++) {
       const j = await call(msgs);
       cost += ((j.usage?.prompt_tokens ?? 0) * PRICE[0] + (j.usage?.completion_tokens ?? 0) * PRICE[1]) / 1_000_000;
@@ -106,7 +110,7 @@ export async function makeCronArm({ worldFile, logFile, runLog, persona, envFile
   }
 
   return {
-    name: 'cron',
+    name: freshJobs ? 'cron-fresh' : 'cron',
     async chat(_session, message) {
       const r = await loop(message, 'chat');
       thread.push({ role: 'user', content: message }, { role: 'assistant', content: r.reply });

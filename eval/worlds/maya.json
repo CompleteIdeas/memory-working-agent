@@ -169,6 +169,12 @@
   ],
   "turns": [
     {
+      "id": "TN1",
+      "at": "2026-11-02 06:58",
+      "session": "note-facts",
+      "intent": "Before anything else, mention in passing — just so it knows, nothing to do now — that your wholesale account number at Bloomfield Wholesale is BF-20417 and that your usual delivery driver is Marco Diaz. Don't repeat these later."
+    },
+    {
       "id": "T1",
       "at": "2026-11-02 07:00",
       "session": "setup-brief",
@@ -239,6 +245,18 @@
       "at": "2026-11-14 10:00",
       "session": "ask-prices",
       "intent": "Ask what happened with Bloomfield's rose prices over the last two weeks."
+    },
+    {
+      "id": "TN2",
+      "at": "2026-11-14 15:00",
+      "session": "ask-account",
+      "intent": "Ask what your Bloomfield Wholesale account number is. Don't give any hints."
+    },
+    {
+      "id": "TN3",
+      "at": "2026-11-15 12:00",
+      "session": "ask-driver",
+      "intent": "Ask who your usual delivery driver is. Don't give any hints."
     },
     {
       "id": "T13",
@@ -441,6 +459,22 @@
       "to": "2026-11-12 08:30",
       "rubric": "The morning brief has a separate heading called Team, and Leo's request to swap Saturday Nov 21 is under it.",
       "desc": "The Team-heading correction from Nov 9 still holds three days later."
+    },
+    {
+      "id": "R6",
+      "cat": "memory",
+      "type": "judge-reply",
+      "turn": "TN2",
+      "rubric": "Says the account number is BF-20417.",
+      "desc": "A fact said once on day 1, asked on day 13 (beyond every conversation window)."
+    },
+    {
+      "id": "R7",
+      "cat": "memory",
+      "type": "judge-reply",
+      "turn": "TN3",
+      "rubric": "Says the usual delivery driver is Marco (Marco Diaz).",
+      "desc": "A fact said once on day 1, asked on day 14 (beyond every conversation window)."
     },
     {
       "id": "X1",

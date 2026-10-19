@@ -11,12 +11,15 @@ import { mkdirSync, writeFileSync, appendFileSync, existsSync, rmSync, readFileS
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const { values: a } = parseArgs({ options: { world: { type: 'string' }, arm: { type: 'string' }, env: { type: 'string' }, until: { type: 'string' }, port: { type: 'string', default: '7811' }, out: { type: 'string', default: 'results/assessment' }, image: { type: 'string', default: 'mwa:dev' }, cap: { type: 'string', default: '12' } } });
+// --fair (BL-53): every arm in one conversation with the same window (MWA carries 30 turns, the plain loop 60
+// messages), scheduled results in it, and the request classifier on in the MWA arms.
+const { values: a } = parseArgs({ options: { world: { type: 'string' }, arm: { type: 'string' }, env: { type: 'string' }, until: { type: 'string' }, port: { type: 'string', default: '7811' }, out: { type: 'string', default: 'results/assessment' }, image: { type: 'string', default: 'mwa:dev' }, cap: { type: 'string', default: '12' }, fair: { type: 'boolean', default: false } } });
 const readCost = (f) => (existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter(Boolean).reduce((s, l) => { try { return s + Number(JSON.parse(l).costUsd ?? 0); } catch { return s; } }, 0) : 0);
 const here = dirname(fileURLToPath(import.meta.url));
-if (!['maya', 'sam'].includes(a.world) || !['mwa', 'mwa-nomem', 'cron'].includes(a.arm) || !a.env) {
-  console.error('usage: --world maya|sam --arm mwa|mwa-nomem|cron --env <file with AZURE_GPT_*>'); process.exit(2);
+if (!['maya', 'sam'].includes(a.world) || !['mwa', 'mwa-nomem', 'cron', 'cron-fresh'].includes(a.arm) || !a.env) {
+  console.error('usage: --world maya|sam --arm mwa|mwa-nomem|cron|cron-fresh --env <file with AZURE_GPT_*> [--fair]'); process.exit(2);
 }
+const isCron = a.arm === 'cron' || a.arm === 'cron-fresh';
 const worldFile = join(here, 'worlds', `${a.world}.json`);
 const rawWorld = JSON.parse(readFileSync(worldFile, 'utf8'));
 process.env.TZ = rawWorld.tz;
@@ -38,16 +41,16 @@ const log = (file, obj) => appendFileSync(join(outDir, file), JSON.stringify(obj
 const say = (m) => console.log(`[${stamp(Date.now())}] ${m}`);
 
 let arm;
-if (a.arm === 'cron') {
+if (isCron) {
   process.env.MWA_ENV_PATH = resolve(a.env);
   const cfg = join(outDir, 'cron.config.json');
   writeFileSync(cfg, JSON.stringify({ models: { fetch: 'azure:gpt-5-4-mini', reason: 'azure:gpt-5-4-mini' } }));
   process.env.MWA_CONFIG_PATH = cfg;
   const { makeCronArm } = await import('./cron-arm.mjs');
-  arm = await makeCronArm({ worldFile, logFile: join(outDir, 'world-log.jsonl'), runLog: join(outDir, 'runs.jsonl'), persona: world.persona, envFile: resolve(a.env) });
+  arm = await makeCronArm({ worldFile, logFile: join(outDir, 'world-log.jsonl'), runLog: join(outDir, 'runs.jsonl'), persona: world.persona, envFile: resolve(a.env), freshJobs: a.arm === 'cron-fresh' });
 } else {
   const { makeMwaArm } = await import('./mwa-arm.mjs');
-  arm = await makeMwaArm({ world, worldName: a.world, arm: a.arm, port: Number(a.port), envFile: resolve(a.env), evalDir: here, outDir, image: a.image });
+  arm = await makeMwaArm({ world, worldName: a.world, arm: a.arm, port: Number(a.port), envFile: resolve(a.env), evalDir: here, outDir, image: a.image, fair: a.fair });
 }
 
 async function setVirtual(ms) {
@@ -69,7 +72,7 @@ events.sort((x, y) => x.at - y.at);
 const seen = []; // what the person has been told: {vt, when, text}
 let deliveredCount = 0;
 async function refreshSeen() {
-  const ds = a.arm === 'cron' ? arm.deliveries() : await arm.deliveries();
+  const ds = isCron ? arm.deliveries() : await arm.deliveries();
   for (const d of ds.slice(deliveredCount)) seen.push({ vt: Number(d.ts), when: stamp(Number(d.ts)), text: String(d.summary ?? ''), source: 'job' });
   deliveredCount = ds.length;
 }
@@ -94,7 +97,7 @@ say(`start ${world.persona.name} / ${a.arm}`);
 const t0 = performance.now();
 
 while (true) {
-  const jobs = a.arm === 'cron' ? arm.dueJobs() : await arm.dueJobs();
+  const jobs = isCron ? arm.dueJobs() : await arm.dueJobs();
   const nextJob = jobs.length ? Math.min(...jobs.map((j) => j.due)) : Infinity;
   const nextEv = events.length ? events[0].at : Infinity;
   const t = Math.min(nextJob, nextEv);
@@ -104,7 +107,7 @@ while (true) {
   if (nextJob <= nextEv) {
     const due = jobs.filter((j) => j.due <= Date.now());
     say(`jobs due: ${due.map((j) => j.instruction.slice(0, 50)).join(' | ')}`);
-    if (a.arm === 'cron') await arm.fireDue();
+    if (isCron) await arm.fireDue();
     else {
       const n = await arm.waitFires(due.length, nextJob);
       if (n < 0) { say('  ! fires did not finish in 10 min'); log('harness.jsonl', { vt: Date.now(), issue: 'fire-timeout', due }); }
@@ -121,7 +124,9 @@ while (true) {
     const msg = await persona.personMessage(world, ev.turn, stamp(Date.now()), recent);
     say(`${ev.turn.id} person: ${msg}`);
     const exchange = [{ who: 'You', text: msg }];
-    let r = await arm.chat(ev.turn.session, msg);
+    // --fair: one conversation for every turn, as in a real chat app; otherwise one session per topic.
+    const session = a.fair ? 'chat' : ev.turn.session;
+    let r = await arm.chat(session, msg);
     say(`${ev.turn.id} assistant: ${r.reply.replace(/\s+/g, ' ').slice(0, 160)}`);
     log('transcript.jsonl', { vt: Date.now(), turn: ev.turn.id, session: ev.turn.session, who: 'person', text: msg });
     log('transcript.jsonl', { vt: Date.now(), turn: ev.turn.id, session: ev.turn.session, who: 'assistant', text: r.reply, tools: r.tools, asked: r.asked, costUsd: r.costUsd });
@@ -131,7 +136,7 @@ while (true) {
       const ans = await persona.personAnswer(world, ev.turn, stamp(Date.now()), exchange);
       if (!ans) break;
       say(`${ev.turn.id} person: ${ans}`);
-      r = await arm.chat(ev.turn.session, ans);
+      r = await arm.chat(session, ans);
       say(`${ev.turn.id} assistant: ${r.reply.replace(/\s+/g, ' ').slice(0, 160)}`);
       log('transcript.jsonl', { vt: Date.now(), turn: ev.turn.id, session: ev.turn.session, who: 'person', text: ans, followUp: k + 1 });
       log('transcript.jsonl', { vt: Date.now(), turn: ev.turn.id, session: ev.turn.session, who: 'assistant', text: r.reply, tools: r.tools, asked: r.asked, costUsd: r.costUsd, followUp: k + 1 });
@@ -145,7 +150,7 @@ while (true) {
     log('harness.jsonl', { vt: Date.now(), consolidate: r });
   } else if (ev.kind === 'rate') {
     // Budget guard: stop this run if its model calls pass --cap dollars (the assessment's budget is $50 in all).
-    const spent = a.arm === 'cron' ? readCost(join(outDir, 'runs.jsonl')) : await arm.cost();
+    const spent = isCron ? readCost(join(outDir, 'runs.jsonl')) : await arm.cost();
     if (spent > Number(a.cap)) { say(`! stopped: $${spent.toFixed(2)} spent, over the $${a.cap} cap`); log('harness.jsonl', { vt: Date.now(), issue: 'cap', spent }); break; }
     await refreshSeen();
     const items = seen.filter((s) => s.vt >= ev.day && s.vt < ev.day + 86_400_000);
@@ -156,7 +161,7 @@ while (true) {
 }
 
 await refreshSeen();
-if (a.arm === 'cron') writeFileSync(join(outDir, 'notifications.jsonl'), arm.deliveries().map((d) => JSON.stringify(d)).join('\n') + '\n');
+if (isCron) writeFileSync(join(outDir, 'notifications.jsonl'), arm.deliveries().map((d) => JSON.stringify(d)).join('\n') + '\n');
 else { await arm.collect(); await arm.stop(); }
 writeFileSync(join(outDir, 'summary.json'), JSON.stringify({ world: a.world, arm: a.arm, start: world.start, end: stamp(end), realMinutes: Math.round((performance.now() - t0) / 60_000), messagesSeen: seen.length }, null, 2));
 say(`done in ${Math.round((performance.now() - t0) / 60_000)} real minutes`);

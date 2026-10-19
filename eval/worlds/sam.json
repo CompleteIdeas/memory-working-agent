@@ -149,6 +149,12 @@
   ],
   "turns": [
     {
+      "id": "TN1",
+      "at": "2026-11-02 06:27",
+      "session": "note-facts",
+      "intent": "Before anything else, mention in passing — just so it knows, nothing to do now — that the babysitter Nora charges $17.50 an hour and that Max wears size 13 shoes. Don't repeat these later."
+    },
+    {
       "id": "T1",
       "at": "2026-11-02 06:30",
       "session": "setup-plan",
@@ -209,10 +215,22 @@
       "intent": "Ask what time your flight leaves tomorrow."
     },
     {
+      "id": "TN2",
+      "at": "2026-11-13 19:00",
+      "session": "ask-nora",
+      "intent": "Ask how much Nora the babysitter charges per hour. Don't give any hints."
+    },
+    {
       "id": "T11",
       "at": "2026-11-14 09:00",
       "session": "ask-bills",
       "intent": "Ask what bills or renewals are coming up in the next two weeks, and whether the electric bill got sorted."
+    },
+    {
+      "id": "TN3",
+      "at": "2026-11-15 12:00",
+      "session": "ask-shoes",
+      "intent": "Ask what shoe size Max wears. Don't give any hints."
     },
     {
       "id": "T12",
@@ -401,6 +419,22 @@
       "time": "07:00",
       "max": 3,
       "desc": "The 3-bullet correction from Nov 9 holds in later plans."
+    },
+    {
+      "id": "R7",
+      "cat": "memory",
+      "type": "judge-reply",
+      "turn": "TN2",
+      "rubric": "Says Nora charges $17.50 an hour.",
+      "desc": "A fact said once on day 1, asked on day 12 (beyond every conversation window)."
+    },
+    {
+      "id": "R8",
+      "cat": "memory",
+      "type": "judge-reply",
+      "turn": "TN3",
+      "rubric": "Says Max wears size 13 shoes.",
+      "desc": "A fact said once on day 1, asked on day 14 (beyond every conversation window)."
     },
     {
       "id": "X1",

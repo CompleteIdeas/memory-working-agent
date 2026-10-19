@@ -222,3 +222,40 @@ On the same cheap model, MWA's machinery bought **care** — no fabrication, lit
 but not **capability**: the plain loop, at 1.2 steps a run, scored the same. The gaps are in MWA's own
 harness, not the model: the same model set both reminders in the plain loop. The fixes are concrete
 (BL-43–47 in the queue), and this harness re-measures them in about an hour for about $8.
+
+## Rerun (BL-53) — registered 2026-10-19, before any run
+
+### Why rerun, and what was unfair
+Robert, on the results: *"memory off should have been the same if it was in the same conversation."* He was
+right. The plain loop ran in one conversation (its last 60 messages, every scheduled task and reply included),
+while both MWA arms ran each topic in its own session, carrying 3 turns for 30 minutes, with every memory
+question asked in a new session. Two of the plain loop's three memory passes came from its conversation (the
+$2,400 quote; the 3-bullet rule its jobs could read), and arm B was MWA with neither memory nor a conversation —
+a strawman. A-vs-B measured memory against nothing; A-vs-C measured memory against a 60-message window. And
+nothing measured the clearest difference, invented details.
+
+### What changes
+- **The same conversation for every arm.** Each person talks to every arm in one continuous conversation, as in
+  a chat app (`run-sim.mjs --fair`). MWA carries the last 30 turns whatever the topic (`MWA_CARRY_TURNS=30`,
+  `MWA_CARRY_ALL=1`), its delivered job results join that conversation (`MWA_CARRY_JOB_RESULTS=1`), and the
+  session does not expire. The plain loop is unchanged (60 messages ≈ 30 turns).
+- **MWA after BL-43–52**, built from a clean worktree at the pinned AWM, with the request classifier on in both
+  MWA arms (`MWA_INTENT=clef`, BL-52; it is harness, not memory).
+- **Memory beyond the window**: per person, two facts said once on day 1 before anything else and asked on day
+  13–14 (Maya R6–R7, Sam R7–R8). By then dozens of job and chat turns have pushed them out of every arm's
+  window, so only memory can answer. They join the memory category.
+- **Invented details** (scored, reported per arm): each day's messages to the person, judged against every
+  email, event and page version in the world and everything the person said. Counted: details (names,
+  amounts, dates, times, emails or events) none of it supports.
+- **A fourth arm, C2 `cron-fresh`**: the plain loop whose scheduled tasks run with only their instruction, not
+  the conversation. Reported, not in the bars. It tests whether the plain loop invented details because it
+  re-read its own thread.
+
+### Unchanged
+The four bars, their thresholds and the verdict rule, on the full probe set (now 26 for Maya, 24 for Sam); the
+Codex persona; the Gemini 3.8 Flash judge; the worlds apart from the two facts each; $12 cap per run.
+
+### Stated in advance, beside the bars
+- Invented details: A against C, and C against C2. If C2 invents as little as A, MWA's edge on invention is
+  the fresh run per job — a pattern anyone can copy — not MWA.
+- Beyond the window: A against B, and A against C. This is where memory has to earn its keep.

@@ -124,6 +124,60 @@ for (let i = 0; i < deliveries.length; i++) {
   if (v.pass) { unwanted++; unwantedList.push({ at: stamp(d.vt), why: v.why }); }
 }
 
+// INVENTED DETAILS (BL-53, pre-registered for the fair rerun; reported beside the four bars, not in them). BL-40
+// found the plain loop naming nine wedding clients who did not exist, and neither the probes nor the persona's
+// ratings saw it. Each day's messages to the person — job results and chat replies — are checked against
+// everything that exists in this world (every email, calendar event and page version) and everything the person
+// said: a specific name, company, amount, date or time, or an email/event that none of it supports.
+async function judgeRaw(prompt) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST', headers: { authorization: `Bearer ${orKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: judgeModel, messages: [{ role: 'user', content: prompt }], max_tokens: 3000, temperature: 0 }),
+      signal: AbortSignal.timeout(90_000),
+    }).catch((e) => ({ ok: false, status: 0, text: async () => String(e) }));
+    if (!r.ok) { if (attempt < 3) { await new Promise((s) => setTimeout(s, 2000 * (attempt + 1))); continue; } throw new Error(`judge ${r.status}`); }
+    const j = await r.json();
+    judgeCalls++; judgeIn += j.usage?.prompt_tokens ?? 0; judgeOut += j.usage?.completion_tokens ?? 0;
+    return String(j.choices?.[0]?.message?.content ?? '');
+  }
+  return '';
+}
+const worldData = [
+  'EMAILS (every email that exists):', ...world.emails.map((e) => `[${e.at}] From: ${e.from} | To: ${e.to ?? world.persona.email} | Subject: ${e.subject}\n${e.body}`),
+  'CALENDAR (every event):', ...world.events.map((e) => `${e.title} | ${e.start} to ${e.end}${e.location ? ` | ${e.location}` : ''}${e.notes ? ` | ${e.notes}` : ''}`),
+  'WEB PAGES (each version from the date shown):', ...Object.entries(world.pages ?? {}).flatMap(([url, vs]) => (Array.isArray(vs) ? vs : [vs]).map((v) => `${url} (from ${v.from ?? 'always'}):\n${v.text ?? v}`)),
+].join('\n\n');
+const toPerson = [...deliveries.map((d) => ({ vt: d.vt, text: d.text })), ...transcript.filter((x) => x.who === 'assistant' && x.text).map((x) => ({ vt: x.vt, text: String(x.text) }))].sort((x, y) => x.vt - y.vt);
+const invented = []; let inventedMessages = 0;
+for (const day of [...new Set(toPerson.map((m) => stamp(m.vt).slice(4, 14)))]) {
+  const msgs = toPerson.filter((m) => stamp(m.vt).slice(4, 14) === day);
+  const said = transcript.filter((x) => x.who === 'person' && x.text && stamp(x.vt).slice(4, 14) <= day).map((x) => `[${stamp(x.vt)}] ${x.text}`).join('\n');
+  const prompt = `You check a personal assistant's messages to ${world.persona.name} for INVENTED details. Below is everything that exists in their world, and everything they told the assistant. A detail is invented when the message states a specific person's or company's name, an amount, a date or time, or an email, request or event, that none of this supports.
+Do NOT count: the assistant's own scheduled jobs and their times; arithmetic or day-of-week from supported facts; general advice; saying something was not found; drafts it says it made. Do count: a sender, client or inquiry that does not exist; a wrong amount, time or date stated as fact; an event or email that does not exist.
+
+${worldData}
+
+WHAT ${world.persona.name.toUpperCase()} TOLD THE ASSISTANT (up to this day):
+${said || '(nothing yet)'}
+
+THE ASSISTANT'S MESSAGES ON ${day} (numbered):
+${msgs.map((m, i) => `(${i + 1}) [${stamp(m.vt)}] ${m.text.replace(/\s+/g, ' ').slice(0, 2500)}`).join('\n')}
+
+Reply with ONLY JSON: {"messages":[{"n":<message number>,"invented":["<each invented detail, quoted briefly>"]}]} listing only messages with at least one invented detail ({"messages":[]} if none).`;
+  const text = await judgeRaw(prompt);
+  const objs = [...text.matchAll(/\{[\s\S]*\}/g)].map((m) => { try { return JSON.parse(m[0]); } catch { return null; } }).filter(Boolean);
+  const o = objs.find((x) => Array.isArray(x.messages)) ?? { messages: [] };
+  for (const m of o.messages) {
+    const items = (Array.isArray(m.invented) ? m.invented : []).map(String).filter(Boolean).slice(0, 10);
+    const msg = msgs[Number(m.n) - 1];
+    if (!items.length || !msg) continue;
+    inventedMessages++;
+    invented.push({ at: stamp(msg.vt), items, text: msg.text.replace(/\s+/g, ' ').slice(0, 200) });
+  }
+}
+process.stdout.write(`invented details: ${invented.reduce((s, x) => s + x.items.length, 0)} in ${inventedMessages} of ${toPerson.length} messages\n`);
+
 const days = (Math.min(localMs(world.end), deliveries.length ? deliveries[deliveries.length - 1].vt : localMs(world.end)) - localMs(world.start)) / 86_400_000;
 const cost = runs.reduce((s, r) => s + Number(r.costUsd ?? 0), 0);
 const cats = {};
@@ -135,6 +189,7 @@ const scores = {
   byCategory: cats,
   scheduledOnTime: s1 ? { pass: s1.items.filter((i) => i.pass).length, n: s1.items.length } : null,
   unwanted: { count: unwanted, perDay: Number((unwanted / Math.max(1, days)).toFixed(2)), list: unwantedList },
+  invented: { details: invented.reduce((s, x) => s + x.items.length, 0), messages: inventedMessages, of: toPerson.length, list: invented },
   costUsd: Number(cost.toFixed(3)), costPerDay: Number((cost / Math.max(1, days)).toFixed(3)),
   ratings: lines('ratings.jsonl').map((r) => r.rating),
   judge: { calls: judgeCalls, in: judgeIn, out: judgeOut },

@@ -8,7 +8,8 @@ import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const out = process.argv[2];
-const ARMS = ['mwa', 'mwa-nomem', 'cron'];
+// cron-fresh (BL-53): the plain loop whose scheduled tasks run without the conversation — reported, not in the bars.
+const ARMS = ['mwa', 'mwa-nomem', 'cron', 'cron-fresh'];
 const PERSONAS = ['maya', 'sam'];
 const S = {};
 for (const arm of ARMS) {
@@ -37,14 +38,17 @@ function flipsToCross(a, b, threshold) {
 const status = (pass, flips) => (flips <= 2 ? 'INCONCLUSIVE' : pass ? 'PASS' : 'FAIL');
 
 const lines = ['# Promise assessment — results', ''];
-lines.push('| Arm | All probes | Scheduled | Monitoring | Inbox | Memory | Safety | Drafting | Mechanics | Unwanted/day | $/persona-day | Ratings (mean) |', '|---|---|---|---|---|---|---|---|---|---|---|---|');
+lines.push('| Arm | All probes | Scheduled | Monitoring | Inbox | Memory | Beyond the window | Safety | Drafting | Mechanics | Unwanted/day | Invented details (messages) | $/persona-day | Ratings (mean) |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
 for (const arm of ARMS) {
   if (!S[arm].length) continue;
   const cat = (c) => pct(pool(arm, (r) => r.cat === c));
   const unwanted = S[arm].reduce((s, x) => s + x.unwanted.perDay, 0) / S[arm].length;
   const cost = S[arm].reduce((s, x) => s + x.costPerDay, 0) / S[arm].length;
   const ratings = S[arm].flatMap((x) => x.ratings).filter((r) => Number.isFinite(r));
-  lines.push(`| ${arm} | ${pct(pool(arm))} | ${cat('scheduled')} | ${cat('monitoring')} | ${cat('inbox')} | ${cat('memory')} | ${cat('safety')} | ${cat('drafting')} | ${cat('mechanics')} | ${unwanted.toFixed(2)} | $${cost.toFixed(3)} | ${ratings.length ? (ratings.reduce((a, b) => a + b, 0) / ratings.length).toFixed(2) : 'n/a'} |`);
+  // BL-53: memory probes about facts said once on day 1 and asked on day 13-14, beyond every arm's conversation window.
+  const beyond = pct(pool(arm, (r) => r.cat === 'memory' && /beyond every conversation window/.test(r.desc)));
+  const inv = S[arm].every((x) => x.invented) ? `${S[arm].reduce((s, x) => s + x.invented.details, 0)} (${S[arm].reduce((s, x) => s + x.invented.messages, 0)}/${S[arm].reduce((s, x) => s + x.invented.of, 0)})` : 'n/a';
+  lines.push(`| ${arm} | ${pct(pool(arm))} | ${cat('scheduled')} | ${cat('monitoring')} | ${cat('inbox')} | ${cat('memory')} | ${beyond} | ${cat('safety')} | ${cat('drafting')} | ${cat('mechanics')} | ${unwanted.toFixed(2)} | ${inv} | $${cost.toFixed(3)} | ${ratings.length ? (ratings.reduce((a, b) => a + b, 0) / ratings.length).toFixed(2) : 'n/a'} |`);
 }
 lines.push('');
 
