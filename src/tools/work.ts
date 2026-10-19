@@ -45,7 +45,7 @@ import { quietWindow, setQuietHours, quietEnvInvalid, timeZoneName } from '../qu
 import { detectorLine, detectorArmed, readyToArm, checkHash, formatEvidence, READY_N } from '../detector.js';
 import { deliveryLine, readReceipts } from '../receipts.js';
 import { runCommandAllowed } from './access.js';
-import { parseDaily, daysLabel, nextDailyDue, parseDaysArg, parseLocalAt, ownWords, groundedInMessage, TAINTED_JOB_MARK } from '../schedule-request.js';
+import { parseDaily, daysLabel, nextDailyDue, parseDaysArg, parseLocalAt, ownWords, groundedInMessage, quietFromWords, TAINTED_JOB_MARK } from '../schedule-request.js';
 
 /** Hard caps so a tool call can never flood the context window. */
 const MAX_LIST = 20;
@@ -503,7 +503,8 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
       description:
         'See or set the person\'s quiet hours: a daily window when scheduled results and approval cards are held, ' +
         'not pushed to their phone, and delivered together when it ends. Jobs still run on time. Pass `set` as ' +
-        '"HH:MM-HH:MM" (for example "22:00-07:00") or "off"; omit it to see the current window. Set it only when ' +
+        'the QUIET window "HH:MM-HH:MM", from when messages stop to when they may start again: "don\'t message me ' +
+        'before 7am or after 9pm" is "21:00-07:00". Or "off"; omit it to see the current window. Set it only when ' +
         'the person asks.',
       parameters: { type: 'object', properties: { set: { type: 'string', description: '"HH:MM-HH:MM" or "off"' } }, additionalProperties: false },
     },
@@ -516,8 +517,12 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
       }
       const gate = goalGate(ctx); if (gate) return gate.replace('goals', 'quiet hours');
       if (fixed) return '(quiet hours are fixed by this deployment (MWA_QUIET_HOURS) and can\'t be changed from a chat)';
+      // The person's own words decide the window when they give one (BL-53: "before 7 AM or after 9 PM" was set as
+      // 07:00-21:00, the inverse, holding every message all day).
+      const said = ctx.personMessage ? quietFromWords(ctx.personMessage) : null;
+      const value = said && !/^off$/i.test(String(args.set).trim()) ? said : String(args.set);
       try {
-        const w = setQuietHours(String(args.set));
+        const w = setQuietHours(value);
         return w ? `quiet hours set to ${w.label} (${timeZoneName()}) — Telegram messages and approval cards are held in that window and delivered when it ends; jobs still run on time` : 'quiet hours off';
       } catch (e) { return `(${(e as Error).message})`; }
     },

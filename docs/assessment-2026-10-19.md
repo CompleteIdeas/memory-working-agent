@@ -259,3 +259,51 @@ Codex persona; the Gemini 3.8 Flash judge; the worlds apart from the two facts e
 - Invented details: A against C, and C against C2. If C2 invents as little as A, MWA's edge on invention is
   the fresh run per job — a pattern anyone can copy — not MWA.
 - Beyond the window: A against B, and A against C. This is where memory has to earn its keep.
+
+## Rerun results — first pass (the registered run, 2026-10-19)
+
+Image `mwa:eval-bl53` at `9780022` (all of BL-43–52 plus the pilot fixes), the fair conversation, Clef on in
+both MWA arms. Eight cells; the plain-loop cells were rerun once after Azure rate limits killed them with all
+eight running in parallel (the harness now retries patiently, d31e6cf; the arm itself is unchanged).
+
+| Arm | All checks | Memory | Beyond the window | Safety | Unwanted/day | Invented details (messages) | $/person-day | Rating |
+|---|---|---|---|---|---|---|---|---|
+| A — MWA | **62% (31/50)** | 40% (6/15) | **3/4** | 10/10 | 0.57 | **8 (6/66)** | $0.155 | 2.69 |
+| B — MWA, memory off | 56% (28/50) | 33% (5/15) | 0/4 | 9/10 | 1.06 | 12 (9/95) | $0.157 | 2.73 |
+| C — plain loop | 44% (22/50) | 7% (1/15) | 0/4 | 10/10 | 0.73 | 37 (25/68) | $0.011 | 3.81 |
+| C2 — plain loop, fresh jobs | 42% (21/50) | 20% (3/15) | 0/4 | 8/10 | 0.91 | 11 (11/86) | $0.010 | 2.96 |
+
+Bars, by the pre-registered rule:
+1. **Beats the plain loop: inconclusive.** A − C = +18 points (needs +15), within one check of the line.
+2. **Memory makes it better: inconclusive.** 6/15 vs 5/15 overall; beyond the window 3/4 vs 0/4.
+3. **Reliable unattended: FAIL.** On time 10/24 — Sam's daily plan was never created (below).
+4. **Worth its cost: PASS.** $0.155 a person-day (BL-40: $0.19), with a 30-turn conversation carried.
+
+**Verdict (pre-registered rule): no evidence of promise** — bar 3 fails.
+
+What moved, against BL-40 (A 21/46, C 21/46):
+- A went from tying the plain loop to leading it by 18 points; Maya's MWA cell from 10/24 to 19/26.
+- Memory now shows where only memory can: facts said once on day 1 and asked on day 13–14 — A 3 of 4, every
+  other arm 0 of 4.
+- Invented details: the plain loop 37; the plain loop with fresh jobs 11. Most of the plain loop's invention came
+  from re-reading its own thread — the pattern is copyable. MWA is still lowest (8), and its flags are mostly
+  wrong or stale specifics, not people from nothing.
+
+What failed, found in the logs:
+- **Sam's daily plan was never scheduled.** "Set me up with a daily 7:00 AM plan" was answered with that day's
+  plan; the run never listed the schedule, so the push to schedule (which required a listing) never fired. One
+  missing job cost 8 checks and bar 3.
+- **Quiet hours were set inverted.** "No messages before 7 AM or after 9 PM" was stored as 07:00–21:00, holding
+  Maya's messages all day.
+- **The persona rated MWA lowest** (2.7 against the plain loop's 3.8): job messages carried a "What I did ·
+  Reached outside your machine" footer and "If you want, I can next…" offers the persona called noisy, and the
+  quiet-hours inversion. The plain loop's invented clients went unnoticed by the persona.
+
+## Rerun — second pass (after the first pass; reported beside it, never instead of it)
+
+Fixes made after reading the first pass (`b4…` below), then the four MWA cells run again on the same harness;
+the plain-loop cells are not rerun (nothing they run changed). This pass is not pre-registered: it measures
+whether the four fixes work, and its numbers are read as that.
+- The push to schedule fires on the request itself, without a listing.
+- Quiet hours come from the person's own words when they give a window.
+- A job's message names only what it changed (reads stay in the action log) and ends without offers.

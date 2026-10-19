@@ -288,9 +288,10 @@ describe('a request to set up LATER work (BL-19)', () => {
     expect(r.summary).toMatch(/already is this request/);
   }, 30_000);
 
-  it('no push on wording alone: the run must have listed the schedule (the measured signature)', async () => {
+  it('BL-53: the request itself is enough — a promise with no job and no listing is pushed once', async () => {
+    // The first fair rerun: "Set me up with a daily 7:00 AM plan" was answered now, never listed or scheduled.
     const r = await run('Remind me tomorrow at 9am to call the bank', [{ action: 'done', summary: 'Noted — I will remind you.' }], undefined, 'Remind me tomorrow at 9am to call the bank');
-    expect(r.history.join('\n')).not.toMatch(/nothing scheduled for a later request/);
+    expect(r.history.filter((h) => /nothing scheduled for a later request/.test(h))).toHaveLength(1);
   }, 30_000);
 
   it('not once something was set up another way (a calendar tool), nor for a request that is not for later', async () => {

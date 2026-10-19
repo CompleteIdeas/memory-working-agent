@@ -79,6 +79,56 @@ describe('the person\'s own words set what the model leaves out (BL-53 pilot 2)'
   });
 });
 
+describe('BL-53 first pass', () => {
+  it('quiet hours come from the person\'s words — "before 7 AM or after 9 PM" is 21:00-07:00, never the inverse', async () => {
+    const { quietFromWords } = await import('../src/schedule-request.js');
+    expect(quietFromWords('Don’t message me before 7:00 AM or after 9:00 PM.')).toBe('21:00-07:00');
+    expect(quietFromWords('Set quiet hours for me: no messages before 7:00 AM or after 9:00 PM.')).toBe('21:00-07:00');
+    expect(quietFromWords('no messages after 9pm or before 7am')).toBe('21:00-07:00');
+    expect(quietFromWords('Don’t message me between 10pm and 6am. I work some nights.')).toBe('22:00-06:00');
+    expect(quietFromWords('Set a daily 9:00 AM check')).toBeNull();
+  });
+
+  it('the quiet_hours tool uses the person\'s window over a model\'s inverted one', async () => {
+    const { workTools } = await import('../src/tools/work.js');
+    const prev = process.env.MWA_QUIET_HOURS; delete process.env.MWA_QUIET_HOURS;
+    const prevCfg = process.env.MWA_CONFIG_PATH;
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-quiet-'));
+    process.env.MWA_CONFIG_PATH = join(dir, 'mwa.config.json');
+    try {
+      const tool = workTools({ enabled: true, pendingScheduled: async () => [] } as never).find((t) => t.def.name === 'quiet_hours')!;
+      const out = await tool.handler({ set: '07:00-21:00' }, { sandboxDir: dir, interactive: true, personId: 'maya', personMessage: 'Don’t message me before 7:00 AM or after 9:00 PM.' } as never);
+      expect(out).toMatch(/quiet hours set to 21:00.07:00/);
+    } finally {
+      if (prev === undefined) delete process.env.MWA_QUIET_HOURS; else process.env.MWA_QUIET_HOURS = prev;
+      if (prevCfg === undefined) delete process.env.MWA_CONFIG_PATH; else process.env.MWA_CONFIG_PATH = prevCfg;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a request for later answered NOW, with no listing, is pushed to schedule', async () => {
+    const { runAgent } = await import('../src/agent.js');
+    const { MwaMemory } = await import('../src/awm.js');
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-pass1-'));
+    const mem = new MwaMemory('pass1', join(dir, 'm.db'));
+    const msg = 'Set me up with a daily 7:00 AM plan: today’s appointments, bills due this week, and anything for the kids’ school.';
+    let i = 0; const actions = [{ action: 'done', summary: 'Today: no appointments; Ocean State Power $142.37 due Nov 9.' }, { action: 'schedule', kind: 'task', instruction: 'Send a 5-bullet plan', daily_at: '07:00' }, { action: 'done', summary: 'Set.' }];
+    const brain = { id: 's', model: 's', price: [0, 0] as [number, number], chat: async (input: any) => {
+      if (!String(input.system ?? '').includes('TRUST BOUNDARY')) return { text: '{}', usage: { input: 1, output: 1 } };
+      return { text: JSON.stringify(actions[Math.min(i++, actions.length - 1)]), usage: { input: 1, output: 1 } };
+    } };
+    const prev = process.env.MWA_FAST_CHAT; process.env.MWA_FAST_CHAT = '0';
+    try {
+      const r = await runAgent({ instruction: msg, userMessage: msg, dir, memory: mem as any, brain, worker: brain, interactive: true, plan: false, budget: { maxSteps: 6, maxWallMs: 20_000 } } as any);
+      expect(r.history.join('\n')).toMatch(/nothing scheduled for a later request/);
+      expect((await mem.pendingScheduled())[0]?.recur).toBe('daily:07:00');
+    } finally {
+      if (prev === undefined) delete process.env.MWA_FAST_CHAT; else process.env.MWA_FAST_CHAT = prev;
+      mem.close(); rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
 describe('a job\'s sources and outcomes', () => {
   const TOOLS = ['gmail__search_email', 'calendar__list_events', 'web__open_page'];
   it('drafting an email is not reading one', () => {

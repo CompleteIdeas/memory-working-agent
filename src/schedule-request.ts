@@ -112,6 +112,23 @@ export function asksChangesOnly(message: string): boolean {
   return /\bonly\s+(?:alert|tell|notify|message|ping|text|email|warn)\s+me\b|\b(?:alert|tell|notify|message|ping|text|email|warn)\s+me\s+only\b|\bno (?:message|alert|ping|text)s? (?:if|when|otherwise)\b|\bnothing otherwise\b|\b(?:don'?t|do not) (?:message|tell|ping|bother|alert) me (?:if|unless|otherwise)\b/i.test(message);
 }
 
+/**
+ * The quiet window the person's words give, as "HH:MM-HH:MM", or null. "Don't message me before 7 AM or after 9 PM"
+ * is 21:00-07:00; "not between 10pm and 6am" is 22:00-06:00. BL-53: MWA set 07:00-21:00 — the inverse — and held
+ * Maya's messages all day.
+ */
+export function quietFromWords(message: string): string | null {
+  const t = (x: string, ap?: string) => { const m = /^(\d{1,2})(?::(\d{2}))?$/.exec(x); if (!m) return null; let h = Number(m[1]) % 12; if ((ap ?? '').toLowerCase().startsWith('p')) h += 12; else if (!ap && Number(m[1]) >= 13) h = Number(m[1]); return `${String(h).padStart(2, '0')}:${m[2] ?? '00'}`; };
+  const T = String.raw`(\d{1,2}(?::\d{2})?)\s*([ap])\.?\s*m\.?`;
+  const ba = new RegExp(`before\\s+${T}[^.?!]{0,40}?after\\s+${T}`, 'i').exec(message);
+  if (ba) { const early = t(ba[1], ba[2]); const late = t(ba[3], ba[4]); return early && late ? `${late}-${early}` : null; }
+  const ab = new RegExp(`after\\s+${T}[^.?!]{0,40}?before\\s+${T}`, 'i').exec(message);
+  if (ab) { const late = t(ab[1], ab[2]); const early = t(ab[3], ab[4]); return early && late ? `${late}-${early}` : null; }
+  const bw = new RegExp(`between\\s+${T}\\s+and\\s+${T}`, 'i').exec(message);
+  if (bw && /\b(?:don['’]?t|do not|no|never|not)\b/i.test(message)) { const a = t(bw[1], bw[2]); const b = t(bw[3], bw[4]); return a && b ? `${a}-${b}` : null; }
+  return null;
+}
+
 /** How schedule_list marks a job set up after reading outside content. A listing with none of them shows only
  *  instructions the person's own clean chats wrote, so it does not taint the run that reads it (BL-52 review:
  *  listing first — as the push to schedule asks — turned every reminder after it into a task). */

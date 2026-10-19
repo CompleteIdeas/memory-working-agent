@@ -321,6 +321,8 @@ export function jobContext(opts: { jobId?: string; jobRequest?: string; jobLastR
   // BL-49: with memory on, Sam's morning plan searched email on 4 of 14 mornings (12 of 14 with memory off) —
   // PRIOR KNOWLEDGE answered for the inbox, and the failed-autopay email was never seen.
   const out: string[] = ['THIS IS A SCHEDULED JOB: read its sources again on every run (the inbox, the calendar, the page). PRIOR KNOWLEDGE is background only — what a source said before is not a check, and "do not search again" does not apply to a job\'s own sources. Label every date against NOW: today, tomorrow, in N days, or overdue.'];
+  // BL-53: the persona rated MWA's job messages down for length and trailing offers ("If you want, I can next…").
+  out.push('Your summary is sent to the person as a phone message: lead with what matters, keep it short, and do not end with offers of more help.');
   // BL-50: what a brief sees that needs the person goes on their list, so "what needs me?" can find it.
   if (opts.openItems) out.push('If you find something that needs the PERSON’s own action — a reply they owe, a bill, a deadline, a renewal, a decision, a request from someone — record it with open_item_add (what, who, due date). Close an item you see resolved with open_item_close (open_items lists them).');
   if (opts.jobRequest) {
@@ -586,11 +588,14 @@ export async function runAgent(opts: {
   const pushLater = (): boolean => {
     // A calendar or reminder tool that WRITES counts as setting something up; listing events does not (review 2).
     const setSomethingUp = [...toolsUsed].some((t) => t === 'schedule' || classifyTool(t) === 'schedule' || (/calendar|event|remind/i.test(t) && classifyTool(t) !== 'read' && !/(^|[_-])(list|get|search|read|find|query)/i.test(t)));
-    if (!forLater || laterRejections >= 1 || !toolsUsed.has('schedule_list') || setSomethingUp || now() - start >= maxWallMs * 0.8 || steps >= maxSteps - 1) return false;
+    // No longer only after a listing (BL-53 first pass: "Set me up with a daily 7:00 AM plan" was answered NOW,
+    // never listed or scheduled, and Sam got no plan for 14 days — 8 checks). The request itself is the evidence
+    // now that it is read by tightened patterns or the classifier (BL-52).
+    if (!forLater || laterRejections >= 1 || setSomethingUp || now() - start >= maxWallMs * 0.8 || steps >= maxSteps - 1) return false;
     laterRejections++; gatesFired.push('later');
     consecNoProgress = 0;
-    nudge = 'This request is for LATER, and nothing has been scheduled in this run. If a job in the list already IS this same request (same task, same time), say so plainly and stop. '
-      + 'Otherwise call `schedule` now with the instruction to carry out at that time (in_minutes / daily_at / every_minutes as asked) — and do not do the later part of the work now.';
+    nudge = 'This request is to set something up for LATER or to REPEAT, and nothing has been scheduled in this run. If a job in the schedule already IS this same request (same task, same time), say so plainly and stop. '
+      + 'Otherwise call `schedule` now with the instruction to carry out at that time (in_minutes / at / daily_at / every_minutes as asked) — doing it once now is not setting it up.';
     history.push('(nothing scheduled for a later request — asked to schedule it, or name the job that already is)');
     return true;
   };
@@ -1993,8 +1998,11 @@ export async function runAgent(opts: {
 
   // F3 Explain: end any run that DID something with a plain-language account of what it did —
   // so a run nobody watched (scheduled, background) still reports its side effects honestly.
-  if (runActions.length) {
-    const report = buildDoneReport(runActions);
+  // A job's message goes to the person's phone: name what it changed, not the pages and inboxes it read (BL-53:
+  // "the repeated 'reached outside your machine' log is noisy and unsettling"). The action log keeps every read.
+  const reported = opts.jobId ? runActions.filter((a) => !(a.effect === 'external' && /(?:open_page|search|read|list|get|fetch|lookup|status)/i.test(a.tool))) : runActions;
+  if (reported.length) {
+    const report = buildDoneReport(reported);
     if (report && !finalSummary.includes(report)) finalSummary = finalSummary ? `${finalSummary}\n\n${report}` : report;
   }
 
