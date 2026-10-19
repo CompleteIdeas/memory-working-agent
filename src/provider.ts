@@ -206,14 +206,17 @@ class OpenAICompatProvider implements Provider {
   }
   /** this endpoint refused `reasoning: { enabled: false }` once (BL-35) — don't send it again */
   private reasoningMandatory = false;
+  /** BL-57: this model was seen spending the whole output budget on hidden reasoning — give it headroom from now on */
+  private seenThinking = false;
   async chat({ system, messages, maxTokens = 1500, tools, reasoningEffort }: ChatInput): Promise<ChatResult> {
     const msgs = (system ? [{ role: 'system', content: system }, ...messages] : messages).map((m) => ({ role: m.role, content: m.content }));
     // Only send reasoning_effort to OpenAI reasoners (gpt-5.x, o-series) — others 400 on it.
     const openaiReasoner = /(^|[:/-])(o[1-9]|gpt-5)/i.test(this.model);
     const reasons = openaiReasoner && !!reasoningEffort;
     // Models that "think" spend OUTPUT tokens on hidden reasoning BEFORE the visible answer —
-    // give them headroom so the reply isn't starved/truncated.
-    const thinker = openaiReasoner || /gemini|deepseek-r|qwen3|:thinking|grok-[34]-mini|magistral/i.test(this.model);
+    // give them headroom so the reply isn't starved/truncated. A model not on this list is learned from its first
+    // empty reply cut off at the limit (BL-57: Claude Haiku 5.5 through OpenRouter spent all 800 tokens thinking).
+    const thinker = openaiReasoner || this.seenThinking || /gemini|deepseek-r|qwen3|:thinking|grok-[34]-mini|magistral/i.test(this.model);
     const headroom = thinker && reasoningEffort !== 'minimal' ? 4000 : 0;
     const body: Record<string, unknown> = { model: this.model, messages: msgs, max_tokens: maxTokens + headroom };
     if (reasons) body.reasoning_effort = reasoningEffort;
@@ -229,6 +232,7 @@ class OpenAICompatProvider implements Provider {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (this.key) headers.authorization = `Bearer ${this.key}`;
     let lastErr = `${this.id}: unknown error`;
+    const spent = { input: 0, output: 0 }; // a reply thrown away for thinking past the limit still cost its tokens
     for (let attempt = 0; attempt < 6; attempt++) {
       if (attempt) await new Promise((r) => setTimeout(r, Math.min(8000, 600 * attempt * attempt)));
       let res: Response;
@@ -242,7 +246,15 @@ class OpenAICompatProvider implements Provider {
         const toolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length
           ? msg.tool_calls.map((tc: any) => ({ name: tc.function?.name ?? '', args: safeJson(tc.function?.arguments) }))
           : undefined;
-        return { text, toolCalls, usage: { input: j.usage?.prompt_tokens ?? 0, output: j.usage?.completion_tokens ?? 0 } };
+        spent.input += j.usage?.prompt_tokens ?? 0; spent.output += j.usage?.completion_tokens ?? 0;
+        // Nothing visible, cut off at the limit: the budget went to hidden reasoning. Once, with headroom.
+        if (!text.trim() && !toolCalls && j.choices?.[0]?.finish_reason === 'length' && !this.seenThinking) {
+          this.seenThinking = true;
+          body.max_tokens = maxTokens + 4000;
+          lastErr = `${this.id}: the reply was all hidden reasoning, cut off at ${maxTokens} tokens`;
+          continue;
+        }
+        return { text, toolCalls, usage: { input: spent.input, output: spent.output } };
       }
       const errText = await res.text();
       lastErr = `${this.id} ${res.status}: ${errText.slice(0, 200)}`;

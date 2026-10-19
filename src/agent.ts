@@ -1061,6 +1061,7 @@ export async function runAgent(opts: {
 
     let action: Action | null = null;
     const tc = out.toolCalls?.[0];
+    const viaToolCall = Boolean(tc?.name); // a native tool call — its reply text is separate from its arguments
     if (tc?.name) { action = { action: tc.name, ...tc.args }; nudge = ''; }
     else { try { action = parseJsonLoose<Action>(out.text); nudge = ''; } catch { action = null; } }
     // BL-57: a model that answers in plain text has finished — what native tool-calling models (Claude through
@@ -1127,8 +1128,9 @@ export async function runAgent(opts: {
     if (action.action === 'done') {
       // BL-57: Claude models through OpenRouter often write the answer as the reply's text and call done with an empty
       // or stub summary ("", "Here") — Haiku's replays ended "instruction satisfied" with the plan in the text.
+      // Only for a native tool call: a JSON-mode reply IS its text ({"action":"done",…}), and was a summary once (review).
       const doneArg = action.summary ? String(action.summary) : '';
-      const replyText = String(out.text ?? '').trim();
+      const replyText = viaToolCall ? String(out.text ?? '').trim() : '';
       const summ = replyText.length > doneArg.trim().length && doneArg.trim().length < 40 ? replyText : doneArg;
       // NOTHING SCHEDULED FOR A LATER REQUEST (BL-19): 3 of 18 scheduling chats on 2026-10-18 listed the
       // schedule, saw other jobs (or none), said "I couldn't confirm it is scheduled" and stopped — never
