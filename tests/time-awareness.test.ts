@@ -62,16 +62,28 @@ describe('scheduling at a date and time in a run', () => {
     expect(r.summary).toContain('Scheduled for 2026-10-22 15:00');
   }, 60_000);
 
-  it('a past or malformed `at` goes back to the model with NOW instead of running in a minute', async () => {
+  it('a past or malformed `at` goes back to the model with NOW, and the corrected retry is not skipped as a repeat', async () => {
     process.env.TZ = 'America/New_York';
+    // Long enough that the time falls past the first 80 characters of the call (BL-39 review: the retry was dropped).
+    const long = 'Remind the person to call the plumber about the leaking kitchen tap and ask for the quote in writing.';
     const { jobs, prompts } = await run([
-      { action: 'schedule', instruction: 'Remind the person to call the plumber.', at: '2026-10-15 15:00' },
-      { action: 'schedule', instruction: 'Remind the person to call the plumber.', at: 'Thursday 3pm' },
-      { action: 'schedule', instruction: 'Remind the person to call the plumber.', at: '2026-10-22 15:00' },
+      { action: 'schedule', instruction: long, at: '2026-10-15 15:00' },
+      { action: 'schedule', instruction: long, at: 'Thursday 3pm' },
+      { action: 'schedule', instruction: long, at: '2026-10-22 15:00' },
     ]);
     expect(prompts[1]).toMatch(/That time is already past\. NOW: Monday, October 19, 2026/);
     expect(prompts[2]).toMatch(/is not a date and time in the form YYYY-MM-DD HH:MM/);
     expect(jobs).toHaveLength(1);
     expect(jobs[0].due).toBe(Date.UTC(2026, 9, 22, 19, 0));
+  }, 60_000);
+
+  it('an hour the clocks skip is named as such, not as a format error', async () => {
+    process.env.TZ = 'America/New_York';
+    expect(parseLocalAt('2027-03-14 02:30')).toBeNull(); // spring forward: 02:00 → 03:00
+    const { prompts } = await run([
+      { action: 'schedule', instruction: 'Remind the person to call the plumber.', at: '2027-03-14 02:30' },
+      { action: 'schedule', instruction: 'Remind the person to call the plumber.', at: '2027-03-14 03:30' },
+    ]);
+    expect(prompts[1]).toContain('is not a real local date and time (check the day of the month, and whether the clocks change that night)');
   }, 60_000);
 });
