@@ -679,7 +679,9 @@ export async function runAgent(opts: {
    * both stable and must never be crowded out of context by later steps.
    */
   const runSystem = [
-    AGENT_SYSTEM + persona + personBlock,
+    // The warm-start interview fills memory; with memory off (MWA_MEMORY=off) the store is always empty and it
+    // would run on every turn, so it goes (promise assessment pilot: arm B opened every chat with it).
+    (harnessOn && !memory.enabled ? AGENT_SYSTEM.replace(`${ONBOARD_PROTOCOL}\n`, '') : AGENT_SYSTEM) + persona + personBlock,
     // The shared system text describes recall/remember/supersede and a PRIOR KNOWLEDGE block; without
     // memory none of them exist, so say so rather than let the model spend steps on them (BL-09 review).
     ...(memory.enabled ? [] : ['MEMORY IS OFF in this run: recall, remember and supersede are unavailable and PRIOR KNOWLEDGE stays empty. When you need something you read earlier, read the file again.']),

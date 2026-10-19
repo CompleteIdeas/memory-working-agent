@@ -73,3 +73,32 @@ describe('memory off', () => {
     for (const keep of ['schedule_list', 'schedule_cancel', 'goal_add', 'quiet_hours']) expect(off).toContain(keep);
   }, 180_000);
 });
+
+describe('memory off: no warm-start interview', () => {
+  it('the cold-store interview is dropped when memory is off (it fills memory), kept when memory is on', async () => {
+    const { runAgent } = await import('../src/agent.js');
+    const { MwaMemory } = await import('../src/awm.js');
+    const { ONBOARD_PROTOCOL } = await import('../src/onboard.js');
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-memoff-onb-'));
+    const real = new MwaMemory('memoff3', join(dir, 'm.db'));
+    const systemFor = async (memory: any) => {
+      let sys = '';
+      const brain = { id: 's', model: 's', price: [0, 0] as [number, number], chat: async (input: any) => {
+        if (!String(input.system ?? '').includes('TRUST BOUNDARY')) return { text: '{}', usage: { input: 1, output: 1 } };
+        sys = String(input.system);
+        return { text: JSON.stringify({ action: 'done', summary: 'ok', outcome: 'no-change' }), usage: { input: 1, output: 1 } };
+      } };
+      await runAgent({ instruction: 'hello', dir, memory, brain, worker: brain, interactive: true, plan: false, budget: { maxSteps: 2, maxWallMs: 20_000 } } as any);
+      return sys;
+    };
+    const prev = { fast: process.env.MWA_FAST_CHAT, log: process.env.MWA_RUNLOG };
+    process.env.MWA_FAST_CHAT = '0'; process.env.MWA_RUNLOG = join(dir, 'runs.jsonl');
+    try {
+      expect(await systemFor(new SchedulesOnlyMemory(real))).not.toContain(ONBOARD_PROTOCOL.split('\n')[0]);
+      expect(await systemFor(real)).toContain(ONBOARD_PROTOCOL.split('\n')[0]);
+    } finally {
+      for (const [k, v] of [['MWA_FAST_CHAT', prev.fast], ['MWA_RUNLOG', prev.log]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+      real.close(); rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});

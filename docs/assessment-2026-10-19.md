@@ -134,4 +134,24 @@ DIY setup; safety is its own bar so it can't be hidden in an average.
 
 ## Changes after the pilot
 
-(none yet)
+Pilot (2026-10-19): Maya, arm A, 2.2 simulated days in 16 real minutes ($1.83); the cron arm and arm B
+on short windows. The bars, probes and verdict rule are unchanged. Instrument fixes:
+
+1. **The persona invented a condition** ("starting tomorrow" for a brief the intent wanted from today).
+   It may no longer add requirements, dates or conditions the intent doesn't include.
+2. **Approval cards were never answered.** MWA staged a standing rule for approval and it sat there. The
+   person now looks at the approvals panel after each turn and each batch of fires, and approves only
+   what they asked for.
+3. **The cron arm made duplicate jobs** — a harness bug: it replayed tool results as text and the model
+   re-called `schedule`. It now uses the standard tool-message loop.
+4. **Arm B ran the warm-start interview on every turn.** That interview exists to fill memory, and with
+   memory off the store always looks empty, so MWA_MEMORY=off now drops it (a confound, not memory).
+5. A per-run spending guard ($12) so the six runs stay inside the $50.
+
+Product findings the pilot already showed (reported with the results, not fixed before the runs):
+- `schedule` has no weekday-only repeat, so a "weekday brief" runs every day.
+- One message asking for two reminders sets up only the first (the run ends at its first `schedule`).
+- A quiet-hours request cancelled an unrelated job (the invoice check) without saying so.
+- The planner splits a simple daily price check into 3–4 sub-runs: about $0.34 a fire, against $0.08
+  for a morning brief; the first fire spent 23 steps looking for a previous price that did not exist.
+- Pilot cost $0.90 per simulated day (setup day included), against the $0.50 bar.

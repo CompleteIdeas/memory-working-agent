@@ -105,6 +105,7 @@ export async function makeMwaArm({ world, worldName, arm, port, envFile, evalDir
       return -1;
     },
     async deliveries() { return readLines('/data/notifications.jsonl'); },
+    async cost() { return (await readLines('/data/runs.jsonl')).reduce((s, r) => s + Number(r.costUsd ?? 0), 0); },
     /** The approval cards waiting for the person (the app's approvals panel). */
     async approvals() {
       const r = await fetch(`${base}/api/approvals`, { headers: { cookie } });

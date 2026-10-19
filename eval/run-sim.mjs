@@ -11,7 +11,8 @@ import { mkdirSync, writeFileSync, appendFileSync, existsSync, rmSync, readFileS
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const { values: a } = parseArgs({ options: { world: { type: 'string' }, arm: { type: 'string' }, env: { type: 'string' }, until: { type: 'string' }, port: { type: 'string', default: '7811' }, out: { type: 'string', default: 'results/assessment' }, image: { type: 'string', default: 'mwa:dev' } } });
+const { values: a } = parseArgs({ options: { world: { type: 'string' }, arm: { type: 'string' }, env: { type: 'string' }, until: { type: 'string' }, port: { type: 'string', default: '7811' }, out: { type: 'string', default: 'results/assessment' }, image: { type: 'string', default: 'mwa:dev' }, cap: { type: 'string', default: '12' } } });
+const readCost = (f) => (existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter(Boolean).reduce((s, l) => { try { return s + Number(JSON.parse(l).costUsd ?? 0); } catch { return s; } }, 0) : 0);
 const here = dirname(fileURLToPath(import.meta.url));
 if (!['maya', 'sam'].includes(a.world) || !['mwa', 'mwa-nomem', 'cron'].includes(a.arm) || !a.env) {
   console.error('usage: --world maya|sam --arm mwa|mwa-nomem|cron --env <file with AZURE_GPT_*>'); process.exit(2);
@@ -143,6 +144,9 @@ while (true) {
     const r = await arm.consolidate();
     log('harness.jsonl', { vt: Date.now(), consolidate: r });
   } else if (ev.kind === 'rate') {
+    // Budget guard: stop this run if its model calls pass --cap dollars (the assessment's budget is $50 in all).
+    const spent = a.arm === 'cron' ? readCost(join(outDir, 'runs.jsonl')) : await arm.cost();
+    if (spent > Number(a.cap)) { say(`! stopped: $${spent.toFixed(2)} spent, over the $${a.cap} cap`); log('harness.jsonl', { vt: Date.now(), issue: 'cap', spent }); break; }
     await refreshSeen();
     const items = seen.filter((s) => s.vt >= ev.day && s.vt < ev.day + 86_400_000);
     const r = await persona.personRating(world, new Date(ev.day).toDateString(), items);
