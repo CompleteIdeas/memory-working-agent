@@ -32,6 +32,7 @@ const TOOL_CATEGORY: Record<string, ActionCategory> = {
   // unattended run that merely LISTS its own schedule three times would pause itself.
   schedule_list: 'read', memory_profile: 'read', memory_store_map: 'read',
   schedule_cancel: 'schedule',
+  schedule_update: 'schedule', // rewrites a job's instruction (BL-45)
   // goals (BL-05): local writes; goal_list echoes stored text, so its output is local content.
   goal_list: 'read', goal_add: 'schedule', goal_update: 'schedule',
   // approval_results echoes what an approved command printed — output of code the model may have
@@ -128,7 +129,7 @@ const OWN_OUTPUT_TOOLS = new Set([
 // NOT run_command: a command can fetch anything (`curl …`), so its output is external.
 const LOCAL_CONTENT_TOOLS = new Set([
   'read_file', 'list_files', 'read', 'dispatch', 'onboard_scan',
-  'knowledge_list', 'memory_profile', 'memory_store_map', 'schedule_list', 'list_active_tools', 'list_connectors',
+  'knowledge_list', 'memory_profile', 'memory_store_map', 'schedule_list', 'schedule_update', 'list_active_tools', 'list_connectors',
 ]);
 export type OutputSource = 'own' | 'local' | 'external';
 export function outputSource(name: string): OutputSource {

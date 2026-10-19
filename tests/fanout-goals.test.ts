@@ -51,7 +51,8 @@ describe('fanoutRefusal', () => {
   it.each([
     ['depth 3', { depth: 3 }, /levels/],
     ['a job with 2 children', { isFire: true, depth: 1, childrenOfThisJob: 2 }, /follow-up jobs/],
-    ['a run that scheduled 3', { byThisRun: 3 }, /already scheduled 3/],
+    ['an unattended run that scheduled 3', { byThisRun: 3, unattendedOrTainted: true }, /already scheduled 3 jobs \(at most 3\)/],
+    ['a person’s clean chat that scheduled 8 (BL-43: "set four reminders" is fine)', { byThisRun: 8 }, /already scheduled 8 jobs \(at most 8\)/],
     ['a goal with 5 jobs', { goalJobs: 5 }, /that goal already has 5/],
     ['a finished goal', { goalClosed: true }, /finished or no longer exists/],
     ['unattended at the pending cap', { unattendedOrTainted: true, pending: MAX_PENDING }, /already waiting/],
@@ -98,12 +99,12 @@ describe('a scheduled fire scheduling more jobs', () => {
     });
   }, 30_000);
 
-  it('counts a planned run as one run: a fourth job from the same run is refused', async () => {
+  it('counts a planned run as one run: a ninth job from the same attended run is refused', async () => {
     await withMemory(async (dir, mem) => {
-      for (const i of [1, 2, 3]) await mem.addScheduledTask(`Step job ${i}`, Date.now() + 3_600_000, { byRun: 'dddddddd' });
+      for (const i of [1, 2, 3, 4, 5, 6, 7, 8]) await mem.addScheduledTask(`Step job ${i}`, Date.now() + 3_600_000, { byRun: 'dddddddd' });
       await runAgent({ instruction: 'Plan my week', dir, memory: mem, brain: schedulingBrain({ instruction: 'One more', in_minutes: 60 }), worker: schedulingBrain({ instruction: 'x', in_minutes: 60 }),
         interactive: true, rootRunId: 'dddddddd-4444-run', budget: { maxSteps: 4, maxWallMs: 20_000 } });
-      expect(await mem.pendingScheduled()).toHaveLength(3);
+      expect(await mem.pendingScheduled()).toHaveLength(8);
     });
   }, 30_000);
 });

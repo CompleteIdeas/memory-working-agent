@@ -804,6 +804,18 @@ export class MwaMemory implements Memory {
       `checkmode=${mode}`, ...(mode === 'armed' && arm ? [`checkarm=${arm}`] : []),
     ]);
   }
+  /** BL-45: the person changed what a job does. Same job — id, schedule, record and history stay — with a
+   *  new instruction, and optionally the person's words added to its request and a new daily time. */
+  async updateScheduledJob(id: string, change: { instruction: string; request?: string; recur?: string; due?: number }): Promise<void> {
+    await this.init();
+    await this.store.updateContent(id, change.instruction);
+    await this.setScheduledTags(id, (tags) => [
+      ...tags.filter((t) => !(change.request !== undefined && t.startsWith('request64=')) && !(change.recur !== undefined && t.startsWith('recur=')) && !(change.due !== undefined && t.startsWith('due='))),
+      ...(change.request !== undefined ? [`request64=${Buffer.from(change.request.slice(-2000), 'utf8').toString('base64')}`] : []),
+      ...(change.recur !== undefined ? [`recur=${change.recur}`] : []),
+      ...(change.due !== undefined ? [`due=${Math.round(change.due)}`] : []),
+    ]);
+  }
   /** BL-44: what this job's last good run reported (replaces the previous record). */
   async setJobLastRun(id: string, rec: JobLastRun): Promise<void> {
     await this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('lastrun64=')), `lastrun64=${Buffer.from(JSON.stringify(rec), 'utf8').toString('base64')}`]);

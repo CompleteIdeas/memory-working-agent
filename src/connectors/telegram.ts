@@ -234,7 +234,8 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
       const chatId = (task.notify ?? '').startsWith('tg-') ? task.notify!.slice(3) : null;
       const job = res.job ?? task.resumeOf ?? task.id, fire = res.fire ?? `${job.slice(0, 8)}-${Date.now()}`;
       if (!chatId) { recordReceipt({ job, fire, channel: 'none', status: 'failed', detail: 'no chat to send it to' }); return; }
-      const text = `⏰ Scheduled: ${task.instruction.slice(0, 80)}\n\n${res.summary}`.slice(0, 3900);
+      // A reminder (BL-43) is its own text — "⏰ Scheduled: X" over "Reminder: X" said it twice.
+      const text = (task.kind === 'reminder' ? `⏰ ${res.summary}` : `⏰ Scheduled: ${task.instruction.slice(0, 80)}\n\n${res.summary}`).slice(0, 3900);
       const files = res.files.slice(0, 5).map((f) => join(res.dir, f));
       // Quiet hours (BL-07): the job ran on time; its message waits for the morning unless urgent.
       if (isQuietNow() && !task.urgent) {

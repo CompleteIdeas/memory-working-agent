@@ -191,14 +191,14 @@ describe('a run whose reply claims work it never did, enforced (BL-36, MWA_CLAIM
 
   it('pushed back, the model actually schedules: a normal run', async () => {
     const r = await run(REMIND, [{ action: 'schedule_list' }, CLAIM, { action: 'schedule', instruction: 'Remind me to call Dana about the venue', in_minutes: 60 }], { schedule_list: '(nothing scheduled)' });
-    expect(r.summary).toMatch(/^Scheduled for/);
+    expect(r.summary).toMatch(/Scheduled for/); // BL-43: the run goes on to the model's done; the read-back follows its words
     expect(r.summary).not.toMatch(/Not done/);
     expect(r.outcome).not.toBe('could-not');
   }, 30_000);
 
   it('a real schedule is not flagged', async () => {
     const r = await run('In 1 minute, write a.txt with OK. Schedule it.', [{ action: 'schedule', instruction: 'Write a.txt with exactly OK', in_minutes: 1 }]);
-    expect(r.summary).toMatch(/^Scheduled for/);
+    expect(r.summary).toMatch(/Scheduled for/); // BL-43: the run goes on to the model's done; the read-back follows its words
     expect(r.summary).not.toMatch(/Not done/);
     expect(r.outcome).not.toBe('could-not');
   }, 30_000);
@@ -258,27 +258,27 @@ describe('a request to set up LATER work (BL-19)', () => {
   it('the measured dead end — listed the schedule, could not confirm, stopped — is pushed to schedule, and the push is logged', async () => {
     const r = await run(LATER, [{ action: 'schedule_list' }, GAVE_UP, SCHED], LIST, LATER);
     expect(r.history.join('\n')).toMatch(/nothing scheduled for a later request/);
-    expect(r.summary).toMatch(/^Scheduled for/);
+    expect(r.summary).toMatch(/Scheduled for/); // BL-43: the run goes on to the model's done; the read-back follows its words
   }, 30_000);
 
   it('the dead end as measured with the action trail — listing again and again, never `done` — is pushed too', async () => {
     // e2e-j1gxe-1: ["schedule_list","schedule_list","schedule_list"], ended by the "repeating after output ⇒ finished" shortcut.
     const r = await run(LATER, [{ action: 'schedule_list' }, { action: 'schedule_list' }, { action: 'schedule_list' }, SCHED], LIST, LATER);
     expect(r.history.join('\n')).toMatch(/nothing scheduled for a later request/);
-    expect(r.summary).toMatch(/^Scheduled for/);
+    expect(r.summary).toMatch(/Scheduled for/); // BL-43: the run goes on to the model's done; the read-back follows its words
   }, 30_000);
 
   it('after the push, the file check still speaks — telling it to schedule, not to write now', async () => {
     const r = await run(LATER, [{ action: 'schedule_list' }, GAVE_UP, GAVE_UP, SCHED], LIST, LATER);
     expect(r.history.filter((h) => /nothing scheduled for a later request/.test(h))).toHaveLength(1);
     expect(r.history.join('\n')).toMatch(/rejected premature done — missing output file/);
-    expect(r.summary).toMatch(/^Scheduled for/);
+    expect(r.summary).toMatch(/Scheduled for/); // BL-43: the run goes on to the model's done; the read-back follows its words
   }, 30_000);
 
   it('a repeated read elsewhere does not spend the push (review 2)', async () => {
     const r = await run(LATER, [{ action: 'read_file', path: 'a.txt' }, { action: 'read_file', path: 'a.txt' }, { action: 'schedule_list' }, GAVE_UP, SCHED], { ...LIST, read_file: '(no such file yet)' }, LATER);
     expect(r.history.join('\n')).toMatch(/nothing scheduled for a later request/);
-    expect(r.summary).toMatch(/^Scheduled for/);
+    expect(r.summary).toMatch(/Scheduled for/); // BL-43: the run goes on to the model's done; the read-back follows its words
   }, 30_000);
 
   it('naming the job that already is this request is accepted — not pushed twice toward a duplicate (review 2)', async () => {

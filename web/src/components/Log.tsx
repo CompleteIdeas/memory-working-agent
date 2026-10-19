@@ -3,7 +3,11 @@ import { getRuns, getSchedule, type RunLog } from '../api';
 
 function when(due: number, recur: string | null): string {
   if (recur?.startsWith('every:')) return `every ${recur.slice(6)} min`;
-  if (recur?.startsWith('daily:')) return `daily at ${recur.slice(6)}`;
+  if (recur?.startsWith('daily:')) {
+    // "daily:08:00@12345" runs on some days only (BL-51), JS getDay digits.
+    const [hm, days] = recur.slice(6).split('@');
+    return `${days === '12345' ? 'weekdays' : days === '06' ? 'weekends' : days ? `days ${days.split('').map((d) => 'SMTWTFS'[Number(d)]).join('')}` : 'daily'} at ${hm}`;
+  }
   try { return new Date(due).toLocaleString(); } catch { return 'soon'; }
 }
 

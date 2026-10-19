@@ -97,28 +97,32 @@ export function asksForLater(message: string): boolean {
   return /(?:^|[.!;]\s*|\b(?:please|and|then|to|can you|could you|would you)\s+)schedule (?:it|this|that|them|a|an|one|two|three|\d+)\b/im.test(own)
     || /\b(?:remind me|set a reminder|add a reminder)\b(?= (?:to|at|in|on|for|tomorrow|tonight|every|next|before|this|the day|(?:mon|tues|wednes|thurs|fri|satur|sun)day))/i.test(own)
     || /\bin (?:\d+|an?|one|two|three)\s*(?:min|mins|minutes?|hours?|days?|weeks?)\b/i.test(own)
-    || /\b(?:every|each) (?:day|morning|evening|night|week|weekday|hour|\d+\s*(?:minutes?|hours?|days?)|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(own)
+    || /\bevery (?:day|morning|evening|night|week|weekday|hour|\d+\s*(?:minutes?|hours?|days?)|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(own)
     || /\b(?:daily at|weekly on)\b/i.test(own)
     // BL-43, measured in BL-40: "Set two reminders for me: …", "Set a daily 9:00 AM check on …", "Set a
     // weekday 8:00 AM brief", "set me up with a short daily plan at 7:00" matched none of the above, so the
-    // push never fired and four runs listed the schedule three times and gave up. Something that only
-    // exists to fire later (a reminder, an alert, a watch) is a request on its own; a check, brief, plan
-    // or report is one only with a when-word somewhere in the message ("Make a plan for the wedding" isn't).
-    || new RegExp(`${SET_UP}(?:reminders?|alerts?|alarms?|watch(?:es)?|monitors?)\\b`, 'i').test(own)
-    || (new RegExp(`${SET_UP}(?:checks?|briefs?|briefings?|digests?|plans?|summar(?:y|ies)|reports?|notifications?|jobs?|updates?)\\b`, 'i').test(own) && WHEN_WORD.test(own))
-    // A standing watch, asked as "tell me when/before …": "Only message me if the price changes", "always
-    // warn me before anything auto-renews". A bare "tell me if this is spam" asks about now, so "if" needs
-    // a change word after it.
-    || /\b(?:tell|warn|notify|alert|ping|text|message|email)\s+me\s+(?:when(?:ever)?|before|as soon as|the moment|any ?time)\b/i.test(own)
-    || /\b(?:tell|warn|notify|alert|ping|text|message|email)\s+me\s+(?:only\s+)?if\b.{0,80}?\b(?:chang|drops?|rises?|goes (?:up|down)|moves?|arrives?|comes in|delayed|cancel)/i.test(own)
-    || /\b(?:give|send) me a heads[- ]up\b/i.test(own)
-    || /\b(?:keep an eye on|keep watching|watch for)\b/i.test(own);
+    // push never fired and four runs listed the schedule three times and gave up. Narrow on purpose (BL-43
+    // review): only set/add/create, only time and kind words between the count and the noun, and not "a
+    // summary of …", "a report template", "a plan for the board meeting". A reminder or alert is a request
+    // on its own; a check, brief, plan or report needs a when-word somewhere in the message.
+    || new RegExp(`${SET_UP}(?:reminders?|alerts?|alarms?)\\b`, 'i').test(own)
+    || (new RegExp(`${SET_UP}(?:checks?|briefs?|briefings?|digests?|plans?|summar(?:y|ies)|reports?|watch(?:es)?|monitors?|updates?)\\b${NOT_AN_OBJECT}`, 'i').test(own) && WHEN_WORD.test(own))
+    // A standing watch: "always warn me before anything auto-renews", "Only message me if the price changes".
+    // "Tell me when you are done", "tell me if anything changed in this diff" and "email me before you send
+    // anything" are not: "when"/"if" need a change still to come, and "before" only warns.
+    || /\b(?:warn|notify|alert|remind)\s+me\s+(?:before|whenever|as soon as|the moment|any ?time)\b/i.test(own)
+    || /\b(?:tell|warn|notify|alert|ping|text|message|email)\s+me\s+(?:only\s+)?(?:when|if|whenever|as soon as|the moment)\b[^.?!]{0,60}?\b(?:changes|drops|rises|goes (?:up|down)|moves|arrives|comes in|ships|is delivered|gets (?:delayed|cancell?ed)|is (?:delayed|cancell?ed)|goes on sale|is back)\b/i.test(own)
+    || /\b(?:give|send) me a heads[- ]up\b/i.test(own);
 }
 
-/** "Set (me up with) a / two / 2 <up to four words> " — the opening of a request to create something. */
-const SET_UP = String.raw`\b(?:set|add|create|make|start|put in)\s+(?:me\s+)?(?:up\s+)?(?:with\s+)?(?:a|an|one|two|three|four|five|\d+|both|some)\s+(?:[^\s.,;!?]+\s+){0,4}?`;
+/** Words that may sit between "set a" and the thing being set: when it runs and what kind it is. */
+const FILLER = String.raw`(?:daily|weekly|weekday|weekdays|monthly|hourly|morning|evening|nightly|recurring|quick|short|new|separate|price|invoice|inbox|email|calendar|flight|renewal|bill|\d{1,2}(?::\d{2})?|[ap]\.?m\.?)`;
+/** "Set (me up with) a / two / 2 <time and kind words> " — the opening of a request to create something. */
+const SET_UP = String.raw`\b(?:set|add|create)\s+(?:me\s+)?(?:up\s+)?(?:with\s+)?(?:a|an|one|two|three|four|five|\d+|both|some)\s+(?:${FILLER}\s+){0,4}`;
+/** The noun is the object of now-work: "a summary of …", "a report template", "a plan for the meeting" (but "for me" is fine). */
+const NOT_AN_OBJECT = String.raw`(?!\s+(?:of|about|template|list|file|document|doc|draft|outline|section)\b)(?!\s+for\s+(?!me\b))`;
 /** A word that places something in time — what turns "a brief" into a job. */
-const WHEN_WORD = /\b(?:daily|weekly|monthly|hourly|weekdays?|every|each|mornings?|evenings?|nightly|tomorrow|tonight|(?:mon|tues|wednes|thurs|fri|satur|sun)day|\d{1,2}(?::\d{2})?\s*[ap]\.?m\b|\d{1,2}:\d{2})/i;
+const WHEN_WORD = /\b(?:daily|weekly|monthly|hourly|weekdays?|every|mornings?|evenings?|nightly|tomorrow|tonight|(?:mon|tues|wednes|thurs|fri|satur|sun)day|\d{1,2}(?::\d{2})?\s*[ap]\.?m\b|\d{1,2}:\d{2})/i;
 
 /** The kinds of work the person's message asks for. Loose on purpose: it only decides whether a claim
  *  is checked at all, and the other conditions carry the precision. */

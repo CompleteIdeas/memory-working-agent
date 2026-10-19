@@ -1,7 +1,7 @@
 /**
- * Fan-out budget for scheduling (BL-05, H-8). A run's `schedule` action ends the run, so one run
- * schedules at most once — but every fire of a recurring job can create another job, and every new
- * job can do the same, so the job count compounds; and a planned run's steps can each schedule.
+ * Fan-out budget for scheduling (BL-05, H-8). A run may schedule several jobs (BL-43: "two reminders" is
+ * two calls), every fire of a recurring job can create another job, and every new job can do the same,
+ * so the job count compounds; and a planned run's steps can each schedule.
  * Not a ban: a monitor legitimately schedules a one-off follow-up. These limits are STRUCTURAL (job
  * lineage, counts), not textual, so rewording "check back tomorrow" can't slip past them.
  *
@@ -9,7 +9,8 @@
  *              parent's depth + 1, and by any other unattended run (mailbox, inbox) depth 1.
  *              Nothing deeper than MAX_JOB_DEPTH.
  *   children   one job may have at most MAX_CHILDREN pending jobs it created.
- *   per run    a run — a planned run counts all its steps and retries — schedules at most MAX_PER_RUN.
+ *   per run    a run — a planned run counts all its steps and retries — schedules at most MAX_PER_RUN,
+ *              or MAX_PER_RUN_ATTENDED when a person is present in a clean chat ("set four reminders").
  *   pending    a run nobody watched, or one that read outside content, may not schedule while
  *              MAX_PENDING jobs are already waiting. A person in an attended, clean chat always may.
  *   per goal   a goal owns at most MAX_JOBS_PER_GOAL pending jobs, and a finished goal owns none.
@@ -17,6 +18,7 @@
 export const MAX_JOB_DEPTH = 2;
 export const MAX_CHILDREN = 2;
 export const MAX_PER_RUN = 3;
+export const MAX_PER_RUN_ATTENDED = 8;
 export const MAX_PENDING = 50;
 export const MAX_JOBS_PER_GOAL = 5;
 
@@ -50,7 +52,8 @@ export function fanoutRefusal(i: FanoutInput): string | null {
   if (i.goalClosed) return 'the goal this job would belong to is finished or no longer exists';
   if (i.depth > MAX_JOB_DEPTH) return `jobs created by jobs stop at ${MAX_JOB_DEPTH} levels — this would be level ${i.depth}`;
   if (i.isFire && i.childrenOfThisJob >= MAX_CHILDREN) return `this job already has ${i.childrenOfThisJob} follow-up jobs waiting (at most ${MAX_CHILDREN})`;
-  if (i.byThisRun >= MAX_PER_RUN) return `this run already scheduled ${i.byThisRun} jobs (at most ${MAX_PER_RUN})`;
+  const perRun = i.unattendedOrTainted ? MAX_PER_RUN : MAX_PER_RUN_ATTENDED;
+  if (i.byThisRun >= perRun) return `this run already scheduled ${i.byThisRun} jobs (at most ${perRun})`;
   if (i.goalJobs !== undefined && i.goalJobs >= MAX_JOBS_PER_GOAL) return `that goal already has ${i.goalJobs} jobs waiting (at most ${MAX_JOBS_PER_GOAL})`;
   if (i.unattendedOrTainted && i.pending >= MAX_PENDING) return `${i.pending} jobs are already waiting (an unattended run may add more only below ${MAX_PENDING})`;
   return null;

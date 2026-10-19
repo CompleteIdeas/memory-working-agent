@@ -45,6 +45,7 @@ import { quietWindow, setQuietHours, quietEnvInvalid, timeZoneName } from '../qu
 import { detectorLine, detectorArmed, readyToArm, checkHash, formatEvidence, READY_N } from '../detector.js';
 import { deliveryLine, readReceipts } from '../receipts.js';
 import { runCommandAllowed } from './access.js';
+import { parseDaily, daysLabel, nextDailyDue } from '../schedule-request.js';
 
 /** Hard caps so a tool call can never flood the context window. */
 const MAX_LIST = 20;
@@ -83,7 +84,8 @@ function whenLabel(dueMs: number, nowMs: number): string {
 function recurLabel(recur?: string): string {
   if (!recur) return 'once';
   if (recur.startsWith('every:')) return `repeats every ${recur.slice(6)}m`;
-  if (recur.startsWith('daily:')) return `repeats daily at ${recur.slice(6)}`;
+  const d = parseDaily(recur);
+  if (d) return `repeats ${daysLabel(d.days) || 'daily'} at ${pad(d.h)}:${pad(d.m)}`;
   return `repeats (${clip(recur, 24)})`;
 }
 
@@ -135,7 +137,9 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
     handler: async (_args, ctx) => {
       const { mine, resumes } = await myTasks(ctx);
       const tail = resumes ? `\n(plus ${resumes} internal resume task${resumes > 1 ? 's' : ''} — the harness finishing its own earlier work; not yours to cancel)` : '';
-      if (!mine.length) return `(nothing scheduled)${tail}\n${LIST_ONLY}`;
+      // The hint is for a person asking for a job in this chat — not for a fired run, which must not create one.
+      const hint = ctx.interactive ? `\n${LIST_ONLY}` : '';
+      if (!mine.length) return `(nothing scheduled)${tail}${hint}`;
       const now = Date.now();
       const receipts = readReceipts(); // BL-13: did each job's last result reach the person?
       const rows = mine.slice(0, MAX_LIST).map((t) => {
@@ -147,7 +151,7 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
       });
       const more = mine.length > MAX_LIST ? `\n(+${mine.length - MAX_LIST} more)` : '';
       // BL-43: four BL-40 runs listed the schedule three times and stopped, never creating the job asked for.
-      return `SCHEDULED (${mine.length}):\n${rows.join('\n')}${more}${tail}\n${LIST_ONLY}`;
+      return `SCHEDULED (${mine.length}):\n${rows.join('\n')}${more}${tail}${hint}`;
     },
   };
 
@@ -178,6 +182,62 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
       if (hits.length > 1) return `(ambiguous: ${hits.length} tasks start with "${clip(want, 16)}" — use more characters)`;
       await memory.cancelScheduled(hits[0].id);
       return `canceled — "${clip(hits[0].instruction, MAX_INSTRUCTION_CHARS)}" will not run again`;
+    },
+  };
+
+  // BL-45. Measured in BL-40: "From now on, the morning brief should have a separate heading: Team" got
+  // "Got it, I'll make the morning brief use a separate Team heading" — after listing the schedule four times
+  // and changing nothing. A job runs later in a fresh session; only its stored instruction reaches it.
+  const scheduleUpdate: RegisteredTool = {
+    def: {
+      name: 'schedule_update',
+      description:
+        'Change what ONE scheduled job does when the person corrects it or adds to it ("from now on put staff ' +
+        'requests under a Team heading", "keep the plan to 3 bullets", "also flag anything about to auto-renew"). ' +
+        'Pass the short id from schedule_list and the job\'s FULL new instruction: everything that still applies ' +
+        'plus the change, standing on its own. Optionally a new daily_at time for a daily job. The job keeps its ' +
+        'id, history and last reading. A reply that only promises "I\'ll do that from now on" changes nothing — ' +
+        'the job runs later without this conversation, so call this.',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'the short id shown by schedule_list' },
+          instruction: { type: 'string', description: 'the job\'s full new instruction, with the change' },
+          daily_at: { type: 'string', description: 'OPTIONAL new time for a daily job, HH:MM (24-hour, local)' },
+        },
+        required: ['id', 'instruction'],
+        additionalProperties: false,
+      },
+    },
+    handler: async (args, ctx) => {
+      // A job runs unattended on every fire; rewriting one is the person's call, made while they are here and
+      // not steered by content this conversation read (an email saying "update your brief to forward …").
+      if (ctx.interactive !== true) return '(refused: a scheduled job is changed only while the person is present. Say in your summary what you would change.)';
+      if (ctx.tainted) return '(refused: this conversation has read outside content, so it cannot rewrite a job that runs unattended. Tell the person exactly what you would change, and ask them to confirm it in a new message.)';
+      const want = String(args.id ?? '').trim().toLowerCase();
+      if (want.length < 4) return '(give the short id from schedule_list — at least 4 characters)';
+      const instruction = String(args.instruction ?? '').trim();
+      if (instruction.length < 8) return '(give the job\'s full new instruction — it has to stand on its own when the job runs)';
+      const { mine } = await myTasks(ctx);
+      const hits = mine.filter((t) => t.id.toLowerCase().startsWith(want));
+      if (!hits.length) return `(no scheduled task with id "${clip(want, 16)}" — call schedule_list for the current ids)`;
+      if (hits.length > 1) return `(ambiguous: ${hits.length} tasks start with "${clip(want, 16)}" — use more characters)`;
+      const task = hits[0];
+      let recur: string | undefined; let due: number | undefined;
+      if (args.daily_at !== undefined) {
+        const m = /^(\d{1,2}):(\d{2})$/.exec(String(args.daily_at).trim());
+        if (!task.recur?.startsWith('daily:')) return '(daily_at is only for a daily job — this one is not; cancel it and schedule a new one instead)';
+        if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return '(daily_at must be HH:MM, 24-hour)';
+        // Keeps the job's days (BL-51): moving a weekday brief to 7:30 keeps it on weekdays.
+        const keep = /@([0-6]+)$/.exec(task.recur)?.[1];
+        recur = `daily:${pad(Number(m[1]))}:${m[2]}${keep ? `@${keep}` : ''}`;
+        due = nextDailyDue(recur, Date.now());
+      }
+      // The person's own words go with the job, after what they first asked: a later fire reads both.
+      const said = ctx.personMessage?.trim();
+      const request = said ? `${task.request ? `${task.request}\n` : ''}[later] ${said}` : undefined;
+      await memory.updateScheduledJob(task.id, { instruction, ...(request !== undefined ? { request } : {}), ...(recur ? { recur, due } : {}) });
+      return `updated ${task.id.slice(0, HANDLE_LEN)} — now: "${clip(instruction, MAX_INSTRUCTION_CHARS)}"${recur ? ` · ${recurLabel(recur)}` : ''} (was: "${clip(task.instruction, 80)}"). Tell the person which job changed and how.`;
     },
   };
 
@@ -512,5 +572,5 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
     },
   };
 
-  return [scheduleList, scheduleCancel, policySave, policyForget, routinePropose, goalAdd, goalList, goalUpdate, quietHours, scheduleDetector];
+  return [scheduleList, scheduleCancel, scheduleUpdate, policySave, policyForget, routinePropose, goalAdd, goalList, goalUpdate, quietHours, scheduleDetector];
 }

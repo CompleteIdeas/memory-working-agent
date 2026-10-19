@@ -32,6 +32,8 @@ export interface ToolContext {
   runId?: string;
   /** the conversation this run belongs to (e.g. `tg-<chatId>`): where an approval is offered. */
   session?: string;
+  /** BL-45: the person's own message this turn, when a person is present — what a job change is kept as. */
+  personMessage?: string;
 }
 
 export interface RegisteredTool {

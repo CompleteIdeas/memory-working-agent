@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { runCommandAllowed } from './tools/access.js';
 import type { Provider } from './provider.js';
 import type { MwaMemory, ScheduledTask, JobLastRun } from './awm.js';
-import { friendlyWhen } from './schedule-request.js';
+import { friendlyWhen, nextDailyDue } from './schedule-request.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { runAgent } from './agent.js';
 import { detectorArmed, scoreDryRun } from './detector.js';
@@ -142,10 +142,11 @@ async function recordObservation(deps: SchedulerDeps, task: ScheduledTask, value
   if (!mem.enabled) return undefined;
   const what = (task.task ?? task.instruction).replace(/\s+/g, ' ').slice(0, 160);
   const concept = `observed: ${what.slice(0, 60)}`;
+  // A dated record, not a claim of precedence: the answer weighs it against other sources by date (the NEWER
+  // BEATS OLDER rule), and the value itself came from an outside page (BL-43 review).
   const content = `${friendlyWhen(at)}: the scheduled job "${what}" read its source and found: ${value}.`
-    + (prev?.value !== undefined ? ` Before that, on ${friendlyWhen(prev.valueAt ?? prev.at)}, it was ${prev.value}.` : '')
-    + ' This was read from the source itself, so it is newer than a calendar entry, note or older email that says otherwise.';
-  const tags = ['topic=observation', `job=${(task.resumeOf ?? task.id).slice(0, 8)}`, 'confidence_level=verified'];
+    + (prev?.value !== undefined ? ` Before that, on ${friendlyWhen(prev.valueAt ?? prev.at)}, it was ${prev.value}.` : '');
+  const tags = ['topic=observation', `job=${(task.resumeOf ?? task.id).slice(0, 8)}`, 'confidence_level=observed'];
   // canonical is the salience FLOOR, not trust (as for scheduled tasks): the observation reads much like the
   // job's own stored instruction, and the novelty filter discarded it as a near-duplicate. Trust stays ingested.
   const opts = { eventType: 'surprise' as const, provenance: 'ingested' as const, origin: 'scheduled job', global: true, canonical: true };
@@ -155,14 +156,10 @@ async function recordObservation(deps: SchedulerDeps, task: ScheduledTask, value
   } catch { return undefined; }
 }
 
-/** Next due (epoch ms) for a recurring spec ("every:<min>" or "daily:HH:MM"). */
+/** Next due (epoch ms) for a recurring spec ("every:<min>", "daily:HH:MM", or "daily:HH:MM@<days>" — BL-51). */
 function nextRecur(recur: string, fromMs: number): number {
   if (recur.startsWith('every:')) return fromMs + Number(recur.slice(6)) * 60_000;
-  if (recur.startsWith('daily:')) {
-    const [h, m] = recur.slice(6).split(':').map(Number);
-    const d = new Date(fromMs); d.setHours(h || 0, m || 0, 0, 0);
-    let due = d.getTime(); if (due <= fromMs) due += 86_400_000; return due;
-  }
+  if (recur.startsWith('daily:')) return nextDailyDue(recur, fromMs);
   return fromMs + 60_000;
 }
 
@@ -262,7 +259,7 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     let r; let ranOk = false;
     try {
       // A resume continues an unfinished run — never re-plan it (it already says "do only the
-      // remaining work"). Fresh scheduled tasks plan automatically if complex.
+      // remaining work"). A one-off task plans automatically if complex; a recurring job does not (BL-43 review: a planned fire lost its reading, and BL-40 measured a one-step check split into 3-4 sub-runs).
       // AS THE OWNER. Without personId the run is the shared `unknown` profile, so a task owned by
       // tg-1000000001 is invisible to its own run: schedule_list shows nothing and a recurring task
       // cannot cancel itself once the thing it watches has happened. It also leaks the other way —
@@ -272,7 +269,7 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       // dueNow: tell the run the timing is already settled (a resume carries its own framing, and
       // "do only the remaining work" must not be overridden by "do it all now").
       // extraRoots: the folder the task was created in, so a baked-in absolute path still resolves.
-      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
+      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt || task.recur ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
       ranOk = true;
     } catch (e) {
       r = { summary: `failed: ${(e as Error).message.slice(0, 120)}`, reason: 'error', steps: 0, toolCalls: 0, costUsd: 0, durationMs: 0 } as any;
@@ -292,6 +289,7 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     let outcome = String((r as { outcome?: string }).outcome ?? (r.reason === 'done' ? 'changed' : 'could-not'));
     let completion: 'candidate' | 'stopped' | undefined;
     let summary = r.summary;
+    let overridden = false; // the outcome below is the job record's, not the run's own word
     // BL-44: the job's own record of its last good run — a watch's value and its changes, a brief's "since".
     // A failed run keeps the last good record: "couldn't open the page" is not a new reading.
     if (ranOk && !task.resumeAttempt && outcome !== 'could-not' && outcome !== 'blocked' && deps.memory.setJobLastRun) {
@@ -306,11 +304,13 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
         if (changed) {
           // The change is news whatever the run called it, and it is said with both values (BL-40: "no change"
           // the day roses went from $1.10 to $1.45).
-          if (outcome === 'no-change') outcome = 'changed';
+          if (outcome === 'no-change') { outcome = 'changed'; overridden = true; }
           if (!String(summary).includes(prev!.value!)) summary += `\n\n(Changed since ${friendlyWhen(prev!.valueAt ?? prev!.at)}: it was ${prev!.value}; it is now ${val}.)`;
-        } else if (prev?.value !== undefined && (task.deliver ?? 'always') === 'changed' && outcome === 'changed') {
-          // The same reading as last time, for a job told to report only changes: quiet.
-          outcome = 'no-change';
+        } else if (prev?.value !== undefined && (task.deliver ?? 'always') === 'changed' && outcome === 'changed'
+          && !((r as { staged?: string[] }).staged?.length) && !Number((r as { actionsTaken?: number }).actionsTaken)) {
+          // The same reading as last time, for a job told to report only changes: quiet — unless the run did
+          // something or staged something, which is news of its own (BL-43 review).
+          outcome = 'no-change'; overridden = true;
         }
         if (prev?.value === undefined || changed) {
           const obs = await recordObservation(deps, task, val, changed ? prev : undefined, now());
@@ -337,7 +337,8 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     let detectorNews: string | undefined;
     // Only an outcome the run itself DECLARED is evidence — a derived one leans to "changed" (any tool
     // call counts), which would score a correct detector as missing a change every quiet fire.
-    const declared = (r as { outcomeDeclared?: boolean }).outcomeDeclared === true;
+    // An outcome the job record overrode is not the run's declaration (BL-43 review: it would train the detector).
+    const declared = (r as { outcomeDeclared?: boolean }).outcomeDeclared === true && !overridden;
     if (newSig && !armed && deps.memory.recordDryRun) {
       const score = dry ? (declared ? scoreDryRun(dry.wouldSkip, outcome) : 'inconclusive') : null; // null: the bootstrap
       const rec = await deps.memory.recordDryRun(task.id, { score, sig: newSig, prevSig: task.lastSig });
