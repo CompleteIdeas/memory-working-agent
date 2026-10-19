@@ -81,3 +81,15 @@ describe('the coding worker stays in its sandbox (BL-29)', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 30_000);
 });
+
+describe('the worker reports what a check kept it from writing (BL-38)', () => {
+  it('refused paths are listed, so the run counts a refusal', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mwa-bl38w-'));
+    try {
+      const box = join(root, 'sandbox'); mkdirSync(box);
+      const r = await runWorker(writes([{ path: '../sandbox-x/escape.txt', content: 'x' }, { path: '.git/hooks/pre-commit', content: 'x' }, { path: 'ok.txt', content: 'x' }]), { instruction: 'w', testCmd: 'node -e "0"' }, box);
+      expect(r.filesWritten).toEqual(['ok.txt']);
+      expect(r.refused).toEqual(['../sandbox-x/escape.txt', '.git/hooks/pre-commit']);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 30_000);
+});

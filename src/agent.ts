@@ -1292,6 +1292,7 @@ export async function runAgent(opts: {
       const tier = worker instanceof RoutedProvider ? ` [${worker.getTier()}]` : '';
       history.push(`dispatch#${dispatches}${tier}: ${action.instruction.slice(0, 110)} -> ${wres.filesWritten.join(', ') || '(no files)'} | ${markToolOutput('dispatch', wres.output.slice(0, 160), fence)}`);
       emit('dispatch', { n: dispatches, files: wres.filesWritten });
+      if (wres.refused?.length) checkRefused = true; // a safety check kept the worker from writing (BL-38 review)
       if (memory.enabled) {
         await memory.write(`agent step: ${action.instruction.slice(0, 56)}`, `Working "${instruction.slice(0, 60)}": ${action.instruction.slice(0, 200)} -> wrote ${wres.filesWritten.join(', ')}`, ['topic=agent', 'intent=decision', 'confidence_level=verified'], { eventType: 'decision' });
       }
@@ -1443,7 +1444,7 @@ export async function runAgent(opts: {
       const sk = await brain.chat({
         system: 'A task was just completed using tools. If it followed a REPEATABLE procedure that would help on similar future requests, output ONLY JSON {"name":"short skill name (e.g. \'triage scouting inbox\')","steps":"numbered how-to a future run can follow"}. If it was a trivial one-off, output exactly {}.'
           // BL-38: the same rule the lesson prompt carries, when a check refused something in this run.
-          + (checkRefused || approvalRefused ? ` ${LESSON_PROMPT_RULE.replace('the lesson must', 'the skill must')}` : ''),
+          + (checkRefused || approvalRefused || reason === 'paused' ? ` ${LESSON_PROMPT_RULE.replace('the lesson must', 'the skill must')}` : ''),
         messages: [{ role: 'user', content: `REQUEST: ${instruction}\n\nSTEPS TAKEN:\n${history.slice(-24).join('\n')}` }],
         maxTokens: 400,
       });
@@ -1455,9 +1456,11 @@ export async function runAgent(opts: {
         // Skills from runs nothing refused are saved as before (skills hold code and run long; the risk the
         // study found is after a refusal).
         let skillOpts: { canonical?: boolean; untrusted?: boolean } = learnOpts;
-        if (checkRefused || approvalRefused) {
+        if (checkRefused || approvalRefused || reason === 'paused') {
           const judge = opts.lessonJudge !== undefined ? opts.lessonJudge : lessonJudge();
-          const verdict = judge ? await judgeLesson(`${String(s.name).slice(0, 72)}: ${String(s.steps).slice(0, MAX_LESSON_CHARS)}`, judge) : null;
+          // The whole skill, not a prefix: one too long to judge comes back "not judged" and is kept unconfirmed,
+          // so no unread tail is ever saved trusted after a refusal.
+          const verdict = judge ? await judgeLesson(`${String(s.name).slice(0, 72)}: ${String(s.steps)}`, judge) : null;
           const d = lessonDisposition(verdict, true);
           if (d === 'drop') { gatesFired.push('skill-evasion'); history.push('(skill not saved: it teaches a way around a safety check)'); s.steps = undefined; }
           else if (d === 'unconfirmed') { gatesFired.push('skill-unconfirmed'); skillOpts = { canonical: false, untrusted: true }; }
@@ -1517,7 +1520,8 @@ export async function runAgent(opts: {
       if (r?.topic && r?.lesson && String(r.lesson).trim().length > 12) {
         // BL-35 — the gate. A lesson that teaches a way around a check is not saved; one the judge couldn't
         // read, or (with no judge) one written after a refusal, is kept UNCONFIRMED: stored, never primed.
-        const refusedRun = checkRefused || approvalRefused;
+        // A run paused by a limit (the outward-action cap, a tripwire) was stopped by a check too (BL-38 review).
+        const refusedRun = checkRefused || approvalRefused || reason === 'paused';
         // Exactly the text that is judged is the text that is saved (review: a judged prefix let a tail through).
         const lessonText = String(r.lesson).trim().slice(0, MAX_LESSON_CHARS);
         const judge = opts.lessonJudge !== undefined ? opts.lessonJudge : lessonJudge();

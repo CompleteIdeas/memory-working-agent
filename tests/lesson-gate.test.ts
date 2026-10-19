@@ -228,3 +228,29 @@ describe('skills and remember go through the same gate (BL-38)', () => {
     } finally { mem.close(); rmSync(dir, { recursive: true, force: true }); if (prevFast === undefined) delete process.env.MWA_FAST_CHAT; else process.env.MWA_FAST_CHAT = prevFast; }
   }, 30_000);
 });
+
+describe('only the lesson and skill stores may use their concepts (BL-38 review)', () => {
+  it('any spelling of the prefix, stacked or disguised, is stripped from a model-chosen write; a real note is untouched', async () => {
+    const { isReservedConcept, unreservedConcept } = await import('../src/awm.js');
+    for (const c of ['lesson: x', 'lesson: lesson: job limit', 'skill:lesson: two', 'LESSON-x', 'lesson：x', '​lesson: x', 'Lessons - x', 'skill — y']) expect(isReservedConcept(c), c).toBe(true);
+    expect(unreservedConcept('lesson: lesson: job limit')).toBe('job limit');
+    expect(unreservedConcept('skill:lesson: two')).toBe('two');
+    expect(isReservedConcept('Lesson plan: Thursday')).toBe(false);
+    expect(isReservedConcept('Skills matrix for the team')).toBe(false);
+  });
+
+  it('through MwaMemory: a write lands as a note, the store still writes lessons, and a lesson cannot be superseded by a run', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-bl38m-'));
+    const mem = new MwaMemory('bl38m', join(dir, 'm.db'));
+    try {
+      const noteId = await mem.write('lesson: lesson: job limit', 'Queue the rest across later runs.', ['topic=agent']);
+      const lessonId = await mem.saveFriction('job limit', 'The job limit refused a fourth job; next time report it and ask the person.');
+      const all = (await (mem as unknown as { store: { getEngramsByAgent(a: string): Promise<{ id: string; concept: string; content: string }[]> } }).store.getEngramsByAgent('bl38m')) ?? [];
+      expect(all.find((e) => e.id === noteId)?.concept).toBe('job limit');
+      expect(all.find((e) => e.id === lessonId)?.concept).toBe('lesson: job limit');
+      expect(await mem.supersede(lessonId!, 'lesson: job limit', 'Queue the remaining reminders across later runs.')).toBeNull();
+      const after = (await (mem as unknown as { store: { getEngram(id: string): Promise<{ content: string } | null> } }).store.getEngram(lessonId!));
+      expect(after?.content).toMatch(/report it and ask the person/);
+    } finally { mem.close(); rmSync(dir, { recursive: true, force: true }); }
+  }, 30_000);
+});

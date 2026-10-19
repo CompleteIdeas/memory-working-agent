@@ -27,6 +27,9 @@ export interface WorkerResult {
   pass: boolean;
   output: string;
   filesWritten: string[];
+  /** files a safety check kept the worker from writing (outside the sandbox, .git, a startup folder …) — the
+   *  run counts these as a refusal, so its lesson and skill go through the BL-35 gate (BL-38 review). */
+  refused?: string[];
   usage: { input: number; output: number };
   raw: string;
 }
@@ -107,16 +110,16 @@ export async function runWorker(
     };
   }
 
-  const written: string[] = [];
+  const written: string[] = []; const refused: string[] = [];
   for (const f of files) {
     if (!f.path || typeof f.content !== 'string') continue;
     // Inside the sandbox by REAL path, with a separator: `sandbox-x` is a sibling, and a link inside the
     // sandbox must not carry the write elsewhere (BL-29) — the same check write_file makes.
     const target = resolve(sandboxDir, f.path);
-    if (!insideReal(sandboxDir, target)) continue;
+    if (!insideReal(sandboxDir, target)) { refused.push(f.path); continue; }
     // Never overwrite the grader — by real path too, so `src/../test.mjs`, `TEST.MJS` or a link to it can't.
     if (protect.some((p) => insideReal(resolve(sandboxDir, p), target))) continue;
-    if (writeRefusal(target)) continue; // .git / hooks, streams, short names (BL-14a)
+    if (writeRefusal(target)) { refused.push(f.path); continue; } // .git / hooks, streams, short names (BL-14a)
     // A path naming a folder (the sandbox itself, `src`) or under a dangling link is skipped, not fatal.
     try {
       mkdirSync(dirname(target), { recursive: true });
@@ -130,6 +133,7 @@ export async function runWorker(
     pass: run.code === 0,
     output: `[exit ${run.code}]\n${run.stdout}\n${run.stderr}`.trim().slice(0, 4000),
     filesWritten: written,
+    ...(refused.length ? { refused } : {}),
     usage: res.usage,
     raw: res.text.slice(0, 500),
   };

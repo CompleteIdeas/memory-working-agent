@@ -95,6 +95,22 @@ export interface WriteOpts {
   noMerge?: boolean;
   /** INTERNAL — set only by promoteRoutine: this write is the skill a person promoted from that routine. */
   promotedOf?: string;
+  /** INTERNAL — the lesson and skill stores' own writes (saveFriction, saveSkill, promoteRoutine): only
+   *  these may use a `lesson:` / `skill:` concept (BL-38). */
+  reservedConcept?: boolean;
+}
+
+/** A concept the lesson or skill store owns, however it is spelled: "lesson:", "Lessons -", "SKILL：", with
+ *  a zero-width character in front, stacked ("lesson: lesson: x"). Auto-prime treats these as lessons and
+ *  skills, so a model-chosen write under one would skip the BL-35 gate (BL-38 review). */
+const RESERVED_CONCEPT = /^(?:lessons?|skills?)\s*[:：\-–—]/i;
+const normConcept = (c: string) => String(c).normalize('NFKC').replace(/[​-‍⁠﻿]/g, '').trim();
+export function isReservedConcept(concept: string): boolean { return RESERVED_CONCEPT.test(normConcept(concept)); }
+/** The concept without any reserved prefix, however many are stacked. */
+export function unreservedConcept(concept: string): string {
+  let c = normConcept(concept);
+  while (RESERVED_CONCEPT.test(c)) c = c.replace(RESERVED_CONCEPT, '').trim();
+  return c || 'note';
 }
 
 /** One recorded action the agent took (the "what it did" history + undo substrate). */
@@ -370,6 +386,9 @@ export class MwaMemory implements Memory {
   }
 
   async write(concept: string, content: string, tags: string[] = [], opts: WriteOpts = {}): Promise<string | null> {
+    // Every model-chosen write comes through here (remember, auto-learn, recorded changes, the MCP memory
+    // tools): none may land under a lesson or skill concept (BL-38).
+    if (!opts.reservedConcept && isReservedConcept(concept)) concept = unreservedConcept(concept);
     try {
       await this.init();
       // SPINE: stamp provenance + trust OUT OF BAND. Strip any reserved tags a caller (or the
@@ -527,6 +546,9 @@ export class MwaMemory implements Memory {
       await this.init();
       const old: any = oldId ? await this.store.getEngram(oldId) : null;
       if (old && this.parseTags(old.tags).some((t: string) => String(t).startsWith('promoted='))) return null;
+      // A lesson or skill is the gated stores' own — a run can't rewrite one in place (BL-38 review: a refused
+      // run superseded a trusted lesson with "queue the rest across later runs", and it stayed trusted).
+      if (old && isReservedConcept(String(old.concept ?? '')) && !opts.reservedConcept) return null;
     } catch { /* fall through: the write below is guarded again */ }
     // The caller's canonical/provenance win: a tainted run must not be able to replace a trusted fact
     // with a canonical one (BL-17 review). Canonical stays the default for ordinary corrections.
@@ -928,7 +950,7 @@ export class MwaMemory implements Memory {
    *  auto-prime recalls it on similar future tasks — the agent learns HOW, not just WHAT. */
   async saveSkill(name: string, steps: string, opts: LearnOpts = {}): Promise<string | null> {
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
-    return this.write(`skill: ${name}`.slice(0, 80), steps, ['topic=skill', `skill=${slug}`, 'intent=procedural', 'confidence_level=observed'], { canonical: opts.canonical ?? true, eventType: 'observation', global: true, ...(opts.untrusted ? { provenance: 'ingested' as const } : {}) });
+    return this.write(`skill: ${name}`.slice(0, 80), steps, ['topic=skill', `skill=${slug}`, 'intent=procedural', 'confidence_level=observed'], { reservedConcept: true, canonical: opts.canonical ?? true, eventType: 'observation', global: true, ...(opts.untrusted ? { provenance: 'ingested' as const } : {}) });
   }
 
   /** REFLEXION: record a verbal failure reflection as a canonical memory tagged topic=friction
@@ -936,7 +958,7 @@ export class MwaMemory implements Memory {
    *  counterpart of saveSkill — the agent learns from what went wrong, not just what worked. */
   async saveFriction(topic: string, lesson: string, opts: LearnOpts = {}): Promise<string | null> {
     const slug = topic.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
-    return this.write(`lesson: ${topic}`.slice(0, 80), lesson, ['topic=friction', `about=${slug}`, ...(opts.area ? [`area=${opts.area}`] : []), 'intent=finding', 'confidence_level=observed'], { canonical: opts.canonical ?? true, eventType: 'friction', global: true, ...(opts.untrusted ? { provenance: 'ingested' as const } : {}) });
+    return this.write(`lesson: ${topic}`.slice(0, 80), lesson, ['topic=friction', `about=${slug}`, ...(opts.area ? [`area=${opts.area}`] : []), 'intent=finding', 'confidence_level=observed'], { reservedConcept: true, canonical: opts.canonical ?? true, eventType: 'friction', global: true, ...(opts.untrusted ? { provenance: 'ingested' as const } : {}) });
   }
 
   /** Failure lessons the agent has recorded, for the UI "Lessons" view. */
@@ -1083,7 +1105,7 @@ export class MwaMemory implements Memory {
       const version = get('version=');
       const skillId = await this.write(`skill: ${name} (promoted ${version})`.slice(0, 80), String(e.content ?? ''),
         ['topic=skill', `skill=${get('routine=')}`, 'intent=procedural', 'confidence_level=verified'],
-        { canonical: true, eventType: 'decision', global: true, noMerge: true, provenance: 'user', promotedOf: id });
+        { canonical: true, eventType: 'decision', global: true, noMerge: true, provenance: 'user', promotedOf: id, reservedConcept: true });
       if (!skillId) return { ok: false, error: 'the memory filter declined to save it' };
       await this.setScheduledTags(id, (tags) => [...tags.filter((x) => !x.startsWith('status=') && !x.startsWith('skillid=')), 'status=active', `skillid=${skillId}`]);
       return { ok: true, name, version: get('version=') };
