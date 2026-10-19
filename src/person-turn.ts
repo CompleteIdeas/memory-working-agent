@@ -15,6 +15,7 @@ import { intakeHint } from './person-intake.js';
 import { assessIdentity, identityGuidance, stepUpGuidance, type IdentityAssessment } from './person-identity.js';
 import { learnAboutPerson, compressPersonDossier } from './person-learn.js';
 import { markSuspicious, isSuspicious } from './step-up.js';
+import { MEMORY_OFF } from './memory-off.js';
 
 export interface PersonContext { text?: string; identity: IdentityAssessment }
 
@@ -39,7 +40,8 @@ export interface PreparedPerson { personId: string; name?: string; personContext
 export async function preparePersonTurn(memory: MwaMemory, ref: PersonRef, message: string, opts: { channelVerified?: boolean } = {}): Promise<PreparedPerson> {
   const personId = resolvePersonId(ref);
   const name = ref.name;
-  if (process.env.MWA_PERSON_PROFILE === '0') return { personId, name, mismatch: false, reasons: [], notes: 0 };
+  // Off by switch, or with memory off: a person profile is memory (MWA_MEMORY=off, src/memory-off.ts).
+  if (process.env.MWA_PERSON_PROFILE === '0' || MEMORY_OFF) return { personId, name, mismatch: false, reasons: [], notes: 0 };
   try {
     const profile = await memory.recallPersonProfile(personId);
     if (opts.channelVerified && personId !== 'unknown' && !profile.some((n) => n.field === 'verified-contact')) {

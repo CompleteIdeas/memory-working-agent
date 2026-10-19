@@ -117,6 +117,9 @@ export interface ActionRecord {
 
 export interface Memory {
   readonly enabled: boolean;
+  /** Keeps scheduled jobs although `enabled` is false (MWA_MEMORY=off, src/memory-off.ts): the jobs are
+   *  the cron, not memory. */
+  readonly keepsSchedules?: boolean;
   recall(query: string, opts?: { limit?: number; workspace?: string; full?: boolean; fast?: boolean; rerank?: boolean; expand?: boolean; namespace?: string }): Promise<RecalledMemory[]>;
   write(concept: string, content: string, tags?: string[], opts?: WriteOpts): Promise<string | null>;
   supersede(oldId: string, concept: string, content: string, tags?: string[], opts?: WriteOpts): Promise<string | null>;

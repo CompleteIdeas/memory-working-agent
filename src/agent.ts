@@ -474,7 +474,10 @@ export async function runAgent(opts: {
   }
   const tx: Transcript | undefined = typeof opts.transcript === 'object' ? opts.transcript : undefined;
 
-  if (!opts.subRun && memory.enabled && process.env.MWA_PLAN !== 'off' && (opts.plan ?? isComplexTask(instruction))) {
+  // MWA_MEMORY=off (src/memory-off.ts) turns off what memory KNOWS, not the rest of the harness: planning,
+  // scheduling and the action log with its tripwire stay, so the promise assessment's arm B differs only in memory.
+  const harnessOn = memory.enabled || memory.keepsSchedules === true;
+  if (!opts.subRun && harnessOn && process.env.MWA_PLAN !== 'off' && (opts.plan ?? isComplexTask(instruction))) {
     return runPlanned(opts);
   }
 
@@ -1134,7 +1137,7 @@ export async function runAgent(opts: {
       continue;
     }
 
-    if (action.action === 'schedule' && action.instruction && memory.enabled) {
+    if (action.action === 'schedule' && action.instruction && harnessOn) {
       // GUARD: an unattended run re-creating its OWN task. A fired task whose stored instruction kept
       // the scheduling language reads "just schedule it for later" and obliges — and on a recurring
       // task that is a loop that burns a model call every interval and never does the work. Measured
@@ -1313,7 +1316,7 @@ export async function runAgent(opts: {
         const method = String((args as Record<string, unknown>).method ?? 'GET').toUpperCase();
         if (!((action.action === 'http_request' && (method === 'GET' || method === 'HEAD')) || action.action === 'read_document')) wroteSomething = true;
       }
-      if (memory.enabled && !refused && isSensitive(action.action)) {
+      if (harnessOn && !refused && isSensitive(action.action)) {
         const rec = { verb: action.action.replace(/_/g, ' '), tool: action.action, effect: effectOf(action.action) };
         runActions.push(rec);
         try { await memory.logAction({ verb: rec.verb, summary: result.slice(0, 200).replace(/\n/g, ' '), effect: rec.effect, tool: rec.tool }); } catch { /* */ }

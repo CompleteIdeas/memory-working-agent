@@ -19,6 +19,7 @@ import type { MwaConfig } from './config.js';
 import { getProvider, type Provider } from './provider.js';
 import { RoutedProvider } from './model-router.js';
 import { MwaMemory } from './awm.js';
+import { agentMemory } from './memory-off.js';
 import { buildRegistry } from './tools/build.js';
 import { runAgent } from './agent.js';
 
@@ -179,7 +180,7 @@ export async function processInbox(opts: {
           // The person's own words, without MWA's line above — which asks for files, and would make every
           // inbox task read as a request to write (BL-36 review 3).
           userMessage: instruction,
-          dir: workDir, memory, brain, worker, tools: registry,
+          dir: workDir, memory: agentMemory(memory), brain, worker, tools: registry,
           workspace: opts.config.awm.workspace,
           session: `task-${id}`,
           // A file dropped in the inbox is unattended in every sense. It was left UNSET, and the shared

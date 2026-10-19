@@ -11,6 +11,7 @@ import { loadMcpServers } from './mcp.js';
 import { installerTools } from './installer.js';
 import { onboardTools } from './onboard.js';
 import { memoryTools } from './memory.js';
+import { MEMORY_OFF, KNOWLEDGE_TOOLS } from '../memory-off.js';
 import { workTools } from './work.js';
 import { knowledgeTools } from './knowledge.js';
 import { checkTools } from './checks.js';
@@ -44,11 +45,13 @@ export async function buildRegistry(
   // talking to, the shape of its own store, and recall feedback. MwaMemory implemented
   // these long before anything could call them; see src/tools/memory.ts for why that
   // mattered more than it sounds.
-  registry.registerAll(memoryTools(memory));
+  // MWA_MEMORY=off (src/memory-off.ts): the tools that read or write what memory knows are not offered.
+  const known = (ts: ReturnType<typeof memoryTools>) => (MEMORY_OFF ? ts.filter((t) => !KNOWLEDGE_TOOLS.has(t.def.name)) : ts);
+  registry.registerAll(known(memoryTools(memory)));
   // Work tools — the agent's own scheduled automations, standing preferences and saved procedures.
   // Same gap as the memory tools one layer out: it could CREATE a recurring task but never see or
   // stop one. See src/tools/work.ts for why the policy writers are the gated ones.
-  registry.registerAll(workTools(memory));
+  registry.registerAll(known(workTools(memory)));
   // Knowledge store (opt-in via MWA_KNOWLEDGE_DIR). These were written and exported and
   // then never registered, so `knowledge_write`/`knowledge_list` existed as dead code —
   // the agent could not call either. Registering them is the whole fix.

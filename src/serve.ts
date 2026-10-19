@@ -83,6 +83,7 @@ import { status, testAnthropic, testAzure, testTelegram, testProvider, envKeyFor
 import { disconnectGoogle } from './connectors/google.js';
 import { disconnectMicrosoft } from './connectors/microsoft.js';
 import { awmCliPath, loadEmbeddings, loadPostgresStore } from './awm-api.js';
+import { MEMORY_OFF, agentMemory } from './memory-off.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 // dist-ui sits next to dist/ (built) or at repo root in dev.
@@ -162,7 +163,7 @@ async function resolveOpenQuestionsBg(): Promise<void> {
   const cfg = loadConfig();
   const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
   const memory = new MwaMemory(SERVE_AGENT, dbPath, cfg.awm.workspace);
-  const open = (await memory.listOpenQuestions()).slice(0, 3);
+  const open = MEMORY_OFF ? [] : (await memory.listOpenQuestions()).slice(0, 3); // memory off: no open questions
   if (!open.length) { memory.close(); return; }
   const brain = new RoutedProvider(getProvider('brain'), getProvider('high'));
   const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
@@ -388,7 +389,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     if (prepared.mismatch) send('identity', { level: 'mismatch' });
 
     const r = await runAgent({
-      instruction, userMessage: message, dir: s.dir, memory, brain, worker, tools: registry, transcript: true, // BL-10
+      instruction, userMessage: message, dir: s.dir, memory: agentMemory(memory), brain, worker, tools: registry, transcript: true, // BL-10
       ...(ctx && ctxTainted ? { carried: `Recent conversation so far:\n${ctx}`, startTainted: true } : {}),
       workspace: cfg.awm.workspace, session: sessionId, interactive: true, // a human is watching → ask_user can ask them
       style: cfg.style, // guided (proactive/plain) vs direct (concise) — independent of access preset
@@ -404,7 +405,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     // S3/S5 — LEARN durable facts about this person + recompress their dossier (suppressed for the
     // shared 'unknown' profile and on an identity mismatch). Runs after the reply is sent.
     // Not from a reply that read external content: person notes are primed into every turn with them.
-    const learned = r.tainted ? 0 : await learnFromTurn(brain, memory, prepared, message, r.summary);
+    const learned = r.tainted || MEMORY_OFF ? 0 : await learnFromTurn(brain, memory, prepared, message, r.summary);
     if (learned) send('learned', { about: prepared.personId, count: learned });
   } catch (e) {
     logger.error('chat', 'agent run failed', { session: sessionId, error: (e as Error).message.slice(0, 200) });
@@ -1146,7 +1147,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       const { registry } = await buildRegistry(cfg, memory);
       console.log('  ⏰ scheduler on — say e.g. "every day at 8am, summarize my inbox"');
       await runScheduler({
-        memory, brain, worker, tools: registry,
+        memory, brain, worker, tools: registry, agentMemory: agentMemory(memory),
+        // Eval only: a faster tick for the accelerated-clock assessment (MWA_SCHEDULER_TICK_MS, at least 1 s).
+        ...(Number(process.env.MWA_SCHEDULER_TICK_MS) >= 1000 ? { intervalMs: Number(process.env.MWA_SCHEDULER_TICK_MS) } : {}),
         outRoot: resolve(cfg.workspace ?? './mwa-workspace', 'scheduled'),
         onFire: async (task, r) => {
           // Carry the real numbers. The chat card for a fired task was built from this record with
