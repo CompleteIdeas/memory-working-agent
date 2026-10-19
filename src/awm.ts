@@ -367,7 +367,9 @@ export class MwaMemory implements Memory {
       const want = opts.limit ?? 5;
       const ns0 = opts.namespace ?? this.currentNamespace;
       const ns = ns0 ? nsSlug(ns0) : undefined;
-      const results = await this.activation.activate({
+      // Not routines or the action log (below). Fetched at the size asked, and again with 8 more only when the filter
+      // dropped some from a full page — over-fetching every recall grew the reranker's pool by a third (BL-54 review).
+      const activate = (limit: number) => this.activation.activate({
         agentId: this.agentId,
         context: query,
         // F5: when scoping to a topic, over-fetch generously then post-filter so we still return
@@ -375,7 +377,7 @@ export class MwaMemory implements Memory {
         // corpus an in-scope fact ranked beyond the over-fetch window can be missed (a false negative,
         // never a cross-topic bleed). Scoped recall is opt-in; the proper fix (push ns= into the
         // activation query) is the follow-on.
-        limit: ns ? want * 8 + 24 : want,
+        limit,
         minScore: 0.05,
         // Default = RERANK-ONLY (rerank on, query-expansion OFF). Measured: expansion recovers
         // ZERO needles rerank-only misses even on heavy-paraphrase/vocab-mismatch queries (its
@@ -392,14 +394,20 @@ export class MwaMemory implements Memory {
         workspace: opts.workspace ?? this.workspace,
         internal: true,
       });
+      const kept = (rows: any[]) => rows.filter((r: any) => { const t = this.parseTags(r.engram.tags); return !t.includes('topic=routine') && !t.includes('topic=action-log'); });
+      let results = await activate(ns ? want * 8 + 24 : want);
+      if (!ns && results.length >= want && kept(results).length < want) results = await activate(want + 8);
       // F5 namespace scope: keep facts in THIS topic OR global (no ns=), drop OTHER topics — the
       // no-bleed guarantee. Global facts (user prefs, etc.) stay relevant across every topic.
       const rows: any[] = ns
-        ? results.filter((r: any) => { const t = this.parseTags(r.engram.tags).find((x: string) => String(x).startsWith('ns=')); return !t || t.slice(3) === ns; }).slice(0, want)
+        ? results.filter((r: any) => { const t = this.parseTags(r.engram.tags).find((x: string) => String(x).startsWith('ns=')); return !t || t.slice(3) === ns; })
         : results;
       // A ROUTINE never comes back from recall, by any path (BL-12 review: the model's own recall action
       // surfaced a proposed one). Its promoted copy is a skill; the routine itself is for the person's review.
-      return rows.filter((r: any) => !this.parseTags(r.engram.tags).includes('topic=routine')).map((r: any) => ({
+      // Nor does the ACTION LOG (BL-54): it is the "what I did" record, read by recentActions. Recalled, each entry
+      // is a snapshot of a tool's output — twelve copies of a flight page's old 10:15 outranked the job that saw
+      // it move to 8:40 (BL-53 second pass).
+      return kept(rows).slice(0, want).map((r: any) => ({
         id: r.engram.id,
         concept: r.engram.concept,
         content: opts.full ? r.engram.content : (r.summary ?? r.engram.content),

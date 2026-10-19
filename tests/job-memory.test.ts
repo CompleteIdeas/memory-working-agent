@@ -94,7 +94,8 @@ describe('the scheduler keeps the record and reports a change', () => {
     expect(fired[0].summary).toContain('(Changed since Thu 5 Nov 2026 at 7:00 AM: it was $1.10 per stem; it is now $1.45 per stem.)');
     expect(saved[0].value).toBe('$1.45 per stem');
     expect(saved[0].history!.map((h) => h.value)).toEqual(['$1.10 per stem', '$1.45 per stem']);
-    expect(supersedes[0]).toMatch(/^obs-1:.*found: \$1\.45 per stem\. Before that, on Thu 5 Nov 2026 at 7:00 AM, it was \$1\.10 per stem\./);
+    // Led by what was watched and what it read (BL-54).
+    expect(supersedes[0]).toMatch(/^obs-1:.*: \$1\.45 per stem — read .*\. Before that, on Thu 5 Nov 2026 at 7:00 AM, it was \$1\.10 per stem\./);
     expect(saved[0].obs).toBe('obs-2');
   });
 
@@ -109,7 +110,7 @@ describe('the scheduler keeps the record and reports a change', () => {
   it('the first reading starts the history and writes the first observation', async () => {
     const { saved, writes } = await fire(WATCH, { summary: 'Standard roses: $1.10 per stem.', outcome: 'changed', watchValue: '$1.10 per stem' });
     expect(saved[0].history!.map((h) => h.value)).toEqual(['$1.10 per stem']);
-    expect(writes[0]).toMatch(/found: \$1\.10 per stem\./);
+    expect(writes[0]).toMatch(/: \$1\.10 per stem — read /);
     expect(saved[0].obs).toBe('obs-new');
   });
 

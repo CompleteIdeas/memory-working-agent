@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { runCommandAllowed } from './tools/access.js';
 import type { Provider } from './provider.js';
 import type { MwaMemory, ScheduledTask, JobLastRun } from './awm.js';
-import { friendlyWhen, nextDailyDue } from './schedule-request.js';
+import { friendlyWhen, nextDailyDue, subjectOf, atMostDaily, isWatch } from './schedule-request.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { runAgent } from './agent.js';
 import { detectorArmed, scoreDryRun } from './detector.js';
@@ -149,10 +149,13 @@ async function recordObservation(deps: SchedulerDeps, task: ScheduledTask, value
   const mem = deps.agentMemory ?? deps.memory;
   if (!mem.enabled) return undefined;
   const what = (task.task ?? task.instruction).replace(/\s+/g, ' ').slice(0, 160);
-  const concept = `observed: ${what.slice(0, 60)}`;
+  const subject = subjectOf(what);
+  const concept = `observed: ${subject.slice(0, 60)}`;
   // A dated record, not a claim of precedence: the answer weighs it against other sources by date (the NEWER
-  // BEATS OLDER rule), and the value itself came from an outside page (BL-43 review).
-  const content = `${friendlyWhen(at)}: the scheduled job "${what}" read its source and found: ${value}.`
+  // BEATS OLDER rule), and the value itself came from an outside page (BL-43 review). It leads with what was
+  // watched and what it read: led by the job's wording, the 8:40 reading sat past the first 200 characters and
+  // ranked 35th for "what time does my flight leave tomorrow?" (BL-54).
+  const content = `${subject}: ${value} — read ${friendlyWhen(at)} by the scheduled check "${what}".`
     + (prev?.value !== undefined ? ` Before that, on ${friendlyWhen(prev.valueAt ?? prev.at)}, it was ${prev.value}.` : '');
   const tags = ['topic=observation', `job=${(task.resumeOf ?? task.id).slice(0, 8)}`, 'confidence_level=observed'];
   // canonical is the salience FLOOR, not trust (as for scheduled tasks): the observation reads much like the
@@ -307,9 +310,13 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // A failed run keeps the last good record: "couldn't open the page" is not a new reading.
     if (ranOk && !task.resumeAttempt && outcome !== 'could-not' && outcome !== 'blocked' && deps.memory.setJobLastRun) {
       const prev = task.lastRun;
-      const val = (r as { watchValue?: string }).watchValue;
+      // Only a WATCH keeps a reading (BL-54): a job set to report changes, or to finish when something becomes true.
+      // A report job's "value" is its digest — Sam's morning plan gave "…; Max dentist cleaning Wed 3:30–4:15 PM; …"
+      // every day from a stale calendar, each one a dated observation newer than the email that moved it.
+      const watch = isWatch(task);
+      const val = watch ? (r as { watchValue?: string }).watchValue : undefined;
       const rec: JobLastRun = { at: now(), summary: String(summary ?? '').slice(0, 600), sumHash: textHash(String(r.summary ?? '')),
-        ...(prev?.value !== undefined ? { value: prev.value, valueAt: prev.valueAt } : {}), ...(prev?.history ? { history: prev.history } : {}), ...(prev?.obs ? { obs: prev.obs } : {}) };
+        ...(watch && prev?.value !== undefined ? { value: prev.value, valueAt: prev.valueAt } : {}), ...(watch && prev?.history ? { history: prev.history } : {}), ...(watch && prev?.obs ? { obs: prev.obs } : {}) };
       if (val) {
         const changed = prev?.value !== undefined && sameReading(prev.value, val) === false;
         valueChanged = changed;
@@ -370,7 +377,12 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     const prevFails = task.fails ?? 0;
     const fails = outcome === 'could-not' ? prevFails + 1 : 0;
     if (task.recur && !task.resumeAttempt && fails !== prevFails) await deps.memory.setJobFails?.(task.id, fails);
-    const failQuiet = task.recur !== undefined && fails > 1 && (fails & (fails + 1)) !== 0;
+    // BL-54: except a job the person asked to hear from every time that runs at most daily — its message is the
+    // report they asked for, a failed one usually still carries it, and one a day is the cadence they chose. BL-53
+    // second pass: Maya's Nov 3 and Nov 6 briefs, each a full brief that ended "could not", were the second failure
+    // in a row and never arrived. Jobs that run more often, or report only changes, keep the throttle.
+    const everyFire = policy === 'always' && atMostDaily(task.recur);
+    const failQuiet = task.recur !== undefined && !everyFire && fails > 1 && (fails & (fails + 1)) !== 0;
     if (task.recur && fails > 1) summary += `\n\n(This job has not been able to finish ${fails} times in a row.)`;
     // Back to working after failures: news of its own, delivered whatever `deliver` says (BL-52 review: under
     // deliver=changed, or as a repeat of the last message, it was never heard).

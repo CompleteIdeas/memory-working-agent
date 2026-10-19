@@ -22,7 +22,8 @@ describe('F3 tripwire hard-halt (unattended)', () => {
     // A brain that only ever fires draft_email — with a varying subject so it isn't dup-detected.
     const spamBrain: Provider = {
       id: 'stub', model: 'stub', price: [0, 0],
-      chat: async (): Promise<ChatResult> => ({ text: JSON.stringify({ action: 'draft_email', to: 'a@b.test', subject: `msg ${++n}`, body: 'hello' }), usage: { input: 1, output: 1 } }),
+      // A different recipient each time, each named in the instruction: one draft per recipient per run (BL-54).
+      chat: async (): Promise<ChatResult> => ({ text: JSON.stringify({ action: 'draft_email', to: `a${++n}@b.test`, subject: `msg ${n}`, body: 'hello' }), usage: { input: 1, output: 1 } }),
     };
     let calls = 0;
     const tools = {
@@ -36,7 +37,7 @@ describe('F3 tripwire hard-halt (unattended)', () => {
     const mem = new MwaMemory('trip-test', join(dir, 'trip.db'));
     try {
       const r = await runAgent({
-        instruction: 'draft a lot of emails', dir, memory: mem, brain: spamBrain, worker: spamBrain,
+        instruction: `draft a lot of emails, to ${Array.from({ length: 30 }, (_, i) => `a${i + 1}@b.test`).join(', ')}`, dir, memory: mem, brain: spamBrain, worker: spamBrain,
         tools, interactive: false, budget: { maxSteps: 25, maxWallMs: 30_000 },
       });
       expect(r.reason).toBe('paused');

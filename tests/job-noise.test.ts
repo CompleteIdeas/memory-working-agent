@@ -68,8 +68,23 @@ describe('the same message twice', () => {
   it('not when the run acted or staged something, or under the default policy when it is a failure streak (BL-52 review)', async () => {
     expect((await fire({ ...BRIEF, lastRun: last }, { summary: '1. Wedding inquiry from Aisha Nguyen. 2. Harbor Hotel quote due Friday.', outcome: 'changed', staged: ['draft-1'] })).fired).toHaveLength(1);
     expect((await fire({ ...BRIEF, lastRun: last }, { summary: '1. Wedding inquiry from Aisha Nguyen. 2. Harbor Hotel quote due Friday.', outcome: 'changed', actionsTaken: 1 })).fired).toHaveLength(1);
-    // deliver=always (the default) follows the failure rule too: the 2nd failure in a row is quiet.
-    expect((await fire({ ...BRIEF, fails: 1 }, FAIL)).fired).toHaveLength(0);
+    // deliver=always (the default) follows the failure rule too for a job that runs more often than daily.
+    expect((await fire({ ...BRIEF, recur: 'every:60', fails: 1 }, FAIL)).fired).toHaveLength(0);
+  });
+
+  it('a daily job the person hears from every time is heard every time, failures included, with the count (BL-54)', async () => {
+    // BL-53 second pass: Maya's Nov 3 and Nov 6 briefs were full briefs that ended "could not", each the second
+    // failure in a row — never delivered, and two of S1's ten mornings lost.
+    const brief = { summary: "1. Wedding inquiry from Aisha Nguyen. I couldn't confirm whether it was already answered.", outcome: 'could-not' };
+    for (const fails of [1, 2, 3, 5]) {
+      const { fired } = await fire({ ...BRIEF, fails }, brief);
+      expect(fired, `failure ${fails + 1}`).toHaveLength(1);
+      expect(fired[0].summary).toContain(`not been able to finish ${fails + 1} times in a row`);
+    }
+    expect((await fire({ ...BRIEF, recur: 'every:1440', fails: 1 }, brief)).fired).toHaveLength(1);
+    expect((await fire({ ...BRIEF, recur: 'daily:08:00@12345', fails: 1 }, brief)).fired).toHaveLength(1);
+    // Only-changes jobs keep the throttle, daily or not.
+    expect((await fire({ ...BRIEF, deliver: 'changed', fails: 1 }, brief)).fired).toHaveLength(0);
   });
 
   it('a whole message is compared, not its first 600 characters', async () => {

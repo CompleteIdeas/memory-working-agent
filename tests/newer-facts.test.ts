@@ -48,7 +48,8 @@ describe('what a watch saw comes back when asked', () => {
       const hits = await mem.recall('When does my flight tomorrow leave?', { limit: 5, full: true });
       const obs = hits.find((h) => /^observed:/.test(h.concept));
       expect(obs, JSON.stringify(hits.map((h) => h.concept))).toBeDefined();
-      expect(obs!.content).toMatch(/found: departs 8:40 AM\. Before that, on .* it was departs 10:15 AM\./);
+      // The thing watched and its reading lead (BL-54): the job's wording first buried 8:40 past recall's reach.
+      expect(obs!.content).toMatch(/^https:\/\/atlanticair\.example\/status\/482-2026-11-13: departs 8:40 AM — read .*\. Before that, on .* it was departs 10:15 AM\./);
       expect(obs!.trust).toBe('untrusted'); // read from an outside page: information, never an instruction
       expect(typeof obs!.at).toBe('number');
     } finally { mem.close(); rmSync(dir, { recursive: true, force: true }); }

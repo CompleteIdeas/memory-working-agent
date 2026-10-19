@@ -109,6 +109,9 @@ const GROUND_STOP = new Set(['the', 'and', 'for', 'you', 'your', 'about', 'with'
 
 /** The person asks to hear only about changes: "Only alert me if the price changes. No message if it doesn't." */
 export function asksChangesOnly(message: string): boolean {
+  // BL-54 review: "let me know if it changes", "tell me if the price changes", "alert me when it drops" are the same
+  // ask; missed, the watch stayed on "every time" and a failing one messaged daily.
+  if (/\b(?:let me know|tell me|alert me|notify me|ping me|text me|message me|email me|warn me)\s+(?:if|when|whenever|as soon as)\b[^.?!]{0,60}?\b(?:changes?|changed|drops?|dropped|rises?|goes (?:up|down)|falls?|moves?|is back|comes back|back in stock|becomes available|opens? up)\b/i.test(message)) return true;
   return /\bonly\s+(?:alert|tell|notify|message|ping|text|email|warn)\s+me\b|\b(?:alert|tell|notify|message|ping|text|email|warn)\s+me\s+only\b|\bno (?:message|alert|ping|text)s? (?:if|when|otherwise)\b|\bnothing otherwise\b|\b(?:don'?t|do not) (?:message|tell|ping|bother|alert) me (?:if|unless|otherwise)\b/i.test(message);
 }
 
@@ -226,4 +229,80 @@ export function friendlySchedule(dueMs: number, recur?: string): string {
   if (recur?.startsWith('daily:')) return `${recurWords(recur)}, first ${friendlyWhen(dueMs)}`;
   if (recur?.startsWith('every:')) return `every ${recur.slice(6)} minutes, first ${friendlyWhen(dueMs)}`;
   return friendlyWhen(dueMs);
+}
+
+// ── What a job watches (BL-54) ───────────────────────────────────────────────────────────────────
+
+/** What a check looks at, from its instruction: "Check the Atlantic Air flight 482 status page at <url> and message
+ *  me only if it changed" is "the Atlantic Air flight 482 status page at <url>". Leads an observation, so recall
+ *  meets the thing watched before the job's wording. */
+export function subjectOf(instruction: string): string {
+  let s = instruction.replace(/\s+/g, ' ').trim()
+    .replace(/^(?:please\s+)?(?:check|watch|monitor|track|look at|open|keep an eye on|read)\s+/i, '')
+    .replace(/\s+(?:every|each)\s+(?:day|morning|evening|night|week|weekday)\b[^.,;]*/i, '')
+    .replace(/\s*(?:,|\band\b|\bthen\b)\s*(?:only\s+)?(?:message|alert|tell|notify|ping|text|email|let|warn)\b.*$/i, '');
+  // The first sentence: a period ends one before a capital, but not after an initial or a short abbreviation
+  // ("the U.S. Embassy", "Dr. Patel", "St. Mary's" — review).
+  for (const m of s.matchAll(/\.\s+(?=[A-Z])/g)) {
+    const before = /(\S+)$/.exec(s.slice(0, m.index))?.[1] ?? '';
+    if (/^(?:[A-Za-z]|(?:[A-Za-z]\.)+[A-Za-z]|Dr|Mr|Mrs|Ms|Jr|Sr|St|Mt|Ave|No|vs|Inc|Co|Ltd)$/.test(before)) continue;
+    s = s.slice(0, m.index); break;
+  }
+  s = s.replace(/[.;,:]+$/, '');
+  return (s || instruction).slice(0, 120);
+}
+
+const READING_STOP = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'what', 'when', 'where', 'which', 'who', 'how', 'does', 'did', 'has', 'have', 'any', 'are', 'was', 'were', 'will', 'would', 'can', 'could', 'should', 'you', 'your', 'our', 'its', 'about', 'from', 'into', 'then', 'than', 'there', 'here', 'today', 'tomorrow', 'yesterday', 'now', 'again', 'still', 'just', 'also', 'please', 'check', 'checks', 'checking', 'daily', 'day', 'days', 'every', 'each', 'morning', 'evening', 'night', 'week', 'weekly', 'weekday', 'weekdays', 'message', 'messages', 'alert', 'alerts', 'notify', 'tell', 'ping', 'text', 'only', 'change', 'changes', 'changed', 'set', 'time', 'times', 'minute', 'minutes', 'hour', 'hours', 'run', 'job', 'look', 'see', 'know', 'get', 'let', 'want', 'need', 'not', 'page', 'site', 'status', 'latest', 'new', 'old', 'last', 'next']);
+const URL_PARTS = new Set(['https', 'http', 'www', 'com', 'org', 'net', 'example', 'html']);
+const readingWords = (s: string) => new Set((s.toLowerCase().match(/[a-z0-9$]+/g) ?? [])
+  .filter((w) => w.length >= 3 && !READING_STOP.has(w) && !URL_PARTS.has(w) && !/^(?:19|20)\d\d$/.test(w)));
+
+/**
+ * The latest reading of each recurring check whose subject the message is about, newest first: "<subject>: <value>
+ * (read <when>)". BL-53 second pass: a flight watch told Sam three times that the flight moved to 8:40; asked "what
+ * time does my flight leave tomorrow?", MWA answered 10:15 from the calendar. The watch's observation ranked 35th
+ * in recall, under copies of run records and page snapshots. A check's latest reading is a fact MWA holds, not a
+ * memory to rank, so a chat about the same thing is shown it. Matching is a content word shared with what the check
+ * WATCHES (its subject), not its whole instruction or its reading: an invoice job's "draft a polite payment reminder"
+ * would otherwise pull its reading into every chat about drafting.
+ */
+export function latestReadings(tasks: { instruction: string; task?: string; recur?: string; deliver?: string; until?: string; lastRun?: { at: number; value?: string; valueAt?: number } }[], message: string, max = 6): string[] {
+  const asked = readingWords(message);
+  if (!asked.size) return [];
+  const when = (t: { lastRun?: { at: number; valueAt?: number } }) => t.lastRun?.valueAt ?? t.lastRun?.at ?? 0;
+  return tasks
+    .filter((t) => t.recur && isWatch(t) && t.lastRun?.value)
+    .filter((t) => { const w = readingWords(subjectOf(t.task ?? t.instruction)); return [...asked].some((x) => w.has(x)); })
+    .sort((a, b) => when(b) - when(a))
+    .slice(0, max)
+    .map((t) => `${subjectOf(t.task ?? t.instruction)}: ${String(t.lastRun!.value).replace(/\s+/g, ' ').slice(0, 200)} (read ${friendlyWhen(when(t))})`);
+}
+
+/** A job that opens a web page: "check Bloomfield Wholesale's price page", "watch the tracking page". */
+export function namesWebPage(text: string): boolean {
+  return /\b(?:web\s?pages?|webpages?|web\s?sites?|websites?|(?:status|price|prices|pricing|product|tracking|order|listing|results?|invoices?|billing|account|menu|stock|availability|booking|registration)\s+pages?)\b/i.test(text);
+}
+
+/** The text carries a link: http(s)://, www., or a host with a path ("bloomfield-wholesale.example/prices"). A bare
+ *  domain is not one — "emails from dana@ledgerline.com" and "my Outlook.com inbox" made briefs watches (review). */
+export function hasLink(text: string): boolean {
+  const t = text.replace(/[a-z0-9._%+'-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi, ' ');
+  return /\bhttps?:\/\/\S+|\bwww\.\S+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|org|net|io|co|example|gov|edu|us|uk|app|dev|ai|info|biz|shop|store)\/\S*/i.test(t);
+}
+
+/**
+ * A WATCH: a job that tracks one thing's value — set to report only changes, to finish when something becomes true,
+ * or checking a page it names by link. Only a watch keeps a reading (BL-54). A report job — a brief, a plan — gave
+ * its whole digest as its "value", and each became a dated observation: Sam's plan restated a stale calendar's
+ * dentist time every morning. (The link counts so a watch the person left on "tell me every time" keeps its readings.)
+ */
+export function isWatch(job: { deliver?: string; until?: string; instruction?: string; task?: string }): boolean {
+  return job.deliver === 'changed' || Boolean(job.until) || hasLink(job.task ?? job.instruction ?? '');
+}
+
+/** A recurring spec that fires at most once a day: "daily:08:00", "daily:08:00@12345", "every:1440". */
+export function atMostDaily(recur?: string): boolean {
+  if (!recur) return false;
+  if (recur.startsWith('daily:')) return true;
+  return recur.startsWith('every:') && Number(recur.slice(6)) >= 1440;
 }
