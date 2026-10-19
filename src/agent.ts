@@ -22,7 +22,7 @@ import { loadDomainPack, buildDomainContext } from './domain-pack.js';
 import { ONBOARD_PROTOCOL } from './onboard.js';
 import type { Memory, RecalledMemory, TrustTier } from './awm.js';
 import { effectOf, isSensitive, classifyTool, buildDoneReport, checkTripwires, readsUntrustedContent, markToolOutput, newFenceCode, outputSource } from './tools/governance.js';
-import { unbackedClaims, unbackedNote, unbackedNudge, type ClaimKind } from './claim-check.js';
+import { unbackedClaims, unbackedNote, unbackedNudge, asksForLater, type ClaimKind } from './claim-check.js';
 import { answerConfidence, type Confidence } from './tools/honesty.js';
 import { isRoutineWorthy, scanPolicy } from './tools/routines.js';
 import { BRAIN_TOOLS } from './brain.js';
@@ -468,7 +468,7 @@ export async function runAgent(opts: {
   let folded = 0; // BL-30: history lines already handed to opts.compaction.fold
   let dispatches = 0, toolCalls = 0, reRecalls = 0, supersedes = 0, consolidations = 0;
   let learnedFacts = 0, skillsDerived = 0, openQuestions = 0, frictionsLearned = 0, policiesLearned = 0; // for the run log + self-learning loop
-  let consecNoProgress = 0, consecWorkerFails = 0, brainErrors = 0, incompleteRejections = 0;
+  let consecNoProgress = 0, consecWorkerFails = 0, brainErrors = 0, incompleteRejections = 0, laterRejections = 0;
   let verifyRejections = 0, verified = false; // verify-before-done: one numeric re-check, no spinning
   let substanceRejections = 0; // substance gate: one re-prompt on a fabricated/punted done
   const MAX_FETCH_FAILS = 2;
@@ -712,8 +712,12 @@ export async function runAgent(opts: {
   // Named output files the instruction asked the agent to PRODUCE (write/create/save … X.ext,
   // or "to X.ext") — verified to actually exist before we accept `done`, catching "it's ready"
   // claims with no file. Conservative: only filenames in a produce-context.
-  const expectedOutputs = (() => {
-    const ext = '(?:md|json|jsonl|csv|html?|txt|js|mjs|cjs|ts|tsx|py|css|ya?ml|xml|svg)';
+  // A request for LATER work names its file too ("In 1 minute, write a.txt …"), but the deliverable now
+  // is the schedule: demanding the file pushed the model to write it early, and after two rejections it
+  // gave up with "I couldn't confirm" — BL-19's signature. A job's own fire (jobId) still checks.
+  const forLater = !opts.jobId && asksForLater(opts.userMessage ?? instruction);
+  const expectedOutputs = forLater ? [] : (() => {
+    const ext ='(?:md|json|jsonl|csv|html?|txt|js|mjs|cjs|ts|tsx|py|css|ya?ml|xml|svg)';
     const fileRe = new RegExp(`\\b([\\w][\\w.-]*\\.${ext})\\b`, 'gi');
     const produce = /(write|writes|writing|creat|sav|produce|generat|output|build|make|findings to|results? to|report to|put (it|them|that) (in|into|to))/i;
     const out = new Set<string>();
@@ -855,6 +859,20 @@ export async function runAgent(opts: {
 
     if (action.action === 'done') {
       const summ = action.summary ? String(action.summary) : '';
+      // NOTHING SCHEDULED FOR A LATER REQUEST (BL-19): 3 of 18 scheduling chats on 2026-10-18 listed the
+      // schedule, saw other jobs (or none), said "I couldn't confirm it is scheduled" and stopped — never
+      // calling `schedule`. Lessons saying so were already in memory and didn't reach this moment, and
+      // the tool's description didn't either, so the push comes here, once, at the point of action —
+      // FIRST, before the gates below, whose "produce it now" pushes are wrong for work due later.
+      // Not when anything else that could have set it up ran (a calendar tool, a schedule-type tool).
+      if (forLater && laterRejections < 1 && ![...toolsUsed].some((t) => t === 'schedule' || (['schedule', 'external'].includes(classifyTool(t)) && t !== 'schedule_list'))) {
+        laterRejections++;
+        consecNoProgress = 0;
+        nudge = 'This request is for LATER, and nothing has been scheduled yet in this run. Call `schedule` now with the instruction to carry out at that time (in_minutes / daily_at / every_minutes as asked). '
+          + 'Jobs already in the schedule are not this request — do not check or confirm them first, and do not do the work now.';
+        history.push('(nothing scheduled for a later request — asked to call schedule)');
+        continue;
+      }
       // Reject a "done" whose OWN summary admits unfinished work ("I didn't finish X",
       // "the next step is to add Y") — the model stopping short of a requested deliverable.
       // Normalize markdown first (summaries use **bold**). Cap rejections to avoid spinning.
@@ -863,7 +881,8 @@ export async function runAgent(opts: {
       // Requested output files that don't actually exist → the agent claimed completion
       // ("the output is ready") without producing the file. Make it really write them.
       const missingOutputs = expectedOutputs.filter((f) => { try { return !existsSync(join(dir, f)); } catch { return false; } });
-      if ((admitsUnfinished || missingOutputs.length) && incompleteRejections < 2 && now() - start < maxWallMs * 0.8) {
+      // Not for a request due LATER: "I did not create the file now" is right there, and "produce it now" is the premature write (BL-19).
+      if (!forLater && (admitsUnfinished || missingOutputs.length) && incompleteRejections < 2 && now() - start < maxWallMs * 0.8) {
         incompleteRejections++;
         consecNoProgress = 0; // it IS progressing, just stopping short — don't trip the stuck guard
         nudge = missingOutputs.length

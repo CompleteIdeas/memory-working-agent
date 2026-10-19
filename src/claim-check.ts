@@ -81,6 +81,14 @@ export function claimsIn(reply: string): Set<ClaimKind> {
   return found;
 }
 
+/** The person's message asks for work to happen LATER ("In 1 minute, write …", "remind me tomorrow at
+ *  9", "every morning …"), not a question about the schedule (BL-19). Explicit timing only — "later" on
+ *  its own is too loose to act on. */
+export function asksForLater(message: string): boolean {
+  if (asksOnly(message)) return false;
+  return /\b(schedule|remind me|set a reminder|in \d+\s*(?:min|mins|minutes?|hours?|days?|weeks?)|every (?:day|morning|evening|night|week|hour|weekday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d+)|daily at|weekly on|tomorrow at|tonight at|at \d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i.test(message);
+}
+
 /** The kinds of work the person's message asks for. Loose on purpose: it only decides whether a claim
  *  is checked at all, and the other conditions carry the precision. */
 export function requestedKinds(message: string): Set<ClaimKind> {

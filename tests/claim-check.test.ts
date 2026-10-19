@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { claimsIn, unbackedClaims, unbackedNote, unbackedNudge, asksOnly, requestedKinds } from '../src/claim-check.js';
+import { claimsIn, unbackedClaims, unbackedNote, unbackedNudge, asksOnly, requestedKinds, asksForLater } from '../src/claim-check.js';
 import { runAgent } from '../src/agent.js';
 import type { Provider, ChatResult, ChatInput } from '../src/provider.js';
 import { MwaMemory } from '../src/awm.js';
@@ -166,7 +166,7 @@ const CLAIM = { action: 'done', summary: "I've scheduled it for tomorrow at 9am,
 
 describe('by default the check is a shadow: it corrects in the loop and records, nothing more', () => {
   it('the e2e-k5ncb-3 shape: pushed back once, then recorded — no note, no could-not', async () => {
-    const r = await run(REMIND, [{ action: 'schedule_list' }, CLAIM, CLAIM], { schedule_list: '(nothing scheduled)' });
+    const r = await run(REMIND, [{ action: 'schedule_list' }, CLAIM, CLAIM, CLAIM], { schedule_list: '(nothing scheduled)' });
     expect(r.history.join('\n')).toMatch(/substance gate: Your answer says you scheduled something in this run/);
     expect(r.unbackedClaims).toEqual(['schedule']);
     expect(r.history.join('\n')).not.toMatch(/did none/); // recorded in the run log only: end-of-run passes read history
@@ -181,7 +181,7 @@ describe('a run whose reply claims work it never did, enforced (BL-36, MWA_CLAIM
   afterAll(() => { if (prevMode === undefined) delete process.env.MWA_CLAIM_CHECK; else process.env.MWA_CLAIM_CHECK = prevMode; });
 
   it('the e2e-k5ncb-3 shape: listed the schedule, said it scheduled — pushed back once, then could-not and the person is told', async () => {
-    const r = await run(REMIND, [{ action: 'schedule_list' }, CLAIM, CLAIM], { schedule_list: '(nothing scheduled)' });
+    const r = await run(REMIND, [{ action: 'schedule_list' }, CLAIM, CLAIM, CLAIM], { schedule_list: '(nothing scheduled)' });
     // The substance gate alone passed this (a tool was used); the kind check pushed back with the missing action.
     expect(r.history.join('\n')).toMatch(/substance gate: Your answer says you scheduled something in this run, but this run has not done that/);
     expect(r.outcome).toBe('could-not');
@@ -232,5 +232,37 @@ describe('a run whose reply claims work it never did, enforced (BL-36, MWA_CLAIM
   it('a schedule made another way (a cron job via a command) is an action: not checked', async () => {
     const r = await run('Schedule a nightly backup of my notes at 2am', [{ action: 'run_command', command: 'crontab -l' }, { action: 'done', summary: "I've scheduled a nightly cron job for 2am." }], { run_command: 'ok' });
     expect(r.summary).not.toMatch(/Not done/);
+  }, 30_000);
+});
+
+// ---- BL-19: a request for later work that never gets scheduled ----
+describe('a request for LATER work (BL-19)', () => {
+  it('what counts as asking for later', () => {
+    for (const m of ['In 1 minute, write a file called e2e-x-1.txt whose contents are exactly OK. Schedule it to run later — do not create the file now.',
+      'Remind me tomorrow at 9am to call the bank', 'Every morning, summarize my inbox', 'Schedule a weekly report for Mondays', 'At 5pm send Dana the agenda']) expect(asksForLater(m), m).toBe(true);
+    for (const m of ['What do I have scheduled tomorrow?', 'Write notes.md with the summary', 'Did the reminder run?', 'Summarize this later if you can']) expect(asksForLater(m), m).toBe(false);
+  });
+
+  const LATER = 'In 1 minute, write a file called e2e-x-1.txt whose contents are exactly CHECK-OK. Schedule it to run later — do not create the file now.';
+  const GAVE_UP = { action: 'done', summary: "I couldn't confirm that e2e-x-1.txt has been scheduled yet; I did not create the file now." };
+
+  it('the measured dead end — listed the schedule, could not confirm, stopped — is pushed to schedule, once', async () => {
+    const r = await run(LATER, [{ action: 'schedule_list' }, GAVE_UP, { action: 'schedule', instruction: 'Write file e2e-x-1.txt with exactly CHECK-OK', in_minutes: 1 }], { schedule_list: '(2 scheduled: e2e-w-0.txt, e2e-w-1.txt)' });
+    expect(r.history.join('\n')).toMatch(/nothing scheduled for a later request — asked to call schedule/);
+    expect(r.history.join('\n')).not.toMatch(/missing output file/); // the file is for later: not demanded now
+    expect(r.summary).toMatch(/^Scheduled for/);
+  }, 30_000);
+
+  it('pushes only once: a model that still will not schedule ends honestly', async () => {
+    const r = await run(LATER, [{ action: 'schedule_list' }, GAVE_UP, GAVE_UP], { schedule_list: '(nothing scheduled)' });
+    expect(r.history.filter((h) => /asked to call schedule/.test(h))).toHaveLength(1);
+    expect(r.summary).toMatch(/couldn't confirm/);
+  }, 30_000);
+
+  it('not for a request that is not for later, nor once a schedule-type tool ran', async () => {
+    const now = await run('Write notes.md with the meeting summary', [{ action: 'write_file', path: 'notes.md', content: 'x' }, { action: 'done', summary: 'Wrote `notes.md`.' }], { write_file: 'wrote notes.md (1 bytes)' });
+    expect(now.history.join('\n')).not.toMatch(/asked to call schedule/);
+    const cal = await run('Remind me tomorrow at 9am to call the bank', [{ action: 'gcal__create_event' }, { action: 'done', summary: 'Added a 9am reminder to your calendar.' }], { gcal__create_event: 'created event' });
+    expect(cal.history.join('\n')).not.toMatch(/asked to call schedule/);
   }, 30_000);
 });
