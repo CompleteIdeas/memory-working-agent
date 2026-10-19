@@ -1386,7 +1386,13 @@ export async function runAgent(opts: {
         // SAME concept as the prior + eventType=surprise → R3 supersede with the transition text.
         // F2: a transition DERIVED from an untrusted prior stays untrusted (no trust-laundering
         // of inbox content into a medium-trust fact via supersede-detection).
-        const id = await memory.write(prior.concept, String(t.statement), ['topic=world', 'intent=decision', 'confidence_level=verified'], { canonical: !sawUntrustedRead && !sawLocalRead, eventType: 'surprise', provenance: (prior.trust === 'untrusted' || sawUntrustedRead) ? 'ingested' : 'inferred' });
+        const tOpts = { canonical: !sawUntrustedRead && !sawLocalRead, eventType: 'surprise' as const, provenance: (prior.trust === 'untrusted' || sawUntrustedRead) ? 'ingested' as const : 'inferred' as const };
+        const tTags = ['topic=world', 'intent=decision', 'confidence_level=verified'];
+        // A fact whose own name looks like a lesson ("Skills: React") is updated by id, keeping its name: a write
+        // under that name would be renamed, and the stale original would stay (BL-38 review 4).
+        const id = isReservedConcept(prior.concept)
+          ? await memory.supersede(prior.id, prior.concept, String(t.statement), tTags, tOpts)
+          : await memory.write(prior.concept, String(t.statement), tTags, tOpts);
         if (id) { supersedes++; transitionsRecorded++; emit('remember', { concept: `updated: ${prior.concept}`.slice(0, 80) }); history.push(`recorded a change ("${String(t.statement).slice(0, 56)}")`); }
       }
     } catch { /* best-effort */ }

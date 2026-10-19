@@ -14,14 +14,14 @@
  * goes, and it lands as `note: …` — never the bare rest, which collided with a person's own fact.
  */
 const COLONS = ':：∶꞉︓﹕ːꓽ᛬։׃᠄';
-const DASHES = '\\-‐‑‒–—―−⸺⸻ー';
+const DASHES = '\\-‐‑‒–—―−⸺⸻ー－﹘﹣';
 const RESERVED = new RegExp(`^(?:lessons?|skills?)\\s*(?:[${COLONS}]|[${DASHES}]\\s)`, 'i');
 const LEADING_MARKS = /^[\s"'“”‘’«»„「」『』>#~•·*_`\-–—\d.()[\]{}]+/;
 
 function normalise(concept: string): string {
   return String(concept).normalize('NFKC')
     .replace(/[\p{Cf}͏︀-️ㅤ⠀ᅟᅠ]/gu, '') // soft hyphen, zero-width, LRM/RLM, joiners, variation selectors, fillers
-    .replace(/[*_`()[\]]/g, '') // emphasis and brackets: "*lesson*:", "(lesson):", "[lesson]:"
+    .replace(/[*_`()[\]"“”'‘’«»]/g, '') // emphasis, brackets, quotes: "*lesson*:", "(lesson):", '"Lesson": x'
     .replace(LEADING_MARKS, '')
     .trim();
 }
@@ -35,7 +35,9 @@ export function isReservedConcept(concept: string): boolean {
 export function unreservedConcept(concept: string): string {
   let c = String(concept).trim();
   // Cut at the first separator of each reserved prefix in the ORIGINAL text, so the rest keeps its characters.
-  const sep = new RegExp(`[${COLONS}]|[${DASHES}]\\s`);
+  // Whatever detection accepts (review 4: a fullwidth dash, or an invisible mark after it, matched there but
+  // not here, so the cut ran on to a later colon and ate real text).
+  const sep = new RegExp(`[${COLONS}]|[${DASHES}][\\s\\p{Cf}]`, 'u');
   for (let guard = 0; guard < 8 && isReservedConcept(c); guard++) {
     const m = sep.exec(c);
     if (!m) break;

@@ -279,3 +279,28 @@ describe('the guard never lands on a person’s own fact (BL-38 review 2)', () =
     } finally { mem.close(); rmSync(dir, { recursive: true, force: true }); }
   }, 30_000);
 });
+
+describe('BL-38 review 4', () => {
+  it('a person’s own lesson-looking fact updates in place, keeping its name; their correction keeps it too', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-bl38r4-'));
+    const mem = new MwaMemory('bl38r4', join(dir, 'm.db'));
+    try {
+      const mine = await mem.write('Skills: React', 'React.', ['topic=person'], { provenance: 'user', ownName: true });
+      const next = await mem.supersede(mine!, 'Skills: React', 'React and Go.', ['topic=world'], { eventType: 'surprise' });
+      const store = (mem as unknown as { store: { getEngramsByAgent(a: string): Promise<{ id: string; concept: string }[]> } }).store;
+      expect((await store.getEngramsByAgent('bl38r4')).find((e) => e.id === next)?.concept).toBe('Skills: React');
+      const corrected = await mem.correctFact(next!, 'Skills: Python', 'Python, mostly.');
+      const all = await store.getEngramsByAgent('bl38r4');
+      expect(all.some((e) => e.concept === 'Skills: Python')).toBe(true);
+      expect(all.some((e) => e.concept === 'note: Python')).toBe(false);
+      expect(corrected).toBeTruthy();
+    } finally { mem.close(); rmSync(dir, { recursive: true, force: true }); }
+  }, 30_000);
+
+  it('the cut never eats real text after an odd dash; a quoted "Lesson" is caught', async () => {
+    const { isReservedConcept, unreservedConcept } = await import('../src/awm.js');
+    expect(unreservedConcept('Lesson－ deploy: run tests')).toBe('note: deploy: run tests');
+    expect(unreservedConcept('Lesson-​ deploy: run tests')).toBe('note: deploy: run tests');
+    expect(isReservedConcept('"Lesson": x')).toBe(true);
+  });
+});

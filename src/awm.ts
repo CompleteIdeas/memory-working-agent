@@ -546,7 +546,10 @@ export class MwaMemory implements Memory {
     } catch { /* fall through: the write below is guarded again */ }
     // The caller's canonical/provenance win: a tainted run must not be able to replace a trusted fact
     // with a canonical one (BL-17 review). Canonical stays the default for ordinary corrections.
-    const newId = await this.write(concept, content, tags, { ...opts, canonical: opts.canonical ?? true });
+    // A memory that isn't the stores' own keeps its name when updated — a person's "Skills: React" fact, written
+    // under that name, must not come back as "note: React" beside the stale original (BL-38 review 4).
+    const keepName = isReservedConcept(concept) && !opts.reservedConcept;
+    const newId = await this.write(concept, content, tags, { ...opts, canonical: opts.canonical ?? true, ...(keepName ? { ownName: true } : {}) });
     // Never supersede a memory by itself (identical text returns the same id) — it would drop out of recall.
     if (newId && oldId && newId !== oldId) {
       try {
@@ -575,13 +578,13 @@ export class MwaMemory implements Memory {
     // Forget the original FIRST so the corrected write can't reinforce-MERGE into the stale value
     // (which would leave a contradictory old+new blend). Then write the user's authoritative text.
     await this.forget(oldId);
-    const newId = await this.write(concept.slice(0, 80) || 'correction', content, ['topic=world', 'intent=decision', 'confidence_level=verified'], { provenance: 'user', canonical: true });
+    const newId = await this.write(concept.slice(0, 80) || 'correction', content, ['topic=world', 'intent=decision', 'confidence_level=verified'], { provenance: 'user', canonical: true, ownName: true }); // the person's own correction keeps their name (BL-38)
     if (!newId) {
       // Write failed — ROLL BACK: restore the original (content + its original trust tier) so the
       // user's data is never lost on the very operation meant to fix it.
       const t = this.trustOf(old);
       const prov: Provenance = t === 'high' ? 'user' : t === 'untrusted' ? 'ingested' : 'inferred';
-      try { await this.write(String(old.concept ?? concept), String(old.content ?? ''), ['topic=world', 'intent=finding', 'confidence_level=observed'], { provenance: prov, canonical: true }); } catch { /* best-effort restore */ }
+      try { await this.write(String(old.concept ?? concept), String(old.content ?? ''), ['topic=world', 'intent=finding', 'confidence_level=observed'], { provenance: prov, canonical: true, ownName: true }); } catch { /* best-effort restore */ }
       return null;
     }
     return newId;
