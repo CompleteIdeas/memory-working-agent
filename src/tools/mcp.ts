@@ -21,7 +21,7 @@ import { VERSION } from '../version.js';
 import type { RegisteredTool } from './registry.js';
 import { ToolRefusal } from './registry.js';
 import { mcpUrlRefusal } from './net-guard.js';
-import { defangMarkers } from './governance.js';
+import { defangMarkers, markMcpReadOnly } from './governance.js';
 
 /** A server's input schema carries its own prose — `description`, `title`, `examples` — which reaches the
  *  prompt too: clip and defang the first two, drop examples (BL-16). Values the server CHECKS (`enum`,
@@ -104,6 +104,9 @@ export async function loadMcpServers(servers: Record<string, McpServerSpec> = {}
       await client.connect(transport);
       const listed = await client.listTools();
       for (const t of listed.tools) {
+        // A tool its server declares read-only is classed a read, not an outward action (BL-41).
+        const hints = (t as { annotations?: { readOnlyHint?: unknown; destructiveHint?: unknown } }).annotations;
+        if (hints?.readOnlyHint === true && hints.destructiveHint !== true) markMcpReadOnly(`${name}__${t.name}`);
         tools.push({
           def: {
             name: `${name}__${t.name}`,

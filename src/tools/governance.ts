@@ -54,13 +54,28 @@ const TOOL_CATEGORY: Record<string, ActionCategory> = {
   install_connector: 'external', uninstall_connector: 'external', propose_connector: 'external',
   add_mcp_server: 'external', remove_mcp_server: 'external',
   // NOTE: MCP-bridged tools are named `<server>__<tool>` at runtime and cannot appear here.
-  // Defaulting those to 'external' is deliberate — they run third-party code.
+  // Defaulting those to 'external' is deliberate — they run third-party code. The one exception is
+  // below: a tool whose server declares it read-only.
 };
+
+// BL-41: MCP tools their server declares read-only (`annotations.readOnlyHint`, not destructive). Every
+// MCP read used to count as an outward action, so an unattended run reading mail through any MCP
+// connector paused after three reads (MAX_EXTERNAL) — found grounding the promise assessment. The hint
+// is the server's own word, the same trust as running its code at all; it is honored only for that
+// server's namespaced tools (`server__tool`), never for a name MWA classifies itself, and the tool's
+// output is still fenced as outside content.
+const MCP_READ_ONLY = new Set<string>();
+export function markMcpReadOnly(name: string): boolean {
+  const n = String(name);
+  if (!/^[^_].*__./.test(n) || Object.prototype.hasOwnProperty.call(TOOL_CATEGORY, n)) return false;
+  MCP_READ_ONLY.add(n);
+  return true;
+}
 
 /** Classify a tool by what it does to the world. Unknown tools are treated as 'external' — the most
  *  cautious bucket — so a newly self-installed tool is governed by default, not silently trusted. */
 export function classifyTool(name: string): ActionCategory {
-  return TOOL_CATEGORY[String(name)] ?? 'external';
+  return TOOL_CATEGORY[String(name)] ?? (MCP_READ_ONLY.has(String(name)) ? 'read' : 'external');
 }
 
 /** True when `name` is classified EXPLICITLY rather than falling through to the 'external' default.

@@ -42,6 +42,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     name: 'web_search',
     description: 'Search the web and return top results (title, url, snippet). Uses Brave if BRAVE_API_KEY is set, else DuckDuckGo (keyless). Pair with the http_request tool to read a result page.',
     inputSchema: { type: 'object', properties: { query: { type: 'string' }, count: { type: 'number', description: 'max results, default 5' } }, required: ['query'] },
+    // A search reads; MWA classes its own web_search the same way. Without this every search counted
+    // as an outward action and an unattended research job paused after three (BL-41).
+    annotations: { readOnlyHint: true },
   }],
 }));
 
