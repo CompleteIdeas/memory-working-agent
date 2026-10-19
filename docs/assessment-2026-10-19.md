@@ -204,7 +204,7 @@ corrected: A 22/46, B 19/46, C 21/46 — no bar changes.
    sign the slip"), while the plain loop set both. Job instructions drift from what was asked: a plan that
    reads only the calendar (so the failed autopay, the slip and the moved dentist never surface), and a
    watch for "Bloomberg Wholesale" with no URL that flounders 21 steps a fire and then resumes.
-2. **Watching for a change has no state.** Price and flight changes were reported 0 of 6 times by MWA
+2. **Watching for a change has no state.** Price and flight changes were reported 0 of 6 times by MWA by the judge, 1 of 6 with the spot-check correction
    (Nov 6: "no change in the standard rose price" when it had risen from $1.10 to $1.45).
 3. **Corrections don't reach the jobs they are about.** The Team heading held in no arm; the 3-bullet
    rule held in the plain loop and missed by one day in MWA.
