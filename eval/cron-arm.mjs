@@ -68,9 +68,11 @@ export async function makeCronArm({ worldFile, logFile, runLog, persona, envFile
     nowLine(Date.now()),
   ].join('\n');
 
+  // Rate limits (BL-53: eight runs in parallel exhausted six tries at an 8 s ceiling) get patient retries — up to
+  // 12 tries with a 60 s ceiling. How the arm behaves is unchanged; only a transient 429 no longer ends the run.
   async function call(messages) {
-    for (let attempt = 0; attempt < 6; attempt++) {
-      if (attempt) await new Promise((r) => setTimeout(r, Math.min(8000, 600 * attempt * attempt)));
+    for (let attempt = 0; attempt < 12; attempt++) {
+      if (attempt) await new Promise((r) => setTimeout(r, Math.min(60_000, 1000 * attempt * attempt)));
       const r = await fetch(`${base}/chat/completions`, {
         method: 'POST', headers: { 'api-key': key, 'content-type': 'application/json' },
         body: JSON.stringify({ model, messages, tools: toolSpec, tool_choice: 'auto', max_completion_tokens: 6000 }),
