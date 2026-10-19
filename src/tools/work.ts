@@ -54,6 +54,9 @@ const MAX_INSTRUCTION_CHARS = 160;
 /** Short enough to type back, long enough not to collide across a realistic task list. */
 const HANDLE_LEN = 8;
 
+/** The person asks to stop or remove something (BL-47) — a cancel is only ever the answer to that. */
+const STOP_WORDS = /\b(?:cancel\w*|stop\w*|delete|remove|pause|turn (?:it |that |this )?off|disable|unschedule|no longer|don'?t need|do not need|get rid of|end (?:the|my|that|this)|kill|drop (?:the|my|that|this))\b/i;
+
 /** Said after every listing: the list never creates anything, and a job not in it is not a reason to stop. */
 const LIST_ONLY = '(This only lists jobs. If the person asked for one that is not here, call `schedule` to create it — one call per job.)';
 
@@ -180,8 +183,16 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
       const hits = mine.filter((t) => t.id.toLowerCase().startsWith(want));
       if (!hits.length) return `(no scheduled task with id "${clip(want, 16)}" — call schedule_list for the current ids)`;
       if (hits.length > 1) return `(ambiguous: ${hits.length} tasks start with "${clip(want, 16)}" — use more characters)`;
-      await memory.cancelScheduled(hits[0].id);
-      return `canceled — "${clip(hits[0].instruction, MAX_INSTRUCTION_CHARS)}" will not run again`;
+      // BL-47 (BL-40 pilot: "don't message me before 7" cancelled the invoice check, and the reply never said so).
+      // A job stops when the person asked to stop something in this message, or by its own fire once it has
+      // served its purpose — never as a side effect of some other request.
+      const job = hits[0];
+      const ownFire = ctx.jobId !== undefined && (job.id.startsWith(ctx.jobId) || ctx.jobId.startsWith(job.id.slice(0, 8)));
+      if (!ownFire && !(ctx.personMessage && STOP_WORDS.test(ctx.personMessage))) {
+        return '(refused: the person did not ask to stop a scheduled job in this message. Cancel only a job they asked to stop — if one seems in the way, say so and ask.)';
+      }
+      await memory.cancelScheduled(job.id);
+      return `canceled — "${clip(job.instruction, MAX_INSTRUCTION_CHARS)}" will not run again. Tell the person which job you stopped.`;
     },
   };
 

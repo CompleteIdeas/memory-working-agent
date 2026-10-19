@@ -32,8 +32,11 @@ export interface ToolContext {
   runId?: string;
   /** the conversation this run belongs to (e.g. `tg-<chatId>`): where an approval is offered. */
   session?: string;
-  /** BL-45: the person's own message this turn, when a person is present — what a job change is kept as. */
+  /** BL-45/47: the person's own message this turn (not on a job's fire) — what a job change is kept as, and
+   *  what a cancel must answer to. */
   personMessage?: string;
+  /** BL-47: the job this run is a fire of (its lineage) — a fire may stop its own job. */
+  jobId?: string;
 }
 
 export interface RegisteredTool {

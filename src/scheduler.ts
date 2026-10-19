@@ -125,6 +125,9 @@ export interface SchedulerDeps {
   onInterrupted?: (info: InterruptedRun) => void | Promise<void>;
 }
 
+/** A message compared for "the same as last time": case, spacing and end punctuation don't count. */
+function normText(s: string): string { return s.toLowerCase().replace(/\s+/g, ' ').replace(/[.;,!]+$/, '').trim().slice(0, 600); }
+
 /** Two readings of a watched value are the same when they differ only in case, spacing or end punctuation. */
 export function sameReading(a: string, b: string): boolean {
   const n = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').replace(/[.;,!]+$/, '').trim();
@@ -348,14 +351,31 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     }
     if (detectorNews) summary += `\n\n${detectorNews}`;
     const policy = task.deliver ?? 'always';
-    const deliver = completion !== undefined || budgetNews !== undefined || detectorNews !== undefined || outcome === 'complete' || outcome === 'could-not' || outcome === 'blocked'
-      || policy === 'always' || (policy === 'changed' && outcome === 'changed');
+    // BL-51, NOISE (BL-40: 13 unwanted messages in 13 days for Maya with memory on \u2014 8 from one price watch that
+    // could not verify the page, "so I did not send an alert" itself sent every morning, and a repeat brief).
+    // A recurring job that keeps failing: the first failure is delivered, then the 3rd, 7th, 15th in a row, each
+    // saying how many \u2014 a broken job still cannot go silent (BL-02), but it stops messaging every interval. When
+    // it recovers, the person hears that too. A failed one-off is always delivered.
+    const prevFails = task.fails ?? 0;
+    const fails = outcome === 'could-not' ? prevFails + 1 : 0;
+    if (task.recur && !task.resumeAttempt && fails !== prevFails) await deps.memory.setJobFails?.(task.id, fails);
+    const failQuiet = task.recur !== undefined && fails > 1 && (fails & (fails + 1)) !== 0;
+    if (task.recur && fails > 1) summary += `\n\n(This job has not been able to finish ${fails} times in a row.)`;
+    if (task.recur && fails === 0 && prevFails > 1) summary += `\n\n(The last ${prevFails} runs could not finish; this one did.)`;
+    // The same message as this job's last one says nothing new (BL-40: a brief repeated word for word).
+    const repeat = task.recur !== undefined && outcome !== 'could-not' && outcome !== 'blocked' && outcome !== 'complete' && task.lastRun?.summary !== undefined
+      && normText(String(r.summary)) === normText(task.lastRun.summary);
+    const deliver = completion !== undefined || budgetNews !== undefined || detectorNews !== undefined || outcome === 'complete' || outcome === 'blocked'
+      || (outcome === 'could-not' && !failQuiet)
+      || (!repeat && (policy === 'always' || (policy === 'changed' && outcome === 'changed')));
     // Receipts (BL-13): this fire's id, so every channel's record of its result lines up.
     const job = task.resumeOf ?? task.id;
     const fire = `${job.slice(0, 8)}-${now()}`;
     if (!deliver) {
-      log(`\u00b7 quiet (${outcome}, deliver=${policy}): ${task.instruction.slice(0, 40)}`);
-      recordReceipt({ job, fire, channel: 'none', status: 'not-sent', detail: `told only ${policy === 'never' ? 'if it fails' : 'when something changes'}; this run: ${outcome}` });
+      const why = outcome === 'could-not' ? `could not finish again (${fails} in a row); told at 1, 3, 7, 15\u2026 in a row`
+        : repeat ? 'the same message as its last one' : `told only ${policy === 'never' ? 'if it fails' : 'when something changes'}; this run: ${outcome}`;
+      log(`\u00b7 quiet (${why}): ${task.instruction.slice(0, 40)}`);
+      recordReceipt({ job, fire, channel: 'none', status: 'not-sent', detail: why });
     } else await deps.onFire(task, {
       job, fire,
       outcome, ...(completion ? { completion } : {}),

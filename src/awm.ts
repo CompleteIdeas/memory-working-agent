@@ -144,6 +144,8 @@ export interface Memory {
   pendingScheduled?(): Promise<ScheduledTask[]>;
   /** BL-44: keep what a job's last good run reported. Absent when AWM is off. */
   setJobLastRun?(id: string, rec: JobLastRun): Promise<void>;
+  /** BL-51: how many fires of this job in a row could not finish. Absent when AWM is off. */
+  setJobFails?(id: string, n: number): Promise<void>;
   /** A goal by id or short id (BL-05). Absent when AWM is off. */
   getGoal?(idOrPrefix: string): Promise<Goal | null>;
   /** Persist a reusable procedure ("skill") recalled on similar future tasks. */
@@ -268,6 +270,8 @@ export interface ScheduledTask {
   /** BL-44 — see ScheduleOpts.request and JobLastRun. */
   request?: string;
   lastRun?: JobLastRun;
+  /** BL-51: fires in a row that could not finish (absent = 0). */
+  fails?: number;
 }
 
 export class MwaMemory implements Memory {
@@ -728,7 +732,7 @@ export class MwaMemory implements Memory {
         if (!tags.includes('topic=scheduled-task') || !tags.includes('status=pending')) continue;
         const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
         const check64 = get('check64=');
-        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, origin: get('origin=') || undefined, tainted: tags.includes('tainted=1') || undefined, until: get('until64=') ? Buffer.from(get('until64='), 'base64').toString('utf8') : undefined, limits: get('limits64=') ? Buffer.from(get('limits64='), 'base64').toString('utf8') : undefined, deliver: (get('deliver=') || undefined) as ScheduledTask['deliver'], pendingComplete: tags.includes('pendingcomplete=1') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined, person: get('person=') || undefined, depth: Number(get('depth=')) || undefined, parent: get('parent=') || undefined, goal: get('goal=') || undefined, byRun: get('byrun=') || undefined, resumeOf: get('resumeof=') || undefined, budgetNotified: tags.includes('budgetnotified=1') || undefined, urgent: tags.includes('urgent=1') || undefined,
+        out.push({ id: e.id, instruction: e.content, due: Number(get('due=')) || 0, recur: get('recur=') || undefined, notify: get('notify=') || undefined, dir: get('dir=') || undefined, origin: get('origin=') || undefined, tainted: tags.includes('tainted=1') || undefined, until: get('until64=') ? Buffer.from(get('until64='), 'base64').toString('utf8') : undefined, limits: get('limits64=') ? Buffer.from(get('limits64='), 'base64').toString('utf8') : undefined, deliver: (get('deliver=') || undefined) as ScheduledTask['deliver'], pendingComplete: tags.includes('pendingcomplete=1') || undefined, resumeAttempt: Number(get('resume=')) || undefined, check: check64 ? Buffer.from(check64, 'base64').toString('utf8') : undefined, lastSig: get('lastsig=') || undefined, person: get('person=') || undefined, depth: Number(get('depth=')) || undefined, parent: get('parent=') || undefined, goal: get('goal=') || undefined, byRun: get('byrun=') || undefined, resumeOf: get('resumeof=') || undefined, budgetNotified: tags.includes('budgetnotified=1') || undefined, urgent: tags.includes('urgent=1') || undefined, fails: Number(get('fails=')) || undefined,
           checkMode: (get('checkmode=') || undefined) as ScheduledTask['checkMode'], checkArm: get('checkarm=') || undefined, checkEv: get('checkev=') ? parseEvidence(get('checkev=')) : undefined, checkReady: tags.includes('checkready=1') || undefined, checkMissed: tags.includes('checkmissed=1') || undefined,
           task: get('task64=') ? Buffer.from(get('task64='), 'base64').toString('utf8') : undefined,
           ...(tags.includes('kind=reminder') ? { kind: 'reminder' as const } : {}),
@@ -817,6 +821,9 @@ export class MwaMemory implements Memory {
     ]);
   }
   /** BL-44: what this job's last good run reported (replaces the previous record). */
+  async setJobFails(id: string, n: number): Promise<void> {
+    await this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('fails=')), ...(n > 0 ? [`fails=${Math.floor(n)}`] : [])]);
+  }
   async setJobLastRun(id: string, rec: JobLastRun): Promise<void> {
     await this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('lastrun64=')), `lastrun64=${Buffer.from(JSON.stringify(rec), 'utf8').toString('base64')}`]);
   }

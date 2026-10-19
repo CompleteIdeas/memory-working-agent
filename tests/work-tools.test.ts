@@ -174,11 +174,26 @@ describe('work tools', () => {
       expect((mem as unknown as { canceled: string[] }).canceled).toEqual([]);
     });
 
-    it('cancels this person\'s task by short id', async () => {
+    it('cancels this person\'s task by short id, when they asked to stop it', async () => {
       const mem = fakeMemory();
-      const out = await byName(mem, 'schedule_cancel').handler({ id: 'BBBB2222' }, ctx({ personId: 'robert' }));
+      const out = await byName(mem, 'schedule_cancel').handler({ id: 'BBBB2222' }, ctx({ personId: 'robert', personMessage: 'Stop the daily inbox summary' }));
       expect(out).toContain('will not run again');
       expect((mem as unknown as { canceled: string[] }).canceled).toEqual(['bbbb2222-dead-beef']);
+    });
+
+    it('BL-47: not as a side effect of another request — "don\'t message me before 7" cancelled the invoice check in the BL-40 pilot', async () => {
+      const mem = fakeMemory();
+      for (const personMessage of ['Don’t message me before 7:00 AM or after 9:00 PM.', undefined]) {
+        const out = await byName(mem, 'schedule_cancel').handler({ id: 'BBBB2222' }, ctx({ personId: 'robert', personMessage }));
+        expect(out).toMatch(/refused: the person did not ask to stop a scheduled job/);
+      }
+      expect((mem as unknown as { canceled: string[] }).canceled).toEqual([]);
+    });
+
+    it('BL-47: a job\'s own fire may stop it once it has served its purpose; another job\'s fire may not', async () => {
+      const mem = fakeMemory();
+      expect(await byName(mem, 'schedule_cancel').handler({ id: 'BBBB2222' }, ctx({ personId: 'robert', jobId: 'aaaa1111-0000' }))).toMatch(/refused/);
+      expect(await byName(mem, 'schedule_cancel').handler({ id: 'BBBB2222' }, ctx({ personId: 'robert', jobId: 'bbbb2222-dead-beef' }))).toContain('will not run again');
     });
 
     it('refuses an ambiguous or too-short id rather than guessing', async () => {

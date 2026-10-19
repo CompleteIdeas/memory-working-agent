@@ -60,7 +60,8 @@ describe('the scheduler runs a dry-run detector without ever skipping', { timeou
       ran.push(a.instruction);
       if (during) { const f = during; during = null; await f(); } // a person acts while the run is going
       if (throwRun) throw new Error('model down');
-      return { summary: 'ok', reason: 'done', outcome: nextOutcome, ...(declared ? { outcomeDeclared: true } : {}), steps: 1, toolCalls: 0, costUsd: 0, durationMs: 1 };
+      // A different message each fire: the same message twice is not delivered again (BL-51).
+      return { summary: `ok ${ran.length}`, reason: 'done', outcome: nextOutcome, ...(declared ? { outcomeDeclared: true } : {}), steps: 1, toolCalls: 0, costUsd: 0, durationMs: 1 };
     }) as never,
     onFire: async (_t: unknown, r: { summary: string }) => { delivered.push(r.summary); },
     onLog: () => {},

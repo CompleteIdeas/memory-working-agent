@@ -563,6 +563,7 @@ export async function runAgent(opts: {
   let consecNoProgress = 0, consecWorkerFails = 0, brainErrors = 0, incompleteRejections = 0, laterRejections = 0;
   // BL-43: the jobs this run created (a run may set several), and the once-only pushes about them.
   const jobsCreated: { instruction: string; dueMs: number; recur?: string; kind?: 'reminder' }[] = [];
+  const jobsCancelled: string[] = []; // BL-47: what schedule_cancel stopped, named in the reply
   let ampmRejections = 0, countRejections = 0, sourceRejections = 0, changeRejections = 0, kindRejections = 0;
   // The done-gates that pushed back this run, in order — logged, because a push leaves no step behind and
   // a run log that shows "2 steps" can't otherwise say whether one fired (BL-19).
@@ -1445,7 +1446,8 @@ export async function runAgent(opts: {
       toolCalls++;
       const { action: _n, ...args } = action as Record<string, unknown> & { action: string };
       const callCtx = { sandboxDir: dir, interactive: opts.interactive, personId: opts.personId, identityInDoubt: opts.identityInDoubt, extraRoots: opts.extraRoots, tainted: sawUntrustedRead, readLocal: sawLocalRead, runId, session: opts.session,
-        personMessage: opts.interactive === true && opts.jobId === undefined ? opts.userMessage : undefined };
+        personMessage: opts.jobId === undefined ? opts.userMessage ?? (opts.interactive === true ? instruction : undefined) : undefined,
+        jobId: opts.jobLineage ?? opts.jobId };
       // BL-10: intent BEFORE the step, result after — a crash in between leaves an intent with no result.
       const txSeq = tx?.intent(action.action, args as Record<string, unknown>, sawUntrustedRead || sawLocalRead);
       const called = typeof opts.tools.callDetailed === 'function'
@@ -1489,6 +1491,7 @@ export async function runAgent(opts: {
         const method = String((args as Record<string, unknown>).method ?? 'GET').toUpperCase();
         if (!((action.action === 'http_request' && (method === 'GET' || method === 'HEAD')) || action.action === 'read_document')) wroteSomething = true;
       }
+      if (action.action === 'schedule_cancel' && !refused) { const c = /^canceled — "(.*)" will not run again/.exec(result); if (c) jobsCancelled.push(c[1]); }
       if (harnessOn && !refused && isSensitive(action.action)) {
         const rec = { verb: action.action.replace(/_/g, ' '), tool: action.action, effect: effectOf(action.action) };
         runActions.push(rec);
@@ -1579,6 +1582,8 @@ export async function runAgent(opts: {
     finalSummary = standIn ? receipt : `${finalSummary}\n\n${receipt}`;
     if (standIn && opts.jobId === undefined && runActions.length === 0 && (reason === 'stuck' || reason === 'budget')) reason = 'done';
   }
+  // BL-47: a stopped job is named, whatever the reply says (the BL-40 pilot's cancel went unmentioned).
+  if (jobsCancelled.length) finalSummary = `${finalSummary ? `${finalSummary}\n\n` : ''}Stopped: ${jobsCancelled.map((s) => `"${s}"`).join(', ')} — ${jobsCancelled.length > 1 ? 'they' : 'it'} will not run again.`;
 
   // If the model didn't give a real answer (budget/stuck, or a generic redundancy-break
   // "done"), make ONE final call to turn what we found into a plain, direct reply — or an

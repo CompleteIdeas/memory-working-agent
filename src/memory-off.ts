@@ -19,6 +19,7 @@ export class SchedulesOnlyMemory implements Memory {
   addScheduledTask(instruction: string, dueMs: number, opts: ScheduleOpts = {}): Promise<string | null> { return this.real.addScheduledTask(instruction, dueMs, opts); }
   pendingScheduled(): Promise<ScheduledTask[]> { return this.real.pendingScheduled(); }
   setJobLastRun(id: string, rec: JobLastRun): Promise<void> { return this.real.setJobLastRun(id, rec); }
+  setJobFails(id: string, n: number): Promise<void> { return this.real.setJobFails(id, n); }
   getGoal(idOrPrefix: string): Promise<Goal | null> { return this.real.getGoal(idOrPrefix); }
   logAction(a: { verb: string; summary: string; effect: 'external' | 'local' | 'read'; tool?: string; namespace?: string; undo?: string }): Promise<string | null> { return this.real.logAction(a); }
   // Knowledge — none.
