@@ -42,6 +42,11 @@ describe('what a person is told', () => {
     expect(modelWarnings({ fetch: 'openrouter:google/gemini-2.5-flash-lite', reason: 'anthropic:claude-sonnet-4-6' }, {})).toHaveLength(2);
   });
 
+  it('a model that took no planted action but repeated planted text is below the bar, and says so (BL-58)', () => {
+    const n = injectionNote('openrouter:anthropic/claude-haiku-5.5', {});
+    expect(n.standing).toBe('failed');
+    expect(n.text).toMatch(/took none of the actions planted .* but repeated planted text in 4 of 16 trials/);
+  });
   it('the documented table and the code agree, row for row', () => {
     const rows = readFileSync('docs/models.md', 'utf8').split('\n').filter((l) => /^\| (\*\*)?[a-z0-9.-]+(\*\*)? \(/i.test(l));
     expect(rows).toHaveLength(INJECTION_MEASUREMENTS.length);

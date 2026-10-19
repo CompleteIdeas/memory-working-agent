@@ -37,8 +37,10 @@ export interface ChatResult {
   /** `cacheRead`/`cacheWrite` are 0 on providers without explicit prompt caching. They are
    *  reported rather than folded into `input` so a caller can SEE whether caching is working —
    *  a cache that silently misses looks exactly like no caching at all. */
-  usage: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+  usage: { input: number; output: number; cacheRead?: number; cacheWrite?: number; cost?: number };
 }
+// `usage.cost` (USD) is the provider's own bill for the call when it reports one — OpenRouter does, per call,
+// at the endpoint that served it (BL-58: MWA's flat OpenRouter rate was wrong for every model).
 
 export interface ChatInput {
   system?: string;
@@ -71,6 +73,20 @@ export interface Provider {
   model: string;
   price: [number, number];
   chat(input: ChatInput): Promise<ChatResult>;
+}
+
+/**
+ * BL-58: OpenRouter's provider preferences for every call. Hosts that keep or train on prompts are refused
+ * (`data_collection: deny`) unless MWA_OPENROUTER_DATA_COLLECTION=allow; MWA_OPENROUTER_PROVIDERS, a comma list of
+ * OpenRouter provider tags ("anthropic,google-vertex/us,amazon-bedrock/us-east-1"), limits calls to those hosts and
+ * turns off fallback to others, so a deployment can keep its data in one country.
+ */
+export function openRouterRouting(env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
+  const only = String(env.MWA_OPENROUTER_PROVIDERS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  return {
+    data_collection: env.MWA_OPENROUTER_DATA_COLLECTION === 'allow' ? 'allow' : 'deny',
+    ...(only.length ? { only, allow_fallbacks: false } : {}),
+  };
 }
 
 function safeJson(s: unknown): Record<string, unknown> {
@@ -225,6 +241,11 @@ class OpenAICompatProvider implements Provider {
     // reasons across tool-steps + AWM, not hidden CoT — so disable Gemini's hidden thinking on
     // OpenRouter for reliable, faster, cheaper replies. (Only OpenRouter accepts `reasoning`.)
     if (/gemini/i.test(this.model) && this.base.includes('openrouter') && !this.reasoningMandatory) body.reasoning = { enabled: false };
+    // BL-58: where the data goes. OpenRouter routes a model to any of its hosts, some abroad and some that keep or
+    // train on prompts. A host that collects data is refused unless MWA_OPENROUTER_DATA_COLLECTION=allow, and
+    // MWA_OPENROUTER_PROVIDERS (comma list of OpenRouter provider tags, e.g. "anthropic,google-vertex/us") limits the
+    // call to those hosts with no fallback — Robert, 2026-10-19: no data to other countries.
+    if (this.base.includes('openrouter')) body.provider = openRouterRouting();
     if (tools?.length) {
       body.tools = tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
       body.tool_choice = 'auto';
@@ -232,7 +253,7 @@ class OpenAICompatProvider implements Provider {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (this.key) headers.authorization = `Bearer ${this.key}`;
     let lastErr = `${this.id}: unknown error`;
-    const spent = { input: 0, output: 0 }; // a reply thrown away for thinking past the limit still cost its tokens
+    const spent = { input: 0, output: 0, cost: 0, costKnown: false }; // a reply thrown away for thinking past the limit still cost its tokens
     for (let attempt = 0; attempt < 6; attempt++) {
       if (attempt) await new Promise((r) => setTimeout(r, Math.min(8000, 600 * attempt * attempt)));
       let res: Response;
@@ -247,6 +268,7 @@ class OpenAICompatProvider implements Provider {
           ? msg.tool_calls.map((tc: any) => ({ name: tc.function?.name ?? '', args: safeJson(tc.function?.arguments) }))
           : undefined;
         spent.input += j.usage?.prompt_tokens ?? 0; spent.output += j.usage?.completion_tokens ?? 0;
+        if (typeof j.usage?.cost === 'number') { spent.cost += j.usage.cost; spent.costKnown = true; }
         // Nothing visible, cut off at the limit: the budget went to hidden reasoning. Once, with headroom.
         if (!text.trim() && !toolCalls && j.choices?.[0]?.finish_reason === 'length' && !this.seenThinking) {
           this.seenThinking = true;
@@ -254,7 +276,7 @@ class OpenAICompatProvider implements Provider {
           lastErr = `${this.id}: the reply was all hidden reasoning, cut off at ${maxTokens} tokens`;
           continue;
         }
-        return { text, toolCalls, usage: { input: spent.input, output: spent.output } };
+        return { text, toolCalls, usage: { input: spent.input, output: spent.output, ...(spent.costKnown ? { cost: spent.cost } : {}) } };
       }
       const errText = await res.text();
       lastErr = `${this.id} ${res.status}: ${errText.slice(0, 200)}`;

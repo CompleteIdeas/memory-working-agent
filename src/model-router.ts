@@ -51,7 +51,7 @@ export function startTier(task: string): Tier {
 export class RoutedProvider implements Provider {
   private tier: Tier;
   escalations = 0;
-  readonly perTier = { fetch: { in: 0, out: 0, calls: 0 }, reason: { in: 0, out: 0, calls: 0 } };
+  readonly perTier = { fetch: { in: 0, out: 0, calls: 0, usd: 0 }, reason: { in: 0, out: 0, calls: 0, usd: 0 } };
 
   constructor(
     private readonly fetchP: Provider,
@@ -79,8 +79,8 @@ export class RoutedProvider implements Provider {
   reset(startTier: Tier = 'fetch'): void {
     this.tier = startTier;
     this.escalations = 0;
-    this.perTier.fetch = { in: 0, out: 0, calls: 0 };
-    this.perTier.reason = { in: 0, out: 0, calls: 0 };
+    this.perTier.fetch = { in: 0, out: 0, calls: 0, usd: 0 };
+    this.perTier.reason = { in: 0, out: 0, calls: 0, usd: 0 };
   }
 
   async chat(input: ChatInput): Promise<ChatResult> {
@@ -92,16 +92,15 @@ export class RoutedProvider implements Provider {
     s.in += r.usage.input;
     s.out += r.usage.output;
     s.calls++;
+    // BL-58: the provider's own bill for the call when it reports one (OpenRouter), else tokens at the list price.
+    const p = (tier === 'fetch' ? this.fetchP : this.reasonP).price;
+    s.usd += typeof r.usage.cost === 'number' ? r.usage.cost : (r.usage.input / 1e6) * p[0] + (r.usage.output / 1e6) * p[1];
     return r;
   }
 
   /** Tier-aware cost for this run (each tier billed at its own price). */
   spentUsd(): number {
-    return (
-      (this.perTier.fetch.in / 1e6) * this.fetchP.price[0] +
-      (this.perTier.fetch.out / 1e6) * this.fetchP.price[1] +
-      (this.perTier.reason.in / 1e6) * this.reasonP.price[0] +
-      (this.perTier.reason.out / 1e6) * this.reasonP.price[1]
-    );
+    // Each call was priced as it returned: the provider's own bill when reported (BL-58), else tokens × list price.
+    return this.perTier.fetch.usd + this.perTier.reason.usd;
   }
 }
