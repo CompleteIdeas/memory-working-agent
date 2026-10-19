@@ -1,27 +1,41 @@
 // Arm C of the promise assessment: a plain model + cron, what a person could set up themselves.
-// The same model and client as MWA (src/provider.ts getProvider('brain')), the same world tools, a
-// scheduler with the same options as MWA's `schedule`, one running conversation (the last 60
-// messages, scheduled results included) and nothing else: no memory store, no gates, no compaction.
+// The same Azure deployment as MWA, called the ordinary way (chat/completions with native tool calls,
+// the API's default reasoning), the same world tools, a scheduler with the same options as MWA's
+// `schedule`, and one running conversation: the last 60 messages, scheduled results included. No
+// memory store, no gates, no compaction.
+//
+// Pilot, 2026-10-19: a first version replayed tool results as text in the next user message (MWA's
+// own prompt style) and the model re-called schedule after it had succeeded — duplicate jobs. That
+// was the harness, not the baseline; this one uses the standard tool-message loop.
 import { makeWorld, stamp } from './world.mjs';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 
 const THREAD_MAX = 60;
 const MAX_STEPS = 12;
+const PRICE = [0.75, 4.5]; // per million tokens, as MWA prices this deployment (src/provider.ts)
 
-export async function makeCronArm({ worldFile, logFile, runLog, persona }) {
-  const { getProvider } = await import('../src/provider.ts');
+function envFrom(file) {
+  const out = {};
+  for (const line of readFileSync(file, 'utf8').split('\n')) { const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(line); if (m) out[m[1]] = m[2].replace(/^["']|["']$/g, ''); }
+  return out;
+}
+
+export async function makeCronArm({ worldFile, logFile, runLog, persona, envFile }) {
   const { nowLine, parseLocalAt, localStamp } = await import('../src/agent.ts');
-  const brain = getProvider('brain');
+  const env = envFrom(envFile);
+  const base = env.AZURE_GPT_BASE_URL, key = env.AZURE_GPT_API_KEY, model = env.AZURE_GPT_DEPLOYMENT || 'gpt-5-4-mini';
+  if (!base || !key) throw new Error('cron arm: AZURE_GPT_BASE_URL / AZURE_GPT_API_KEY missing');
   const { tools: world } = makeWorld(worldFile, logFile);
-  const thread = []; // {role, content}
+  const first = persona.name.split(' ')[0];
+  const thread = []; // {role: 'user'|'assistant', content}
   const jobs = []; // {id, instruction, due, recur}
-  const deliveries = []; // {vt, text, job}
+  const deliveries = [];
   let seq = 0;
 
   const nextDaily = (hhmm, from) => { const [h, m] = hhmm.split(':').map(Number); const d = new Date(from); d.setHours(h || 0, m || 0, 0, 0); let t = d.getTime(); if (t <= from) t += 86_400_000; return t; };
   const scheduleTools = {
     schedule: {
-      description: 'Schedule an instruction to run later; when it runs, its reply is sent to the person. Use in_minutes (one-shot delay), at "YYYY-MM-DD HH:MM" (one-shot, local time), daily_at "HH:MM" (every day), or every_minutes (repeating).',
+      description: `Schedule an instruction to run later; when it runs, its reply is sent to ${first}. Use in_minutes (one-shot delay), at "YYYY-MM-DD HH:MM" (one-shot, local time), daily_at "HH:MM" (every day), or every_minutes (repeating).`,
       parameters: { type: 'object', properties: { instruction: { type: 'string', description: 'what to do when it runs' }, in_minutes: { type: 'number' }, at: { type: 'string' }, daily_at: { type: 'string' }, every_minutes: { type: 'number' } }, required: ['instruction'] },
       run(a) {
         const now = Date.now(); let due = now + 60_000; let recur;
@@ -44,30 +58,47 @@ export async function makeCronArm({ worldFile, logFile, runLog, persona }) {
     },
   };
   const all = { ...world, ...scheduleTools };
-  const defs = Object.entries(all).map(([name, t]) => ({ name, description: t.description, parameters: t.parameters }));
+  const toolSpec = Object.entries(all).map(([name, t]) => ({ type: 'function', function: { name, description: t.description, parameters: t.parameters } }));
   const system = () => [
-    `You are ${persona.name}'s personal assistant. You can search and read their email, look at their calendar, open web pages, draft emails (drafts are never sent; ${persona.name.split(' ')[0]} sends them), and schedule tasks that run later; a scheduled task's reply is sent to ${persona.name.split(' ')[0]}.`,
+    `You are ${persona.name}'s personal assistant. You can search and read their email, look at their calendar, open web pages, draft emails (drafts are never sent; ${first} sends them), and schedule tasks that run later; a scheduled task's reply is sent to ${first}.`,
     'If a scheduled task finds nothing worth telling, reply with exactly NOTHING and no message is sent.',
     nowLine(Date.now()),
   ].join('\n');
 
+  async function call(messages) {
+    for (let attempt = 0; attempt < 6; attempt++) {
+      if (attempt) await new Promise((r) => setTimeout(r, Math.min(8000, 600 * attempt * attempt)));
+      const r = await fetch(`${base}/chat/completions`, {
+        method: 'POST', headers: { 'api-key': key, 'content-type': 'application/json' },
+        body: JSON.stringify({ model, messages, tools: toolSpec, tool_choice: 'auto', max_completion_tokens: 6000 }),
+        signal: AbortSignal.timeout(120_000),
+      }).catch((e) => ({ ok: false, status: 0, text: async () => String(e) }));
+      if (r.ok) return r.json();
+      if (r.status && r.status < 500 && r.status !== 429) throw new Error(`azure ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    }
+    throw new Error('azure: retries exhausted');
+  }
+
   async function loop(input, label) {
     const t0 = Date.now(); let cost = 0; const used = [];
-    let transcript = '';
+    const msgs = [{ role: 'system', content: system() }, ...thread.slice(-THREAD_MAX), { role: 'user', content: input }];
     for (let step = 0; step < MAX_STEPS; step++) {
-      const msgs = [...thread.slice(-THREAD_MAX), { role: 'user', content: transcript ? `${input}\n\nYOUR TOOL CALLS SO FAR THIS TURN:\n${transcript}\n\nContinue: call another tool, or reply to ${persona.name.split(' ')[0]}.` : input }];
-      const out = await brain.chat({ system: system(), messages: msgs, tools: defs, maxTokens: 900 });
-      cost += (out.usage.input * brain.price[0] + out.usage.output * brain.price[1]) / 1_000_000;
-      if (!out.toolCalls?.length) {
-        const reply = String(out.text ?? '').trim();
+      const j = await call(msgs);
+      cost += ((j.usage?.prompt_tokens ?? 0) * PRICE[0] + (j.usage?.completion_tokens ?? 0) * PRICE[1]) / 1_000_000;
+      const m = j.choices?.[0]?.message ?? {};
+      if (!m.tool_calls?.length) {
+        const reply = String(m.content ?? '').trim();
         if (runLog) appendFileSync(runLog, JSON.stringify({ ts: t0, vts: stamp(t0), label, steps: step + 1, tools: used, costUsd: Number(cost.toFixed(5)), reply: reply.slice(0, 300) }) + '\n');
         return { reply, cost, tools: used };
       }
-      for (const c of out.toolCalls) {
-        used.push(c.name);
+      msgs.push({ role: 'assistant', content: m.content ?? null, tool_calls: m.tool_calls });
+      for (const tc of m.tool_calls) {
+        const name = tc.function?.name; used.push(name);
+        let args = {}; try { args = JSON.parse(tc.function?.arguments || '{}'); } catch { /* */ }
         let res;
-        try { res = all[c.name] ? String(all[c.name].run(c.args ?? {})) : `unknown tool ${c.name}`; } catch (e) { res = `error: ${e.message}`; }
-        transcript += `- ${c.name}(${JSON.stringify(c.args ?? {}).slice(0, 300)}) → ${res.slice(0, 2500)}\n`;
+        try { res = all[name] ? String(all[name].run(args)) : `unknown tool ${name}`; } catch (e) { res = `error: ${e.message}`; }
+        msgs.push({ role: 'tool', tool_call_id: tc.id, content: res.slice(0, 6000) });
+        if (runLog) appendFileSync(runLog.replace(/runs\.jsonl$/, 'cron-trace.jsonl'), JSON.stringify({ vts: stamp(Date.now()), label, step, tool: name, args, res: res.slice(0, 300) }) + '\n');
       }
     }
     if (runLog) appendFileSync(runLog, JSON.stringify({ ts: t0, vts: stamp(t0), label, steps: MAX_STEPS, tools: used, costUsd: Number(cost.toFixed(5)), reply: '(step limit)' }) + '\n');

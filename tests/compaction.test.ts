@@ -118,7 +118,7 @@ describe('the built-in compaction in a run', () => {
 });
 
 describe('BL-32 review', () => {
-  it('recent steps stay within 1.5× the window, and the summarizer is given the person’s own words', async () => {
+  it('recent steps never pass 2× the window, even in the last fifth with no folds, and the summarizer is given the person’s own words', async () => {
     const { runAgent, HIST_WINDOW } = await import('../src/agent.js');
     const { NullMemory } = await import('../src/awm.js');
     const { ToolRegistry } = await import('../src/tools/registry.js');
@@ -139,11 +139,11 @@ describe('BL-32 review', () => {
     try {
       await runAgent({ instruction: `Recent conversation so far:\n${'(1) earlier turn → reply\n'.repeat(40)}\nNew request: count to forty`, userMessage: 'count to forty', dir, memory: new NullMemory() as any, brain, worker: brain, tools, interactive: false, plan: false, budget: { maxSteps: 45, maxWallMs: 30_000 } } as any);
     } finally { if (prev === undefined) delete process.env.MWA_FAST_CHAT; else process.env.MWA_FAST_CHAT = prev; rmSync(dir, { recursive: true, force: true }); }
-    expect(asks.length).toBeGreaterThanOrEqual(2);
+    expect(asks.length).toBeGreaterThanOrEqual(1);
     expect(asks[0]).toMatch(/THE TASK \(context only\): count to forty\n/);
     for (const p of prompts) {
       const r = p.slice(Math.max(0, p.indexOf('RECENT STEPS')));
-      expect((r.match(/TICK-RESULT-\d+/g) ?? []).length).toBeLessThanOrEqual(HIST_WINDOW + Math.ceil(HIST_WINDOW / 2));
+      expect((r.match(/TICK-RESULT-\d+/g) ?? []).length).toBeLessThanOrEqual(2 * HIST_WINDOW);
     }
   }, 60_000);
 

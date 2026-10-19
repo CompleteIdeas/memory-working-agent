@@ -105,6 +105,16 @@ export async function makeMwaArm({ world, worldName, arm, port, envFile, evalDir
       return -1;
     },
     async deliveries() { return readLines('/data/notifications.jsonl'); },
+    /** The approval cards waiting for the person (the app's approvals panel). */
+    async approvals() {
+      const r = await fetch(`${base}/api/approvals`, { headers: { cookie } });
+      if (r.status === 401) { await login(); return this.approvals(); }
+      return ((await r.json()).pending ?? []);
+    },
+    async decide(id, approve) {
+      const r = await fetch(`${base}/api/approvals/${approve ? 'confirm' : 'cancel'}`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+      return `${r.status} ${(await r.text()).slice(0, 200)}`;
+    },
     async consolidate() {
       const code = "import('/app/src/awm.ts').then(async (m) => { const mem = new m.MwaMemory(process.env.MWA_AGENT_ID ?? 'mwa-serve', process.env.MWA_DB ?? '/data/agent.db'); const r = await mem.consolidate(); console.log(JSON.stringify(r)); mem.close(); process.exit(0); })";
       const r = await sh(['exec', '-w', '/app', name, 'node', '--import', 'tsx', '-e', code], 10 * 60_000);

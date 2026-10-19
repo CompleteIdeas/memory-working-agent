@@ -43,7 +43,7 @@ if (a.arm === 'cron') {
   writeFileSync(cfg, JSON.stringify({ models: { fetch: 'azure:gpt-5-4-mini', reason: 'azure:gpt-5-4-mini' } }));
   process.env.MWA_CONFIG_PATH = cfg;
   const { makeCronArm } = await import('./cron-arm.mjs');
-  arm = await makeCronArm({ worldFile, logFile: join(outDir, 'world-log.jsonl'), runLog: join(outDir, 'runs.jsonl'), persona: world.persona });
+  arm = await makeCronArm({ worldFile, logFile: join(outDir, 'world-log.jsonl'), runLog: join(outDir, 'runs.jsonl'), persona: world.persona, envFile: resolve(a.env) });
 } else {
   const { makeMwaArm } = await import('./mwa-arm.mjs');
   arm = await makeMwaArm({ world, worldName: a.world, arm: a.arm, port: Number(a.port), envFile: resolve(a.env), evalDir: here, outDir, image: a.image });
@@ -73,6 +73,20 @@ async function refreshSeen() {
   deliveredCount = ds.length;
 }
 
+// Approval cards (MWA arms): the person looks at the panel after talking to it and after its jobs
+// run, and decides in character, approving only what they asked for (pilot: a quiet-hours rule was
+// staged for approval and sat there).
+const askedSoFar = [];
+async function handleApprovals() {
+  if (!arm.approvals) return;
+  for (const card of await arm.approvals()) {
+    const ok = await persona.personApproval(world, stamp(Date.now()), card, askedSoFar);
+    const res = await arm.decide(card.id, ok);
+    say(`approval ${ok ? 'APPROVED' : 'DECLINED'}: ${card.tool} — ${String(card.summary).slice(0, 100)} → ${res.slice(0, 60)}`);
+    log('transcript.jsonl', { vt: Date.now(), who: 'person', approval: ok, tool: card.tool, summary: card.summary, tainted: card.tainted === true, result: res.slice(0, 200) });
+  }
+}
+
 if (arm.start) await arm.start(start - realNow());
 await setVirtual(start);
 say(`start ${world.persona.name} / ${a.arm}`);
@@ -95,6 +109,7 @@ while (true) {
       if (n < 0) { say('  ! fires did not finish in 10 min'); log('harness.jsonl', { vt: Date.now(), issue: 'fire-timeout', due }); }
     }
     await refreshSeen();
+    await handleApprovals();
     continue;
   }
 
@@ -122,6 +137,8 @@ while (true) {
       exchange.push({ who: 'You', text: ans }, { who: 'Assistant', text: r.reply });
       seen.push({ vt: Date.now(), when: stamp(Date.now()), text: r.reply, source: 'chat' });
     }
+    askedSoFar.push(ev.turn.intent);
+    await handleApprovals();
   } else if (ev.kind === 'consolidate') {
     const r = await arm.consolidate();
     log('harness.jsonl', { vt: Date.now(), consolidate: r });

@@ -844,10 +844,11 @@ export async function runAgent(opts: {
       }
     }
 
-    // Fold at 1.5× the window, so recent steps hold 12–18 lines rather than 12–24 (BL-32 review: at 2× a
-    // long run's prompts grew past the window's). In the last fifth of the budget a summary can no longer
-    // pay for itself: nothing more is folded, and the oldest lines drop out as with the window.
-    const maxRecent = HIST_WINDOW + Math.max(4, Math.ceil(HIST_WINDOW / 2));
+    // Fold at 2× the window: recent steps hold 12–24 lines. Measured on BL-30's instrument (5 trials each),
+    // folding at 1.5× was as accurate (5/5) but cost 16% more — smaller prompts, but twice the folds. In the
+    // last fifth of the budget a summary can no longer pay for itself: nothing more is folded, and the
+    // oldest lines drop out as with the window, so recent steps never pass 24 (BL-32 review).
+    const maxRecent = 2 * HIST_WINDOW;
     if (compaction && history.length - folded > maxRecent && steps < maxSteps * 0.8) {
       const cut = history.length - HIST_WINDOW;
       // A failed fold drops those lines, as the window always did; the run goes on.

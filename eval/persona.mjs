@@ -66,3 +66,10 @@ export async function personRating(world, dayLabel, items) {
   try { const j = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1)); return { rating: Number(j.rating), why: String(j.why ?? '') }; }
   catch { return { rating: null, why: out.slice(0, 200) }; }
 }
+
+/** Whether the person approves an action the assistant is asking permission for (the approvals panel). */
+export async function personApproval(world, nowLabel, card, asked) {
+  const out = await respond(`${world.persona.sheet}\n\nYour assistant shows you an approval card: it wants your OK before doing something. Approve only what you actually asked for; decline anything you didn't ask for or that looks wrong.`,
+    `It is ${nowLabel}. Things you have asked your assistant for:\n${asked.map((x) => `- ${x}`).join('\n')}\n\nThe card: ${card.tool} — ${card.summary}\n\nReply with exactly APPROVE or DECLINE.`, 200);
+  return /APPROVE/i.test(out) && !/DECLINE/i.test(out);
+}
