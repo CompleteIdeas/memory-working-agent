@@ -37,6 +37,9 @@ export interface ToolContext {
   personMessage?: string;
   /** BL-47: the job this run is a fire of (its lineage) — a fire may stop its own job. */
   jobId?: string;
+  /** BL-52: the request classifier's reading — the person asks to change or stop an existing job. Absent when
+   *  there is no reading (the cancel tool then goes by the person's words). */
+  asksJobChange?: boolean;
 }
 
 export interface RegisteredTool {

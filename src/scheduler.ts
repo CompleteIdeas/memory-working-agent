@@ -130,12 +130,13 @@ export interface SchedulerDeps {
 }
 
 /** A message compared for "the same as last time": case, spacing and end punctuation don't count. */
-function normText(s: string): string { return s.toLowerCase().replace(/\s+/g, ' ').replace(/[.;,!]+$/, '').trim().slice(0, 600); }
+function normText(s: string): string { return s.toLowerCase().replace(/\s+/g, ' ').replace(/[.;,!]+$/, '').trim(); }
+/** A message's fingerprint for "the same as last time" — the whole message, not its first 600 characters. */
+export function textHash(s: string): string { return signature(normText(s)); }
 
 /** Two readings of a watched value are the same when they differ only in case, spacing or end punctuation. */
 export function sameReading(a: string, b: string): boolean {
-  const n = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').replace(/[.;,!]+$/, '').trim();
-  return n(a) === n(b);
+  return normText(a) === normText(b);
 }
 
 /**
@@ -297,15 +298,17 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     let completion: 'candidate' | 'stopped' | undefined;
     let summary = r.summary;
     let overridden = false; // the outcome below is the job record's, not the run's own word
+    let valueChanged = false; // a watch read a different value from last time
     // BL-44: the job's own record of its last good run — a watch's value and its changes, a brief's "since".
     // A failed run keeps the last good record: "couldn't open the page" is not a new reading.
     if (ranOk && !task.resumeAttempt && outcome !== 'could-not' && outcome !== 'blocked' && deps.memory.setJobLastRun) {
       const prev = task.lastRun;
       const val = (r as { watchValue?: string }).watchValue;
-      const rec: JobLastRun = { at: now(), summary: String(summary ?? '').slice(0, 600),
+      const rec: JobLastRun = { at: now(), summary: String(summary ?? '').slice(0, 600), sumHash: textHash(String(r.summary ?? '')),
         ...(prev?.value !== undefined ? { value: prev.value, valueAt: prev.valueAt } : {}), ...(prev?.history ? { history: prev.history } : {}), ...(prev?.obs ? { obs: prev.obs } : {}) };
       if (val) {
         const changed = prev?.value !== undefined && sameReading(prev.value, val) === false;
+        valueChanged = changed;
         if (prev?.value === undefined || changed) rec.history = [...(prev?.history ?? []), { at: now(), value: val }].slice(-20);
         rec.value = val; rec.valueAt = now();
         if (changed) {
@@ -365,13 +368,20 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     if (task.recur && !task.resumeAttempt && fails !== prevFails) await deps.memory.setJobFails?.(task.id, fails);
     const failQuiet = task.recur !== undefined && fails > 1 && (fails & (fails + 1)) !== 0;
     if (task.recur && fails > 1) summary += `\n\n(This job has not been able to finish ${fails} times in a row.)`;
-    if (task.recur && fails === 0 && prevFails > 1) summary += `\n\n(The last ${prevFails} runs could not finish; this one did.)`;
-    // The same message as this job's last one says nothing new (BL-40: a brief repeated word for word).
-    const repeat = task.recur !== undefined && outcome !== 'could-not' && outcome !== 'blocked' && outcome !== 'complete' && task.lastRun?.summary !== undefined
-      && normText(String(r.summary)) === normText(task.lastRun.summary);
-    const deliver = completion !== undefined || budgetNews !== undefined || detectorNews !== undefined || outcome === 'complete' || outcome === 'blocked'
-      || (outcome === 'could-not' && !failQuiet)
-      || (!repeat && (policy === 'always' || (policy === 'changed' && outcome === 'changed')));
+    // Back to working after failures: news of its own, delivered whatever `deliver` says (BL-52 review: under
+    // deliver=changed, or as a repeat of the last message, it was never heard).
+    const recovered = task.recur !== undefined && fails === 0 && prevFails > 1 && outcome !== 'blocked';
+    if (recovered) summary += `\n\n(The last ${prevFails} runs could not finish; this one did.)`;
+    // The same message as this job's last one says nothing new (BL-40: a brief repeated word for word) — unless
+    // the reading changed, the outcome was overridden, or the run acted or staged something (BL-52 review: a
+    // run that again said "no change" while the price had moved was hidden). The whole message, hashed.
+    const acted = Boolean((r as { staged?: string[] }).staged?.length) || Number((r as { actionsTaken?: number }).actionsTaken) > 0;
+    const repeat = task.recur !== undefined && !['could-not', 'blocked', 'complete'].includes(outcome) && !valueChanged && !overridden && !acted
+      && task.lastRun?.sumHash !== undefined && task.lastRun.sumHash === textHash(String(r.summary ?? ''));
+    const forced = completion !== undefined || budgetNews !== undefined || detectorNews !== undefined || outcome === 'complete' || outcome === 'blocked' || recovered;
+    // A failure follows the failure rule under every `deliver` (BL-52 review: under the default `always`, every
+    // failure was still delivered); anything else follows the policy, minus repeats.
+    const deliver = forced || (outcome === 'could-not' ? !failQuiet : !repeat && (policy === 'always' || (policy === 'changed' && outcome === 'changed')));
     // Receipts (BL-13): this fire's id, so every channel's record of its result lines up.
     const job = task.resumeOf ?? task.id;
     const fire = `${job.slice(0, 8)}-${now()}`;

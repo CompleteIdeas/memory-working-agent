@@ -210,6 +210,8 @@ export interface JobLastRun {
   history?: { at: number; value: string }[];
   /** the memory holding this job's latest observation, superseded on the next change (BL-48) */
   obs?: string;
+  /** a fingerprint of the whole last message, for "the same as last time" (BL-51) */
+  sumHash?: string;
 }
 
 /** A goal (BL-05): an AWM task that owns scheduled jobs. Its status is the source of truth for
@@ -1421,6 +1423,7 @@ function parseLastRun(b64: string): JobLastRun | undefined {
       ...(typeof o.valueAt === 'number' ? { valueAt: o.valueAt } : {}),
       ...(Array.isArray(o.history) ? { history: o.history.filter((h: { at?: unknown; value?: unknown }) => typeof h?.at === 'number' && typeof h?.value === 'string').slice(-20) } : {}),
       ...(typeof o.obs === 'string' ? { obs: o.obs } : {}),
+      ...(typeof o.sumHash === 'string' ? { sumHash: o.sumHash } : {}),
     };
   } catch { return undefined; }
 }

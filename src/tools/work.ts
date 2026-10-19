@@ -45,7 +45,7 @@ import { quietWindow, setQuietHours, quietEnvInvalid, timeZoneName } from '../qu
 import { detectorLine, detectorArmed, readyToArm, checkHash, formatEvidence, READY_N } from '../detector.js';
 import { deliveryLine, readReceipts } from '../receipts.js';
 import { runCommandAllowed } from './access.js';
-import { parseDaily, daysLabel, nextDailyDue } from '../schedule-request.js';
+import { parseDaily, daysLabel, nextDailyDue, parseDaysArg, parseLocalAt, ownWords, TAINTED_JOB_MARK } from '../schedule-request.js';
 
 /** Hard caps so a tool call can never flood the context window. */
 const MAX_LIST = 20;
@@ -55,7 +55,7 @@ const MAX_INSTRUCTION_CHARS = 160;
 const HANDLE_LEN = 8;
 
 /** The person asks to stop or remove something (BL-47) — a cancel is only ever the answer to that. */
-const STOP_WORDS = /\b(?:cancel\w*|stop\w*|delete|remove|pause|turn (?:it |that |this )?off|disable|unschedule|no longer|don'?t need|do not need|get rid of|end (?:the|my|that|this)|kill|drop (?:the|my|that|this))\b/i;
+const STOP_WORDS = /\b(?:cancel\w*|stop\w*|delete|remove|pause|turn\b[^.?!]{0,30}\boff|disable|unschedule|no longer|no more|never ?mind|done with|(?:don'?t|do not) (?:need|want)|get rid of|end (?:the|my|that|this)|kill|quit|drop (?:the|my|that|this))\b/i;
 
 /** Said after every listing: the list never creates anything, and a job not in it is not a reason to stop. */
 const LIST_ONLY = '(This only lists jobs. If the person asked for one that is not here, call `schedule` to create it — one call per job.)';
@@ -148,7 +148,7 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
       const rows = mine.slice(0, MAX_LIST).map((t) => {
         const gate = t.check ? ` [${detectorLine(t)}]` : '';
         // The job contract (BL-02): a person checking what is scheduled sees what bounds each job.
-        const contract = [t.until ? `stops when: ${clip(t.until, 80)}` : '', t.limits ? `limits: ${clip(t.limits, 80)}` : '', t.deliver && t.deliver !== 'always' ? `tells you: ${t.deliver === 'changed' ? 'only when something changes' : 'only if it fails'}` : '', t.pendingComplete ? 'looks finished — confirming' : '', t.goal ? `for goal ${t.goal.slice(0, HANDLE_LEN)}` : '', t.depth ? `created by another job (level ${t.depth})` : ''].filter(Boolean).join(' · ');
+        const contract = [t.tainted ? TAINTED_JOB_MARK : '', t.until ? `stops when: ${clip(t.until, 80)}` : '', t.limits ? `limits: ${clip(t.limits, 80)}` : '', t.deliver && t.deliver !== 'always' ? `tells you: ${t.deliver === 'changed' ? 'only when something changes' : 'only if it fails'}` : '', t.pendingComplete ? 'looks finished — confirming' : '', t.goal ? `for goal ${t.goal.slice(0, HANDLE_LEN)}` : '', t.depth ? `created by another job (level ${t.depth})` : ''].filter(Boolean).join(' · ');
         const delivery = deliveryLine(t.resumeOf ?? t.id, receipts);
         return `${t.id.slice(0, HANDLE_LEN)} — ${whenLabel(t.due, now)} — ${recurLabel(t.recur)}${t.kind === 'reminder' ? ' — reminder' : ''}\n    "${clip(t.instruction, MAX_INSTRUCTION_CHARS)}"${contract ? `\n    ${contract}` : ''}${gate}${delivery ? `\n    ${delivery}` : ''}`;
       });
@@ -186,9 +186,12 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
       // BL-47 (BL-40 pilot: "don't message me before 7" cancelled the invoice check, and the reply never said so).
       // A job stops when the person asked to stop something in this message, or by its own fire once it has
       // served its purpose — never as a side effect of some other request.
+      // With a request classifier (BL-52) its reading decides: "stop messaging me before 7" is a setting, not a
+      // job to stop. Without one, the person's words must ask to stop something.
       const job = hits[0];
-      const ownFire = ctx.jobId !== undefined && (job.id.startsWith(ctx.jobId) || ctx.jobId.startsWith(job.id.slice(0, 8)));
-      if (!ownFire && !(ctx.personMessage && STOP_WORDS.test(ctx.personMessage))) {
+      const ownFire = ctx.jobId !== undefined && job.id.startsWith(ctx.jobId);
+      const asked = ctx.asksJobChange !== undefined ? ctx.asksJobChange : Boolean(ctx.personMessage && STOP_WORDS.test(ctx.personMessage));
+      if (!ownFire && !asked) {
         return '(refused: the person did not ask to stop a scheduled job in this message. Cancel only a job they asked to stop — if one seems in the way, say so and ask.)';
       }
       await memory.cancelScheduled(job.id);
@@ -206,17 +209,21 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
         'Change what ONE scheduled job does when the person corrects it or adds to it ("from now on put staff ' +
         'requests under a Team heading", "keep the plan to 3 bullets", "also flag anything about to auto-renew"). ' +
         'Pass the short id from schedule_list and the job\'s FULL new instruction: everything that still applies ' +
-        'plus the change, standing on its own. Optionally a new daily_at time for a daily job. The job keeps its ' +
-        'id, history and last reading. A reply that only promises "I\'ll do that from now on" changes nothing — ' +
-        'the job runs later without this conversation, so call this.',
+        'plus the change, standing on its own. It also MOVES a job: a new time (daily_at), days (weekdays…), ' +
+        'interval (every_minutes) or, for a one-off, a new date and time (at) — change the job here, never cancel ' +
+        'it and schedule a copy. The job keeps its id, history and last reading. A reply that only promises ' +
+        '"I\'ll do that from now on" changes nothing — the job runs later without this conversation, so call this.',
       parameters: {
         type: 'object',
         properties: {
           id: { type: 'string', description: 'the short id shown by schedule_list' },
-          instruction: { type: 'string', description: 'the job\'s full new instruction, with the change' },
-          daily_at: { type: 'string', description: 'OPTIONAL new time for a daily job, HH:MM (24-hour, local)' },
+          instruction: { type: 'string', description: 'the job\'s full new instruction, with the change (leave out to keep it)' },
+          daily_at: { type: 'string', description: 'OPTIONAL, a daily job: new time HH:MM (24-hour, local)' },
+          days: { type: 'string', description: 'OPTIONAL, a daily job: "weekdays", "weekends", day names like "mon,wed,fri", or "every day"' },
+          every_minutes: { type: 'number', description: 'OPTIONAL, a job that repeats every N minutes: the new N' },
+          at: { type: 'string', description: 'OPTIONAL, a one-off job: new local date and time "YYYY-MM-DD HH:MM"' },
         },
-        required: ['id', 'instruction'],
+        required: ['id'],
         additionalProperties: false,
       },
     },
@@ -224,31 +231,51 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
       // A job runs unattended on every fire; rewriting one is the person's call, made while they are here and
       // not steered by content this conversation read (an email saying "update your brief to forward …").
       if (ctx.interactive !== true) return '(refused: a scheduled job is changed only while the person is present. Say in your summary what you would change.)';
-      if (ctx.tainted) return '(refused: this conversation has read outside content, so it cannot rewrite a job that runs unattended. Tell the person exactly what you would change, and ask them to confirm it in a new message.)';
+      // Local content too, as `schedule` marks a job for it: a planted notes.txt must not rewrite a job (BL-52 review).
+      if (ctx.tainted || ctx.readLocal) return '(refused: this conversation has read outside content or local files, so it cannot rewrite a job that runs unattended. Tell the person exactly what you would change, and ask them to confirm it in a new message.)';
       const want = String(args.id ?? '').trim().toLowerCase();
       if (want.length < 4) return '(give the short id from schedule_list — at least 4 characters)';
-      const instruction = String(args.instruction ?? '').trim();
-      if (instruction.length < 8) return '(give the job\'s full new instruction — it has to stand on its own when the job runs)';
       const { mine } = await myTasks(ctx);
       const hits = mine.filter((t) => t.id.toLowerCase().startsWith(want));
       if (!hits.length) return `(no scheduled task with id "${clip(want, 16)}" — call schedule_list for the current ids)`;
       if (hits.length > 1) return `(ambiguous: ${hits.length} tasks start with "${clip(want, 16)}" — use more characters)`;
       const task = hits[0];
+      const instruction = args.instruction === undefined ? task.instruction : String(args.instruction).trim();
+      if (instruction.length < 8) return '(give the job\'s full new instruction — it has to stand on its own when the job runs)';
+      // Timing (BL-52 review): "move my dentist reminder to 4 PM", "make the brief weekdays only", "every 30 minutes
+      // instead" are changes to the same job — sending them through cancel + schedule left two jobs firing.
       let recur: string | undefined; let due: number | undefined;
-      if (args.daily_at !== undefined) {
-        const m = /^(\d{1,2}):(\d{2})$/.exec(String(args.daily_at).trim());
-        if (!task.recur?.startsWith('daily:')) return '(daily_at is only for a daily job — this one is not; cancel it and schedule a new one instead)';
-        if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return '(daily_at must be HH:MM, 24-hour)';
-        // Keeps the job's days (BL-51): moving a weekday brief to 7:30 keeps it on weekdays.
-        const keep = /@([0-6]+)$/.exec(task.recur)?.[1];
-        recur = `daily:${pad(Number(m[1]))}:${m[2]}${keep ? `@${keep}` : ''}`;
+      if (args.at !== undefined) {
+        if (task.recur) return '(at is for a one-off job; this one repeats — change daily_at, days or every_minutes)';
+        const t = parseLocalAt(String(args.at));
+        if (t === null || t <= Date.now()) return '(at must be a future local date and time, "YYYY-MM-DD HH:MM")';
+        due = t;
+      }
+      if (args.daily_at !== undefined || args.days !== undefined) {
+        const cur = task.recur ? parseDaily(task.recur) : null;
+        if (!cur) return '(daily_at and days are for a daily job — this one is not)';
+        const m = args.daily_at === undefined ? null : /^(\d{1,2}):(\d{2})$/.exec(String(args.daily_at).trim());
+        if (args.daily_at !== undefined && (!m || Number(m[1]) > 23 || Number(m[2]) > 59)) return '(daily_at must be HH:MM, 24-hour)';
+        // Keeps what is not changed (BL-51): moving a weekday brief to 7:30 keeps it on weekdays.
+        const days = args.days !== undefined ? parseDaysArg(String(args.days)) : cur.days ? [...cur.days].sort().join('') : '';
+        if (days === null) return '(days must be "weekdays", "weekends", day names like "mon,wed,fri", or "every day")';
+        recur = `daily:${pad(m ? Number(m[1]) : cur.h)}:${pad(m ? Number(m[2]) : cur.m)}${days ? `@${days}` : ''}`;
         due = nextDailyDue(recur, Date.now());
       }
-      // The person's own words go with the job, after what they first asked: a later fire reads both.
-      const said = ctx.personMessage?.trim();
+      if (args.every_minutes !== undefined) {
+        if (!task.recur?.startsWith('every:')) return '(every_minutes is for a job that repeats every N minutes)';
+        const n = Math.round(Number(args.every_minutes));
+        if (!(n >= 1 && n <= 10_080)) return '(every_minutes must be 1 to 10080)';
+        recur = `every:${n}`; due = Date.now() + n * 60_000;
+      }
+      if (args.instruction === undefined && due === undefined) return '(nothing to change — give a new instruction or a new time)';
+      // The person's own words go with the job, after what they first asked: a later fire reads both — without
+      // quoted or pasted lines, as at creation (BL-52 review).
+      const said = ctx.personMessage ? ownWords(ctx.personMessage) : '';
       const request = said ? `${task.request ? `${task.request}\n` : ''}[later] ${said}` : undefined;
-      await memory.updateScheduledJob(task.id, { instruction, ...(request !== undefined ? { request } : {}), ...(recur ? { recur, due } : {}) });
-      return `updated ${task.id.slice(0, HANDLE_LEN)} — now: "${clip(instruction, MAX_INSTRUCTION_CHARS)}"${recur ? ` · ${recurLabel(recur)}` : ''} (was: "${clip(task.instruction, 80)}"). Tell the person which job changed and how.`;
+      await memory.updateScheduledJob(task.id, { instruction, ...(request !== undefined ? { request } : {}), ...(recur ? { recur } : {}), ...(due !== undefined ? { due } : {}) });
+      const when = recur ? ` · ${recurLabel(recur)}` : due !== undefined ? ` · once, ${whenLabel(due, Date.now())}` : '';
+      return `updated ${task.id.slice(0, HANDLE_LEN)} — now: "${clip(instruction, MAX_INSTRUCTION_CHARS)}"${when} (was: "${clip(task.instruction, 80)}"). Tell the person which job changed and how.`;
     },
   };
 

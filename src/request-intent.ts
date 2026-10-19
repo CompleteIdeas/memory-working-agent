@@ -16,8 +16,13 @@
  * Opt-in, because it sends the person's message to another service: MWA_INTENT=clef (Cloudflare Workers AI;
  * MWA_CLEF_TOKEN or CLOUDFLARE_API_TOKEN, and MWA_CLEF_ACCOUNT or CLOUDFLARE_ACCOUNT_ID), or any provider spec
  * MWA resolves (MWA_INTENT=openrouter:google/gemini-3.8-flash). Off, unreachable, slow or unreadable, it
- * answers null and the patterns decide, as before. It only steers the once-only pushes — whether the run
- * actually scheduled, what time it stored, what it read stay deterministic checks on the run's own record.
+ * answers null and the patterns decide, as before. Only a person's own message in an attended chat is sent.
+ *
+ * What the reading decides: whether the push to schedule fires, whether a request for later work is planned
+ * (waiting at most 2 s for it), the count push at done, the job-correction push, whether a cancel answers the
+ * person, and reminder-vs-task when it agrees with the person's own words. What it never decides: whether the
+ * run actually scheduled, what time it stored, what it read — those stay checks on the run's own record — and
+ * a classifier's count never ends a run early (only a count the person wrote does).
  */
 import type { Provider } from './provider.js';
 import { resolveProvider } from './provider.js';

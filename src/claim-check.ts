@@ -98,6 +98,8 @@ export function asksForLater(message: string): boolean {
     || /\b(?:remind me|set a reminder|add a reminder)\b(?= (?:to|at|in|on|for|tomorrow|tonight|every|next|before|this|the day|(?:mon|tues|wednes|thurs|fri|satur|sun)day))/i.test(own)
     || /\bin (?:\d+|an?|one|two|three)\s*(?:min|mins|minutes?|hours?|days?|weeks?)\b/i.test(own)
     || /\bevery (?:day|morning|evening|night|week|weekday|hour|\d+\s*(?:minutes?|hours?|days?)|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(own)
+    // "Each morning at 8", "each Monday" (BL-52 review: lost when "each" was dropped for "each hour in this log").
+    || /\beach (?:morning|evening|night|weekday|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(own)
     || /\b(?:daily at|weekly on)\b/i.test(own)
     // BL-43, measured in BL-40: "Set two reminders for me: …", "Set a daily 9:00 AM check on …", "Set a
     // weekday 8:00 AM brief", "set me up with a short daily plan at 7:00" matched none of the above, so the

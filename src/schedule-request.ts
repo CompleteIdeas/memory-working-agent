@@ -39,7 +39,14 @@ function statedTimes(message: string): { h: number; m: number; text: string }[] 
 export function ampmMismatch(message: string, hour: number, minute: number): string | null {
   const stated = statedTimes(message);
   if (!stated.length || stated.some((t) => t.h === hour && t.m === minute)) return null;
-  if ((hour < 12 ? /\b(?:morning|a\.m\.)/i : /\b(?:afternoon|evening|tonight|night|p\.m\.)/i).test(message)) return null;
+  // ...but only right after a mention of the stored hour (BL-52 review: "7:00 PM … and tomorrow morning" was let
+  // through by a morning word about something else).
+  const h12 = hour % 12 === 0 ? 12 : hour % 12;
+  const half = hour < 12 ? /^[^.!?;]{0,40}?\b(?:in the morning|morning|a\.m\.)/i : /^[^.!?;]{0,40}?\b(?:afternoon|evening|tonight|night|p\.m\.)/i;
+  // The whole clock time ("7" or "7:00", never the "7" of "7:00 PM"), and not one written with AM/PM.
+  for (const x of message.matchAll(new RegExp(`\\b${h12}(?::${String(minute).padStart(2, '0')})?(?![:\\d])(?!\\s*[ap]\\.?\\s*m\\b)`, 'gi'))) {
+    if (half.test(message.slice((x.index ?? 0) + x[0].length))) return null;
+  }
   const flipped = stated.find((t) => t.h % 12 === hour % 12 && t.m === minute);
   return flipped ? flipped.text : null;
 }
@@ -56,10 +63,13 @@ export function unreadSources(jobText: string, available: string[], used: Set<st
   const EMAIL = /mail|inbox/i;
   const CAL = /calendar|event/i;
   const PAGE = /open_page|fetch_url|http_request|read_document|browse/i;
-  const briefLike = /\b(?:brief|briefing|plan|digest|catch me up|came in|needs? me|my attention|bills?|renew\w*|auto-?renew\w*|charges?|due this week)\b/i.test(jobText);
+  // Words outside links only: ".../events" in a URL is not a calendar (BL-52 review).
+  const words = jobText.replace(/https?:\/\/\S+/gi, ' ');
+  const briefLike = /\b(?:brief|briefing|plan|digest|catch me up|came in|needs? me|my attention|bills?|renew\w*|auto-?renew\w*|charges?|due this week)\b/i.test(words);
   const out: string[] = [];
-  if (has(EMAIL) && !did(EMAIL) && (/\b(?:e-?mails?|inbox|mail|messages?)\b/i.test(jobText) || briefLike)) out.push('email');
-  if (has(CAL) && !did(CAL) && /\b(?:calendar|appointments?|meetings?|events?|schedule today)\b/i.test(jobText)) out.push('the calendar');
+  // Not "message": "send me a motivational message every morning" reads no inbox (BL-52 review).
+  if (has(EMAIL) && !did(EMAIL) && (/\b(?:e-?mails?|inbox|mail)\b/i.test(words) || briefLike)) out.push('email');
+  if (has(CAL) && !did(CAL) && /\b(?:calendar|appointments?|meetings?|events?|schedule today)\b/i.test(words)) out.push('the calendar');
   if (has(PAGE) && !did(PAGE) && /https?:\/\/\S+/i.test(jobText)) out.push('the page it watches');
   return out;
 }
@@ -74,8 +84,30 @@ export function asksToChangeJob(message: string): boolean {
   const standing = /\b(?:from now on|going forward|in (?:the )?future|next time|each time|every time|starting tomorrow|from tomorrow)\b/i.test(message)
     || /\b(?:keep|make|limit|cap)\s+(?:it|them|the\s+[\w ]{1,30}?)\s+(?:to|under|at most|shorter|longer)\b/i.test(message)
     || /\b(?:add|include|use|put|move|drop|remove|skip|stop including)\b.{0,60}\b(?:heading|section|bullets?|format|at the top|first|last)\b/i.test(message);
-  const aboutJob = /\b(?:brief|briefing|plan|summary|digest|report|check|watch|reminder|alert|morning|daily|weekly|nightly)\b/i.test(message);
+  // Nouns for a job's output — not "check" or "watch" ("Next time, check with me before you send" is not a job
+  // correction; BL-52 review).
+  const aboutJob = /\b(?:brief|briefing|plan|summary|digest|report|reminder|alert|morning|daily|weekly|nightly|price check|daily check|price watch)\b/i.test(message);
   return standing && aboutJob;
+}
+
+/** How schedule_list marks a job set up after reading outside content. A listing with none of them shows only
+ *  instructions the person's own clean chats wrote, so it does not taint the run that reads it (BL-52 review:
+ *  listing first — as the push to schedule asks — turned every reminder after it into a task). */
+export const TAINTED_JOB_MARK = 'set up after reading outside content';
+
+/** "YYYY-MM-DD HH:MM" (or with a T) read as LOCAL time; null when it isn't a real date and time. */
+export function parseLocalAt(text: string): number | null {
+  const m = /^\s*(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})\s*$/.exec(String(text));
+  if (!m) return null;
+  const [y, mo, d, h, mi] = m.slice(1).map(Number);
+  const t = new Date(y, mo - 1, d, h, mi, 0, 0);
+  return t.getFullYear() === y && t.getMonth() === mo - 1 && t.getDate() === d && t.getHours() === h && t.getMinutes() === mi ? t.getTime() : null;
+}
+
+/** The person's own words in a message: quoted lines ("> …") and fenced blocks are pasted material, someone
+ *  else's text — not what a job keeps as the person's request (BL-43 review). */
+export function ownWords(message: string): string {
+  return message.replace(/```[\s\S]*?```/g, ' ').replace(/^\s*>.*$/gm, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 2000);
 }
 
 const pad2 = (n: number) => String(n).padStart(2, '0');

@@ -190,7 +190,7 @@ describe('a run whose reply claims work it never did, enforced (BL-36, MWA_CLAIM
   }, 30_000);
 
   it('pushed back, the model actually schedules: a normal run', async () => {
-    const r = await run(REMIND, [{ action: 'schedule_list' }, CLAIM, { action: 'schedule', instruction: 'Remind me to call Dana about the venue', in_minutes: 60 }], { schedule_list: '(nothing scheduled)' });
+    const r = await run(REMIND, [{ action: 'schedule_list' }, CLAIM, { action: 'schedule', kind: 'reminder', instruction: 'Call Dana about the venue', in_minutes: 60 }], { schedule_list: '(nothing scheduled)' });
     expect(r.summary).toMatch(/Scheduled for/); // BL-43: the run goes on to the model's done; the read-back follows its words
     expect(r.summary).not.toMatch(/Not done/);
     expect(r.outcome).not.toBe('could-not');

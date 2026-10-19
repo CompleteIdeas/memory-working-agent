@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { tickScheduler } from '../src/scheduler.js';
+import { tickScheduler, textHash } from '../src/scheduler.js';
 import type { JobLastRun } from '../src/awm.js';
 
 const fire = async (task: Record<string, unknown>, run: Record<string, unknown>) => {
@@ -56,7 +56,7 @@ describe('a recurring job that keeps failing', () => {
 
 describe('the same message twice', () => {
   const BRIEF = { id: 'brief123', instruction: 'Morning brief', due: 1, recur: 'daily:08:00' };
-  const last: JobLastRun = { at: 1, summary: '1. Wedding inquiry from Aisha Nguyen.\n2. Harbor Hotel quote due Friday.' };
+  const last: JobLastRun = { at: 1, summary: '1. Wedding inquiry from Aisha Nguyen.\n2. Harbor Hotel quote due Friday.', sumHash: textHash('1. Wedding inquiry from Aisha Nguyen.\n2. Harbor Hotel quote due Friday.') };
   it('is not sent again', async () => {
     const { fired } = await fire({ ...BRIEF, lastRun: last }, { summary: '1. Wedding inquiry from Aisha Nguyen. 2. Harbor Hotel quote due Friday.', outcome: 'changed' });
     expect(fired).toHaveLength(0);
@@ -65,6 +65,25 @@ describe('the same message twice', () => {
     const { fired } = await fire({ ...BRIEF, lastRun: last }, { summary: '1. New: Carlos and Mei, Sept 18 wedding.', outcome: 'changed' });
     expect(fired).toHaveLength(1);
   });
+  it('not when the run acted or staged something, or under the default policy when it is a failure streak (BL-52 review)', async () => {
+    expect((await fire({ ...BRIEF, lastRun: last }, { summary: '1. Wedding inquiry from Aisha Nguyen. 2. Harbor Hotel quote due Friday.', outcome: 'changed', staged: ['draft-1'] })).fired).toHaveLength(1);
+    expect((await fire({ ...BRIEF, lastRun: last }, { summary: '1. Wedding inquiry from Aisha Nguyen. 2. Harbor Hotel quote due Friday.', outcome: 'changed', actionsTaken: 1 })).fired).toHaveLength(1);
+    // deliver=always (the default) follows the failure rule too: the 2nd failure in a row is quiet.
+    expect((await fire({ ...BRIEF, fails: 1 }, FAIL)).fired).toHaveLength(0);
+  });
+
+  it('a whole message is compared, not its first 600 characters', async () => {
+    const head = 'x'.repeat(700);
+    const prev: JobLastRun = { at: 1, summary: `${head} tail one`.slice(0, 600), sumHash: textHash(`${head} tail one`) };
+    expect((await fire({ ...BRIEF, lastRun: prev }, { summary: `${head} tail two`, outcome: 'changed' })).fired).toHaveLength(1);
+  });
+
+  it('a recovery is heard even under "only when something changes"', async () => {
+    const { fired } = await fire({ ...WATCH, fails: 4 }, { summary: 'Price checked.', outcome: 'no-change' });
+    expect(fired).toHaveLength(1);
+    expect(fired[0].summary).toContain('(The last 4 runs could not finish; this one did.)');
+  });
+
   it('a repeated failure is governed by the failure rule, not this one', async () => {
     const { fired } = await fire({ ...BRIEF, lastRun: { at: 1, summary: FAIL.summary } }, FAIL);
     expect(fired).toHaveLength(1);

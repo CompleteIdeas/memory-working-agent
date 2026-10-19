@@ -94,16 +94,30 @@ describe('a run reads the request through the classifier', () => {
     expect(r.history.join('\n')).not.toMatch(/nothing scheduled for a later request/);
   }, 60_000);
 
-  it('one job read: the run ends at it, with no extra call for done', async () => {
+  it("a classifier's count never ends a run early — only a count the person wrote does (BL-52 review)", async () => {
     process.env.TZ = 'America/New_York';
     const { prompts, jobs } = await run('Set a daily 7:00 AM check on the rose prices', [{ action: 'schedule', kind: 'task', instruction: 'Check rose prices', daily_at: '07:00' }, { action: 'done', summary: 'x' }], LATER1);
     expect(jobs).toHaveLength(1);
-    expect(prompts).toHaveLength(1);
+    expect(prompts).toHaveLength(2); // went on to the model's done
   }, 60_000);
 
-  it('all reminders read: the kind is settled without asking', async () => {
-    const { prompts, jobs } = await run('Ping me in 20 minutes to take the bread out', [{ action: 'schedule', instruction: 'Take the bread out', in_minutes: 20 }], { later: true, category: 'later', jobs: 1, reminders: 1 });
+  it('all reminders read, and the person said "remind": the kind is settled without asking', async () => {
+    const { prompts, jobs } = await run('Remind me in 20 minutes to take the bread out', [{ action: 'schedule', instruction: 'Take the bread out', in_minutes: 20 }, { action: 'done', summary: 'ok' }], { later: true, category: 'later', jobs: 1, reminders: 1 });
     expect(jobs[0].kind).toBe('reminder');
     expect(prompts.join('\n')).not.toMatch(/Say which this is with kind/);
+  }, 60_000);
+
+  it('a reading the words do not back is asked about, and a done after the question is pushed to set the job', async () => {
+    const { r, jobs } = await run('Ping me in 20 minutes to take the bread out', [{ action: 'schedule', instruction: 'Take the bread out', in_minutes: 20 }, { action: 'done', summary: 'ok' }, { action: 'schedule', kind: 'reminder', instruction: 'Take the bread out', in_minutes: 20 }, { action: 'done', summary: 'ok' }], { later: true, category: 'later', jobs: 1, reminders: 1 });
+    expect(r.history.join('\n')).toMatch(/reminder or task\? asked once/);
+    expect(r.history.join('\n')).toMatch(/the job was not set after the reminder-or-task question — asked again/);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].kind).toBe('reminder');
+  }, 60_000);
+
+  it('listing the schedule first does not stop a reminder (BL-52 review: the listing tainted the run)', async () => {
+    const { jobs } = await run('Remind me tomorrow at 9am to call the bank', [{ action: 'schedule_list' }, { action: 'schedule', kind: 'reminder', instruction: 'Call the bank', at: '2026-11-03 09:00' }, { action: 'done', summary: 'ok' }], null, { schedule_list: '(nothing scheduled)' });
+    expect(jobs[0].kind).toBe('reminder');
+    expect(jobs[0].tainted).toBeUndefined();
   }, 60_000);
 });
