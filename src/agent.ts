@@ -1125,7 +1125,11 @@ export async function runAgent(opts: {
     }
 
     if (action.action === 'done') {
-      const summ = action.summary ? String(action.summary) : '';
+      // BL-57: Claude models through OpenRouter often write the answer as the reply's text and call done with an empty
+      // or stub summary ("", "Here") — Haiku's replays ended "instruction satisfied" with the plan in the text.
+      const doneArg = action.summary ? String(action.summary) : '';
+      const replyText = String(out.text ?? '').trim();
+      const summ = replyText.length > doneArg.trim().length && doneArg.trim().length < 40 ? replyText : doneArg;
       // NOTHING SCHEDULED FOR A LATER REQUEST (BL-19): 3 of 18 scheduling chats on 2026-10-18 listed the
       // schedule, saw other jobs (or none), said "I couldn't confirm it is scheduled" and stopped — never
       // calling `schedule`. Lessons saying so were already in memory and didn't reach this moment, and

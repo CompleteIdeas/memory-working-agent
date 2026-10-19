@@ -10,7 +10,7 @@ import { join } from 'node:path';
 
 const PLAN = "Today: nothing on the calendar. Thursday: Max's dentist cleaning, moved from Wednesday 3:30 to Thursday 4:00 PM. Pay Ocean State Power $142.37 today.";
 
-const run = async (replies: ({ text: string } | { tool: Record<string, unknown> })[]) => {
+const run = async (replies: ({ text: string; tool?: undefined } | { tool: Record<string, unknown>; text?: string })[]) => {
   const { runAgent } = await import('../src/agent.js');
   const { MwaMemory } = await import('../src/awm.js');
   const dir = mkdtempSync(join(tmpdir(), 'mwa-bl57-'));
@@ -19,9 +19,9 @@ const run = async (replies: ({ text: string } | { tool: Record<string, unknown> 
   const brain = { id: 's', model: 's', price: [0, 0] as [number, number], chat: async (input: { system?: string }) => {
     if (!String(input.system ?? '').includes('TRUST BOUNDARY')) return { text: '{}', usage: { input: 1, output: 1 } };
     const r = replies[Math.min(i++, replies.length - 1)];
-    return 'text' in r
+    return !r.tool
       ? { text: r.text, usage: { input: 1, output: 1 } }
-      : { text: '', toolCalls: [{ name: String(r.tool.action), args: Object.fromEntries(Object.entries(r.tool).filter(([k]) => k !== 'action')) }], usage: { input: 1, output: 1 } };
+      : { text: r.text ?? '', toolCalls: [{ name: String(r.tool.action), args: Object.fromEntries(Object.entries(r.tool).filter(([k]) => k !== 'action')) }], usage: { input: 1, output: 1 } };
   } };
   const tools = { defs: () => [{ name: 'calendar__list_events', description: 'list', parameters: { type: 'object', properties: {} } }], has: (x: string) => x === 'calendar__list_events', call: async () => 'Wed 2026-11-11 15:30 Max - dentist cleaning' } as never;
   const prev = process.env.MWA_FAST_CHAT; process.env.MWA_FAST_CHAT = '0';
@@ -44,6 +44,12 @@ describe('a plain-text answer', () => {
     const r = await run([{ text: 'Let me look at the calendar first, then the inbox, before I write the plan.' }, { tool: { action: 'calendar__list_events' } }, { tool: { action: 'done', summary: 'Plan sent.' } }]);
     expect(r.history.join('\n')).not.toMatch(/taken as the final answer/);
     expect(r.history.join('\n')).toMatch(/tool calendar__list_events/);
+  }, 60_000);
+  it('done with an empty or stub summary takes the answer from the reply text', async () => {
+    const r = await run([{ tool: { action: 'calendar__list_events' } }, { tool: { action: 'done' }, text: PLAN }]);
+    expect(r.summary).toContain('moved from Wednesday 3:30 to Thursday 4:00 PM');
+    const s = await run([{ tool: { action: 'calendar__list_events' } }, { tool: { action: 'done', summary: 'Here' }, text: PLAN }]);
+    expect(s.summary).toContain('Pay Ocean State Power');
   }, 60_000);
   it('a short or empty reply is not an answer', async () => {
     const r = await run([{ text: 'ok' }, { text: 'ok' }, { text: '' }, { text: 'ok' }, { text: 'ok' }]);
