@@ -940,12 +940,17 @@ export class MwaMemory implements Memory {
   }
 
   /** Failure lessons the agent has recorded, for the UI "Lessons" view. */
-  async listFriction(): Promise<{ topic: string; content: string }[]> {
+  async listFriction(): Promise<{ topic: string; content: string; unconfirmed?: boolean }[]> {
     try {
       await this.init();
       const all: any[] = (await this.store.getEngramsByAgent(this.agentId)) ?? [];
       return all.filter((e) => this.parseTags(e.tags).includes('topic=friction')).reverse()
-        .map((e) => ({ topic: String(e.concept ?? '').replace(/^lesson:\s*/i, ''), content: String(e.content ?? '').slice(0, 300) }));
+        .map((e) => {
+          // Kept but never used in runs (BL-35: written after a refusal, or not cleared by the lesson judge).
+          const tags = this.parseTags(e.tags);
+          const unconfirmed = tags.includes('trust=untrusted') || tags.includes('src=ingested');
+          return { topic: String(e.concept ?? '').replace(/^lesson:\s*/i, ''), content: String(e.content ?? '').slice(0, 300), ...(unconfirmed ? { unconfirmed } : {}) };
+        });
     } catch { return []; }
   }
 

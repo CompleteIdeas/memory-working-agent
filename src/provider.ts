@@ -204,6 +204,8 @@ class OpenAICompatProvider implements Provider {
   ) {
     this.id = `${label}:${model}`;
   }
+  /** this endpoint refused `reasoning: { enabled: false }` once (BL-35) — don't send it again */
+  private reasoningMandatory = false;
   async chat({ system, messages, maxTokens = 1500, tools, reasoningEffort }: ChatInput): Promise<ChatResult> {
     const msgs = (system ? [{ role: 'system', content: system }, ...messages] : messages).map((m) => ({ role: m.role, content: m.content }));
     // Only send reasoning_effort to OpenAI reasoners (gpt-5.x, o-series) — others 400 on it.
@@ -219,7 +221,7 @@ class OpenAICompatProvider implements Provider {
     // dynamic thinking can devour the whole budget and truncate the answer mid-word. The agent
     // reasons across tool-steps + AWM, not hidden CoT — so disable Gemini's hidden thinking on
     // OpenRouter for reliable, faster, cheaper replies. (Only OpenRouter accepts `reasoning`.)
-    if (/gemini/i.test(this.model) && this.base.includes('openrouter')) body.reasoning = { enabled: false };
+    if (/gemini/i.test(this.model) && this.base.includes('openrouter') && !this.reasoningMandatory) body.reasoning = { enabled: false };
     if (tools?.length) {
       body.tools = tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
       body.tool_choice = 'auto';
@@ -246,7 +248,7 @@ class OpenAICompatProvider implements Provider {
       lastErr = `${this.id} ${res.status}: ${errText.slice(0, 200)}`;
       // Newer Gemini endpoints (gemini-3.8-flash) refuse a request that turns reasoning off: "Reasoning is
       // mandatory for this endpoint and cannot be disabled" — every call failed (BL-35). Send it without.
-      if (res.status === 400 && body.reasoning && /reasoning is mandatory/i.test(errText)) { delete body.reasoning; continue; }
+      if (res.status === 400 && body.reasoning && /reasoning is mandatory/i.test(errText)) { delete body.reasoning; this.reasoningMandatory = true; continue; } // once per provider, not every call
       if (res.status !== 429 && res.status < 500) break;
     }
     throw new Error(lastErr);

@@ -23,7 +23,7 @@ import { ONBOARD_PROTOCOL } from './onboard.js';
 import type { Memory, RecalledMemory, TrustTier } from './awm.js';
 import { effectOf, isSensitive, classifyTool, buildDoneReport, checkTripwires, readsUntrustedContent, markToolOutput, newFenceCode, outputSource } from './tools/governance.js';
 import { unbackedClaims, unbackedNote, unbackedNudge, asksForLater, type ClaimKind } from './claim-check.js';
-import { lessonJudge, judgeLesson, lessonDisposition, LESSON_PROMPT_RULE } from './lesson-gate.js';
+import { lessonJudge, judgeLesson, lessonDisposition, LESSON_PROMPT_RULE, MAX_LESSON_CHARS } from './lesson-gate.js';
 import { answerConfidence, type Confidence } from './tools/honesty.js';
 import { isRoutineWorthy, scanPolicy } from './tools/routines.js';
 import { BRAIN_TOOLS } from './brain.js';
@@ -574,6 +574,11 @@ export async function runAgent(opts: {
   // The APPROVAL GATE refused a write in this run — a flag, not a search of refusalLog, which keeps only
   // four entries: a fifth refusal from the gate must still make the run `blocked` (BL-16).
   let approvalRefused = false;
+  // A SAFETY CHECK refused this run (MWA's own "(refused:" — a path, network, budget, presence or approval
+  // gate), not an ordinary failure: a full disk or an unknown tool is not one (BL-35 review). Lessons after
+  // one are where the study found advice to get around the check.
+  let checkRefused = false;
+  let droppedLesson: string | undefined; // BL-35: a lesson the gate kept out, for the run log
   // A successful action that CHANGED something (not an outbound read: an http GET/HEAD, read_document).
   // An unknown tool counts as a write — the override then defers to the model, as before (BL-16 review).
   let wroteSomething = false;
@@ -1078,7 +1083,7 @@ export async function runAgent(opts: {
       if (opts.dueNow && sameTask(String(action.instruction), instruction)) {
         consecNoProgress++;
         nudge = 'That is THIS task, which is due now — do the work itself instead of scheduling it again.';
-        history.push('(refused: re-scheduling this same task — it is due now; do the work)');
+        history.push('(refused: re-scheduling this same task — it is due now; do the work)'); checkRefused = true;
         continue;
       }
       // FAN-OUT BUDGET (BL-05): structural limits on jobs creating jobs (src/fanout.ts). Lineage and
@@ -1112,7 +1117,7 @@ export async function runAgent(opts: {
         // on, and does not turn the fire into "couldn't finish" — a monitor at its children cap would
         // otherwise message the person on every fire (BL-05 review).
         consecNoProgress++; budgetRefusal = budget;
-        history.push(`(refused: scheduling another job — ${budget})`);
+        history.push(`(refused: scheduling another job — ${budget})`); checkRefused = true;
         nudge = `You can't schedule that: ${budget}. Do the work now if you can; otherwise say in your summary what you would schedule, and let the person decide.`;
         continue;
       }
@@ -1206,6 +1211,7 @@ export async function runAgent(opts: {
       if (called.failed) failedCalls++;
       else if (!(refusedShape && outputSource(action.action) !== 'external')) succeededCalls++;
       const refused = called.failed || (refusedShape && outputSource(action.action) !== 'external');
+      if (!called.failed && outputSource(action.action) !== 'external' && /^(\(refused:|\[APPROVAL REQUIRED\])/.test(result.trimStart())) checkRefused = true;
       // Keep refusals as EVIDENCE, not just as a nudge signal: a run that produced nothing needs to
       // say why in the run log, or the next identical failure is just as opaque as the last.
       if (refused && result.includes('confirming a write needs a human present')) approvalRefused = true;
@@ -1491,16 +1497,24 @@ export async function runAgent(opts: {
       if (r?.topic && r?.lesson && String(r.lesson).trim().length > 12) {
         // BL-35 — the gate. A lesson that teaches a way around a check is not saved; one the judge couldn't
         // read, or (with no judge) one written after a refusal, is kept UNCONFIRMED: stored, never primed.
-        const refusedRun = refusals > 0 || approvalRefused || history.some((h) => h.includes('(refused'));
+        const refusedRun = checkRefused || approvalRefused;
+        // Exactly the text that is judged is the text that is saved (review: a judged prefix let a tail through).
+        const lessonText = String(r.lesson).trim().slice(0, MAX_LESSON_CHARS);
         const judge = opts.lessonJudge !== undefined ? opts.lessonJudge : lessonJudge();
-        const verdict = judge ? await judgeLesson(String(r.lesson), judge) : null;
+        const verdict = judge ? await judgeLesson(lessonText, judge) : null;
         const disposition = lessonDisposition(verdict, refusedRun);
         const area = verdict?.area ? { area: verdict.area } : {};
-        if (disposition === 'drop') { gatesFired.push('lesson-evasion'); history.push('(lesson not saved: it teaches a way around a safety check)'); }
+        if (disposition === 'drop') {
+          gatesFired.push('lesson-evasion'); droppedLesson = lessonText; // kept in the run log, so a wrong rejection can be audited
+          history.push('(lesson not saved: it teaches a way around a safety check)');
+        }
         if (disposition === 'unconfirmed') gatesFired.push('lesson-unconfirmed');
         const fid = disposition === 'drop' ? null
-          : await memory.saveFriction(String(r.topic), String(r.lesson), disposition === 'unconfirmed' ? { canonical: false, untrusted: true, ...area } : { ...learnOpts, ...area });
-        if (fid) { frictionsLearned++; emit('remember', { concept: `lesson: ${String(r.topic)}`.slice(0, 80) }); history.push(`recorded a lesson ("${String(r.topic).slice(0, 40)}")`); }
+          : await memory.saveFriction(String(r.topic), lessonText, disposition === 'unconfirmed' ? { canonical: false, untrusted: true, ...area } : { ...learnOpts, ...area });
+        if (fid) {
+          frictionsLearned++; emit('remember', { concept: `lesson: ${String(r.topic)}`.slice(0, 80) });
+          history.push(`recorded a lesson ("${String(r.topic).slice(0, 40)}")${disposition === 'unconfirmed' ? ' — unconfirmed: kept, not used until confirmed' : ''}`);
+        }
       }
     } catch { /* best-effort */ }
   }
@@ -1679,6 +1693,7 @@ export async function runAgent(opts: {
     ...(claimedUnbacked.length ? { unbackedClaims: claimedUnbacked, claimCheck: claimMode } : {}),
     ...(gatesFired.length ? { gates: gatesFired } : {}),
     ...(actionTrail.length ? { actions: actionTrail } : {}),
+    ...(droppedLesson ? { droppedLesson } : {}),
     learned: learnedFacts, skills: skillsDerived, questions: openQuestions, frictions: frictionsLearned, policies: policiesLearned, transitions: transitionsRecorded,
     durationMs: now() - start, costUsd: Number((brainCost + workerCost).toFixed(4)), summary: finalSummary.slice(0, 200),
   });

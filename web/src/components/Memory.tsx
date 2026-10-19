@@ -83,7 +83,7 @@ export function Memory() {
   const [routines, setRoutinesList] = useState<RoutineRow[]>([]);
   const [routineMsg, setRoutineMsg] = useState('');
   const [routineBusy, setRoutineBusy] = useState('');
-  const [lessons, setLessons] = useState<{ topic: string; content: string }[]>([]);
+  const [lessons, setLessons] = useState<{ topic: string; content: string; unconfirmed?: boolean }[]>([]);
   const [policies, setPolicies] = useState<string[]>([]);
   const [questions, setQuestions] = useState<{ id: string; question: string }[]>([]);
   const [people, setPeople] = useState<PersonRow[]>([]);
@@ -216,7 +216,7 @@ export function Memory() {
           <div className="space-y-2">
             {lessons.map((l, i) => (
               <div key={i} className="rounded-[4px] border border-line bg-surface px-4 py-3">
-                <div className="font-medium text-[15px]">{l.topic}</div>
+                <div className="font-medium text-[15px]">{l.topic}{l.unconfirmed && <span className="mono text-[11px] text-dim ml-2" title="Kept, but not used in runs: it was written after a safety check refused something, or the lesson check could not clear it.">unconfirmed — not used</span>}</div>
                 <div className="text-dim text-[13px] leading-snug whitespace-pre-wrap">{l.content}</div>
               </div>
             ))}
