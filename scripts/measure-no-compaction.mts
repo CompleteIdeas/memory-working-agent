@@ -51,6 +51,7 @@ process.env.MWA_CONFIG_PATH = join(cfgDir, 'mwa.config.json');
 // `tools` merges shallowly over the defaults, so mcpServers must be emptied explicitly (BL-09 review).
 writeFileSync(process.env.MWA_CONFIG_PATH, JSON.stringify({ models: { fetch: 'azure:gpt-5-4-mini', reason: 'azure:gpt-5-4-mini' }, tools: { access: { preset: 'assistant' }, mcpServers: {} } }));
 
+process.env.MWA_COMPACTION = 'off'; // this measures the window itself; the agent compacts by default since BL-32
 const { runAgent, HIST_WINDOW } = await import('../src/agent.js');
 const { MwaMemory, NullMemory } = await import('../src/awm.js');
 const { getProvider } = await import('../src/provider.js');

@@ -26,6 +26,8 @@
  *   compact-awm  the same running summary (no MEMORY.md) + AWM — Robert's Claude Code + AWM setup
  *                                                                      MWA_HIST_WINDOW=12
  *   w200-off     window 200, no memory: nothing is ever lost — the ceiling   MWA_HIST_WINDOW=200
+ *   shipped-awm  the agent's own built-in compaction (BL-32: src/compaction.ts, fenced once outside content
+ *                is folded) + AWM — what MWA ships                    MWA_HIST_WINDOW=12, MWA_COMPACTION unset
  * Every arm gets the same instruction and the same tools apart from memory's own (a run without
  * memory is offered none, since BL-09). Folding is the agent's experiment-only `compaction` hook.
  *
@@ -46,7 +48,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const arg = (k: string, d: string) => { const i = process.argv.indexOf(`--${k}`); return i > 0 ? process.argv[i + 1] : d; };
-const ARMS = ['w12-awm', 'w12-off', 'openclaw', 'compact-awm', 'w200-off'] as const;
+const ARMS = ['w12-awm', 'w12-off', 'openclaw', 'compact-awm', 'w200-off', 'shipped-awm'] as const;
 type Arm = typeof ARMS[number];
 const arm = arg('arm', 'w12-awm') as Arm;
 const book = arg('book', 'closed');
@@ -63,7 +65,9 @@ if (!ARMS.includes(arm)) { console.error(`--arm must be one of ${ARMS.join(', ')
 if (book !== 'closed' && book !== 'open') { console.error('--book must be closed or open'); process.exit(2); }
 const wantWindow = arm === 'w200-off' ? 200 : 12;
 if (Number(process.env.MWA_HIST_WINDOW) !== wantWindow) { console.error(`arm ${arm} needs MWA_HIST_WINDOW=${wantWindow} in the process environment`); process.exit(2); }
-function memoryOnFor(a: string) { return a === 'w12-awm' || a === 'compact-awm'; }
+// Since BL-32 the agent compacts by default; the window arms measure the window, and the compaction arms pass their own.
+if ((process.env.MWA_COMPACTION === 'off') !== (arm !== 'shipped-awm')) { console.error(arm === 'shipped-awm' ? 'shipped-awm measures the built-in compaction: unset MWA_COMPACTION' : 'this arm needs MWA_COMPACTION=off in the process environment (BL-32)'); process.exit(2); }
+function memoryOnFor(a: string) { return a === 'w12-awm' || a === 'compact-awm' || a === 'shipped-awm'; }
 const memoryOn = memoryOnFor(arm);
 const compaction = arm === 'openclaw' || arm === 'compact-awm';
 
@@ -280,7 +284,7 @@ async function oneTrial(n: number) {
     if (finalPrompt !== null) {
       const p: string = finalPrompt;
       const rAt = p.lastIndexOf('RECENT STEPS');
-      const cAt = Math.min(...[p.indexOf(MEMORY_HEAD), p.indexOf(SUMMARY_HEAD)].filter((i) => i >= 0), rAt >= 0 ? rAt : p.length);
+      const cAt = Math.min(...[p.indexOf(MEMORY_HEAD), p.indexOf(SUMMARY_HEAD), p.indexOf('SUMMARY OF YOUR OLDER STEPS')].filter((i) => i >= 0), rAt >= 0 ? rAt : p.length);
       const recent = rAt >= 0 ? p.slice(rAt) : '', compacted = p.slice(cAt, rAt >= 0 ? rAt : p.length), primed = p.slice(0, cAt);
       const where = (s: string) => recent.includes(s) ? 'recent' : compacted.includes(s) ? 'summary' : primed.includes(s) ? 'memory' : 'absent';
       source = { contact: where(first.contact), budget: where(first.budget) };
