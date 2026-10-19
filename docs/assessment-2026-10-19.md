@@ -301,7 +301,7 @@ What failed, found in the logs:
 
 ## Rerun — second pass (after the first pass; reported beside it, never instead of it)
 
-Fixes made after reading the first pass (`b4…` below), then the four MWA cells run again on the same harness;
+Fixes made after reading the first pass (`3a0ad82`), then the four MWA cells run again on the same harness;
 the plain-loop cells are not rerun (nothing they run changed). This pass is not pre-registered: it measures
 whether the four fixes work, and its numbers are read as that.
 - The push to schedule fires on the request itself, without a listing.
