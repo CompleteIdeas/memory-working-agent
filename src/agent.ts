@@ -602,6 +602,7 @@ export async function runAgent(opts: {
   const writtenPaths = new Set<string>(); // files this run wrote: read back, they are not a source of addresses
   const normPath = (p: string) => p.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
   let repeatDraftRefusals = 0;
+  let textReplies = 0; // BL-57: plain-text replies in a row (a model that answers without calling done)
   // The done-gates that pushed back this run, in order — logged, because a push leaves no step behind and
   // a run log that shows "2 steps" can't otherwise say whether one fired (BL-19).
   const gatesFired: string[] = [];
@@ -1062,13 +1063,24 @@ export async function runAgent(opts: {
     const tc = out.toolCalls?.[0];
     if (tc?.name) { action = { action: tc.name, ...tc.args }; nudge = ''; }
     else { try { action = parseJsonLoose<Action>(out.text); nudge = ''; } catch { action = null; } }
+    // BL-57: a model that answers in plain text has finished — what native tool-calling models (Claude through
+    // OpenRouter) do. Sam's plan, replayed on Haiku 5.5 and Sonnet 5.5, gathered everything, wrote the plan as text,
+    // and was retried until the run ended "no tool calls". The first text reply is asked to call done; a second one
+    // in a row IS the answer, and goes through done's gates like any other.
+    const textAnswer = String(out.text ?? '').trim();
+    if ((!action || !action.action) && textAnswer.length >= 40 && textReplies >= 1) {
+      action = { action: 'done', summary: textAnswer } as Action; nudge = '';
+      history.push('(a plain-text reply taken as the final answer)');
+    }
     if (!action || !action.action) {
       consecNoProgress++;
-      nudge = 'Call exactly ONE tool. Make a concrete next move toward the instruction.';
+      textReplies = textAnswer.length >= 40 ? textReplies + 1 : 0;
+      nudge = textReplies ? 'If that is your final answer, call done with it as the summary. Otherwise call exactly ONE tool for your next move.' : 'Call exactly ONE tool. Make a concrete next move toward the instruction.';
       history.push('(no tool call; retrying)');
       if (consecNoProgress >= 4) { reason = 'stuck'; finalSummary = 'no tool calls'; break; }
       continue;
     }
+    textReplies = 0;
 
     if (action.action === 'done' || action.action === 'schedule' || action.action === 'schedule_list') await settleIntent();
     toolsUsed.add(action.action); // track what the agent actually invoked (for the substance gate)
