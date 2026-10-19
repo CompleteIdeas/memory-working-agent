@@ -299,6 +299,10 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     let summary = r.summary;
     let overridden = false; // the outcome below is the job record's, not the run's own word
     let valueChanged = false; // a watch read a different value from last time
+    // "Complete" means the job's finished-when condition holds; a job without one has nothing to complete (BL-53
+    // pilot: a price watch's first check said "complete" — delivered as news, and it would have stopped the job).
+    if (outcome === 'complete' && !task.until) { outcome = 'changed'; overridden = true; }
+    const actedThisRun = Boolean((r as { staged?: string[] }).staged?.length) || Number((r as { actionsTaken?: number }).actionsTaken) > 0;
     // BL-44: the job's own record of its last good run — a watch's value and its changes, a brief's "since".
     // A failed run keeps the last good record: "couldn't open the page" is not a new reading.
     if (ranOk && !task.resumeAttempt && outcome !== 'could-not' && outcome !== 'blocked' && deps.memory.setJobLastRun) {
@@ -316,10 +320,10 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
           // the day roses went from $1.10 to $1.45).
           if (outcome === 'no-change') { outcome = 'changed'; overridden = true; }
           if (!String(summary).includes(prev!.value!)) summary += `\n\n(Changed since ${friendlyWhen(prev!.valueAt ?? prev!.at)}: it was ${prev!.value}; it is now ${val}.)`;
-        } else if (prev?.value !== undefined && (task.deliver ?? 'always') === 'changed' && outcome === 'changed'
-          && !((r as { staged?: string[] }).staged?.length) && !Number((r as { actionsTaken?: number }).actionsTaken)) {
-          // The same reading as last time, for a job told to report only changes: quiet — unless the run did
-          // something or staged something, which is news of its own (BL-43 review).
+        } else if ((task.deliver ?? 'always') === 'changed' && outcome === 'changed' && !actedThisRun) {
+          // The same reading as last time — or the first one, the baseline — for a job told to report only changes:
+          // quiet, unless the run did or staged something, which is news of its own (BL-43 review). The setup
+          // already said it is watching; "the price is $1.10" on day one counted as unwanted in BL-40.
           outcome = 'no-change'; overridden = true;
         }
         if (prev?.value === undefined || changed) {
@@ -375,7 +379,7 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // The same message as this job's last one says nothing new (BL-40: a brief repeated word for word) — unless
     // the reading changed, the outcome was overridden, or the run acted or staged something (BL-52 review: a
     // run that again said "no change" while the price had moved was hidden). The whole message, hashed.
-    const acted = Boolean((r as { staged?: string[] }).staged?.length) || Number((r as { actionsTaken?: number }).actionsTaken) > 0;
+    const acted = actedThisRun;
     const repeat = task.recur !== undefined && !['could-not', 'blocked', 'complete'].includes(outcome) && !valueChanged && !overridden && !acted
       && task.lastRun?.sumHash !== undefined && task.lastRun.sumHash === textHash(String(r.summary ?? ''));
     const forced = completion !== undefined || budgetNews !== undefined || detectorNews !== undefined || outcome === 'complete' || outcome === 'blocked' || recovered;

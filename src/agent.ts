@@ -25,7 +25,8 @@ import { isReservedConcept, unreservedConcept, isStoreConcept } from './reserved
 import { effectOf, isSensitive, classifyTool, buildDoneReport, checkTripwires, readsUntrustedContent, markToolOutput, newFenceCode, outputSource } from './tools/governance.js';
 import { unbackedClaims, unbackedNote, unbackedNudge, asksForLater, type ClaimKind } from './claim-check.js';
 import { intentClassifier, type IntentClassifier, type RequestIntent } from './request-intent.js';
-import { TAINTED_JOB_MARK, parseLocalAt, ownWords } from './schedule-request.js';
+import { TAINTED_JOB_MARK, parseLocalAt, ownWords, groundedInMessage } from './schedule-request.js';
+import { MAX_PENDING_TAINTED_CHAT } from './fanout.js';
 // Moved to schedule-request.ts (the work tools use them too); exported here as before.
 export { parseLocalAt, ownWords };
 import { expectedJobCount, ampmMismatch, clock12, friendlySchedule, friendlyWhen, unreadSources, asksToChangeJob, parseDaysArg, nextDailyDue } from './schedule-request.js';
@@ -237,7 +238,7 @@ export const SCHEDULE_TOOL: ToolDef = {
     daily_at: { type: 'string', description: 'recurring daily at HH:MM (24-hour)' },
     days: { type: 'string', description: 'OPTIONAL with daily_at: the days it runs — "weekdays", "weekends", or day names like "mon,wed,fri". Leave out for every day. A "weekday morning brief" is weekdays.' },
     every_minutes: { type: 'number', description: 'recurring every N minutes' },
-    until: { type: 'string', description: 'OPTIONAL, for recurring jobs: when this job is finished for good, in plain words ("the package shows Delivered", "the ticket is closed"). A fire that finds it true finishes with outcome complete; once the next fire confirms, the job stops.' },
+    until: { type: 'string', description: 'OPTIONAL, for recurring jobs: when this job is finished for good, in plain words ("the package shows Delivered", "the ticket is closed"). A fire that finds it true finishes with outcome complete; once the next fire confirms, the job stops. NOT for a watch that should keep reporting changes ("tell me if the price changes"): leave it out, and the job keeps watching.' },
     limits: { type: 'string', description: 'OPTIONAL hard limits every fire must respect, in plain words ("only draft replies, never send", "do not spend money").' },
     urgent: { type: 'boolean', description: 'OPTIONAL: deliver this job\'s results even during the person\'s quiet hours. Only when they asked to be told at once ("wake me if…", "tell me the moment…").' },
     goal: { type: 'string', description: 'OPTIONAL: the short id of the goal this job serves (goal_list shows them). A job created by a scheduled run belongs to that run\'s goal automatically. A goal marked done stops its jobs; a blocked goal pauses them.' },
@@ -588,6 +589,18 @@ export async function runAgent(opts: {
     nudge = 'This request is for LATER, and nothing has been scheduled in this run. If a job in the list already IS this same request (same task, same time), say so plainly and stop. '
       + 'Otherwise call `schedule` now with the instruction to carry out at that time (in_minutes / daily_at / every_minutes as asked) — and do not do the later part of the work now.';
     history.push('(nothing scheduled for a later request — asked to schedule it, or name the job that already is)');
+    return true;
+  };
+  // BL-49: a scheduled fire that is about to end without reading a source its own instruction depends on is sent
+  // back once — at done, and where a repeated read would end the run (BL-53 pilot). A run near its limits is let go.
+  const pushSources = (): boolean => {
+    if (opts.jobId === undefined || sourceRejections >= 1 || !opts.tools || now() - start >= maxWallMs * 0.8 || steps >= maxSteps - 2) return false;
+    // The job's own instruction: the setup message may have set up other jobs too (BL-52 review).
+    const unread = unreadSources(opts.jobTask ?? instruction, opts.tools.defs().map((d) => d.name), toolsUsed);
+    if (!unread.length) return false;
+    sourceRejections++; gatesFired.push('sources'); consecNoProgress = 0;
+    nudge = `This job depends on ${unread.join(' and ')}, and this run has not read ${unread.length > 1 ? 'them' : 'it'}. Read ${unread.length > 1 ? 'them' : 'it'} now — what is new since the last run — then call done. Memory of what ${unread.length > 1 ? 'they' : 'it'} said before is not a check.`;
+    history.push(`(job sources not read: ${unread.join(', ')} — asked to read them)`);
     return true;
   };
   let verifyRejections = 0, verified = false; // verify-before-done: one numeric re-check, no spinning
@@ -1017,6 +1030,9 @@ export async function runAgent(opts: {
       // lists the schedule again and again, and the shortcut below ("repeating after producing output ⇒
       // finished") ends the run, past every done-gate. Push first, here too.
       if (action.action === 'schedule_list' && pushLater()) continue; // only the listing loop (review 2: any repeat spent the push)
+      // BL-53 pilot: a brief called open_items three times and ended there, never reading the inbox — past the
+      // done gate where the source push lives. Push here too.
+      if (pushSources()) continue;
       // Repeating after already producing output ⇒ effectively finished — conclude
       // as done rather than burning steps into "stuck".
       if (productive > 0 && consecNoProgress >= 2) {
@@ -1058,16 +1074,7 @@ export async function runAgent(opts: {
         continue;
       }
       // BL-49: a scheduled job that never read a source it depends on. Once; a run near its limits is let go.
-      if (opts.jobId !== undefined && sourceRejections < 1 && opts.tools && now() - start < maxWallMs * 0.8 && steps < maxSteps - 2) {
-        // The job's own instruction: the setup message may have set up other jobs too (BL-52 review).
-        const unread = unreadSources(opts.jobTask ?? instruction, opts.tools.defs().map((d) => d.name), toolsUsed);
-        if (unread.length) {
-          sourceRejections++; gatesFired.push('sources'); consecNoProgress = 0;
-          nudge = `This job depends on ${unread.join(' and ')}, and this run has not read ${unread.length > 1 ? 'them' : 'it'}. Read ${unread.length > 1 ? 'them' : 'it'} now — what is new since the last run — then call done. Memory of what ${unread.length > 1 ? 'they' : 'it'} said before is not a check.`;
-          history.push(`(job sources not read: ${unread.join(', ')} — asked to read them)`);
-          continue;
-        }
-      }
+      if (pushSources()) continue;
       // BL-45: a correction to a job's output, answered with a promise and no change to the job. Once, only for
       // a person present in a clean conversation (schedule_update refuses otherwise) who has a job it could be.
       if (opts.interactive === true && opts.jobId === undefined && changeRejections < 1 && !sawUntrustedRead && opts.tools?.has('schedule_update')
@@ -1312,7 +1319,9 @@ export async function runAgent(opts: {
         // A goal the model NAMED must exist and be open. An INHERITED goal that is gone means the job
         // now runs unowned (the scheduler keeps it running), so its follow-ups are unowned too.
         goalClosed: explicitGoal ? !goal || goal.status === 'done' : goal?.status === 'done',
-        unattendedOrTainted: opts.interactive === false || sawUntrustedRead || sawLocalRead,
+        // The per-run cap follows whether a person is present; jobs made after outside content are marked
+        // tainted either way (BL-53 pilot: a carried brief made every chat "tainted" and "set four reminders" lost one).
+        unattendedOrTainted: opts.interactive === false || ((sawUntrustedRead || sawLocalRead) && pendingJobs.length >= MAX_PENDING_TAINTED_CHAT),
       });
       if (budget) {
         // A budget limit, not a failure of the job: like the self-reschedule guard it nudges and moves
@@ -1384,6 +1393,12 @@ export async function runAgent(opts: {
       // message). A message asking for a reminder with no kind given is asked once which it is: guessing from
       // the instruction's first verb turned "Tell me the weather" into a reminder and "Email Bob" into a task.
       const personClean = opts.interactive === true && opts.jobId === undefined && !sawUntrustedRead && !sawLocalRead;
+      // BL-53 pilot: carrying the conversation (and the day's brief in it) makes every chat turn "read outside
+      // content", and "Set 2 reminders" became two tasks — BL-40's bug again. A reminder's text is safe to
+      // deliver unfenced when it is the person's own words: every content word of it in their message this
+      // turn, and no link, address or number they did not write.
+      const personSaid = opts.interactive === true && opts.jobId === undefined && groundedInMessage(String(action.instruction), personWords);
+      const reminderOk = personClean || personSaid;
       // With a classifier's reading the kind is settled when it is clear-cut — every job asked for is a reminder,
       // or none is — and asked only when the message mixes them (BL-52).
       // Only when the reading and the words agree: all reminders and the person said "remind", or none and they
@@ -1391,13 +1406,13 @@ export async function runAgent(opts: {
       const saysRemind = /\bremind(?:er|ers)?\b/i.test(personWords);
       const clearKind = intent && intent.later ? (intent.reminders >= intent.jobs && saysRemind ? 'reminder' : intent.reminders === 0 && !saysRemind ? 'task' : undefined) : undefined;
       if (action.kind === undefined && clearKind) action.kind = clearKind;
-      if (action.kind === undefined && personClean && kindRejections < 1 && (intent ? intent.reminders > 0 : /\bremind(?:er|ers)?\b/i.test(personWords))) {
+      if (action.kind === undefined && reminderOk && kindRejections < 1 && (intent ? intent.reminders > 0 : /\bremind(?:er|ers)?\b/i.test(personWords))) {
         kindRejections++; consecNoProgress++; gatesFired.push('kind'); lastSig = '';
         history.push('(schedule: reminder or task? asked once)');
         nudge = 'Say which this is with kind: "reminder" if the person will do it themselves and just wants to be told at that time (they get your instruction text word for word), or "task" if you are to do the work then and report. Call schedule again with kind.';
         continue;
       }
-      const kind = action.kind === 'reminder' && personClean ? 'reminder' as const : undefined;
+      const kind = action.kind === 'reminder' && reminderOk ? 'reminder' as const : undefined;
       if (action.kind === 'reminder' && !kind) history.push('(a reminder can be set only by the person in a clean conversation — made a task)');
       const check = typeof action.check === 'string' && action.check.trim() ? action.check.trim() : undefined;
       // `origin` = the folder this run is working in. The fired run gets a FRESH folder, so without
@@ -1414,7 +1429,7 @@ export async function runAgent(opts: {
         // hasn't read outside content, so injected text can't make jobs buzz a phone at night (BL-07).
         // A reminder is the person's own time, set under the same rule: it arrives then (BL-43 review: a 6:15
         // "leave for the airport" was held until quiet hours ended).
-        urgent: (action.urgent === true || kind === 'reminder') && personClean ? true : undefined,
+        urgent: (action.urgent === true && personClean) || kind === 'reminder' ? true : undefined,
         // BL-44: the person's own words, so every fire keeps the link and the details they gave. Only from a
         // person present (a fire or the inbox has no such words), without quoted or pasted lines, and shown to
         // each fire fenced, as information — a pasted email is still someone else's text.

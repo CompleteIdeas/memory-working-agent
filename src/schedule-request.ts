@@ -68,7 +68,8 @@ export function unreadSources(jobText: string, available: string[], used: Set<st
   const briefLike = /\b(?:brief|briefing|plan|digest|catch me up|came in|needs? me|my attention|bills?|renew\w*|auto-?renew\w*|charges?|due this week)\b/i.test(words);
   const out: string[] = [];
   // Not "message": "send me a motivational message every morning" reads no inbox (BL-52 review).
-  if (has(EMAIL) && !did(EMAIL) && (/\b(?:e-?mails?|inbox|mail)\b/i.test(words) || briefLike)) out.push('email');
+  // Only reading: "draft a payment reminder email" writes one, it doesn't read the inbox (BL-53 pilot).
+  if (has(EMAIL) && !did(EMAIL) && (/\b(?:inbox|unread|came in|new (?:e-?)?mails?|(?:e-?)?mails? (?:from|about|that|which|in|to me)|(?:read|check|search|scan|go through)\s+(?:my |the |new )?(?:e-?)?mails?)\b/i.test(words) || briefLike)) out.push('email');
   if (has(CAL) && !did(CAL) && /\b(?:calendar|appointments?|meetings?|events?|schedule today)\b/i.test(words)) out.push('the calendar');
   if (has(PAGE) && !did(PAGE) && /https?:\/\/\S+/i.test(jobText)) out.push('the page it watches');
   return out;
@@ -89,6 +90,22 @@ export function asksToChangeJob(message: string): boolean {
   const aboutJob = /\b(?:brief|briefing|plan|summary|digest|report|reminder|alert|morning|daily|weekly|nightly|price check|daily check|price watch)\b/i.test(message);
   return standing && aboutJob;
 }
+
+/**
+ * The text is the person's own words from their message (BL-53): every content word of it appears in the message,
+ * and it carries no link, email address or long number the message does not. A reminder is delivered as written,
+ * unfenced — after the conversation has read outside content, only text the person themselves wrote may be.
+ */
+export function groundedInMessage(text: string, message: string): boolean {
+  const lc = message.toLowerCase();
+  const words = (s: string) => (s.toLowerCase().match(/[a-z0-9']+/g) ?? []).map((w) => w.replace(/'s$/, '')).filter((w) => w.length > 2 && !GROUND_STOP.has(w));
+  const msg = new Set(words(message));
+  const content = words(text);
+  if (!content.length || content.some((w) => !msg.has(w) && !msg.has(`${w}s`) && !msg.has(w.replace(/s$/, '')))) return false;
+  const risky = text.match(/https?:\/\/\S+|www\.\S+|[\w.+-]+@[\w-]+\.[\w.]+|\d{4,}/gi) ?? [];
+  return risky.every((r) => lc.includes(r.toLowerCase()));
+}
+const GROUND_STOP = new Set(['the', 'and', 'for', 'you', 'your', 'about', 'with', 'this', 'that', 'remind', 'reminder', 'remember', 'please', 'today', 'tomorrow', 'tonight', 'time', 'call', 'get', 'make', 'sure']);
 
 /** How schedule_list marks a job set up after reading outside content. A listing with none of them shows only
  *  instructions the person's own clean chats wrote, so it does not taint the run that reads it (BL-52 review:

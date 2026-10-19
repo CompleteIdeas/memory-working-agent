@@ -73,6 +73,12 @@ describe('a fire that skipped its inbox is sent back once', () => {
     expect(r.reason).toBe('done');
   }, 30_000);
 
+  it('a fire looping on the same read is pushed too, before the repeat ends it (BL-53 pilot)', async () => {
+    const { r } = await run([{ action: 'calendar__list_events' }, { action: 'calendar__list_events' }, { action: 'calendar__list_events' }, { action: 'gmail__search_email' }, DONE]);
+    expect(r.history.join('\n')).toMatch(/skipped redundant calendar__list_events[\s\S]*job sources not read: email/);
+    expect(r.reason).toBe('done');
+  }, 30_000);
+
   it('a chat run is never pushed', async () => {
     const { r } = await run([{ action: 'calendar__list_events' }, DONE], { jobId: undefined, dueNow: false, interactive: true });
     expect(r.history.join('\n')).not.toMatch(/job sources not read/);

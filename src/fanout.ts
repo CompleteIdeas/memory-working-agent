@@ -19,6 +19,8 @@ export const MAX_JOB_DEPTH = 2;
 export const MAX_CHILDREN = 2;
 export const MAX_PER_RUN = 3;
 export const MAX_PER_RUN_ATTENDED = 8;
+/** An attended chat that has read outside content keeps the attended per-run cap until this many jobs wait (BL-53). */
+export const MAX_PENDING_TAINTED_CHAT = 20;
 export const MAX_PENDING = 50;
 export const MAX_JOBS_PER_GOAL = 5;
 

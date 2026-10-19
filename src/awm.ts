@@ -812,11 +812,13 @@ export class MwaMemory implements Memory {
   }
   /** BL-45: the person changed what a job does. Same job — id, schedule, record and history stay — with a
    *  new instruction, and optionally the person's words added to its request and a new daily time. */
-  async updateScheduledJob(id: string, change: { instruction: string; request?: string; recur?: string; due?: number }): Promise<void> {
+  async updateScheduledJob(id: string, change: { instruction: string; request?: string; recur?: string; due?: number; tainted?: boolean }): Promise<void> {
     await this.init();
     await this.store.updateContent(id, change.instruction);
     await this.setScheduledTags(id, (tags) => [
-      ...tags.filter((t) => !(change.request !== undefined && t.startsWith('request64=')) && !(change.recur !== undefined && t.startsWith('recur=')) && !(change.due !== undefined && t.startsWith('due='))),
+      ...tags.filter((t) => !(change.request !== undefined && t.startsWith('request64=')) && !(change.recur !== undefined && t.startsWith('recur=')) && !(change.due !== undefined && t.startsWith('due=')) && !(change.tainted && t === 'tainted=1')),
+      // Rewritten after outside content: the job is marked for good (never unmarked by a later clean change).
+      ...(change.tainted ? ['tainted=1'] : []),
       ...(change.request !== undefined ? [`request64=${Buffer.from(change.request.slice(-2000), 'utf8').toString('base64')}`] : []),
       ...(change.recur !== undefined ? [`recur=${change.recur}`] : []),
       ...(change.due !== undefined ? [`due=${Math.round(change.due)}`] : []),

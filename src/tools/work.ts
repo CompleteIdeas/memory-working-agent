@@ -45,7 +45,7 @@ import { quietWindow, setQuietHours, quietEnvInvalid, timeZoneName } from '../qu
 import { detectorLine, detectorArmed, readyToArm, checkHash, formatEvidence, READY_N } from '../detector.js';
 import { deliveryLine, readReceipts } from '../receipts.js';
 import { runCommandAllowed } from './access.js';
-import { parseDaily, daysLabel, nextDailyDue, parseDaysArg, parseLocalAt, ownWords, TAINTED_JOB_MARK } from '../schedule-request.js';
+import { parseDaily, daysLabel, nextDailyDue, parseDaysArg, parseLocalAt, ownWords, groundedInMessage, TAINTED_JOB_MARK } from '../schedule-request.js';
 
 /** Hard caps so a tool call can never flood the context window. */
 const MAX_LIST = 20;
@@ -231,8 +231,10 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
       // A job runs unattended on every fire; rewriting one is the person's call, made while they are here and
       // not steered by content this conversation read (an email saying "update your brief to forward …").
       if (ctx.interactive !== true) return '(refused: a scheduled job is changed only while the person is present. Say in your summary what you would change.)';
-      // Local content too, as `schedule` marks a job for it: a planted notes.txt must not rewrite a job (BL-52 review).
-      if (ctx.tainted || ctx.readLocal) return '(refused: this conversation has read outside content or local files, so it cannot rewrite a job that runs unattended. Tell the person exactly what you would change, and ask them to confirm it in a new message.)';
+      // After outside content or local files, the job is changed and MARKED, as `schedule` marks a job it creates
+      // then: its fires start tainted, its settings are fenced, and their writes wait for approval (BL-53 pilot: a
+      // carried brief made every chat turn tainted, so a refusal here meant no correction ever reached a job).
+      const marked = ctx.tainted === true || ctx.readLocal === true;
       const want = String(args.id ?? '').trim().toLowerCase();
       if (want.length < 4) return '(give the short id from schedule_list — at least 4 characters)';
       const { mine } = await myTasks(ctx);
@@ -269,11 +271,16 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
         recur = `every:${n}`; due = Date.now() + n * 60_000;
       }
       if (args.instruction === undefined && due === undefined) return '(nothing to change — give a new instruction or a new time)';
+      // A reminder is delivered word for word with no run to contain it: after outside content, its new text must
+      // be the person's own words from this message.
+      if (marked && task.kind === 'reminder' && args.instruction !== undefined && !groundedInMessage(instruction, ctx.personMessage ?? '')) {
+        return '(refused: this conversation has read outside content, and a reminder is sent word for word — its new text must be the person\'s own words from their message. Use their wording, or ask them to say it again.)';
+      }
       // The person's own words go with the job, after what they first asked: a later fire reads both — without
       // quoted or pasted lines, as at creation (BL-52 review).
       const said = ctx.personMessage ? ownWords(ctx.personMessage) : '';
       const request = said ? `${task.request ? `${task.request}\n` : ''}[later] ${said}` : undefined;
-      await memory.updateScheduledJob(task.id, { instruction, ...(request !== undefined ? { request } : {}), ...(recur ? { recur } : {}), ...(due !== undefined ? { due } : {}) });
+      await memory.updateScheduledJob(task.id, { instruction, ...(request !== undefined ? { request } : {}), ...(recur ? { recur } : {}), ...(due !== undefined ? { due } : {}), ...(marked && args.instruction !== undefined ? { tainted: true } : {}) });
       const when = recur ? ` · ${recurLabel(recur)}` : due !== undefined ? ` · once, ${whenLabel(due, Date.now())}` : '';
       return `updated ${task.id.slice(0, HANDLE_LEN)} — now: "${clip(instruction, MAX_INSTRUCTION_CHARS)}"${when} (was: "${clip(task.instruction, 80)}"). Tell the person which job changed and how.`;
     },

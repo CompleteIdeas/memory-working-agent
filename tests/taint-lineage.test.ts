@@ -164,7 +164,7 @@ describe('the open-question guard has a positive control', () => {
 describe('taint survives scheduling', () => {
   it('a task scheduled by a tainted run is stored tainted', async () => {
     const tasks = await withMemory(async (dir, mem) => {
-      const { brain } = scripted([{ action: 'read_email', id: '1' }, { action: 'schedule', instruction: 'reply to the vendor', in_minutes: 60 }]);
+      const { brain } = scripted([{ action: 'read_email', id: '1' }, { action: 'schedule', kind: 'task', instruction: 'reply to the vendor', in_minutes: 60 }]);
       await runAgent({
         instruction: 'read the vendor email and remind me to reply in an hour', dir, memory: mem, brain, worker: brain,
         interactive: true, tools: stubTools({ read_email: 'vendor email body' }), budget: { maxSteps: 5, maxWallMs: 30_000 },

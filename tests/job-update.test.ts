@@ -62,13 +62,15 @@ describe('schedule_update', () => {
     });
   });
 
-  it('refused unattended, after reading outside content, and for someone else\'s job', async () => {
+  it('refused unattended and for someone else\'s job; after outside content it is changed but marked', async () => {
     await withStore(async (mem, reg, id) => {
       expect(await reg.call('schedule_update', { id: id.slice(0, 8), instruction: NEW }, { sandboxDir: '.', interactive: false, personId: 'maya' } as never)).toMatch(/refused: a scheduled job is changed only while the person is present/);
-      expect(await reg.call('schedule_update', { id: id.slice(0, 8), instruction: NEW }, { sandboxDir: '.', interactive: true, tainted: true, personId: 'maya' } as never)).toMatch(/refused: this conversation has read outside content/);
       expect(await reg.call('schedule_update', { id: id.slice(0, 8), instruction: NEW }, { sandboxDir: '.', interactive: true, personId: 'sam' } as never)).toMatch(/no scheduled task with id/);
+      expect((await mem.pendingScheduled())[0].instruction).not.toBe(NEW);
+      expect(await reg.call('schedule_update', { id: id.slice(0, 8), instruction: NEW }, { sandboxDir: '.', interactive: true, tainted: true, personId: 'maya' } as never)).toMatch(/^updated/);
       const [job] = await mem.pendingScheduled();
-      expect(job.instruction).not.toBe(NEW);
+      expect(job.instruction).toBe(NEW);
+      expect(job.tainted).toBe(true);
     });
   });
 });
