@@ -33,6 +33,9 @@ const TOOL_CATEGORY: Record<string, ActionCategory> = {
   schedule_list: 'read', memory_profile: 'read', memory_store_map: 'read',
   schedule_cancel: 'schedule',
   schedule_update: 'schedule', // rewrites a job's instruction (BL-45)
+  // open items (BL-50): a local record of what needs the person; the list is read as outside content (not
+  // listed as own or local below) because its items were mostly read from an inbox.
+  open_item_add: 'memory', open_item_close: 'memory', open_items: 'read',
   // goals (BL-05): local writes; goal_list echoes stored text, so its output is local content.
   goal_list: 'read', goal_add: 'schedule', goal_update: 'schedule',
   // approval_results echoes what an approved command printed — output of code the model may have

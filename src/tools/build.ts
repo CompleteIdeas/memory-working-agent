@@ -13,6 +13,7 @@ import { onboardTools } from './onboard.js';
 import { memoryTools } from './memory.js';
 import { MEMORY_OFF, KNOWLEDGE_TOOLS } from '../memory-off.js';
 import { workTools } from './work.js';
+import { openItemTools } from './open-items.js';
 import { knowledgeTools } from './knowledge.js';
 import { checkTools } from './checks.js';
 import { googleConfigured, googleTools } from '../connectors/google.js';
@@ -52,6 +53,8 @@ export async function buildRegistry(
   // Same gap as the memory tools one layer out: it could CREATE a recurring task but never see or
   // stop one. See src/tools/work.ts for why the policy writers are the gated ones.
   registry.registerAll(known(workTools(memory)));
+  // Open items (BL-50): what needs the person, kept by briefs and read by "what needs me?". Memory, so off with it.
+  registry.registerAll(known(openItemTools(memory)));
   // Knowledge store (opt-in via MWA_KNOWLEDGE_DIR). These were written and exported and
   // then never registered, so `knowledge_write`/`knowledge_list` existed as dead code —
   // the agent could not call either. Registering them is the whole fix.

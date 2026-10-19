@@ -9,7 +9,7 @@ import type { Memory, MwaMemory, RecalledMemory, ScheduleOpts, ScheduledTask, Go
 export const MEMORY_OFF = String(process.env.MWA_MEMORY ?? '').toLowerCase() === 'off';
 
 /** Tools that read or write what memory knows; absent when memory is off. */
-export const KNOWLEDGE_TOOLS = new Set(['memory_profile', 'memory_learn_person', 'memory_store_map', 'memory_feedback', 'policy_save', 'policy_forget', 'routine_propose']);
+export const KNOWLEDGE_TOOLS = new Set(['memory_profile', 'memory_learn_person', 'memory_store_map', 'memory_feedback', 'policy_save', 'policy_forget', 'routine_propose', 'open_item_add', 'open_item_close', 'open_items']);
 
 export class SchedulesOnlyMemory implements Memory {
   readonly enabled = false;

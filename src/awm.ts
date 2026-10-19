@@ -906,6 +906,59 @@ export class MwaMemory implements Memory {
     await this.mirrorGoal(id, status);
   }
 
+  // ── Open items (BL-50) ───────────────────────────────────────────────────────────────────────
+  // What needs the PERSON: a reply owed, a bill, a deadline, a renewal, a request from staff. BL-40: asked
+  // "what still needs my attention this coming week?", MWA answered with its own job schedule; the lease
+  // renewal, a new wedding inquiry and a day-off swap its briefs had seen went unmentioned. Kept like goals
+  // (tags are the source of truth), but apart from them: an item is information — usually read from an
+  // inbox — never an instruction and never an owner of jobs, so one written after outside content is stored
+  // untrusted.
+
+  /** Add an open item, or refresh the open one it repeats (same words) — a daily brief sees the same email. */
+  async addOpenItem(item: { what: string; who?: string; due?: string; source?: string; person?: string; untrusted?: boolean }): Promise<{ id: string; updated: boolean } | null> {
+    const what = item.what.replace(/\s+/g, ' ').trim().slice(0, 240);
+    if (!what) return null;
+    const person = normalizePersonId(item.person);
+    const key = openItemKey(what);
+    const existing = (await this.listOpenItems(person)).find((o) => openItemKey(o.what) === key);
+    const meta = [...(item.who ? [`who64=${b64(item.who.slice(0, 120))}`] : []), ...(item.due && /^\d{4}-\d{2}-\d{2}$/.test(item.due) ? [`odue=${item.due}`] : []), ...(item.source ? [`osrc64=${b64(item.source.slice(0, 200))}`] : [])];
+    if (existing) {
+      await this.setScheduledTags(existing.id, (tags) => [...tags.filter((t) => !(meta.some((m) => m.split('=')[0] === t.split('=')[0]))), ...meta]);
+      return { id: existing.id, updated: true };
+    }
+    const id = await this.write(`open item: ${what}`.slice(0, 80), what, ['topic=open-item', 'ostatus=open', `person=${person}`, ...meta],
+      { canonical: true, eventType: 'observation', global: true, noMerge: true, ...(item.untrusted ? { provenance: 'ingested' as const } : {}) });
+    return id ? { id, updated: false } : null;
+  }
+
+  /** This person's open items (or closed ones too), soonest due first, undated after. */
+  async listOpenItems(person?: string, includeClosed = false): Promise<OpenItem[]> {
+    try {
+      await this.init();
+      const me = normalizePersonId(person);
+      const all: any[] = (await this.store.getEngramsByAgent(this.agentId)) ?? [];
+      const out: OpenItem[] = [];
+      for (const e of all) {
+        if (e.retracted) continue;
+        const tags = this.parseTags(e.tags);
+        if (!tags.includes('topic=open-item') || !tags.includes(`person=${me}`)) continue;
+        const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
+        const status = get('ostatus=') === 'closed' ? 'closed' : 'open';
+        if (status === 'closed' && !includeClosed) continue;
+        out.push({ id: e.id, what: String(e.content ?? ''), status, trust: this.trustOf(e),
+          ...(get('who64=') ? { who: unb64(get('who64=')) } : {}), ...(get('odue=') ? { due: get('odue=') } : {}),
+          ...(get('osrc64=') ? { source: unb64(get('osrc64=')) } : {}), ...(get('oclosed64=') ? { closedWhy: unb64(get('oclosed64=')) } : {}),
+          ...(e.createdAt ? { createdAt: new Date(e.createdAt).getTime() } : {}) });
+      }
+      return out.sort((a, b) => (a.due ?? '9999').localeCompare(b.due ?? '9999') || (a.createdAt ?? 0) - (b.createdAt ?? 0));
+    } catch { return []; }
+  }
+
+  /** Close an open item, with why. */
+  async closeOpenItem(id: string, why?: string): Promise<void> {
+    await this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('ostatus=') && !t.startsWith('oclosed64=')), 'ostatus=closed', ...(why ? [`oclosed64=${b64(why.slice(0, 200))}`] : [])]);
+  }
+
   /** Rough count of stored memories for this agent — powers the UI "memory meter". */
   async memoryCount(): Promise<number> {
     try { await this.init(); return ((await this.store.getEngramsByAgent(this.agentId)) ?? []).length; } catch { return 0; }
@@ -1371,3 +1424,10 @@ function parseLastRun(b64: string): JobLastRun | undefined {
     };
   } catch { return undefined; }
 }
+
+/** BL-50: an item that needs the person — see MwaMemory.addOpenItem. */
+export interface OpenItem { id: string; what: string; status: 'open' | 'closed'; trust: TrustTier; who?: string; due?: string; source?: string; closedWhy?: string; createdAt?: number }
+const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64');
+const unb64 = (s: string) => { try { return Buffer.from(s, 'base64').toString('utf8'); } catch { return ''; } };
+/** Two items are the same item when their words match, ignoring case, punctuation and spacing. */
+function openItemKey(what: string): string { return what.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
