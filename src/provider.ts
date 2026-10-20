@@ -227,7 +227,8 @@ class OpenAICompatProvider implements Provider {
   async chat({ system, messages, maxTokens = 1500, tools, reasoningEffort }: ChatInput): Promise<ChatResult> {
     const msgs = (system ? [{ role: 'system', content: system }, ...messages] : messages).map((m) => ({ role: m.role, content: m.content }));
     // Only send reasoning_effort to OpenAI reasoners (gpt-5.x, o-series) — others 400 on it.
-    const openaiReasoner = /(^|[:/-])(o[1-9]|gpt-5)/i.test(this.model);
+    // gpt-6.x too (2026 bake-off): without its effort set it reasons at the default, which is slow and costly per step.
+    const openaiReasoner = /(^|[:/-])(o[1-9]|gpt-[5-9])/i.test(this.model);
     const reasons = openaiReasoner && !!reasoningEffort;
     // Models that "think" spend OUTPUT tokens on hidden reasoning BEFORE the visible answer —
     // give them headroom so the reply isn't starved/truncated. A model not on this list is learned from its first
