@@ -7,6 +7,7 @@
  * guarded), mirroring the worker. http_request is network egress — opt-in.
  */
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import { resolveVaultRefs, hasVaultRef } from '../vault/vault.js';
 import { resolve, join, dirname, basename } from 'node:path';
 import { runCommand, runCommandAsync } from '../util.js';
 import { resolveAllowed, runCommandAllowed, allowedRoots, accessPolicy } from './access.js';
@@ -230,6 +231,7 @@ const httpRequestTool: RegisteredTool = {
         url: { type: 'string' },
         method: { type: 'string', description: 'GET (default), POST, etc.' },
         body: { type: 'string', description: 'optional request body' },
+        headers: { type: 'object', additionalProperties: { type: 'string' }, description: 'optional headers, e.g. {"Authorization": "Bearer {{vault:my-api.key}}"}. A {{vault:…}} reference (vault_list) is filled in only for its own site.' },
       },
       required: ['url'],
     },
@@ -247,13 +249,22 @@ const httpRequestTool: RegisteredTool = {
     // out, the call is an outbound action whatever follows — a redirect the guard then refuses, a
     // timeout — and must stay counted against the run's budget and in the action log (BL-16 review:
     // treating those as refusals let an unattended run send unlimited POSTs unlogged).
+    // BL-63: saved vault values go in only now, only for the entry's own site; a reference for another site refuses
+    // the whole request before anything is sent.
+    const headers: Record<string, string> = args.body ? { 'content-type': 'application/json' } : {};
+    let body = args.body ? String(args.body) : undefined;
+    try {
+      if (hasVaultRef(url)) throw new Error('a vault reference cannot go in the address — put it in a header or the body');
+      if (args.headers && typeof args.headers === 'object') for (const [k, v] of Object.entries(args.headers as Record<string, unknown>)) headers[k] = resolveVaultRefs(String(v), url);
+      if (body) body = resolveVaultRefs(body, url);
+    } catch (e) { throw new ToolRefusal(`(refused: ${(e as Error).message})`); }
     const firstHop = await urlRefusal(url);
     if (firstHop) { clearTimeout(timer); throw new ToolRefusal(`(refused: ${firstHop})`); }
     try {
       const res = await guardedFetch(url, {
         method,
         signal: ctl.signal,
-        ...(args.body ? { body: String(args.body), headers: { 'content-type': 'application/json' } } : {}),
+        ...(body ? { body } : {}), headers,
       });
       if (typeof res === 'string') return res;
       const text = (await res.text()).slice(0, CAP);

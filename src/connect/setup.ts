@@ -10,6 +10,7 @@
  * Outlook needs no secret at all when an app id is available: it is a device code the person enters at Microsoft.
  */
 import { randomBytes } from 'node:crypto';
+import { vaultSave, vaultName } from '../vault/vault.js';
 import { listConnectors, enabledConnectorIds, enableConnector, missingSecrets } from '../connectors/registry.js';
 
 export interface SetupField { env: string; label: string; help?: string; secret: boolean; optional?: boolean }
@@ -134,6 +135,8 @@ export type SetupStatus = 'waiting' | 'done' | 'failed' | 'cancelled' | 'expired
 export interface SetupRequest {
   id: string; service: string; name: string; howTo: string; fields: SetupField[];
   status: SetupStatus; message: string; session?: string; createdAt: number; expiresAt: number;
+  /** BL-63: a card that saves to the vault (an entry and the site it is for), not to the app's settings */
+  vault?: { name: string; site?: string };
 }
 
 const TTL_MS = 30 * 60_000;
@@ -155,6 +158,25 @@ export function openSetupRequest(svc: SetupService, session?: string): SetupRequ
 }
 
 /** Setup cards, newest first: waiting ones and the recently finished (what the person and the agent see). */
+/**
+ * BL-63: a card that saves a login or a key to the vault. The agent names the entry, its site and what to ask for
+ * ("username", "password"); the person types the values into the card. Usernames and emails show as they are typed;
+ * everything else is masked. One waiting card per entry.
+ */
+export function openVaultRequest(name: string, site: string | undefined, fieldLabels: string[], session?: string): SetupRequest {
+  sweep();
+  const n = vaultName(name);
+  const open = [...requests.values()].find((r) => r.vault?.name === n && r.status === 'waiting');
+  if (open) return open;
+  const labels = (fieldLabels.length ? fieldLabels : ['password']).slice(0, 6);
+  const fields: SetupField[] = labels.map((l) => ({ env: vaultName(l) || 'value', label: l.trim().slice(0, 60) || 'Value', secret: !/^(user ?name|user|login|e-?mail|account|email address|username or email)$/i.test(l.trim()) }));
+  const now = Date.now();
+  const where = site ? ` for ${site}` : '';
+  const r: SetupRequest = { id: `setup_${randomBytes(6).toString('hex')}`, service: `vault:${n}`, name: `Vault · ${n}`, howTo: `Saved encrypted on this computer as "${n}"${where}. I can use it without seeing it, and only on that site.`, fields, status: 'waiting', message: '', session, createdAt: now, expiresAt: now + TTL_MS, vault: { name: n, site } };
+  requests.set(r.id, r);
+  return r;
+}
+
 export function listSetupRequests(): SetupRequest[] {
   sweep();
   return [...requests.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, 10);
@@ -178,14 +200,19 @@ export async function submitSetupRequest(id: string, values: Record<string, unkn
   const r = requests.get(id);
   if (!r) return { ok: false, message: 'That setup card is gone — ask me to connect it again.' };
   if (r.status !== 'waiting') return { ok: false, message: `That setup card is already ${r.status}.` };
-  const svc = setupServices().find((s) => s.id === r.service);
-  if (!svc) return { ok: false, message: 'That service is no longer available.' };
   const v: Record<string, string> = {};
   for (const f of r.fields) {
     const val = String(values[f.env] ?? '').trim();
     if (!val && !f.optional) return { ok: false, message: `${f.label} is needed.` };
     if (val) v[f.env] = val;
   }
+  if (r.vault) {
+    try { const n = vaultSave(r.vault.name, r.vault.site, v); r.status = 'done'; r.message = `Saved to the vault as "${n}"${r.vault.site ? ` for ${r.vault.site}` : ''}.`; }
+    catch (e) { return { ok: false, message: `Couldn't save it: ${(e as Error).message.slice(0, 120)}` }; }
+    return { ok: true, message: r.message };
+  }
+  const svc = setupServices().find((s) => s.id === r.service);
+  if (!svc) return { ok: false, message: 'That service is no longer available.' };
   if (svc.check) {
     let c: CheckResult;
     try { c = await svc.check(v); } catch (e) { c = { ok: false, message: `I couldn't check it: ${(e as Error).message.slice(0, 120)}` }; }

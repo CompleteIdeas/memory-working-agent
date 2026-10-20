@@ -14,6 +14,7 @@
  *   - pluggable tools (built-ins + MCP) are first-class, not just codegen dispatch.
  */
 import { readFileSync, statSync, appendFileSync, mkdirSync, existsSync } from 'node:fs';
+import { redactVault } from './vault/vault.js';
 import { randomUUID } from 'node:crypto';
 import { resolve, sep, dirname, join } from 'node:path';
 import type { Provider } from './provider.js';
@@ -1652,7 +1653,8 @@ export async function runAgent(opts: {
         : typeof opts.tools.callDetailed === 'function'
           ? await opts.tools.callDetailed(action.action, args as Record<string, unknown>, callCtx)
           : { text: await opts.tools.call(action.action, args as Record<string, unknown>, callCtx), failed: false };
-      const result = called.text;
+      // BL-63: a saved vault value never reaches the model, the history or the logs through a tool's output.
+      const result = redactVault(called.text);
       if (draftNo) gatesFired.push('draft');
       else if (!called.failed) {
         if (isDraft) { draftedTo.add(draftKey(args as Record<string, unknown>, action.action)); draftToolsOk.add(action.action); guardOnly.delete(action.action); }
