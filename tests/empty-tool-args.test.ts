@@ -15,3 +15,12 @@ describe('empty tool arguments mean "not given"', () => {
     expect(withoutEmptyArgs({ action: 'read_file', path: 'a.txt', offset: 0, query: '  ', note: null })).toEqual({ action: 'read_file', path: 'a.txt', offset: 0 });
   });
 });
+
+import { outOfCredit } from '../src/agent.js';
+describe('an AI account out of credit says so (BL-62)', () => {
+  it('names the problem and where to fix it; other errors are left alone', () => {
+    expect(outOfCredit('openrouter:openai/gpt-6.1-sol 402: {"error":{"message":"This request would exceed your available credits given your current in-flight requests')).toMatch(/out of credit\. Add credit at openrouter\.ai/);
+    expect(outOfCredit('anthropic 400: Your credit balance is too low to access the Anthropic API')).toMatch(/Anthropic console/);
+    expect(outOfCredit('azure 429: rate limited')).toBeNull();
+  });
+});

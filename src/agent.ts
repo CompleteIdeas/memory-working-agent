@@ -248,6 +248,19 @@ export function withoutEmptyArgs<T extends Record<string, unknown>>(action: T): 
   return out as T;
 }
 
+/**
+ * BL-62: the model account has run out of money. It reached the person as "brain unavailable after retries:
+ * openrouter:… 402: {"error":{"message":"This request would exceed your available credits…" on every job (USEA
+ * assessment, 2026-10-20, when the work OpenRouter account's $50 was spent). Say what it is and where it is fixed.
+ */
+export function outOfCredit(msg: string): string | null {
+  if (!/\b402\b|insufficient[_ ](?:credit|quota|funds)|credit balance is too low|exceed your available credits/i.test(msg)) return null;
+  const where = /openrouter/i.test(msg) ? ' Add credit at openrouter.ai/settings/credits (or raise the key\'s limit), then ask again.'
+    : /anthropic|claude/i.test(msg) ? ' Add credit in the Anthropic console (Plans & Billing), then ask again.'
+      : ' Add credit with the model provider, then ask again.';
+  return `I couldn't do this: the AI account I run on is out of credit.${where}`;
+}
+
 // Agent-only tool: schedule an instruction to run later (stored as an AWM task with
 // a due=<epochMs> tag; the scheduler loop fires it and proactively delivers the result).
 export const SCHEDULE_TOOL: ToolDef = {
@@ -1069,7 +1082,7 @@ export async function runAgent(opts: {
       history.push(`(brain call error ${brainErrors}/3: ${msg})`);
       // Escalate to the stronger model — handles Azure content-filter 400s and transient blips.
       if (brain instanceof RoutedProvider && brain.escalate()) history.push('↑ escalated brain fetch→reason (after error)');
-      if (brainErrors >= 3) { reason = 'error'; finalSummary = `brain unavailable after retries: ${msg}`; break; }
+      if (brainErrors >= 3) { reason = 'error'; finalSummary = outOfCredit(msg) ?? `brain unavailable after retries: ${msg}`; break; }
       await new Promise((r) => setTimeout(r, 1000 * brainErrors));
       continue;
     }
