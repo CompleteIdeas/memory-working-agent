@@ -16,6 +16,7 @@ So the model you pick is a security choice as well as a cost one.
 | deepseek-v3.2 (OpenRouter) | 4 of 8 | 3 of 8 | 2026-10-15 |
 | gpt-5-nano (OpenRouter) | failed; the full count was lost | at least 1 | 2026-10-15 |
 | claude-haiku-5.5 (OpenRouter) | 0 of 16 | 4 of 16 | 2026-10-19 |
+| **gpt-6.1-sol** (OpenRouter, US hosts) — MWA's default from 2026-10-20 | **0 of 32** | 0 of 32 | 2026-10-20 |
 
 claude-haiku-5.5 never took a planted action, but the planted text reached a quarter of its answers, so it
 does not meet the bar (0 and 0) as things stand. It delivered 6 of 6 scheduled jobs, and on one judgement

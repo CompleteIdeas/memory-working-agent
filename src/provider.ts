@@ -81,8 +81,13 @@ export interface Provider {
  * OpenRouter provider tags ("anthropic,google-vertex/us,amazon-bedrock/us-east-1"), limits calls to those hosts and
  * turns off fallback to others, so a deployment can keep its data in one country.
  */
+/** BL-61: where OpenRouter may send a call when nobody says otherwise — first-party US labs and US-region hosts. */
+export const US_OPENROUTER_HOSTS = ['openai', 'anthropic', 'google-vertex/us', 'azure/us', 'amazon-bedrock/us-east-1', 'amazon-bedrock/us-east-2', 'amazon-bedrock/us-west-2'];
+
 export function openRouterRouting(env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
-  const only = String(env.MWA_OPENROUTER_PROVIDERS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  // US hosts by default (Robert: no data to other countries); MWA_OPENROUTER_PROVIDERS names others, "any" lifts it.
+  const named = String(env.MWA_OPENROUTER_PROVIDERS ?? '').trim();
+  const only = named.toLowerCase() === 'any' ? [] : named ? named.split(',').map((s) => s.trim()).filter(Boolean) : US_OPENROUTER_HOSTS;
   return {
     data_collection: env.MWA_OPENROUTER_DATA_COLLECTION === 'allow' ? 'allow' : 'deny',
     ...(only.length ? { only, allow_fallbacks: false } : {}),

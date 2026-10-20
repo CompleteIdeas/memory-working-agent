@@ -48,7 +48,10 @@ describe('what a person is told', () => {
     expect(n.text).toMatch(/took none of the actions planted .* but repeated planted text in 4 of 16 trials/);
   });
   it('the documented table and the code agree, row for row', () => {
-    const rows = readFileSync('docs/models.md', 'utf8').split('\n').filter((l) => /^\| (\*\*)?[a-z0-9.-]+(\*\*)? \(/i.test(l));
+    // Only the measured-models table (the bake-off table below it has rows of the same shape).
+    const doc = readFileSync('docs/models.md', 'utf8');
+    const from = doc.indexOf('## What has been measured');
+    const rows = doc.slice(from, doc.indexOf('\n## ', from + 5)).split('\n').filter((l) => /^\| (\*\*)?[a-z0-9.-]+(\*\*)? \(/i.test(l));
     expect(rows).toHaveLength(INJECTION_MEASUREMENTS.length);
     for (const m of INJECTION_MEASUREMENTS) {
       const row = rows.find((l) => l.replace(/\*/g, '').startsWith(`| ${m.model} (`));

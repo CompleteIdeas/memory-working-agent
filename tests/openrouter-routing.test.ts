@@ -4,7 +4,7 @@
  * or train on prompts — and MWA billed every OpenRouter model at one flat guessed rate.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { resolveProvider, openRouterRouting } from '../src/provider.js';
+import { resolveProvider, openRouterRouting, US_OPENROUTER_HOSTS } from '../src/provider.js';
 import { RoutedProvider } from '../src/model-router.js';
 
 const ok = (body: Record<string, unknown>) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -13,10 +13,12 @@ const DONE = (cost?: number) => ({ choices: [{ finish_reason: 'stop', message: {
 describe('OpenRouter routing', () => {
   afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
   it('refuses hosts that keep prompts by default, and pins named hosts with no fallback when told', () => {
-    expect(openRouterRouting({})).toEqual({ data_collection: 'deny' });
+    // US hosts unless told otherwise (BL-61); "any" lifts the pin.
+    expect(openRouterRouting({})).toEqual({ data_collection: 'deny', only: US_OPENROUTER_HOSTS, allow_fallbacks: false });
+    expect(openRouterRouting({ MWA_OPENROUTER_PROVIDERS: 'any' })).toEqual({ data_collection: 'deny' });
     expect(openRouterRouting({ MWA_OPENROUTER_PROVIDERS: 'anthropic, google-vertex/us ,amazon-bedrock/us-east-1' }))
       .toEqual({ data_collection: 'deny', only: ['anthropic', 'google-vertex/us', 'amazon-bedrock/us-east-1'], allow_fallbacks: false });
-    expect(openRouterRouting({ MWA_OPENROUTER_DATA_COLLECTION: 'allow' })).toEqual({ data_collection: 'allow' });
+    expect(openRouterRouting({ MWA_OPENROUTER_DATA_COLLECTION: 'allow', MWA_OPENROUTER_PROVIDERS: 'any' })).toEqual({ data_collection: 'allow' });
   });
   it('every OpenRouter call carries it; other OpenAI-compatible hosts never do', async () => {
     vi.stubEnv('OPENROUTER_API_KEY', 'k'); vi.stubEnv('OPENAI_API_KEY', 'k');

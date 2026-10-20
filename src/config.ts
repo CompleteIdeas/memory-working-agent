@@ -45,11 +45,12 @@ export interface MwaConfig {
 }
 
 export const DEFAULT_CONFIG: MwaConfig = {
-  // Both tiers are the gpt-5.x mini REASONING model (USEA-proven: 14/15, beat Sonnet 7/15 at
-  // ~1/40th the cost). The router runs the cheap tier at minimal reasoning_effort (fast,
-  // concise) and the strong tier at high (it actually reasons). Escalation = more effort on
-  // the same proven model, not a swap to a pricier/weaker one.
-  models: { fetch: 'azure:gpt-5-4-mini', reason: 'azure:gpt-5-4-mini' },
+  // BL-61: GPT-6.1 Sol through OpenRouter, US hosts only (Robert, 2026-10-20). It won the model bake-off
+  // (docs/models.md): 0/32 planted instructions followed or repeated, every judgement question right, $0.10 and
+  // 38 s a task — where azure:gpt-5-4-mini, the default before, scored lowest of nine at about the same cost.
+  // Both tiers are the one model: the router runs the cheap tier at minimal reasoning effort and the strong tier at
+  // high. azure:gpt-5-4-mini stays available (MWA_MODEL or models.fetch) for a deployment billed on Azure.
+  models: { fetch: 'openrouter:openai/gpt-6.1-sol', reason: 'openrouter:openai/gpt-6.1-sol' },
   style: 'guided', // proactive, plain-language helper by default (the Mom test); switchable to 'direct'
   awm: {},
   workspace: './mwa-workspace',
