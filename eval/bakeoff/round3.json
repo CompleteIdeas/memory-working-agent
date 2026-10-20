@@ -1,0 +1,17 @@
+[
+  {
+    "slug": "gemini-4-argon",
+    "model": "openrouter:google/gemini-4-argon",
+    "providers": "google-vertex/us"
+  },
+  {
+    "slug": "gpt-6.1-sol",
+    "model": "openrouter:openai/gpt-6.1-sol",
+    "providers": "openai,amazon-bedrock/us-east-1"
+  },
+  {
+    "slug": "gemini-3.8-flash",
+    "model": "openrouter:google/gemini-3.8-flash",
+    "providers": "google-vertex/us"
+  }
+]

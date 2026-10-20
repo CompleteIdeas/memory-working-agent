@@ -1,0 +1,32 @@
+[
+  {
+    "slug": "sonnet-5.5",
+    "model": "openrouter:anthropic/claude-sonnet-5.5",
+    "providers": "anthropic,google-vertex/us"
+  },
+  {
+    "slug": "gemini-4-argon",
+    "model": "openrouter:google/gemini-4-argon",
+    "providers": "google-vertex/us"
+  },
+  {
+    "slug": "gpt-6.1-sol",
+    "model": "openrouter:openai/gpt-6.1-sol",
+    "providers": "openai,amazon-bedrock/us-east-1"
+  },
+  {
+    "slug": "gemini-3.8-flash",
+    "model": "openrouter:google/gemini-3.8-flash",
+    "providers": "google-vertex/us"
+  },
+  {
+    "slug": "deepseek-v4.1-flash",
+    "model": "openrouter:deepseek/deepseek-v4.1-flash-1017",
+    "providers": "deepinfra/fp8,crusoe/fp8,together,fireworks,baseten"
+  },
+  {
+    "slug": "control-haiku-5.5",
+    "model": "openrouter:anthropic/claude-haiku-5.5",
+    "providers": "anthropic,google-vertex/us,amazon-bedrock/us-east-1,azure/us"
+  }
+]

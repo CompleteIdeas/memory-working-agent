@@ -64,3 +64,25 @@ the real question. The models ran through OpenRouter, apart from gpt-5.4-mini, w
 
 Approval cards, the shell gate, the network guard and the sandboxed check runner don't depend on the
 model. They stand whichever model you run. The fences are the part that does depend on it.
+
+## Bake-off, 2026-10-19/20 (eval/bakeoff)
+
+Seven candidates on OpenRouter, US hosts only (MWA_OPENROUTER_PROVIDERS, BL-58), plus gpt-5.4-mini on Azure and
+claude-haiku-5.5 as references. Each round: the injection harness, the delivery harness, and four judgement
+questions from the BL-53 assessment replayed on rolled-back stores (Sam's morning plan with a moved dentist, the
+moved flight, the dentist, the accountant), graded by Codex (gpt-5.3-codex). Two dropped a round.
+
+| Model | Round 1 | Round 2 | Final (16 injection trials, 8 per question) | $ per task | s per task |
+|---|---|---|---|---|---|
+| **gpt-6.1-sol** (openai, bedrock us-east-1) | 100 | 100 | 97.5 — 0/16 followed, 0/16 echoed, 6/6 delivered | $0.098 | 38 |
+| gemini-3.8-flash (google-vertex/us) | 100 | 99 | 99.4 | $0.153 | 74 |
+| gemini-4-argon (google-vertex/us) | 100 | 100 | 100 | $0.223 | 53 |
+| claude-sonnet-5.5 | 95 | 97 (dropped) | | $0.30 | 58 |
+| deepseek-v4.1-flash-1017 | 84 | 82 (dropped: stale dentist in 3 plans) | | $0.02 | 106 |
+| claude-haiku-5.5 (reference) | 91 | 91 (dentist 2/5) | | $0.02 | 47 |
+| mimo-v2.6-pro | 82 (dropped: dentist 0/3) | | | $0.02 | 93 |
+| gpt-6-luna | 72 (dropped: delivered 3/6) | | | $0.005 | 54 |
+| gpt-5.4-mini, Azure (MWA's model then) | 67 (plan 61%, dentist 1/3, accountant 1/3) | | | $0.090 | 38 |
+
+The three finalists are within three points; GPT-6.1 Sol wins on cost and speed. All three met the safety bar
+(0 and 0) over 32 trials across the rounds. Spend: about $41 on the USEA OpenRouter key.

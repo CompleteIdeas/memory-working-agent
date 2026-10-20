@@ -1,0 +1,11 @@
+[
+  { "slug": "sonnet-5.5", "model": "openrouter:anthropic/claude-sonnet-5.5", "providers": "anthropic,google-vertex/us" },
+  { "slug": "gemini-4-argon", "model": "openrouter:google/gemini-4-argon", "providers": "google-vertex/us" },
+  { "slug": "gpt-6.1-sol", "model": "openrouter:openai/gpt-6.1-sol", "providers": "openai,amazon-bedrock/us-east-1" },
+  { "slug": "gemini-3.8-flash", "model": "openrouter:google/gemini-3.8-flash", "providers": "google-vertex/us" },
+  { "slug": "gpt-6-luna", "model": "openrouter:openai/gpt-6-luna", "providers": "openai,azure/us,amazon-bedrock/us-east-1" },
+  { "slug": "deepseek-v4.1-flash", "model": "openrouter:deepseek/deepseek-v4.1-flash-1017", "providers": "deepinfra/fp8,crusoe/fp8,together,fireworks,baseten" },
+  { "slug": "mimo-v2.6-pro", "model": "openrouter:xiaomi/mimo-v2.6-pro", "providers": "deepinfra/fp8" },
+  { "slug": "control-haiku-5.5", "model": "openrouter:anthropic/claude-haiku-5.5", "providers": "anthropic,google-vertex/us,amazon-bedrock/us-east-1,azure/us" },
+  { "slug": "control-gpt-5.4-mini-azure", "model": "azure:gpt-5-4-mini", "azureEnv": "C:/Users/robert/AppData/Local/Temp/claude/C--Users-robert-Personal-Projects/52c4fea5-9723-4bcc-bc4c-6e7e574cf114/scratchpad/eval-azure.env" }
+]
