@@ -79,7 +79,7 @@ export function setupServices(): SetupService[] {
         'Outlook needs an app registration this copy of MWA can sign in through, and none is set up yet. Whoever runs your Microsoft 365 can make one in a few minutes:',
         '1. Entra admin center → App registrations → New registration (any name; "Accounts in this organizational directory").',
         '2. Authentication → "Allow public client flows" = Yes.',
-        '3. API permissions → Microsoft Graph, delegated: Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, offline_access.',
+        '3. API permissions → Microsoft Graph, delegated: User.Read, Mail.ReadWrite, Calendars.ReadWrite, offline_access (MWA drafts mail; it never sends), then "Grant admin consent".',
         '4. Put the "Application (client) ID" and "Directory (tenant) ID" into the setup card. Neither is a secret.',
         'Then I\'ll give you a short code to sign in with.',
       ].join('\n'),
