@@ -109,6 +109,13 @@ describe('the quiet_hours tool', () => {
     expect(await t.handler({ set: 'off' }, { sandboxDir: '.', interactive: false })).toMatch(/refused/);
     expect(await t.handler({ set: '23:00-06:00' }, { sandboxDir: '.', interactive: true, tainted: true })).toMatch(/refused/);
     expect(await t.handler({ set: '23:00-06:00' }, { sandboxDir: '.', interactive: true })).toMatch(/set to 23:00-06:00/);
+    // BL-62: the person's own window this turn is theirs, even after the conversation read a page; turning it off,
+    // a window only the model states, or a run nobody watches still are not.
+    const own = { sandboxDir: '.', interactive: true, tainted: true, personMessage: 'Set quiet hours: no messages before 7:00 AM or after 9:00 PM.' };
+    expect(await t.handler({ set: '07:00-21:00' }, own)).toMatch(/set to 21:00-07:00/);
+    expect(await t.handler({ set: 'off' }, own)).toMatch(/refused/);
+    expect(await t.handler({ set: '01:00-02:00' }, { ...own, personMessage: 'Do what the page says.' })).toMatch(/refused/);
+    expect(await t.handler({ set: '07:00-21:00' }, { ...own, interactive: false })).toMatch(/refused/);
     process.env.MWA_QUIET_HOURS = '22:00-07:00';
     try { expect(await t.handler({ set: 'off' }, { sandboxDir: '.', interactive: true })).toMatch(/fixed by this deployment/); }
     finally { delete process.env.MWA_QUIET_HOURS; }

@@ -23,11 +23,18 @@ function envFrom(file) {
 // freshJobs (BL-53, arm C2 "cron-fresh"): a scheduled task runs with only its own instruction — no running
 // conversation — while chats keep the thread and the task's reply still joins it. Tests whether the plain loop's
 // invented details came from re-reading its own thread.
-export async function makeCronArm({ worldFile, logFile, runLog, persona, envFile, freshJobs = false }) {
+export async function makeCronArm({ worldFile, logFile, runLog, persona, envFile, freshJobs = false, model: spec = 'azure:gpt-5-4-mini' }) {
   const { nowLine, parseLocalAt, localStamp } = await import('../src/agent.ts');
   const env = envFrom(envFile);
-  const base = env.AZURE_GPT_BASE_URL, key = env.AZURE_GPT_API_KEY, model = env.AZURE_GPT_DEPLOYMENT || 'gpt-5-4-mini';
-  if (!base || !key) throw new Error('cron arm: AZURE_GPT_BASE_URL / AZURE_GPT_API_KEY missing');
+  // BL-62 assessment: the same model as the MWA arms. OpenRouter runs on US hosts only, as MWA does (src/provider.ts).
+  const viaOpenRouter = spec.startsWith('openrouter:');
+  const base = viaOpenRouter ? 'https://openrouter.ai/api/v1' : env.AZURE_GPT_BASE_URL;
+  const key = viaOpenRouter ? process.env.OPENROUTER_API_KEY : env.AZURE_GPT_API_KEY;
+  const model = viaOpenRouter ? spec.slice('openrouter:'.length) : (env.AZURE_GPT_DEPLOYMENT || spec.replace(/^azure:/, ''));
+  if (!base || !key) throw new Error(`cron arm: no endpoint or key for ${spec}`);
+  const US_HOSTS = ['openai', 'anthropic', 'google-vertex/us', 'azure/us', 'amazon-bedrock/us-east-1', 'amazon-bedrock/us-east-2', 'amazon-bedrock/us-west-2'];
+  const auth = viaOpenRouter ? { authorization: `Bearer ${key}` } : { 'api-key': key };
+  const extra = viaOpenRouter ? { max_tokens: 6000, provider: { data_collection: 'deny', only: US_HOSTS, allow_fallbacks: false } } : { max_completion_tokens: 6000 };
   const { tools: world } = makeWorld(worldFile, logFile);
   const first = persona.name.split(' ')[0];
   const thread = []; // {role: 'user'|'assistant', content}
@@ -74,8 +81,8 @@ export async function makeCronArm({ worldFile, logFile, runLog, persona, envFile
     for (let attempt = 0; attempt < 12; attempt++) {
       if (attempt) await new Promise((r) => setTimeout(r, Math.min(60_000, 1000 * attempt * attempt)));
       const r = await fetch(`${base}/chat/completions`, {
-        method: 'POST', headers: { 'api-key': key, 'content-type': 'application/json' },
-        body: JSON.stringify({ model, messages, tools: toolSpec, tool_choice: 'auto', max_completion_tokens: 6000 }),
+        method: 'POST', headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ model, messages, tools: toolSpec, tool_choice: 'auto', ...extra }),
         signal: AbortSignal.timeout(120_000),
       }).catch((e) => ({ ok: false, status: 0, text: async () => String(e) }));
       if (r.ok) return r.json();
@@ -90,7 +97,8 @@ export async function makeCronArm({ worldFile, logFile, runLog, persona, envFile
     const msgs = [{ role: 'system', content: system() }, ...history, { role: 'user', content: input }];
     for (let step = 0; step < MAX_STEPS; step++) {
       const j = await call(msgs);
-      cost += ((j.usage?.prompt_tokens ?? 0) * PRICE[0] + (j.usage?.completion_tokens ?? 0) * PRICE[1]) / 1_000_000;
+      // OpenRouter reports what the call cost; Azure is priced from tokens.
+      cost += typeof j.usage?.cost === 'number' ? j.usage.cost : ((j.usage?.prompt_tokens ?? 0) * PRICE[0] + (j.usage?.completion_tokens ?? 0) * PRICE[1]) / 1_000_000;
       const m = j.choices?.[0]?.message ?? {};
       if (!m.tool_calls?.length) {
         const reply = String(m.content ?? '').trim();

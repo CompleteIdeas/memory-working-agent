@@ -229,6 +229,25 @@ const REMEMBER_TOOL: ToolDef = {
   parameters: { type: 'object', properties: { concept: { type: 'string', description: 'short title' }, fact: { type: 'string', description: 'the durable fact — lead with it' } }, required: ['concept', 'fact'] },
 };
 
+/**
+ * BL-62: an argument a model fills with an empty value means "not given". GPT-6.1 Sol sends every optional field of a
+ * tool, empty: schedule({daily_at: "08:30", days: "weekdays", in_minutes: 0, at: "", every_minutes: 0, …}). The
+ * handler read in_minutes first and set a one-time job for now — Jordan's weekday brief became eight one-offs (USEA
+ * assessment smoke run, 2026-10-20). Empty strings and nulls are dropped for every tool; a zero or negative delay
+ * only for schedule's in_minutes / every_minutes, where it is never a real schedule (elsewhere 0 or false can mean
+ * something, so they stay).
+ */
+export function withoutEmptyArgs<T extends Record<string, unknown>>(action: T): T {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(action)) {
+    if (k === 'action') { out[k] = v; continue; }
+    if (v === null || v === undefined || (typeof v === 'string' && !v.trim())) continue;
+    if (action.action === 'schedule' && (k === 'in_minutes' || k === 'every_minutes') && typeof v === 'number' && v <= 0) continue;
+    out[k] = v;
+  }
+  return out as T;
+}
+
 // Agent-only tool: schedule an instruction to run later (stored as an AWM task with
 // a due=<epochMs> tag; the scheduler loop fires it and proactively delivers the result).
 export const SCHEDULE_TOOL: ToolDef = {
@@ -1064,6 +1083,7 @@ export async function runAgent(opts: {
     const viaToolCall = Boolean(tc?.name); // a native tool call — its reply text is separate from its arguments
     if (tc?.name) { action = { action: tc.name, ...tc.args }; nudge = ''; }
     else { try { action = parseJsonLoose<Action>(out.text); nudge = ''; } catch { action = null; } }
+    if (action) action = withoutEmptyArgs(action);
     // BL-57: a model that answers in plain text has finished — what native tool-calling models (Claude through
     // OpenRouter) do. Sam's plan, replayed on Haiku 5.5 and Sonnet 5.5, gathered everything, wrote the plan as text,
     // and was retried until the run ended "no tool calls". The first text reply is asked to call done; a second one

@@ -13,11 +13,17 @@ import { fileURLToPath } from 'node:url';
 
 // --fair (BL-53): every arm in one conversation with the same window (MWA carries 30 turns, the plain loop 60
 // messages), scheduled results in it, and the request classifier on in the MWA arms.
-const { values: a } = parseArgs({ options: { world: { type: 'string' }, arm: { type: 'string' }, env: { type: 'string' }, until: { type: 'string' }, port: { type: 'string', default: '7811' }, out: { type: 'string', default: 'results/assessment' }, image: { type: 'string', default: 'mwa:dev' }, cap: { type: 'string', default: '12' }, fair: { type: 'boolean', default: false } } });
+const { values: a } = parseArgs({ options: { world: { type: 'string' }, arm: { type: 'string' }, env: { type: 'string' }, until: { type: 'string' }, port: { type: 'string', default: '7811' }, out: { type: 'string', default: 'results/assessment' }, image: { type: 'string', default: 'mwa:dev' }, cap: { type: 'string', default: '12' }, fair: { type: 'boolean', default: false }, model: { type: 'string', default: 'azure:gpt-5-4-mini' } } });
+// BL-62 assessment: the model every arm runs (the same for all, so the arms differ only in what wraps it). An
+// OpenRouter model takes USEA's key from the user environment (eval/openrouter-key.mjs), never from a file.
+if (a.model.startsWith('openrouter:') && !process.env.OPENROUTER_API_KEY) {
+  const { openRouterKey } = await import('./openrouter-key.mjs');
+  process.env.OPENROUTER_API_KEY = openRouterKey() ?? '';
+}
 const readCost = (f) => (existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter(Boolean).reduce((s, l) => { try { return s + Number(JSON.parse(l).costUsd ?? 0); } catch { return s; } }, 0) : 0);
 const here = dirname(fileURLToPath(import.meta.url));
-if (!['maya', 'sam'].includes(a.world) || !['mwa', 'mwa-nomem', 'cron', 'cron-fresh'].includes(a.arm) || !a.env) {
-  console.error('usage: --world maya|sam --arm mwa|mwa-nomem|cron|cron-fresh --env <file with AZURE_GPT_*> [--fair]'); process.exit(2);
+if (!existsSync(join(here, 'worlds', `${a.world}.json`)) || !['mwa', 'mwa-nomem', 'cron', 'cron-fresh'].includes(a.arm) || !a.env) {
+  console.error('usage: --world <name in eval/worlds> --arm mwa|mwa-nomem|cron|cron-fresh --env <file with AZURE_GPT_*> [--fair]'); process.exit(2);
 }
 const isCron = a.arm === 'cron' || a.arm === 'cron-fresh';
 const worldFile = join(here, 'worlds', `${a.world}.json`);
@@ -44,13 +50,13 @@ let arm;
 if (isCron) {
   process.env.MWA_ENV_PATH = resolve(a.env);
   const cfg = join(outDir, 'cron.config.json');
-  writeFileSync(cfg, JSON.stringify({ models: { fetch: 'azure:gpt-5-4-mini', reason: 'azure:gpt-5-4-mini' } }));
+  writeFileSync(cfg, JSON.stringify({ models: { fetch: a.model, reason: a.model } }));
   process.env.MWA_CONFIG_PATH = cfg;
   const { makeCronArm } = await import('./cron-arm.mjs');
-  arm = await makeCronArm({ worldFile, logFile: join(outDir, 'world-log.jsonl'), runLog: join(outDir, 'runs.jsonl'), persona: world.persona, envFile: resolve(a.env), freshJobs: a.arm === 'cron-fresh' });
+  arm = await makeCronArm({ worldFile, logFile: join(outDir, 'world-log.jsonl'), runLog: join(outDir, 'runs.jsonl'), persona: world.persona, envFile: resolve(a.env), freshJobs: a.arm === 'cron-fresh', model: a.model });
 } else {
   const { makeMwaArm } = await import('./mwa-arm.mjs');
-  arm = await makeMwaArm({ world, worldName: a.world, arm: a.arm, port: Number(a.port), envFile: resolve(a.env), evalDir: here, outDir, image: a.image, fair: a.fair });
+  arm = await makeMwaArm({ world, worldName: a.world, arm: a.arm, port: Number(a.port), envFile: resolve(a.env), evalDir: here, outDir, image: a.image, fair: a.fair, model: a.model });
 }
 
 async function setVirtual(ms) {

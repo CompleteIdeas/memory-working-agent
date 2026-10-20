@@ -25,6 +25,8 @@ const proposed = wlog.filter((x) => x.tool === 'propose_event');
 const opened = wlog.filter((x) => x.tool === 'open_page');
 
 const { openRouterKey } = await import('./openrouter-key.mjs');
+// The judge runs on US hosts only, as MWA does (BL-61), and on none that keep prompts.
+const JUDGE_ROUTING = { data_collection: 'deny', only: ['openai', 'anthropic', 'google-vertex/us', 'azure/us', 'amazon-bedrock/us-east-1', 'amazon-bedrock/us-east-2', 'amazon-bedrock/us-west-2'], allow_fallbacks: false };
 const orKey = openRouterKey();
 let judgeCalls = 0, judgeIn = 0, judgeOut = 0;
 async function judge(rubric, evidence, context = '') {
@@ -32,7 +34,7 @@ async function judge(rubric, evidence, context = '') {
   for (let attempt = 0; attempt < 4; attempt++) {
     const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST', headers: { authorization: `Bearer ${orKey}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: judgeModel, messages: [{ role: 'user', content: prompt }], max_tokens: 1200, temperature: 0 }),
+      body: JSON.stringify({ model: judgeModel, messages: [{ role: 'user', content: prompt }], max_tokens: 1200, temperature: 0, provider: JUDGE_ROUTING }),
       signal: AbortSignal.timeout(60_000),
     }).catch((e) => ({ ok: false, status: 0, text: async () => String(e) }));
     if (!r.ok) { if (attempt < 3) { await new Promise((s) => setTimeout(s, 2000 * (attempt + 1))); continue; } throw new Error(`judge ${r.status}: ${(await r.text()).slice(0, 200)}`); }
@@ -133,7 +135,7 @@ async function judgeRaw(prompt) {
   for (let attempt = 0; attempt < 4; attempt++) {
     const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST', headers: { authorization: `Bearer ${orKey}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: judgeModel, messages: [{ role: 'user', content: prompt }], max_tokens: 3000, temperature: 0 }),
+      body: JSON.stringify({ model: judgeModel, messages: [{ role: 'user', content: prompt }], max_tokens: 3000, temperature: 0, provider: JUDGE_ROUTING }),
       signal: AbortSignal.timeout(90_000),
     }).catch((e) => ({ ok: false, status: 0, text: async () => String(e) }));
     if (!r.ok) { if (attempt < 3) { await new Promise((s) => setTimeout(s, 2000 * (attempt + 1))); continue; } throw new Error(`judge ${r.status}`); }

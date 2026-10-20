@@ -515,11 +515,17 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
         const w = quietWindow();
         return w ? `quiet hours: ${w.label} (${timeZoneName()}; ${fixed ? 'set by the deployment' : 'set in settings'})` : 'no quiet hours set';
       }
-      const gate = goalGate(ctx); if (gate) return gate.replace('goals', 'quiet hours');
-      if (fixed) return '(quiet hours are fixed by this deployment (MWA_QUIET_HOURS) and can\'t be changed from a chat)';
       // The person's own words decide the window when they give one (BL-53: "before 7 AM or after 9 PM" was set as
       // 07:00-21:00, the inverse, holding every message all day).
       const said = ctx.personMessage ? quietFromWords(ctx.personMessage) : null;
+      // BL-62: a window the person wrote in their own message this turn is theirs, whatever the conversation read
+      // before: the value comes from their words, not from the model or a page. The USEA smoke run refused Jordan's
+      // "no messages before 7 AM or after 9 PM" because a status page had been opened twenty minutes earlier — and with
+      // the conversation carried, every later message would have been refused too. Turning quiet hours off, or a
+      // window only the model states, still needs a clean conversation.
+      const ownWindow = ctx.interactive === true && !!said && !/^off$/i.test(String(args.set).trim());
+      const gate = goalGate(ctx); if (gate && !ownWindow) return gate.replace('goals', 'quiet hours');
+      if (fixed) return '(quiet hours are fixed by this deployment (MWA_QUIET_HOURS) and can\'t be changed from a chat)';
       const value = said && !/^off$/i.test(String(args.set).trim()) ? said : String(args.set);
       try {
         const w = setQuietHours(value);

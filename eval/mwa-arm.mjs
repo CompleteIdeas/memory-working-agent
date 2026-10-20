@@ -13,14 +13,15 @@ const realSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // fair (BL-53): one long conversation with the same window as the plain-loop arm, scheduled results in it, and the
 // request classifier on (MWA_INTENT=clef; MWA_CLEF_TOKEN / MWA_CLEF_ACCOUNT pass through from the harness's own
-// environment — never written to a file).
-export async function makeMwaArm({ world, worldName, arm, port, envFile, evalDir, outDir, image = 'mwa:dev', fair = false, carryTurns = 30 }) {
+// environment — never written to a file). EVAL_MWA_INTENT names another classifier (BL-62: openrouter:google/gemini-3.8-flash
+// when no Cloudflare token is at hand; it scored 43/43 against Clef's 42/43, src/request-intent.ts).
+export async function makeMwaArm({ world, worldName, arm, port, envFile, evalDir, outDir, image = 'mwa:dev', fair = false, carryTurns = 30, model = 'azure:gpt-5-4-mini' }) {
   const name = `mwa-eval-${worldName}-${arm}`;
   const pw = randomBytes(12).toString('hex');
   const base = `http://127.0.0.1:${port}`;
   const tz = world.tz;
   const mcp = (mode) => ({ command: 'node', args: ['/app/eval/world-server.mjs', mode], env: { WORLD_FILE: `/app/eval/worlds/${worldName}.json`, WORLD_LOG: '/data/world-log.jsonl', MWA_EVAL_CLOCK_FILE: '/data/eval-clock.json', TZ: tz } });
-  const config = { models: { fetch: 'azure:gpt-5-4-mini', reason: 'azure:gpt-5-4-mini' }, tools: { mcpServers: { gmail: mcp('gmail'), calendar: mcp('calendar'), web: mcp('web') } } };
+  const config = { models: { fetch: model, reason: model }, tools: { mcpServers: { gmail: mcp('gmail'), calendar: mcp('calendar'), web: mcp('web') } } };
   mkdirSync(outDir, { recursive: true });
   const cfgFile = join(outDir, 'mwa.config.json');
   writeFileSync(cfgFile, JSON.stringify(config, null, 2));
@@ -48,9 +49,11 @@ export async function makeMwaArm({ world, worldName, arm, port, envFile, evalDir
       const create = await sh(['create', '--name', name, '-p', `127.0.0.1:${port}:7788`, '-v', `${name}:/data`, '-v', `${resolve(evalDir)}:/app/eval:ro`,
         '-e', `MWA_ACCESS_PASSWORD=${pw}`, '-e', 'MWA_CONFIG_PATH=/data/mwa.config.json', '-e', 'MWA_ENV_PATH=/data/.env', '-e', `TZ=${tz}`,
         '-e', 'NODE_OPTIONS=--import=/app/eval/clock-shim.mjs', '-e', 'MWA_EVAL_CLOCK_FILE=/data/eval-clock.json',
-        '-e', 'MWA_SCHEDULER_TICK_MS=4000', '-e', 'MWA_INBOX=0', ...(arm === 'mwa-nomem' ? ['-e', 'MWA_MEMORY=off'] : []),
+        '-e', 'MWA_SCHEDULER_TICK_MS=4000', '-e', 'MWA_INBOX=0',
+        // An OpenRouter model: the key passes by name from the harness's environment, never on a command line or in a file.
+        ...(model.startsWith('openrouter:') ? ['-e', 'OPENROUTER_API_KEY'] : []), ...(arm === 'mwa-nomem' ? ['-e', 'MWA_MEMORY=off'] : []),
         ...(fair ? ['-e', `MWA_CARRY_TURNS=${carryTurns}`, '-e', 'MWA_CARRY_ALL=1', '-e', 'MWA_CARRY_JOB_RESULTS=1', '-e', 'MWA_SESSION_TTL_MS=2592000000',
-          '-e', 'MWA_INTENT=clef', '-e', 'MWA_CLEF_TOKEN', '-e', 'MWA_CLEF_ACCOUNT'] : []), image]);
+          '-e', `MWA_INTENT=${process.env.EVAL_MWA_INTENT || 'clef'}`, '-e', 'MWA_CLEF_TOKEN', '-e', 'MWA_CLEF_ACCOUNT'] : []), image]);
       if (!create.ok) throw new Error(`docker create: ${create.err}`);
       const clockFile = join(outDir, 'eval-clock.json');
       writeFileSync(clockFile, JSON.stringify({ offsetMs: Math.round(initialOffsetMs) }));
