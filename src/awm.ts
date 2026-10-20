@@ -15,7 +15,7 @@
  * "decision continuity" thesis — which is what the benchmark measures.)
  */
 // AWM's internals come through one file (BL-11): an AWM upgrade that moves them breaks awm-api.ts only.
-import { loadEngines, loadSqliteStore, loadPGliteStore, loadPostgresStore, type AwmEngines } from './awm-api.js';
+import { loadEngines, loadSqliteStore, loadPGliteStore, loadPostgresStore, loadConflictOrder, type AwmEngines } from './awm-api.js';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isReservedConcept, unreservedConcept } from './reserved-concept.js';
@@ -281,11 +281,9 @@ export interface ScheduledTask {
   fails?: number;
 }
 
-// BL-55: AWM 0.18 turned its second-stage rerank on by default, which orders the final window by the cross-encoder
-// score alone — recency no longer breaks a tie, and "the newest of three same-topic facts ranks first" (F4) stopped
-// holding. MWA's newer-beats-older behaviour, and every assessment result so far, rest on the blended order, so MWA
-// keeps it unless an operator sets AWM_RERANK2 themselves. 0.18's supersede, expiry and conflict marks still apply.
-if (process.env.AWM_RERANK2 === undefined) process.env.AWM_RERANK2 = '0';
+// BL-59: AWM 0.18 orders the final window by the cross-encoder alone (rerank2, on by default), so recency no longer
+// breaks a tie (F4 failed under it). AWM 0.18.1 marks two memories about one thing with different values and says
+// which is newer; MWA's policy is newer beats older, so recall puts the newer of a marked pair first.
 
 export class MwaMemory implements Memory {
   readonly enabled = true;
@@ -408,6 +406,7 @@ export class MwaMemory implements Memory {
       const kept = (rows: any[]) => rows.filter((r: any) => { const t = this.parseTags(r.engram.tags); return !t.includes('topic=routine') && !t.includes('topic=action-log'); });
       let results = await activate(ns ? want * 8 + 24 : want);
       if (!ns && results.length >= want && kept(results).length < want) results = await activate(want + 8);
+      results = (await loadConflictOrder())(results, results.map((r: any) => r.conflictsWith ?? []));
       // F5 namespace scope: keep facts in THIS topic OR global (no ns=), drop OTHER topics — the
       // no-bleed guarantee. Global facts (user prefs, etc.) stay relevant across every topic.
       const rows: any[] = ns

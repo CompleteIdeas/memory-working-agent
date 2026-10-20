@@ -61,6 +61,16 @@ export function loadEngines(): Promise<AwmEngines> {
   return engines;
 }
 
+/** AWM 0.18.1's "newer beats older" order for results its conflict detector marked (BL-59). An AWM build that
+ *  predates it leaves the order as it is. */
+export async function loadConflictOrder(): Promise<<T>(results: T[], marks: unknown[][]) => T[]> {
+  try {
+    const mod: any = await import('agent-working-memory/dist/core/conflicts.js');
+    if (typeof mod.newestFirstAmongConflicts === 'function') return mod.newestFirstAmongConflicts;
+  } catch { /* older AWM */ }
+  return (results) => results;
+}
+
 /** The embedding model's entry points. */
 export async function loadEmbeddings(): Promise<{ embed: (text: string) => Promise<number[]>; cosineSimilarity: (a: number[], b: number[]) => number }> {
   return import('agent-working-memory/dist/core/embeddings.js');
