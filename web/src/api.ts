@@ -363,3 +363,19 @@ export function chatStream(message: string, session: string, h: ChatHandlers): E
   });
   return es;
 }
+
+// BL-62: setup cards the agent opens when the person asks it to connect something. Values go only to /api/setup.
+export interface SetupField { env: string; label: string; help?: string; secret: boolean; optional?: boolean }
+export interface SetupCard { id: string; name: string; howTo: string; fields: SetupField[]; status: 'waiting' | 'done' | 'failed' | 'cancelled' | 'expired'; message: string; expiresInSec: number }
+export async function getSetupCards(): Promise<SetupCard[]> {
+  try { const j = await (bounceIfLocked(await fetch('/api/setup'))).json(); return j.requests ?? []; } catch { return []; }
+}
+export async function submitSetupCard(id: string, values: Record<string, string> | null): Promise<{ ok: boolean; message: string }> {
+  try {
+    const r = bounceIfLocked(await fetch(`/api/setup/${values ? 'submit' : 'cancel'}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, values }),
+    }));
+    const j = await r.json();
+    return { ok: r.ok && j.ok === true, message: String(j.message ?? j.error ?? '') };
+  } catch (e) { return { ok: false, message: (e as Error).message }; }
+}

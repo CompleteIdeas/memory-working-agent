@@ -9,6 +9,7 @@ import { approvalTools } from './approval.js';
 import { manageTools } from './manage.js';
 import { loadMcpServers } from './mcp.js';
 import { installerTools } from './installer.js';
+import { connectTools } from './connect.js';
 import { onboardTools } from './onboard.js';
 import { memoryTools } from './memory.js';
 import { MEMORY_OFF, KNOWLEDGE_TOOLS } from '../memory-off.js';
@@ -42,6 +43,8 @@ export async function buildRegistry(
   // Runtime tool management: list_active_tools + uninstall/remove (safe) + add_mcp_server
   // (approval-gated). Makes the tool/MCP set hot-swappable from chat.
   registry.registerAll(manageTools(config));
+  // BL-62: connect an account by asking — secrets go into a setup card, never the conversation.
+  registry.registerAll(connectTools());
   // Memory tools — the agent's reach into the memory it already has: the person it is
   // talking to, the shape of its own store, and recall feedback. MwaMemory implemented
   // these long before anything could call them; see src/tools/memory.ts for why that

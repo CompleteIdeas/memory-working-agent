@@ -57,6 +57,8 @@ const TOOL_CATEGORY: Record<string, ActionCategory> = {
   knowledge_write: 'write-local',
   install_connector: 'external', uninstall_connector: 'external', propose_connector: 'external',
   add_mcp_server: 'external', remove_mcp_server: 'external',
+  // BL-62: starts a sign-in or opens a setup card on this machine; the secret itself never passes through a tool.
+  connect_account: 'write-local', connection_status: 'read',
   // NOTE: MCP-bridged tools are named `<server>__<tool>` at runtime and cannot appear here.
   // Defaulting those to 'external' is deliberate — they run third-party code. The one exception is
   // below: a tool whose server declares it read-only.
@@ -124,7 +126,7 @@ const OWN_OUTPUT_TOOLS = new Set([
   'write_file', 'knowledge_write', 'schedule_cancel', 'policy_save', 'policy_forget', 'routine_propose',
   'memory_learn_person', 'memory_feedback', 'goal_add', 'goal_update', 'goal_list', 'quiet_hours', 'schedule_detector', 'cancel_action', 'list_pending',
   'onboard_questions', 'draft_email', 'draft_outlook', 'propose_event', 'propose_outlook_event',
-  'generate_image', 'install_connector', 'uninstall_connector', 'remove_mcp_server',
+  'generate_image', 'install_connector', 'uninstall_connector', 'remove_mcp_server', 'connect_account', 'connection_status',
 ]);
 // Local = content from this machine: files, the owner's docs folder (warm-start), the coding
 // worker's output, and listings that echo stored text (the knowledge store, memory, scheduled

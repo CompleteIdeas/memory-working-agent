@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { chatStream, getSuggestions, getNotifications, type SpineStep, type ChatResult } from '../api';
 import { Approvals } from './Approvals';
+import { SetupCards } from './SetupCards';
 import { ActivitySpine } from './ActivitySpine';
 
 /** What an UNATTENDED (scheduled) run did. It has no live step spine — nobody streamed it — so the
@@ -168,6 +169,7 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
       </div>
 
       <div className="sticky bottom-0 bg-bone/95 backdrop-blur py-4 -mx-4 px-4 sm:-mx-6 sm:px-6 border-t border-line">
+        <SetupCards refresh={approvalTick} />
         <Approvals refresh={approvalTick} />
         <div className="flex gap-2 max-w-3xl mx-auto">
           <input

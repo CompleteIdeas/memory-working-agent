@@ -82,6 +82,7 @@ import { accessPolicy, setAccess, ACCESS_PRESETS, type AccessPreset } from './to
 import { status, testAnthropic, testAzure, testTelegram, testProvider, envKeyForProvider, upsertEnv, removeEnv } from './wizard.js';
 import { disconnectGoogle } from './connectors/google.js';
 import { disconnectMicrosoft } from './connectors/microsoft.js';
+import { setSetupDeps, listSetupRequests, submitSetupRequest, cancelSetupRequest } from './connect/setup.js';
 import { awmCliPath, loadEmbeddings, loadPostgresStore } from './awm-api.js';
 import { MEMORY_OFF, agentMemory } from './memory-off.js';
 
@@ -449,6 +450,17 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   // What this process stages, it owns: its memory identity (BL-18). Approvals for it made in Telegram
   // run here — swept independently of the scheduler, so it works with no model configured too.
   setApprovalOwner(SERVE_AGENT);
+  // BL-62: what a setup card checks against and saves to (the agent starts it; the person fills it here).
+  setSetupDeps({
+    save: (v) => upsertEnv(v),
+    gmailConnected: () => gmailImapConfigured() || googleConfigured(),
+    checkGmail: verifyGmailImap,
+    outlookConnected: microsoftConfigured,
+    outlookAppReady: microsoftClientReady,
+    startOutlookDeviceCode: () => startMicrosoftDeviceCode(false),
+    telegramConnected: () => !!process.env.TELEGRAM_BOT_TOKEN,
+    checkTelegram: testTelegram,
+  });
   setInterval(() => {
     void runApproved().then((done) => {
       for (const r of done) appendNotification({ ts: Date.now(), instruction: `Approved in Telegram: ${r.tool}`, summary: r.result.slice(0, 2000), reason: 'done', outcome: r.ok ? 'changed' : 'could-not' });
@@ -752,6 +764,22 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         const b = await readBody(req);
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ message: cancelPending(String(b.id ?? '')) }));
+        return;
+      }
+      // BL-62: setup cards. The person types a secret here; it is checked and saved, and never shown back or to the model.
+      if (p === '/api/setup' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ requests: listSetupRequests().map(({ id, name, howTo, fields, status, message, expiresAt }) => ({ id, name, howTo, fields, status, message, expiresInSec: Math.max(0, Math.round((expiresAt - Date.now()) / 1000)) })) }));
+        return;
+      }
+      if ((p === '/api/setup/submit' || p === '/api/setup/cancel') && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        const out = p.endsWith('cancel')
+          ? { ok: cancelSetupRequest(String(b.id ?? '')), message: 'Closed.' }
+          : await submitSetupRequest(String(b.id ?? ''), (b.values && typeof b.values === 'object') ? b.values as Record<string, unknown> : {});
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(out));
         return;
       }
       if (p === '/api/questions' && req.method === 'GET') {
