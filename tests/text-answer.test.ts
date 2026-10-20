@@ -55,4 +55,11 @@ describe('a plain-text answer', () => {
     const r = await run([{ text: 'ok' }, { text: 'ok' }, { text: '' }, { text: 'ok' }, { text: 'ok' }]);
     expect(r.reason).toBe('stuck');
   }, 60_000);
+  it('a job run that writes its outcome into the text has that outcome, and the words leave the message (BL-62)', async () => {
+    const said = "Tessa Morrow's membership shows **ACTIVE** through November 30, 2027. outcome complete";
+    const r = await run([{ tool: { action: 'calendar__list_events' } }, { text: said }, { text: said }]);
+    expect(r.outcome).toBe('complete');
+    expect(r.summary).not.toMatch(/outcome complete/);
+    expect(r.summary).toContain('ACTIVE');
+  }, 60_000);
 });

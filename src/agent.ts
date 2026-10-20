@@ -1104,6 +1104,12 @@ export async function runAgent(opts: {
     const textAnswer = String(out.text ?? '').trim();
     if ((!action || !action.action) && textAnswer.length >= 40 && textReplies >= 1) {
       action = { action: 'done', summary: textAnswer } as Action; nudge = '';
+      // BL-62: a job's run that answers in text sometimes writes its outcome into the text ("…through November 30,
+      // 2027. outcome complete") instead of done's field — GPT-6.1 Sol, the USEA Jordan run. Read as nothing, the
+      // job defaulted to "changed": a change-only watch repeated "still Active" for four days and never stopped. A
+      // trailing "outcome X" in a job's run is that outcome, and it leaves the message.
+      const stated = opts.jobId ? /(?:^|[\s.;(])outcome[:\s]+\**(changed|no-change|complete|could-not|blocked)\**[\s.)]*$/i.exec(textAnswer) : null;
+      if (stated) Object.assign(action, { outcome: stated[1].toLowerCase(), summary: textAnswer.slice(0, stated.index).trim() || textAnswer });
       history.push('(a plain-text reply taken as the final answer)');
     }
     if (!action || !action.action) {

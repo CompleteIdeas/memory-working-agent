@@ -394,7 +394,12 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     const acted = actedThisRun;
     const repeat = task.recur !== undefined && !['could-not', 'blocked', 'complete'].includes(outcome) && !valueChanged && !overridden && !acted
       && task.lastRun?.sumHash !== undefined && task.lastRun.sumHash === textHash(String(r.summary ?? ''));
-    const forced = completion !== undefined || budgetNews !== undefined || detectorNews !== undefined || outcome === 'complete' || outcome === 'blocked' || recovered;
+    // BL-62: a change-only watch that already told the person ("Tessa is now Active", and that it will stop after the
+    // next check) stops quietly on the confirming check when nothing moved. USEA Jordan run: the confirmation was one
+    // more "still Active" for someone who asked to hear only the change.
+    const quietStop = completion === 'stopped' && policy === 'changed' && !valueChanged && !acted;
+    if (quietStop) log(`· stopped quietly (finished, and already told): ${task.instruction.slice(0, 40)}`);
+    const forced = (completion !== undefined && !quietStop) || budgetNews !== undefined || detectorNews !== undefined || (outcome === 'complete' && !quietStop) || outcome === 'blocked' || recovered;
     // A failure follows the failure rule under every `deliver` (BL-52 review: under the default `always`, every
     // failure was still delivered); anything else follows the policy, minus repeats.
     const deliver = forced || (outcome === 'could-not' ? !failQuiet : !repeat && (policy === 'always' || (policy === 'changed' && outcome === 'changed')));

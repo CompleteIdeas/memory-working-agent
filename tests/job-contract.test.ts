@@ -162,7 +162,15 @@ describe('the scheduler delivers by policy, and completion is two-phase', () => 
     expect(c.completed).toBe(1);
     expect(c.onFire[0].completion).toBe('stopped');
   });
+  it('a change-only watch that already told the person stops quietly when the next check confirms (BL-62)', async () => {
+    const c = await fire({ ...monitor, deliver: 'changed', until: 'her membership shows Active', pendingComplete: true }, 'complete');
+    expect(c.completed).toBe(1);
+    expect(c.onFire).toHaveLength(0);
+    // A job the person hears from every time still gets the "stopped" message.
+    expect((await fire({ ...monitor, until: 'the tracker shows Delivered', pendingComplete: true }, 'complete')).onFire).toHaveLength(1);
+  });
   it('a candidate that the next fire does not confirm is cleared', async () => {
+
     const c = await fire({ ...monitor, until: 'the tracker shows Delivered', pendingComplete: true }, 'no-change');
     expect(c.completed).toBe(0);
     expect(c.pending).toEqual([false]);
