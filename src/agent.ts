@@ -2283,6 +2283,9 @@ export async function runAgent(opts: {
     durationMs: now() - start, costUsd: Number((brainCost + workerCost).toFixed(4)), summary: finalSummary.slice(0, 200),
   });
   emit('end', { reason, steps, dispatches, durationMs: now() - start });
+  // AWM 0.20 implicit feedback: credit the memories this run's answer actually used. MWA's store had 12 feedback
+  // rows against 23,653 recalls, so recall could not learn what helped (AWM session, 2026-10-21). Best-effort.
+  if (reason === 'done' && finalSummary) { try { await memory.noteUse?.(finalSummary, 'reply'); } catch { /* */ } }
   return {
     tainted: sawUntrustedRead,
     outcome,

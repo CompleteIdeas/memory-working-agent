@@ -165,6 +165,8 @@ export interface Memory {
   listPolicies(): Promise<string[]>;
   /** Persist an open question the agent wants answered later (self-learning loop). */
   saveQuestion(question: string): Promise<string | null>;
+  /** AWM 0.20: credits recalled memories whose identifiers appear in `text` (a reply, a write). Optional. */
+  noteUse?(text: string, source: string): Promise<number>;
   close(): void;
 }
 
@@ -1387,6 +1389,14 @@ export class MwaMemory implements Memory {
       }
       return [...map.entries()].map(([personId, r]) => ({ personId, notes: r.notes, fields: [...r.fields], dossier: r.dossier })).sort((a, b) => b.notes - a.notes);
     } catch (err) { console.error('[awm] listPeople error:', (err as Error).message); return []; }
+  }
+
+  /** AWM 0.20 implicit feedback (ActivationEngine.noteImplicitUse); a no-op on an older engine. */
+  async noteUse(text: string, source: string): Promise<number> {
+    try {
+      const a = this.activation as { noteImplicitUse?: (t: string, s: string) => Promise<number> } | undefined;
+      return a?.noteImplicitUse ? await a.noteImplicitUse(text, source) : 0;
+    } catch { return 0; }
   }
 
   close(): void {
