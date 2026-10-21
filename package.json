@@ -70,6 +70,7 @@
     "imapflow": "^1.7.8",
     "mailparser": "^3.9.39",
     "mammoth": "^1.12.0",
+    "playwright-core": "1.52.0",
     "unpdf": "^1.6.2"
   },
   "devDependencies": {

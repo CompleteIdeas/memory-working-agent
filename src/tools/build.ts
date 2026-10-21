@@ -10,6 +10,8 @@ import { manageTools } from './manage.js';
 import { loadMcpServers } from './mcp.js';
 import { installerTools } from './installer.js';
 import { connectTools } from './connect.js';
+import { browserTools } from './browser.js';
+import { createRequire } from 'node:module';
 import { onboardTools } from './onboard.js';
 import { memoryTools } from './memory.js';
 import { MEMORY_OFF, KNOWLEDGE_TOOLS } from '../memory-off.js';
@@ -45,6 +47,8 @@ export async function buildRegistry(
   registry.registerAll(manageTools(config));
   // BL-62: connect an account by asking — secrets go into a setup card, never the conversation.
   registry.registerAll(connectTools());
+  // BL-64: the agent browser, when playwright-core is installed and MWA_BROWSER isn't 0.
+  if (process.env.MWA_BROWSER !== '0' && browserInstalled()) registry.registerAll(browserTools());
   // Memory tools — the agent's reach into the memory it already has: the person it is
   // talking to, the shape of its own store, and recall feedback. MwaMemory implemented
   // these long before anything could call them; see src/tools/memory.ts for why that
@@ -77,4 +81,9 @@ export async function buildRegistry(
   const mcp = await loadMcpServers(config.tools.mcpServers ?? {});
   registry.registerAll(mcp.tools);
   return { registry, close: mcp.close };
+}
+
+/** True when playwright-core can be loaded (the browser tools need it; MWA runs without it). */
+function browserInstalled(): boolean {
+  try { createRequire(import.meta.url).resolve('playwright-core'); return true; } catch { return false; }
 }

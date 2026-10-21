@@ -28,6 +28,12 @@ COPY web/package.json ./web/
 COPY vendor/agent-working-memory/package.json ./vendor/agent-working-memory/
 RUN npm install
 
+# BL-64: the agent browser — Chromium (headless shell) and its system libraries, for playwright-core. ~250 MB.
+# Set MWA_BROWSER=0 to keep the tools off; build with --build-arg MWA_NO_BROWSER=1 to leave Chromium out.
+ARG MWA_NO_BROWSER=
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN if [ -z "$MWA_NO_BROWSER" ]; then npx playwright-core install --with-deps --only-shell chromium && rm -rf /var/lib/apt/lists/*; fi
+
 # Sources needed to build: the AWM submodule, the SPA, the agent, bundled MCP servers.
 COPY vendor/agent-working-memory ./vendor/agent-working-memory
 COPY web ./web
@@ -53,6 +59,8 @@ ENV MWA_ENV_PATH=/data/.env \
     MWA_DB=/data/agent.db \
     MWA_WORKSPACE=/data/mwa-workspace \
     MWA_CONFIG_PATH=/data/mwa.config.json \
+    MWA_VAULT_PATH=/data/vault.json \
+    MWA_BROWSER_DIR=/data/browser \
     MWA_RUNLOG=/data/runs.jsonl \
     MWA_NOTIFY=/data/notifications.jsonl \
     MWA_LOG=/data/mwa.log \

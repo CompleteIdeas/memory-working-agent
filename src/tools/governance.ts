@@ -60,6 +60,8 @@ const TOOL_CATEGORY: Record<string, ActionCategory> = {
   // BL-62: starts a sign-in or opens a setup card on this machine; the secret itself never passes through a tool.
   connect_account: 'write-local', connection_status: 'read',
   vault_list: 'read', vault_request: 'write-local', vault_forget: 'write-local',
+  // BL-64: the agent browser reaches outside; what a page says is outside content (not listed as own or local below).
+  browser_open: 'external', browser_click: 'external', browser_type: 'external', browser_screenshot: 'write-local',
   // NOTE: MCP-bridged tools are named `<server>__<tool>` at runtime and cannot appear here.
   // Defaulting those to 'external' is deliberate — they run third-party code. The one exception is
   // below: a tool whose server declares it read-only.
