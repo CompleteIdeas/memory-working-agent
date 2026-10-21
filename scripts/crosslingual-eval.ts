@@ -67,7 +67,7 @@ async function main() {
 
   for (const it of ITEMS) {
     for (const l of langs) {
-      const rows = await m.recall(it.q[l], { limit: 5, rerank: process.env.AWM_XLING_NORERANK !== '1' });
+      const rows = await m.recall(it.q[l], { internal: true, limit: 5, rerank: process.env.AWM_XLING_NORERANK !== '1' });
       const rank = rows.findIndex(r => r.id === idOf[it.concept]) + 1;
       agg[l].n++;
       if (rank === 1) agg[l].r1++;

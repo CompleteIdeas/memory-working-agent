@@ -122,7 +122,7 @@ async function oneTrial(n: number) {
     } as any);
     const sumPath = join(dir, 'summary.txt');
     const summary = existsSync(sumPath) ? readFileSync(sumPath, 'utf8') : '';
-    const remembered = memoryOn && (await memory.recall(CODE, { limit: 5, full: true })).some((m: any) => `${m.concept} ${m.content}`.includes(CODE));
+    const remembered = memoryOn && (await memory.recall(CODE, { internal: true, limit: 5, full: true })).some((m: any) => `${m.concept} ${m.content}`.includes(CODE));
     let attribution = summary ? 'no-write-step-seen' : 'no-summary';
     if (writePrompt !== null) {
       const wp: string = writePrompt;

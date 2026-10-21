@@ -80,7 +80,7 @@ async function buildContext(arm: Arm, distractors: number, runId: string): Promi
   const mem = new MwaMemory(`ret-${runId}`, db);
   for (const c of CONVENTIONS) await mem.write(c.concept, c.text, ['topic=convention'], { canonical: true, eventType: 'decision' });
   for (let i = 0; i < distractors; i++) { const d = distractor(i); await mem.write(d.concept, d.text, ['topic=note']); }
-  const hits = await mem.recall('record.mjs makeRecord id amount file conventions to honor', { limit: 6 });
+  const hits = await mem.recall('record.mjs makeRecord id amount file conventions to honor', { internal: true, limit: 6 });
   const block = hits.length
     ? 'RECALLED PROJECT CONVENTIONS:\n' + hits.map((h, i) => `${i + 1}. ${h.content}`).join('\n')
     : '(no conventions recalled)';

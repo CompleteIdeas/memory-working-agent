@@ -372,7 +372,7 @@ export class MwaMemory implements Memory {
     }
   }
 
-  async recall(query: string, opts: { limit?: number; workspace?: string; full?: boolean; fast?: boolean; rerank?: boolean; expand?: boolean; namespace?: string } = {}): Promise<RecalledMemory[]> {
+  async recall(query: string, opts: { limit?: number; workspace?: string; full?: boolean; fast?: boolean; rerank?: boolean; expand?: boolean; namespace?: string; internal?: boolean } = {}): Promise<RecalledMemory[]> {
     try {
       await this.init();
       const want = opts.limit ?? 5;
@@ -403,7 +403,11 @@ export class MwaMemory implements Memory {
         granularity: opts.full ? 'full' : 'compact',
         // default to this agent's configured workspace → cross-agent recall when shared.
         workspace: opts.workspace ?? this.workspace,
-        internal: true,
+        // BL-67: a real recall must count as one. internal:true (here since v1) skipped AWM's touch (the fade clock),
+        // co-activation, the activation log and the recent-recalls list that implicit feedback credits, so MWA's
+        // memories faded while in use and retrieval_feedback stayed empty. Benchmarks pass internal:true so their
+        // probes don't train the store they measure.
+        internal: opts.internal ?? process.env.MWA_RECALL_INTERNAL === '1', // =1 restores the old behaviour to compare
       });
       const kept = (rows: any[]) => rows.filter((r: any) => { const t = this.parseTags(r.engram.tags); return !t.includes('topic=routine') && !t.includes('topic=action-log'); });
       let results = await activate(ns ? want * 8 + 24 : want);

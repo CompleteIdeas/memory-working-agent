@@ -69,7 +69,7 @@ async function runOnce(D: number, verbose: boolean): Promise<Metrics> {
   for (const { p, attr } of QUERIES) {
     const correct = VALUES[attr][p];
     const others = VALUES[attr].filter((_, i) => i !== p);
-    const hits = await mem.recall(`What ${attr} does project ${PROJECTS[p]} use?`, { limit: 5, full: true });
+    const hits = await mem.recall(`What ${attr} does project ${PROJECTS[p]} use?`, { internal: true, limit: 5, full: true });
     const conts = hits.map((h) => norm(h.content));
     const inTop1 = conts[0]?.includes(norm(correct)) ?? false;
     const inAny = conts.some((c) => c.includes(norm(correct)));

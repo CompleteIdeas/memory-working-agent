@@ -76,7 +76,7 @@ async function main() {
   let probes = 0, attribWins = 0, correctAt1 = 0, mrrSum = 0;
   for (let ti = 0; ti < TOPICS.length; ti++) {
     for (let si = 0; si < SPEAKERS.length; si++) {
-      const rows = await m.recall(`What does ${SPEAKERS[si]} think about ${TOPICS[ti].topic}?`, { limit: 10 });
+      const rows = await m.recall(`What does ${SPEAKERS[si]} think about ${TOPICS[ti].topic}?`, { internal: true, limit: 10 });
       const rankOf = (id: string) => { const r = rows.findIndex(x => x.id === id); return r < 0 ? Infinity : r + 1; };
       const myRank = rankOf(correctId[ti][si]);
       const otherRanks = SPEAKERS.map((_, sj) => sj === si ? Infinity : rankOf(correctId[ti][sj])).filter(r => r < Infinity);

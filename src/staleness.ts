@@ -84,7 +84,7 @@ export async function runStaleness(runId = 'stale'): Promise<void> {
   // A_awm WITHOUT supersede: recall the originally-stored facts (also stale)
   const awmStale: { key: string; got: string; ok: boolean }[] = [];
   for (const q of questions) {
-    const hits = await mem.recall(`config ${q.key} value`, { limit: 3, full: true });
+    const hits = await mem.recall(`config ${q.key} value`, { internal: true, limit: 3, full: true });
     const got = (hits.find((h) => h.content.includes(q.key))?.content.split('= ')[1] ?? '(none)').trim();
     awmStale.push({ key: q.key, got, ok: got === q.correct });
   }
@@ -100,7 +100,7 @@ export async function runStaleness(runId = 'stale'): Promise<void> {
   }
   const awmFresh: { key: string; got: string; ok: boolean }[] = [];
   for (const q of questions) {
-    const hits = await mem.recall(`config ${q.key} value`, { limit: 3, full: true });
+    const hits = await mem.recall(`config ${q.key} value`, { internal: true, limit: 3, full: true });
     const got = (hits.find((h) => h.content.includes(q.key))?.content.split('= ')[1] ?? '(none)').trim();
     awmFresh.push({ key: q.key, got, ok: got === q.correct });
   }

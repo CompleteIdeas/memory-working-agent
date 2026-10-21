@@ -127,7 +127,7 @@ async function answer(arm: Arm, qa: QA, spec: RepoSpec, ing: IngestResult): Prom
   const gen = getProvider('brain');
   let context = '';
   if (arm === 'A_awm') {
-    const hits = await ing.mem!.recall(qa.q, { limit: 10, full: true }); // full content — precise values, not truncated summaries
+    const hits = await ing.mem!.recall(qa.q, { internal: true, limit: 10, full: true }); // full content — precise values, not truncated summaries
     context = 'RECALLED FACTS:\n' + hits.map((h) => `- ${h.content}`).join('\n');
   } else if (arm === 'MD_file') {
     context = 'PROJECT NOTES (notes.md):\n' + ing.facts; // the whole notes file, every time

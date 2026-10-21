@@ -81,7 +81,7 @@ async function probe(mem: MwaMemory, label: string): Promise<number> {
   let totalPrec = 0;
   console.log(`\n  [${label}]`);
   for (const { cluster, q } of PROBES) {
-    const hits = await mem.recall(q, { limit: TOPK });
+    const hits = await mem.recall(q, { internal: true, limit: TOPK });
     const mates = hits.filter((h) => clusterOf(h.concept) === cluster).length;
     const prec = mates / Math.max(1, hits.length);
     totalPrec += prec;
@@ -94,7 +94,7 @@ async function probe(mem: MwaMemory, label: string): Promise<number> {
 /** One "day": use the memory (recall + positive feedback = co-activation), then sleep (consolidate). */
 async function useThenSleep(mem: MwaMemory, cycle: number): Promise<void> {
   for (const { cluster, q } of PROBES) {
-    const hits = await mem.recall(q, { limit: TOPK });
+    const hits = await mem.recall(q, { internal: true, limit: TOPK });
     // positive feedback on the correct cluster-mates = the co-activation signal consolidation reinforces
     for (const h of hits.filter((h) => clusterOf(h.concept) === cluster)) await mem.feedback(h.id, true);
   }

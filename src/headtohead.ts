@@ -52,7 +52,7 @@ export async function runHeadToHead(): Promise<void> {
   const rows: { q: string; awmTok: number; awmTop: string; docTok: number; docFile: string }[] = [];
   for (const { q, kw } of QUESTIONS) {
     // AWM arm
-    const hits = await mem.recall(q, { limit: 5, full: true });
+    const hits = await mem.recall(q, { internal: true, limit: 5, full: true });
     const awmTok = hits.reduce((s, h) => s + tok(h.content), 0);
     const awmTop = hits[0] ? `${hits[0].concept} :: ${hits[0].content.slice(0, 90).replace(/\n/g, ' ')}` : '(none)';
 
