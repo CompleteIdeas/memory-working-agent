@@ -230,20 +230,27 @@ const REMEMBER_TOOL: ToolDef = {
   parameters: { type: 'object', properties: { concept: { type: 'string', description: 'short title' }, fact: { type: 'string', description: 'the durable fact — lead with it' } }, required: ['concept', 'fact'] },
 };
 
+/** BL-62: the person's message asks for an email draft ("draft a quick note to Carter", "draft a reply to the Nguyens"). */
+export function asksForDraft(msg: string): boolean {
+  if (/\b(?:don'?t|do not|no need to|never|without)\s+(?:\w+\s+)?draft/i.test(msg)) return false;
+  return /\bdraft\b[^.?!\n]{0,60}\b(?:note|e-?mail|reply|response|message|letter)\b/i.test(msg);
+}
+
 /**
  * BL-62: an argument a model fills with an empty value means "not given". GPT-6.1 Sol sends every optional field of a
  * tool, empty: schedule({daily_at: "08:30", days: "weekdays", in_minutes: 0, at: "", every_minutes: 0, …}). The
  * handler read in_minutes first and set a one-time job for now — Jordan's weekday brief became eight one-offs (USEA
- * assessment smoke run, 2026-10-20). Empty strings and nulls are dropped for every tool; a zero or negative delay
- * only for schedule's in_minutes / every_minutes, where it is never a real schedule (elsewhere 0 or false can mean
- * something, so they stay).
+ * assessment smoke run, 2026-10-20). Empty strings and nulls are dropped for every tool; so is a zero or negative
+ * in_minutes / every_minutes, which is never a real delay or interval — schedule_update got every_minutes: 0 with a
+ * new brief instruction and refused it seven times (USEA Casey run: "the Officials heading" never reached the job).
+ * Elsewhere 0 or false can mean something, so they stay.
  */
 export function withoutEmptyArgs<T extends Record<string, unknown>>(action: T): T {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(action)) {
     if (k === 'action') { out[k] = v; continue; }
     if (v === null || v === undefined || (typeof v === 'string' && !v.trim())) continue;
-    if (action.action === 'schedule' && (k === 'in_minutes' || k === 'every_minutes') && typeof v === 'number' && v <= 0) continue;
+    if ((k === 'in_minutes' || k === 'every_minutes') && typeof v === 'number' && v <= 0) continue;
     out[k] = v;
   }
   return out as T;
@@ -625,6 +632,7 @@ export async function runAgent(opts: {
   // BL-43: the jobs this run created (a run may set several), and the once-only pushes about them.
   const jobsCreated: { instruction: string; dueMs: number; recur?: string; kind?: 'reminder' }[] = [];
   const jobsCancelled: string[] = []; // BL-47: what schedule_cancel stopped, named in the reply
+  let draftAskRejections = 0;
   let ampmRejections = 0, countRejections = 0, sourceRejections = 0, changeRejections = 0, kindRejections = 0, kindFollowups = 0, linkRejections = 0;
   // BL-54: the email addresses this run has met (the person's words, the conversation, memory, each tool result),
   // and the recipients it has drafted to — kept as they arrive, so folding older steps into a summary loses none.
@@ -1204,6 +1212,16 @@ export async function runAgent(opts: {
           history.push('(a job correction with no job changed — asked to update it)');
           continue;
         }
+      }
+      // BL-62: "Draft a quick note to Carter…" answered with the note's text in the reply and no draft made (USEA Casey
+      // run, D1): the person has nothing in Drafts to send. Once, when their own message asks for a draft and a draft
+      // tool is there; the draft guard still decides whether the address may be used.
+      if (opts.interactive === true && opts.jobId === undefined && draftAskRejections < 1 && asksForDraft(intentMsg)
+          && ![...toolsUsed].some((t) => EMAIL_DRAFT_TOOL.test(t)) && (opts.tools?.defs?.() ?? []).some((d) => EMAIL_DRAFT_TOOL.test(d.name) && !/send_email$/.test(d.name))) {
+        draftAskRejections++; gatesFired.push('draft-asked'); consecNoProgress = 0;
+        nudge = 'The person asked you to draft a message. Writing it in your reply leaves nothing in their Drafts to send: create it with the draft tool, addressed to the recipient (find their address in the emails if you need it), then say it is in Drafts. If you cannot address it, say so plainly.';
+        history.push('(a draft was asked for and none was made — asked to make it)');
+        continue;
       }
       // BL-43: "Set two reminders" with one set. Once — the model may have a reason, and must then say it.
       if (opts.jobId === undefined && !opts.planStep && countRejections < 1 && jobsCreated.length > 0) {

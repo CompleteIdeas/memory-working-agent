@@ -109,6 +109,10 @@ export async function makeCronArm({ worldFile, logFile, runLog, persona, envFile
       for (const tc of m.tool_calls) {
         const name = tc.function?.name; used.push(name);
         let args = {}; try { args = JSON.parse(tc.function?.arguments || '{}'); } catch { /* */ }
+        // BL-62 fairness: GPT-6.1 Sol sends every optional field, empty (in_minutes: 0, at: ""). MWA drops those
+        // (withoutEmptyArgs); the plain loop gets the same tool-call hygiene, or it can't schedule anything — the USEA
+        // Jordan run scheduled and cancelled its brief dozens of times and delivered 0/10.
+        for (const [k, v] of Object.entries(args)) if (v === null || (typeof v === 'string' && !v.trim()) || ((k === 'in_minutes' || k === 'every_minutes') && typeof v === 'number' && v <= 0)) delete args[k];
         let res;
         try { res = all[name] ? String(all[name].run(args)) : `unknown tool ${name}`; } catch (e) { res = `error: ${e.message}`; }
         msgs.push({ role: 'tool', tool_call_id: tc.id, content: res.slice(0, 6000) });
