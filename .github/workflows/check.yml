@@ -30,4 +30,7 @@ jobs:
           node --input-type=module -e "const d='./vendor/agent-working-memory/dist/core/';
           for (const [f, g] of [['embeddings.js', 'getEmbedder'], ['reranker.js', 'getReranker'], ['query-expander.js', 'getExpander']])
           await (await import(d + f))[g]();"
+      # BL-64: tests/browser.test.ts drives a real Chromium. The same headless shell the Dockerfile installs;
+      # without it those tests failed on CI with "Executable doesn't exist".
+      - run: npx playwright-core install --with-deps --only-shell chromium
       - run: npm test
