@@ -632,7 +632,7 @@ export async function runAgent(opts: {
   // BL-43: the jobs this run created (a run may set several), and the once-only pushes about them.
   const jobsCreated: { instruction: string; dueMs: number; recur?: string; kind?: 'reminder' }[] = [];
   const jobsCancelled: string[] = []; // BL-47: what schedule_cancel stopped, named in the reply
-  let draftAskRejections = 0;
+  let draftAskRejections = 0, valueAsks = 0;
   let ampmRejections = 0, countRejections = 0, sourceRejections = 0, changeRejections = 0, kindRejections = 0, kindFollowups = 0, linkRejections = 0;
   // BL-54: the email addresses this run has met (the person's words, the conversation, memory, each tool result),
   // and the recipients it has drafted to — kept as they arrive, so folding older steps into a summary loses none.
@@ -1195,6 +1195,17 @@ export async function runAgent(opts: {
         kindFollowups++; gatesFired.push('kind-lost'); consecNoProgress = 0;
         nudge = 'Nothing is scheduled yet — the schedule call was only asked to say kind. Call schedule again now with the same details and kind "reminder" or "task".';
         history.push('(the job was not set after the reminder-or-task question — asked again)');
+        continue;
+      }
+      // BL-62: a watch's run that read its source but gave no reading. USEA Jordan rerun: after Tessa's status turned
+      // Active, every 9:00 check answered "ACTIVE through November 30, 2027 ... the watch is complete" with outcome
+      // changed and no value, so the scheduler could not see that nothing moved: six repeat alerts. Once per run.
+      if (opts.jobId && valueAsks < 1 && toolCalls > 0 && !(typeof action.value === 'string' && action.value.trim())
+          && action.outcome !== 'could-not' && action.outcome !== 'blocked'
+          && isWatch({ deliver: opts.jobDeliver, until: opts.jobUntil, instruction: opts.jobTask ?? opts.instruction })) {
+        valueAsks++; gatesFired.push('watch-value'); consecNoProgress = 0;
+        nudge = 'This job watches something. Call done again with the same summary and outcome, and put the reading you took from the source this run in "value", exactly as the source shows it (e.g. "ACTIVE through 2027-11-30", "$1.45 per stem") - that is how the next check knows whether anything changed. If the condition the job waits for now holds, outcome is "complete".';
+        history.push('(a watch finished without its reading - asked for it)');
         continue;
       }
       // BL-49: a scheduled job that never read a source it depends on. Once; a run near its limits is let go.
