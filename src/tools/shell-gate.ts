@@ -25,15 +25,40 @@ export type ShellVerdict = { kind: 'read-only' } | { kind: 'needs-approval'; rea
 /** Shell metacharacters: banned everywhere, inside quotes too — on Windows cmd.exe single quotes
  *  are not quotes, so "quoted" text could still chain a second command. Backslash is a path
  *  separator on Windows and an escape on POSIX. Globs (* ?) only expand to file names: allowed. */
-const META_POSIX = /[;&|<>`$(){}!#%^\\\r\n]/;
+// `%` is only special to cmd.exe (variables); a POSIX shell passes it through, and `date '+%H:%M'` needs it (BL-72).
+const META_POSIX = /[;&|<>`$(){}!#^\\\r\n]/;
 const META_WIN = /[;&|<>`$(){}!#%^\r\n]/;
 
-/** command → flags that make it write, execute, or reach outside (exact or `--flag=` prefix). */
-const READ_ONLY: Record<string, { deny?: string[]; noArgs?: boolean; textArgs?: boolean }> = {
+/** `sed` only as a line printer: `-n` (or -E/-r) and one script like `55,260p`, `10q` or `$p` (BL-72: the
+ *  newsletter run waited a day on approval to read its own notes this way). Anything else — `w file`, `e`,
+ *  `-i`, `s///` — can write or run something, so it is staged. */
+function sedPrintOnly(args: string[]): string | null {
+  const flags = args.filter((a) => a.startsWith('-'));
+  if (flags.some((f) => !['-n', '--quiet', '--silent', '-E', '-r', '-nE', '-En', '-nr', '-rn'].includes(f))) return '"sed" with that option can write files';
+  const scripts = args.filter((a) => !a.startsWith('-') && !looksLikePath(a) && /^[\d,$pq]+$/.test(a));
+  if (scripts.length !== 1 || !/^(\d+|\$)(,(\d+|\$))?[pq]$/.test(scripts[0])) return '"sed" is only read-only as a line printer (like sed -n \'10,40p\' file)';
+  return null;
+}
+
+/** `uniq IN OUT` writes OUT: one file at most. */
+const oneFile = (name: string) => (args: string[]) => (args.filter((a) => !a.startsWith('-')).length > 1 ? `"${name}" with a second file writes to it` : null);
+
+/** command → flags that make it write, execute, or reach outside (exact or `--flag=` prefix). `check`
+ *  sees the arguments and returns a reason to stage, for rules a deny list can't say. */
+const READ_ONLY: Record<string, { deny?: string[]; noArgs?: boolean; noArgsWin?: boolean; textArgs?: boolean; check?: (args: string[]) => string | null }> = {
   ls: {}, dir: {}, cat: {}, type: {}, head: {}, tail: {}, wc: {}, pwd: {}, whoami: {}, uname: {},
   which: {}, where: {}, stat: {}, du: {}, df: {}, cut: {}, diff: {},
+  // BL-72: more plain readers. None writes, runs a program, or reaches the network.
+  nl: {}, tac: {}, rev: {}, comm: {}, paste: {}, cmp: {}, column: {}, basename: {}, dirname: {}, realpath: {}, readlink: {},
+  // -c reads whatever files a checksum list names, wherever they are
+  md5sum: { deny: ['-c', '--check'] }, sha1sum: { deny: ['-c', '--check'] }, sha256sum: { deny: ['-c', '--check'] }, sha512sum: { deny: ['-c', '--check'] }, cksum: {},
+  cal: {}, id: {}, nproc: {}, uptime: {}, free: {}, pdfinfo: {},
+  hostname: { noArgs: true }, uniq: { check: oneFile('uniq') },
+  sed: { check: sedPrintOnly },
   echo: { textArgs: true },
-  date: { noArgs: true },
+  // POSIX `date` prints with any format; -s/--set changes the clock, -f and -r read a file (any file: the
+  // format is text, so its paths aren't checked). On Windows `date` with arguments sets the clock.
+  date: { noArgsWin: true, textArgs: true, deny: ['-s', '--set', '-f', '--file', '-r', '--reference'] },
   grep: {},
   rg: { deny: ['--pre', '--pre-glob'] },
   find: { deny: ['-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprint0', '-fprintf', '-fls'] },
@@ -74,7 +99,9 @@ export function classifyCommand(cmd: string, pathAllowed: (p: string) => boolean
   const rule = READ_ONLY[name];
   if (!rule || /[\\/]/.test(toks[0])) return { kind: 'needs-approval', reason: `"${toks[0]}" is not on the read-only list` };
   const args = toks.slice(1);
-  if (rule.noArgs && args.length) return { kind: 'needs-approval', reason: `"${name}" with arguments can change things` };
+  if ((rule.noArgs || (rule.noArgsWin && platform === 'win32')) && args.length) return { kind: 'needs-approval', reason: `"${name}" with arguments can change things` };
+  const why = rule.check?.(args);
+  if (why) return { kind: 'needs-approval', reason: why };
   for (const a of args) {
     const denied = (rule.deny ?? []).some((d) => {
       if (d.startsWith('--')) return a === d || a.startsWith(`${d}=`);

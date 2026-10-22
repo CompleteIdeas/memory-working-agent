@@ -67,6 +67,30 @@ describe('classifyCommand', () => {
     expect(classifyCommand(c, inside, 'linux').kind).toBe('needs-approval');
   });
 
+  // BL-72: the newsletter run waited on approval for `date -u` and for reading its own notes with sed.
+  it.each([
+    'date -u', "date -u '+%A, %Y-%m-%d %H:%M UTC'", "date '+%H:%M'", "sed -n '55,260p' notes.md", 'sed -n 10q notes.md', 'sed -n 1,40p notes.md',
+    'nl notes.md', 'tac log.txt', 'uniq names.txt', 'md5sum a.pdf', 'sha256sum a.pdf', 'basename sub/a.txt', 'pdfinfo a.pdf',
+    'cal', 'id', 'comm a.txt b.txt', 'column -t a.csv',
+  ])('BL-72 runs read-only: %s', (c) => {
+    expect(classifyCommand(c, inside, 'linux')).toEqual({ kind: 'read-only' });
+  });
+
+  it.each([
+    'date -s 2020-01-01', 'date --set=2020-01-01', 'date -us 2020', 'date -r /etc/shadow', 'date -f /etc/shadow', 'date --reference=/etc/shadow',
+    "sed -i 's/a/b/' notes.md", "sed 's/a/b/' notes.md", "sed -n '1w out.txt' notes.md", "sed -n 1e notes.md", 'sed -n 10p /etc/passwd',
+    "sed --in-place -n 1p notes.md", 'sed -n 1p 2p notes.md', 'uniq in.txt out.txt', 'md5sum -c sums.txt', 'sha256sum --check sums.txt',
+    'hostname evil', 'nl /etc/passwd', "date '+%H' ; id",
+  ])('BL-72 still needs approval: %s', (c) => {
+    expect(classifyCommand(c, inside, 'linux').kind).toBe('needs-approval');
+  });
+
+  it('BL-72: on Windows `date` with arguments sets the clock, and % is still a variable', () => {
+    expect(classifyCommand('date', inside, 'win32').kind).toBe('read-only');
+    expect(classifyCommand('date 01-01-2020', inside, 'win32').kind).toBe('needs-approval');
+    expect(classifyCommand('echo %PATH%', inside, 'win32').kind).toBe('needs-approval');
+  });
+
   it('on Windows, cmd chaining needs approval and backslash paths are checked against the allowed folders', () => {
     expect(classifyCommand('type notes.txt', inside, 'win32').kind).toBe('read-only');
     expect(classifyCommand('dir sub\\folder', inside, 'win32').kind).toBe('read-only');            // a relative path inside the folder
