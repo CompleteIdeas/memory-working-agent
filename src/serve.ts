@@ -17,8 +17,8 @@
  * Docker/Tauri can set MWA_SERVE_HOST=0.0.0.0 and map the port host-localhost-only.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { readFileSync, existsSync, statSync, writeFileSync, appendFileSync, mkdirSync, rmSync } from 'node:fs';
-import { resolve, join, extname, normalize, dirname } from 'node:path';
+import { readFileSync, existsSync, statSync, writeFileSync, appendFileSync, mkdirSync, rmSync, createReadStream } from 'node:fs';
+import { resolve, join, extname, normalize, dirname, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -85,6 +85,8 @@ import { disconnectMicrosoft } from './connectors/microsoft.js';
 import { setSetupDeps, listSetupRequests, submitSetupRequest, cancelSetupRequest } from './connect/setup.js';
 import { awmCliPath, loadEmbeddings, loadPostgresStore } from './awm-api.js';
 import { MEMORY_OFF, agentMemory } from './memory-off.js';
+import { listFiles, insideRoot, fileHeaders, saveUpload, deleteFile, sessionFolder, uploadsIn, MAX_UPLOAD, readShares, createShare, revokeShare, shareFor } from './files.js';
+import { exportDoc, exportFormats } from './doc-export.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 // dist-ui sits next to dist/ (built) or at repo root in dev.
@@ -386,7 +388,10 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     const askNote = relation === 'ask' && topicTurns.length
       ? `\n\nNOTE: It's unclear whether this continues the recent conversation (about "${topicTurns[topicTurns.length - 1].instruction.slice(0, 60)}…") or is a new request. If that distinction affects your answer, ask the user ONE short yes/no question to confirm before proceeding; otherwise treat it as a new request.`
       : '';
-    const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${message}` : message) + askNote;
+    // BL-70: the person sees this chat's folder in the Files tab, and a link by file name opens it there.
+    const added = uploadsIn(resolve(cfg.workspace ?? './mwa-workspace'), sessionFolder(sessionId));
+    const filesNote = `\n\n(Files you write here are saved for the person and appear in their Files tab; when you mention one, link it by its path, e.g. [the notes](notes.md).${added.length ? ` Files they added to this chat: ${added.join(', ')}.` : ''})`;
+    const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${message}` : message) + askNote + filesNote;
 
     // Per-person Profile (S1–S6): resolve who's talking, build their prompt context (identity guard +
     // primer + intake hint, with PII redacted on an identity mismatch). Off-switch MWA_PERSON_PROFILE=0.
@@ -429,10 +434,24 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
   }
 }
 
+/** BL-70: a document converted for download (web page, Word or PDF), always as an attachment. */
+async function sendExport(res: ServerResponse, abs: string, format: string): Promise<void> {
+  try {
+    const out = await exportDoc(abs, readFileSync(abs, 'utf8'), format);
+    res.writeHead(200, { ...fileHeaders(out.filename, out.body.length, true), 'content-type': out.type });
+    res.end(out.body);
+  } catch (e) {
+    res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: (e as Error).message }));
+  }
+}
+
 function serveStatic(res: ServerResponse, dir: string, pathname: string): void {
   // SPA: unknown non-asset routes fall back to index.html (client-side routing).
   let rel = normalize(pathname).replace(/^(\.\.[/\\])+/, '').replace(/^[/\\]+/, '');
   let file = join(dir, rel);
+  // The build's asset paths are relative (base './', for the desktop app), so a page one folder down
+  // (a share link, /s/<token>) asks for s/assets/…: drop leading folders until the asset is found.
+  for (let parts = rel.split(/[/\\]/); extname(rel) && parts.length > 1 && !existsSync(file);) { parts = parts.slice(1); file = join(dir, ...parts); }
   if (!rel || !existsSync(file) || statSync(file).isDirectory()) {
     if (extname(rel)) { res.writeHead(404); res.end('not found'); return; }
     file = join(dir, 'index.html');
@@ -512,7 +531,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         // NAS or under a restart policy that acts on health, permanently. Measured 2026-10-14:
         // FailingStreak 4 within two minutes of boot. The handler below still withholds the
         // detail (counts, sessions) from an unauthenticated caller; only ok/db go out.
-        if (!authed(req) && p !== '/api/health') {
+        // BL-70: a share link opens one file for whoever holds it: its page, the app's built assets
+        // and the share API answer without the password. The token is the whole permission.
+        const shared = p.startsWith('/s/') || p.startsWith('/api/share/') || p.startsWith('/assets/');
+        if (!authed(req) && p !== '/api/health' && !shared) {
           if (p.startsWith('/api/')) { res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'locked', message: 'Sign in to continue.' })); return; }
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(LOGIN_HTML); return;
         }
@@ -695,6 +717,13 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         const since = Number(url.searchParams.get('since') ?? 0);
         let notifications: any[] = [];
         try { notifications = readFileSync(np, 'utf8').trim().split('\n').map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean).filter((n: any) => Number(n.ts) > since).slice(-20); } catch { /* none yet */ }
+        // BL-70: where a run's files sit, relative to the workspace, so the card can link them.
+        const wsRoot = resolve(loadConfig().workspace ?? './mwa-workspace');
+        for (const n of notifications) {
+          if (typeof n?.dir !== 'string' || !n.dir) continue;
+          const rel = relative(wsRoot, resolve(n.dir)).split(sep).join('/');
+          if (rel && !rel.startsWith('..') && !isAbsolute(rel)) n.folder = rel;
+        }
         // BL-13: a scheduled result handed to a signed-in browser is `served` — recorded once per fire.
         // (Served, not read: an open tab polls whether anyone is looking.)
         for (const n of notifications) {
@@ -758,6 +787,73 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: out.startsWith('[CONFIRMED'), message: out }));
         return;
+      }
+      // BL-70: what a share link opens — that one file, read-only: its name, its bytes, its exports.
+      if (p.startsWith('/api/share/') && req.method === 'GET') {
+        const [, , , token, what] = p.split('/');
+        const hit = shareFor(resolve(loadConfig().workspace ?? './mwa-workspace'), token ?? '');
+        if (!hit) { res.writeHead(404, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'This link has expired or was turned off.' })); return; }
+        if (what === 'raw') { res.writeHead(200, fileHeaders(hit.abs, statSync(hit.abs).size, url.searchParams.get('download') === '1')); createReadStream(hit.abs).pipe(res); return; }
+        if (what === 'export') { await sendExport(res, hit.abs, url.searchParams.get('format') ?? ''); return; }
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ name: hit.share.path.split('/').pop(), size: statSync(hit.abs).size, expires: hit.share.expires, formats: exportFormats(hit.abs) }));
+        return;
+      }
+      // BL-70: the person's files — what MWA wrote under the workspace, and what they added.
+      if (p.startsWith('/api/files')) {
+        const root = resolve(loadConfig().workspace ?? './mwa-workspace');
+        const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+        if (p === '/api/files' && req.method === 'GET') { json(200, { files: listFiles(root).map((f) => ({ ...f, formats: exportFormats(f.path) })) }); return; }
+        if (p === '/api/files/raw' && (req.method === 'GET' || req.method === 'HEAD')) {
+          const abs = insideRoot(root, url.searchParams.get('path') ?? '');
+          if (!abs || !existsSync(abs) || !statSync(abs).isFile()) { json(404, { error: 'not found' }); return; }
+          res.writeHead(200, fileHeaders(abs, statSync(abs).size, url.searchParams.get('download') === '1'));
+          if (req.method === 'HEAD') { res.end(); return; }
+          createReadStream(abs).pipe(res);
+          return;
+        }
+        if (p === '/api/files/export' && req.method === 'GET') {
+          const abs = insideRoot(root, url.searchParams.get('path') ?? '');
+          if (!abs || !existsSync(abs) || !statSync(abs).isFile()) { json(404, { error: 'not found' }); return; }
+          await sendExport(res, abs, url.searchParams.get('format') ?? '');
+          return;
+        }
+        if (p === '/api/files/shares' && req.method === 'GET') {
+          const path = url.searchParams.get('path');
+          json(200, { shares: readShares(root).filter((x) => !path || x.path === path) });
+          return;
+        }
+        if (req.method === 'POST' && !sameOriginOk(req)) { json(403, { ok: false, error: 'cross-origin request blocked' }); return; }
+        if (p === '/api/files/share' && req.method === 'POST') {
+          const b = await readBody(req);
+          const share = createShare(root, String(b.path ?? ''), Number(b.days ?? 7));
+          json(share ? 200 : 404, share ? { ok: true, share } : { ok: false, message: 'No such file.' });
+          return;
+        }
+        if (p === '/api/files/unshare' && req.method === 'POST') {
+          const b = await readBody(req);
+          json(200, { ok: revokeShare(root, String(b.token ?? '')) });
+          return;
+        }
+        if (p === '/api/files/upload' && req.method === 'POST') {
+          // The body is the file itself; name and chat come in the query. Capped while reading.
+          const folder = `${sessionFolder(url.searchParams.get('session') || 'default')}/uploads`;
+          const chunks: Buffer[] = []; let size = 0;
+          for await (const c of req) {
+            size += (c as Buffer).length;
+            if (size > MAX_UPLOAD) { json(413, { ok: false, message: `Too big: the limit is ${Math.round(MAX_UPLOAD / 1048576)} MB.` }); req.destroy(); return; }
+            chunks.push(c as Buffer);
+          }
+          try { json(200, { ok: true, path: saveUpload(root, folder, url.searchParams.get('name') ?? 'upload', Buffer.concat(chunks)) }); }
+          catch (e) { json(400, { ok: false, message: (e as Error).message }); }
+          return;
+        }
+        if (p === '/api/files/delete' && req.method === 'POST') {
+          const b = await readBody(req);
+          json(200, { ok: deleteFile(root, String(b.path ?? '')) });
+          return;
+        }
+        json(404, { error: 'not found' }); return;
       }
       if (p === '/api/approvals/cancel' && req.method === 'POST') {
         if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }

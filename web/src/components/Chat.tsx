@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { chatStream, getSuggestions, getNotifications, type SpineStep, type ChatResult } from '../api';
+import { chatStream, getSuggestions, getNotifications, uploadFile, sessionFolder, fileUrl, type SpineStep, type ChatResult } from '../api';
+import { Markdown, openFile } from './Markdown';
 import { Approvals } from './Approvals';
 import { SetupCards } from './SetupCards';
 import { ActivitySpine } from './ActivitySpine';
@@ -9,7 +10,8 @@ import { ActivitySpine } from './ActivitySpine';
  *  card shows these facts from the notification record instead. Absent on records written before
  *  2026-10-14, which carried only the summary. */
 interface SchedFacts { steps: number; toolCalls: number; costUsd: number; files: string[]; reason: string; outcome?: string; completion?: string; }
-interface Turn { id: number; user: string; steps: SpineStep[]; live: boolean; result?: ChatResult; error?: string; topicReset?: boolean; sched?: SchedFacts; }
+/** folder: where the turn's files live, relative to the workspace (BL-70), so its links open them. */
+interface Turn { id: number; user: string; steps: SpineStep[]; live: boolean; result?: ChatResult; error?: string; topicReset?: boolean; sched?: SchedFacts; folder?: string; note?: boolean; }
 
 function sessionId(): string {
   let s = localStorage.getItem('mwa-session');
@@ -37,7 +39,7 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
       const notes = await getNotifications(seen);
       if (!notes.length) return;
       setTurns((prev) => [...prev, ...notes.map((n) => ({
-        id: n.ts, user: `⏰ Scheduled · ${n.instruction}`, steps: [] as SpineStep[], live: false,
+        id: n.ts, user: `⏰ Scheduled · ${n.instruction}`, steps: [] as SpineStep[], live: false, folder: n.folder,
         result: {
           reason: n.reason ?? 'done', summary: n.summary, steps: n.steps ?? 0,
           dispatches: 0, toolCalls: n.toolCalls ?? 0, costUsd: n.costUsd ?? 0,
@@ -65,7 +67,7 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
     if (!t) return;
     setInput('');
     const id = Date.now();
-    setTurns((prev) => [...prev, { id, user: t, steps: [], live: true }]);
+    setTurns((prev) => [...prev, { id, user: t, steps: [], live: true, folder: sessionFolder(session.current) }]);
     let stepId = 0;
     const patch = (fn: (turn: Turn) => Turn) => setTurns((prev) => prev.map((tn) => (tn.id === id ? fn(tn) : tn)));
     chatStream(t, session.current, {
@@ -76,6 +78,24 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
       // (not on the first message of a session) — so the user understands the reset.
       onTopic: (tp) => { if (tp.relation === 'fresh' && tp.hadContext) patch((tn) => ({ ...tn, topicReset: true })); },
     });
+  }
+
+  // BL-70: add a file to this chat. It is saved in the chat's folder (uploads/), and the next
+  // request is told it is there.
+  const picker = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  async function attach(files: FileList | null) {
+    if (!files?.length) return;
+    setUploading(true);
+    for (const f of Array.from(files)) {
+      const r = await uploadFile(f, session.current);
+      const id = Date.now() + Math.random();
+      setTurns((prev) => [...prev, r.ok && r.path
+        ? { id, user: `📎 Added ${f.name}`, steps: [], live: false, note: true, result: { reason: 'done', summary: `Saved as [${r.path.split('/').pop()}](${r.path}). Ask me to use it.`, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0 } as ChatResult, folder: sessionFolder(session.current) }
+        : { id, user: `📎 ${f.name}`, steps: [], live: false, note: true, error: r.message ?? 'Could not add that file.' }]);
+    }
+    setUploading(false);
+    if (picker.current) picker.current.value = '';
   }
 
   const empty = turns.length === 0;
@@ -131,7 +151,7 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
                     className="mt-1 border-l-2 border-signal pl-3"
                   >
                     <div className="mono text-[11px] text-dim mb-1">MWA</div>
-                    <p className="text-[15.5px] leading-relaxed whitespace-pre-wrap">{tn.result.summary}</p>
+                    <Markdown text={tn.result.summary} folder={tn.folder} />
                     {tn.sched ? (
                       // Unattended run: no spine to expand, so state the facts outright.
                       <div className="mono text-[11px] text-dim mt-2 break-words">
@@ -144,10 +164,10 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
                         {tn.sched.outcome === 'blocked' && tn.sched.reason === 'done' && <span className="text-signal"> · needs you</span>}
                         {tn.sched.outcome === 'complete' && !tn.sched.completion && <span> · finished</span>}
                         {tn.sched.files.length
-                          ? <span> · wrote {tn.sched.files.join(', ')}</span>
+                          ? <span> · wrote {tn.sched.files.map((f, j) => <span key={f}>{j > 0 && ', '}{tn.folder ? <a href={fileUrl(`${tn.folder}/${f}`)} target="_blank" rel="noreferrer" onClick={(e) => { e.preventDefault(); openFile(`${tn.folder}/${f}`); }} className="underline hover:text-signal">{f}</a> : f}</span>)}</span>
                           : <span> · no files</span>}
                       </div>
-                    ) : (
+                    ) : tn.note ? null : (
                       <button onClick={() => toggleExpand(tn.id)} className="mono text-[11px] text-dim mt-2 underline hover:text-signal">
                         {expanded.has(tn.id) ? 'hide steps' : `what I did · ${tn.steps.length} steps`}
                       </button>
@@ -179,6 +199,8 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
             placeholder="Type a request…"
             className="flex-1 rounded-[3px] border border-line bg-surface px-4 py-3 text-[15px] outline-none focus:border-signal transition-colors"
           />
+          <input ref={picker} type="file" multiple className="hidden" onChange={(e) => void attach(e.target.files)} />
+          <button onClick={() => picker.current?.click()} disabled={uploading} aria-label="Add a file" title="Add a file to this chat" className="rounded-[3px] border border-line bg-surface px-3 text-[17px] text-dim hover:border-signal hover:text-signal transition-colors disabled:opacity-50">{uploading ? '…' : '📎'}</button>
           <button onClick={() => send(input)} aria-label="Send" className="rounded-[3px] bg-signal text-white px-5 text-lg font-medium hover:opacity-90 transition-opacity">→</button>
         </div>
       </div>

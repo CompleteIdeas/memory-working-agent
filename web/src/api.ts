@@ -238,7 +238,7 @@ export async function getRuns(): Promise<RunLog[]> {
 export interface Notification {
   ts: number; instruction: string; summary: string;
   /** present since 2026-10-14; older records in notifications.jsonl have none, so treat as optional. */
-  reason?: string; steps?: number; toolCalls?: number; costUsd?: number; durationMs?: number; files?: string[]; dir?: string;
+  reason?: string; steps?: number; toolCalls?: number; costUsd?: number; durationMs?: number; files?: string[]; dir?: string; folder?: string;
   /** what the run achieved, and a two-phase completion's state (BL-02). */
   outcome?: string; completion?: 'candidate' | 'stopped';
 }
@@ -379,3 +379,41 @@ export async function submitSetupCard(id: string, values: Record<string, string>
     return { ok: r.ok && j.ok === true, message: String(j.message ?? j.error ?? '') };
   } catch (e) { return { ok: false, message: (e as Error).message }; }
 }
+
+// BL-70: the person's files (everything MWA wrote under its workspace, and what they added).
+export interface FileRow { path: string; size: number; mtime: number; formats?: string[]; }
+export async function getFiles(): Promise<FileRow[]> {
+  try { const r = bounceIfLocked(await fetch('/api/files')); return (await r.json()).files ?? []; } catch { return []; }
+}
+/** The URL that opens (or, with download, saves) one file. */
+export function fileUrl(path: string, download = false): string {
+  return `/api/files/raw?path=${encodeURIComponent(path)}${download ? '&download=1' : ''}`;
+}
+export async function uploadFile(file: File, session: string): Promise<{ ok: boolean; path?: string; message?: string }> {
+  try {
+    const r = bounceIfLocked(await fetch(`/api/files/upload?session=${encodeURIComponent(session)}&name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file }));
+    return await r.json();
+  } catch (e) { return { ok: false, message: (e as Error).message }; }
+}
+export async function deleteFile(path: string): Promise<{ ok: boolean }> {
+  try { const r = bounceIfLocked(await fetch('/api/files/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path }) })); return await r.json(); } catch { return { ok: false }; }
+}
+/** A chat's folder, as the server names it. */
+export function sessionFolder(session: string): string {
+  return `serve/${session.replace(/[^a-z0-9_-]/gi, '')}`;
+}
+export interface FileShare { token: string; path: string; created: number; expires: number; }
+/** Conversions a file offers for download (BL-70): html, docx, pdf for documents. */
+export function exportUrl(path: string, format: string): string {
+  return `/api/files/export?path=${encodeURIComponent(path)}&format=${format}`;
+}
+export async function getShares(path: string): Promise<FileShare[]> {
+  try { const r = bounceIfLocked(await fetch(`/api/files/shares?path=${encodeURIComponent(path)}`)); return (await r.json()).shares ?? []; } catch { return []; }
+}
+export async function shareFile(path: string, days: number): Promise<{ ok: boolean; share?: FileShare; message?: string }> {
+  try { const r = bounceIfLocked(await fetch('/api/files/share', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path, days }) })); return await r.json(); } catch (e) { return { ok: false, message: (e as Error).message }; }
+}
+export async function unshareFile(token: string): Promise<{ ok: boolean }> {
+  try { const r = bounceIfLocked(await fetch('/api/files/unshare', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }) })); return await r.json(); } catch { return { ok: false }; }
+}
+export function shareLink(token: string): string { return `${location.origin}/s/${token}`; }

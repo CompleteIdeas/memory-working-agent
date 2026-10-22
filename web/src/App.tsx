@@ -6,8 +6,10 @@ import { Connections } from './components/Connections';
 import { Memory } from './components/Memory';
 import { Log } from './components/Log';
 import { OnboardWizard } from './components/OnboardWizard';
+import { Files } from './components/Files';
+import { FileModal } from './components/FileViewer';
 
-type View = 'chat' | 'connections' | 'memory' | 'log';
+type View = 'chat' | 'files' | 'connections' | 'memory' | 'log';
 
 // The signature instrument readout: a real count of what the agent remembers, with a
 // 5-cell bar on a log scale (≈10k memories fills it). Honest — wired to /api/stats.
@@ -46,6 +48,7 @@ function Header({ dark, setDark, memN, view, setView, showNav, onWizard }: { dar
           {showNav && (
             <nav className="order-last sm:order-none w-full sm:w-auto sm:mr-auto sm:ml-2 flex items-center gap-3 overflow-x-auto">
               {tab('chat', 'chat')}
+              {tab('files', 'files')}
               {tab('connections', 'connect')}
               {tab('memory', 'memory')}
               {tab('log', 'log')}
@@ -73,6 +76,12 @@ export default function App() {
   const [view, setView] = useState<View>('chat');
   const [wizard, setWizard] = useState(false);
   const [dark, setDark] = useState(() => localStorage.getItem('mwa-dark') === '1');
+  // BL-70: a file opened from a chat link or the Files tab shows over whatever is on screen.
+  const [viewing, setViewing] = useState<string | null>(null);
+  useEffect(() => {
+    const open = (e: Event) => setViewing(String((e as CustomEvent).detail));
+    window.addEventListener('mwa-open-file', open); return () => window.removeEventListener('mwa-open-file', open);
+  }, []);
 
   const refreshStats = () => getStats().then((d) => setMemN(d.memories)).catch(() => {});
 
@@ -110,12 +119,14 @@ export default function App() {
             <div className={view === 'chat' ? '' : 'hidden'}>
               <Chat onActivity={refreshStats} />
             </div>
+            {view === 'files' && <Files />}
             {view === 'connections' && <Connections />}
             {view === 'memory' && <Memory />}
             {view === 'log' && <Log />}
           </>
         )}
       </main>
+      {viewing && <FileModal path={viewing} onClose={() => setViewing(null)} />}
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import App from './App';
 import './index.css';
 import { openExternal } from './api';
+import { FilePage } from './components/FileViewer';
 
 // In the desktop app the Tauri webview swallows target="_blank" links, so external links
 // (setup guides, BotFather, etc.) appear dead. Intercept clicks on external http(s) links
@@ -22,9 +23,14 @@ document.addEventListener('click', (e) => {
   }
 });
 
+// BL-70: a popped-out file (/view?path=) and a share link (/s/<token>) are pages of their own.
+const sharedToken = /^\/s\/([A-Za-z0-9_-]+)\/?$/.exec(location.pathname)?.[1];
+const viewPath = location.pathname === '/view' ? new URLSearchParams(location.search).get('path') : null;
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    {sharedToken ? <FilePage src={{ kind: 'shared', token: sharedToken }} />
+      : viewPath ? <FilePage src={{ kind: 'own', path: viewPath }} />
+      : <App />}
   </StrictMode>,
 );
 
