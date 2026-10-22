@@ -322,7 +322,13 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
         valueChanged = changed;
         if (prev?.value === undefined || changed) rec.history = [...(prev?.history ?? []), { at: now(), value: val }].slice(-20);
         rec.value = val; rec.valueAt = now();
-        if (changed) {
+        // BL-68: except for a job that finishes when something becomes true, whose run DECLARED no-change. That job
+        // asks one question — is it true yet? — and the run answered it; a reading that moved without making it
+        // true is not what the person asked to hear. USEA reruns: "LAPSED" → "LAPSED; renewal payment PENDING" and
+        // "PROVISIONAL" → "PROVISIONAL (scores corrected)" were each sent as news, three messages nobody wanted.
+        // The new reading is still kept, so the next real change is measured from it.
+        const answered = Boolean(task.until) && outcome === 'no-change' && (r as { outcomeDeclared?: boolean }).outcomeDeclared === true;
+        if (changed && !answered) {
           // The change is news whatever the run called it, and it is said with both values (BL-40: "no change"
           // the day roses went from $1.10 to $1.45).
           if (outcome === 'no-change') { outcome = 'changed'; overridden = true; }
@@ -397,7 +403,12 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // BL-62: a change-only watch that already told the person ("Tessa is now Active", and that it will stop after the
     // next check) stops quietly on the confirming check when nothing moved. USEA Jordan run: the confirmation was one
     // more "still Active" for someone who asked to hear only the change.
-    const quietStop = completion === 'stopped' && policy === 'changed' && !valueChanged && !acted;
+    // BL-68: "acted" here is something staged or done on this machine, not an outward call: a watch reads its page
+    // through one every fire, and counted as news it sent "Confirmed finished" with the whole message again (USEA
+    // reruns, Jordan and Casey). The cost: an outward WRITE on the confirming check (say, an email the job sends
+    // again) is not announced here either; unattended, it is still in the action log.
+    const actedHere = Boolean((r as { staged?: string[] }).staged?.length) || Number((r as { localActions?: number }).localActions) > 0;
+    const quietStop = completion === 'stopped' && policy === 'changed' && !valueChanged && !actedHere;
     if (quietStop) log(`· stopped quietly (finished, and already told): ${task.instruction.slice(0, 40)}`);
     const forced = (completion !== undefined && !quietStop) || budgetNews !== undefined || detectorNews !== undefined || (outcome === 'complete' && !quietStop) || outcome === 'blocked' || recovered;
     // A failure follows the failure rule under every `deliver` (BL-52 review: under the default `always`, every
