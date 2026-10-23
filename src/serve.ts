@@ -48,7 +48,7 @@ async function migrateMemoryToPostgres(sqliteDbPath: string, url: string): Promi
     return { ok: false, message: `couldn't copy memory: ${(e as Error).message.slice(0, 200)}` };
   } finally { try { rmSync(tmp); } catch { /* */ } }
 }
-import { getProvider, listModels, PROVIDERS, type Provider } from './provider.js';
+import { getProvider, listModels, PROVIDERS, backgroundCalls, type Provider } from './provider.js';
 import { RoutedProvider } from './model-router.js';
 import { MwaMemory } from './awm.js';
 import { recordReceipt, readReceipts, setReceiptProducer } from './receipts.js';
@@ -1457,7 +1457,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         setInterval(() => {
           if (thinking || !thinkDue({ lastAt, now: Date.now() })) return;
           thinking = true; lastAt = Date.now();
-          void thinkOnce(memory, getProvider('brain'), { person: resolvePersonId({ channel: 'web' }) })
+          void backgroundCalls.run(true, () => thinkOnce(memory, getProvider('brain'), { person: resolvePersonId({ channel: 'web' }) }))
             .then((t) => { if (t.length) logger.info('think', `${t.length} thought(s)`, { asks: t.filter((x) => x.kind === 'ask').length }); })
             .finally(() => { thinking = false; });
         }, 5 * 60_000).unref();

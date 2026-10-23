@@ -11,6 +11,9 @@
  * covers providers/models that don't emit tool_calls.
  */
 import Anthropic from '@anthropic-ai/sdk';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { loadEnv } from './env.js';
 import { loadConfig } from './config.js';
 
@@ -84,13 +87,44 @@ export interface Provider {
 /** BL-61: where OpenRouter may send a call when nobody says otherwise — first-party US labs and US-region hosts. */
 export const US_OPENROUTER_HOSTS = ['openai', 'anthropic', 'google-vertex/us', 'azure/us', 'amazon-bedrock/us-east-1', 'amazon-bedrock/us-east-2', 'amazon-bedrock/us-west-2'];
 
-export function openRouterRouting(env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
+/**
+ * Cost (2026-10-23): calls nobody waits on — a scheduled job, a hand-off, thinking time — run inside this, and an
+ * OpenAI model is then asked for OpenAI's "flex" tier first: the same model at half price, slower and sometimes
+ * turned away under load (then the standard tier answers). Measured through OpenRouter: the same reply cost
+ * $0.000034 on flex against $0.000068. MWA_OPENROUTER_FLEX: `background` (default), `all`, or `off`.
+ */
+export const backgroundCalls = new AsyncLocalStorage<boolean>();
+
+/** Which run a model call belongs to, for the token log (set by runAgent). */
+export const callTags = new AsyncLocalStorage<{ session?: string; job?: string; run?: string }>();
+
+/**
+ * Cost (2026-10-23): one line per model call in tokens.jsonl beside the run log (MWA_TOKEN_LOG; "0" turns it off):
+ * which run, which host and tier answered, input / cached / output / reasoning tokens, the real cost, and how big the
+ * system prompt and the messages were — so a long job's spend can be taken apart instead of guessed at.
+ */
+function logCall(rec: Record<string, unknown>): void {
+  if (process.env.MWA_TOKEN_LOG === '0' || process.env.VITEST) return;
+  try {
+    const p = process.env.MWA_TOKEN_LOG ?? join(dirname(process.env.MWA_RUNLOG ?? resolve('./data/runs.jsonl')), 'tokens.jsonl');
+    mkdirSync(dirname(p), { recursive: true });
+    appendFileSync(p, JSON.stringify({ ts: Date.now(), bg: backgroundCalls.getStore() === true, ...callTags.getStore(), ...rec }) + '\n');
+  } catch { /* best effort */ }
+}
+
+export function openRouterRouting(env: NodeJS.ProcessEnv = process.env, model = '', background = backgroundCalls.getStore() === true): Record<string, unknown> {
   // US hosts by default (Robert: no data to other countries); MWA_OPENROUTER_PROVIDERS names others, "any" lifts it.
   const named = String(env.MWA_OPENROUTER_PROVIDERS ?? '').trim();
   const only = named.toLowerCase() === 'any' ? [] : named ? named.split(',').map((s) => s.trim()).filter(Boolean) : US_OPENROUTER_HOSTS;
+  // An OpenAI model goes to OpenAI first: Bedrock and Azure US charge 10% more for the same model ($2.20 / $11 against
+  // $2 / $10 for gpt-6.1-sol), and a call could land there. Only when OpenAI is an allowed host.
+  const flexMode = String(env.MWA_OPENROUTER_FLEX ?? 'background').toLowerCase();
+  const openaiFirst = /^openai\//i.test(model) && (!only.length || only.includes('openai'));
+  const flex = openaiFirst && (flexMode === 'all' || (flexMode === 'background' && background));
   return {
     data_collection: env.MWA_OPENROUTER_DATA_COLLECTION === 'allow' ? 'allow' : 'deny',
     ...(only.length ? { only, allow_fallbacks: false } : {}),
+    ...(openaiFirst ? { order: flex ? ['openai/flex', 'openai'] : ['openai'] } : {}),
   };
 }
 
@@ -251,7 +285,12 @@ class OpenAICompatProvider implements Provider {
     // train on prompts. A host that collects data is refused unless MWA_OPENROUTER_DATA_COLLECTION=allow, and
     // MWA_OPENROUTER_PROVIDERS (comma list of OpenRouter provider tags, e.g. "anthropic,google-vertex/us") limits the
     // call to those hosts with no fallback — Robert, 2026-10-19: no data to other countries.
-    if (this.base.includes('openrouter')) body.provider = openRouterRouting();
+    if (this.base.includes('openrouter')) {
+      body.provider = openRouterRouting(process.env, this.model);
+      // The real cost and the cached and reasoning tokens of each call, not an estimate from list prices (2026-10-23):
+      // without it a flex call or a cache hit cost what the list price said.
+      body.usage = { include: true };
+    }
     if (tools?.length) {
       body.tools = tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
       body.tool_choice = 'auto';
@@ -275,6 +314,10 @@ class OpenAICompatProvider implements Provider {
           : undefined;
         spent.input += j.usage?.prompt_tokens ?? 0; spent.output += j.usage?.completion_tokens ?? 0;
         if (typeof j.usage?.cost === 'number') { spent.cost += j.usage.cost; spent.costKnown = true; }
+        const cached = Number(j.usage?.prompt_tokens_details?.cached_tokens ?? 0) || 0;
+        logCall({ model: this.model, served: j.provider, route: (body.provider as { order?: string[] } | undefined)?.order?.[0], in: j.usage?.prompt_tokens ?? 0, cached,
+          out: j.usage?.completion_tokens ?? 0, reasoning: Number(j.usage?.completion_tokens_details?.reasoning_tokens ?? 0) || 0, cost: j.usage?.cost,
+          sysChars: system?.length ?? 0, msgChars: messages.reduce((n, m) => n + String(m.content ?? '').length, 0), msgs: messages.length, tools: tools?.length ?? 0, attempt });
         // Nothing visible, cut off at the limit: the budget went to hidden reasoning. Once, with headroom.
         if (!text.trim() && !toolCalls && j.choices?.[0]?.finish_reason === 'length' && !this.seenThinking) {
           this.seenThinking = true;
@@ -282,7 +325,7 @@ class OpenAICompatProvider implements Provider {
           lastErr = `${this.id}: the reply was all hidden reasoning, cut off at ${maxTokens} tokens`;
           continue;
         }
-        return { text, toolCalls, usage: { input: spent.input, output: spent.output, ...(spent.costKnown ? { cost: spent.cost } : {}) } };
+        return { text, toolCalls, usage: { input: spent.input, output: spent.output, ...(cached ? { cacheRead: cached } : {}), ...(spent.costKnown ? { cost: spent.cost } : {}) } };
       }
       const errText = await res.text();
       lastErr = `${this.id} ${res.status}: ${errText.slice(0, 200)}`;

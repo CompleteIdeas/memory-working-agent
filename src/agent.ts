@@ -18,6 +18,8 @@ import { redactVault } from './vault/vault.js';
 import { randomUUID } from 'node:crypto';
 import { resolve, sep, dirname, join } from 'node:path';
 import type { Provider } from './provider.js';
+import { backgroundCalls, callTags } from './provider.js';
+import { PAGE_TOOLS, trimPage } from './trim.js';
 import { validateSubstance } from './substance.js';
 import { loadDomainPack, buildDomainContext } from './domain-pack.js';
 import { ONBOARD_PROTOCOL } from './onboard.js';
@@ -601,6 +603,11 @@ export async function runAgent(opts: {
   compaction?: Compaction;
 }): Promise<AgentResult> {
   const { instruction, dir, memory, brain, worker } = opts;
+  // Cost (2026-10-23): a run nobody is watching makes its model calls as background calls, so an OpenAI model
+  // answers on the half-price flex tier (provider.ts openRouterRouting). Planned sub-runs inherit it.
+  if (opts.interactive === false && backgroundCalls.getStore() !== true) return backgroundCalls.run(true, () => runAgent(opts));
+  // the token log (provider.ts) tags each model call with the run it belongs to
+  if (!callTags.getStore()) return callTags.run({ session: opts.session, job: opts.jobId?.slice(0, 8) }, () => runAgent(opts));
   const now = opts.now ?? (() => Date.now());
   const emit = opts.onEvent ?? (() => {});
   const persona = personaFor(opts.style); // appended to every user-facing system prompt
@@ -815,6 +822,7 @@ export async function runAgent(opts: {
   // An unknown tool counts as a write — the override then defers to the model, as before (BL-16 review).
   let wroteSomething = false;
   let budgetRefusal: string | undefined; // BL-05: a follow-up job the fan-out budget refused
+  let pagesRead = 0; // cost: pages this run fetched (page budget, src/trim.ts)
   let resumeQueued = false; // BL-71b
   // What the model said it achieved, and how many calls the REGISTRY itself failed (BL-02).
   let declaredOutcome: RunOutcome | undefined;
@@ -858,6 +866,7 @@ export async function runAgent(opts: {
   } : undefined);
   let compactionFailures = 0;
   const MAX_EXTERNAL = 3; // unattended runs pause BEFORE exceeding this many outward actions
+  const pageBudget = () => Math.max(1, Number(process.env.MWA_PAGE_BUDGET ?? 15) || 15);
   const recalled: RecalledMemory[] = memory.enabled ? (await memory.recall(instruction, { limit: 8, full: true, workspace: opts.workspace })).filter(primeable) : [];
   // STANDING PREFERENCES — user policies that must apply to EVERY task (e.g. "never send
   // without my review", "keep summaries to 5 bullets"). Unlike PRIOR KNOWLEDGE, these are
@@ -1723,9 +1732,16 @@ export async function runAgent(opts: {
       // attempted nothing) — unless this tool also ran. It stays in toolsUsed, so the other gates still see it was
       // tried (review: dropped, the ask-back gate pushed the model to guess again).
       if (draftNo && !draftToolsOk.has(action.action)) guardOnly.add(action.action);
+      // Cost (2026-10-23): a background job reads at most MWA_PAGE_BUDGET pages (15). The hard test's comparison job
+      // read 20+; past the budget it writes up what it has and says what it couldn't check. Searches don't count.
+      const pageCall = PAGE_TOOLS.test(action.action) && action.action !== 'search__web_search';
+      const pageNo = !draftNo && pageCall && opts.interactive === false && pagesRead >= pageBudget()
+        ? `(page budget reached: this job has read ${pagesRead} pages, the most a background job may. Write the result from what you have, and say in it what you could not check.)` : null;
+      if (pageCall && !pageNo && !draftNo) pagesRead++;
+      if (pageNo) gatesFired.push('page-budget');
       // BL-10: intent BEFORE the step, result after — a crash in between leaves an intent with no result.
-      const txSeq = draftNo ? undefined : tx?.intent(action.action, args as Record<string, unknown>, sawUntrustedRead || sawLocalRead);
-      const called = draftNo ? { text: draftNo, failed: true }
+      const txSeq = draftNo || pageNo ? undefined : tx?.intent(action.action, args as Record<string, unknown>, sawUntrustedRead || sawLocalRead);
+      const called = draftNo ? { text: draftNo, failed: true } : pageNo ? { text: pageNo, failed: true }
         : typeof opts.tools.callDetailed === 'function'
           ? await opts.tools.callDetailed(action.action, args as Record<string, unknown>, callCtx)
           : { text: await opts.tools.call(action.action, args as Record<string, unknown>, callCtx), failed: false };
@@ -1750,7 +1766,9 @@ export async function runAgent(opts: {
       // Keep enough of the result for the model to actually USE it — read_email/read_document
       // return long documents (a full email thread, a PDF); 400 chars hid the answer.
       // Fenced and labeled by source (H-3): the result is DATA, and its text can't forge the fence.
-      history.push(`tool ${action.action} -> ${markToolOutput(action.action, result.slice(0, 6000).replace(/\n/g, ' '), fence)}`);
+      // Cost (2026-10-23): a page keeps only what it says about the task (src/trim.ts) — it is sent again on every step.
+      const shown = PAGE_TOOLS.test(action.action) && !called.failed ? trimPage(result, `${opts.userMessage ?? instruction} ${JSON.stringify(args)}`).text : result;
+      history.push(`tool ${action.action} -> ${markToolOutput(action.action, shown.slice(0, 6000).replace(/\n/g, ' '), fence)}`);
       emit('tool', { name: action.action, result: result.slice(0, 120) });
       const uses = (toolUses.get(action.action) ?? 0) + 1; toolUses.set(action.action, uses);
       const repeatedResult = lastToolResult.get(action.action) === result; lastToolResult.set(action.action, result);
@@ -1773,7 +1791,7 @@ export async function runAgent(opts: {
       if (refused) { refusals++; if (refusalLog.length < 4) refusalLog.push(`${action.action}(${String((args as Record<string, unknown>).path ?? (args as Record<string, unknown>).dir ?? '').slice(0, 80)}): ${result.slice(0, 140).replace(/\n/g, ' ')}`); }
       // F2: once this run has pulled in untrusted external content, taint later `remember` writes.
       // Taint on any external call, refused or not — fail-closed.
-      if (readsUntrustedContent(action.action) && !draftNo) sawUntrustedRead = true; // a guard refusal reached nothing outside
+      if (readsUntrustedContent(action.action) && !draftNo && !pageNo) sawUntrustedRead = true; // a guard refusal reached nothing outside
       // BL-71c: a file from another chat or job may hold what an earlier run fetched — outside content.
       else if (!refused && result.startsWith(OTHER_FOLDER_MARK)) sawUntrustedRead = true;
       // A schedule listing shows instructions MWA stored; it counts as local content only when one came from a
@@ -2342,6 +2360,7 @@ export async function runAgent(opts: {
     ...(droppedLesson ? { droppedLesson } : {}),
     ...(folded > 0 ? { compaction: { folds: builtInCompaction?.folds() ?? null, failures: compactionFailures, fenced: builtInCompaction?.tainted() ?? null } } : {}),
     learned: learnedFacts, skills: skillsDerived, questions: openQuestions, frictions: frictionsLearned, policies: policiesLearned, transitions: transitionsRecorded,
+    tokens: { in: usage.brainIn + usage.workerIn, out: usage.brainOut + usage.workerOut, cached: usage.cacheRead }, pagesRead, // cost (2026-10-23)
     durationMs: now() - start, costUsd: Number((brainCost + workerCost).toFixed(4)), summary: finalSummary.slice(0, 200),
   });
   emit('end', { reason, steps, dispatches, durationMs: now() - start });
