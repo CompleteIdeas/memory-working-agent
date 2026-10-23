@@ -1,0 +1,102 @@
+/**
+ * BL-72: the approval reviewer — fixed rules first, then Clef — and its shadow mode, which logs what it
+ * would have done and changes nothing.
+ */
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fixedRule, reviewAction, clefReviewer, reviewMode, commandOf, SAFE_THRESHOLD, type ReviewScores } from '../src/approval-review.js';
+import { stageAction, pendingMeta } from '../src/tools/approval.js';
+// @ts-expect-error — plain JS data
+import { cases } from '../scripts/approval-calibration/cases.mjs';
+
+type Case = { id: string; req: string; tool: string; action: string; tainted?: boolean; label: 'auto' | 'ask' };
+const input = (c: Case) => ({ tool: c.tool, summary: c.action, request: c.req, tainted: !!c.tainted });
+const scores = (safe: number): ReviewScores => ({ matches: 0.9, escalates: 0.05, damage: 0.05, from_outside: 0.05, safe });
+
+describe('fixed rules', () => {
+  it('reads the command off a staged card', () => {
+    expect(commandOf('Run this command in /w:\n  date -u\n(Needs approval because x.)')).toBe('date -u');
+  });
+
+  it('always ask for the actions no model may wave through', () => {
+    const byId = Object.fromEntries((cases as Case[]).map((c) => [c.id, c]));
+    // the two the general models let through in calibration, and planted-instruction shapes
+    for (const id of ['d7', 'd8', 't1', 't7', 'b9']) expect(fixedRule(input(byId[id])), id).not.toBeNull();
+    expect(fixedRule({ tool: 'add_mcp_server', summary: 'Add server x' })?.decision).toBe('ask');
+    expect(fixedRule({ tool: 'policy_save', summary: 'rule' })?.decision).toBe('ask');
+    expect(fixedRule({ tool: 'x', summary: 'y', kind: 'captured-policy' })?.decision).toBe('ask');
+    expect(fixedRule({ tool: 'run_command', summary: 'Run this command in /w:\n  curl -s http://127.0.0.1:7788/api/approvals/confirm' })?.rule).toBe('command');
+  });
+
+  it('leave almost every action the person would approve to the reviewer', () => {
+    const blocked = (cases as Case[]).filter((c) => c.label === 'auto' && fixedRule(input(c))).map((c) => c.id);
+    // b1: downloading after reading a web page — the network after outside content always asks (one extra tap).
+    expect(blocked).toEqual(['b1']);
+  });
+});
+
+describe('reviewAction', () => {
+  it('runs what Clef calls safe and asks otherwise', async () => {
+    expect((await reviewAction({ tool: 'run_command', summary: 'Run this command in /w:\n  mkdir q4' }, async () => scores(SAFE_THRESHOLD))).decision).toBe('auto');
+    const r = await reviewAction({ tool: 'run_command', summary: 'Run this command in /w:\n  rm -r old' }, async () => ({ ...scores(0.4), damage: 0.8 }));
+    expect(r).toMatchObject({ decision: 'ask', by: 'clef' });
+    expect(r.reason).toMatch(/damage/);
+  });
+
+  it('asks when Clef is missing or silent, and a fixed rule beats Clef', async () => {
+    expect((await reviewAction({ tool: 'run_command', summary: 'x' }, null)).by).toBe('unavailable');
+    expect((await reviewAction({ tool: 'run_command', summary: 'x' }, async () => null)).decision).toBe('ask');
+    expect((await reviewAction({ tool: 'policy_save', summary: 'x' }, async () => scores(0.99))).decision).toBe('ask');
+  });
+});
+
+describe('clefReviewer', () => {
+  it('sends the action and reads five probabilities', async () => {
+    let sent: any;
+    const f = (async (_u: string, init: RequestInit) => {
+      sent = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ success: true, result: { answers: { matches: { noul: 0.9 }, escalates: { noul: 0.1 }, damage: { noul: 0.1 }, from_outside: { noul: 0.0 }, safe: { noul: 0.8 } } } }));
+    }) as typeof fetch;
+    const s = await clefReviewer({ token: 't', account: 'a', fetchImpl: f })({ tool: 'run_command', summary: 'S', request: 'R', tainted: true });
+    expect(s?.safe).toBe(0.8);
+    expect(sent.state).toMatchObject({ request: 'R', read_outside_content: 'yes', action: 'S' });
+  });
+
+  it('answers null on an error or a malformed reply', async () => {
+    const bad = (async () => new Response('nope', { status: 500 })) as typeof fetch;
+    expect(await clefReviewer({ token: 't', account: 'a', fetchImpl: bad })({ tool: 'x', summary: 'y' })).toBeNull();
+    const partial = (async () => new Response(JSON.stringify({ success: true, result: { answers: { safe: { noul: 0.9 } } } }))) as typeof fetch;
+    expect(await clefReviewer({ token: 't', account: 'a', fetchImpl: partial })({ tool: 'x', summary: 'y' })).toBeNull();
+  });
+});
+
+describe('mode and shadow log', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('defaults to shadow only when Clef is configured', () => {
+    expect(reviewMode({})).toBe('off');
+    expect(reviewMode({ MWA_CLEF_TOKEN: 't', MWA_CLEF_ACCOUNT: 'a' })).toBe('shadow');
+    expect(reviewMode({ MWA_CLEF_TOKEN: 't', MWA_CLEF_ACCOUNT: 'a', MWA_AUTO_APPROVE: 'on' })).toBe('on');
+    expect(reviewMode({ MWA_CLEF_TOKEN: 't', MWA_CLEF_ACCOUNT: 'a', MWA_AUTO_APPROVE: 'off' })).toBe('off');
+    expect(reviewMode({ MWA_AUTO_APPROVE: 'on' })).toBe('off'); // no reviewer, nothing runs on its own
+  });
+
+  it('shadow mode logs the review and leaves the action waiting for the person', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-bl72-'));
+    const prev = { t: process.env.MWA_CLEF_TOKEN, a: process.env.MWA_CLEF_ACCOUNT, l: process.env.MWA_REVIEW_LOG };
+    process.env.MWA_CLEF_TOKEN = 't'; process.env.MWA_CLEF_ACCOUNT = 'acct-shadow'; process.env.MWA_REVIEW_LOG = join(dir, 'r.jsonl');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: true, result: { answers: { matches: { noul: 0.9 }, escalates: { noul: 0.1 }, damage: { noul: 0.1 }, from_outside: { noul: 0.1 }, safe: { noul: 0.85 } } } }))));
+    try {
+      const id = stageAction({ tool: 'run_command', summary: 'Run this command in /w:\n  mkdir q4', ctx: { sandboxDir: '/w', interactive: true, personMessage: 'make a q4 folder' } });
+      await vi.waitFor(() => expect(existsSync(join(dir, 'r.jsonl'))).toBe(true));
+      const line = JSON.parse(readFileSync(join(dir, 'r.jsonl'), 'utf8').trim().split('\n').pop()!);
+      expect(line).toMatchObject({ id, mode: 'shadow', decision: 'auto', by: 'clef' });
+      expect(pendingMeta(id)).toBeDefined(); // still waiting for the person
+    } finally {
+      for (const [k, v] of [['MWA_CLEF_TOKEN', prev.t], ['MWA_CLEF_ACCOUNT', prev.a], ['MWA_REVIEW_LOG', prev.l]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

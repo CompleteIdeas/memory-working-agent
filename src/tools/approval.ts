@@ -38,6 +38,7 @@
 import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { reviewAction, reviewMode, configuredClef, logReview } from '../approval-review.js';
 import Database from 'better-sqlite3';
 import { ToolRefusal, type RegisteredTool, type ToolContext } from './registry.js';
 import { isStepUpSatisfied } from '../step-up.js';
@@ -208,6 +209,13 @@ export function stageAction(a: {
     .run(id, a.tool, a.executor ?? a.tool, JSON.stringify(a.args ?? {}), a.summary, JSON.stringify(ctx), a.kind ?? 'tool', c.tainted === true ? 1 : 0, now, now + (a.ttlMs ?? ttlMs()), now, owner);
   if (a.execute) localClosures.set(id, a.execute);
   audit?.('dryrun', { id, tool: a.tool, summary: a.summary });
+  // BL-72 shadow: review it as the reviewer would, and log that beside what the person then does.
+  // Changes nothing: the action waits for the person exactly as before.
+  const mode = reviewMode();
+  if (mode !== 'off') {
+    const input = { tool: a.tool, summary: a.summary, kind: a.kind, request: c.personMessage, tainted: c.tainted === true, interactive: c.interactive, sandboxDir: c.sandboxDir };
+    void reviewAction(input, configuredClef()).then((r) => logReview(id, input, r, mode)).catch(() => { /* best effort */ });
+  }
   return id;
 }
 
