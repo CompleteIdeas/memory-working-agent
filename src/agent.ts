@@ -136,6 +136,8 @@ export interface AgentResult {
   /** the run itself declared `outcome` in `done`, and nothing overrode it — not derived from activity.
    *  A detector's dry run is scored only on these (BL-08 review: derived outcomes lean to "changed"). */
   outcomeDeclared?: boolean;
+  /** BL-71b: the run ran out of room and queued a resume that continues it in the background. */
+  resumeQueued?: boolean;
   /** true when this run read external content (H-3). A plan step's output is the NEXT step's
    *  instruction, so the chain needs to know — otherwise taint dies at every step boundary. */
   tainted?: boolean;
@@ -813,6 +815,7 @@ export async function runAgent(opts: {
   // An unknown tool counts as a write — the override then defers to the model, as before (BL-16 review).
   let wroteSomething = false;
   let budgetRefusal: string | undefined; // BL-05: a follow-up job the fan-out budget refused
+  let resumeQueued = false; // BL-71b
   // What the model said it achieved, and how many calls the REGISTRY itself failed (BL-02).
   let declaredOutcome: RunOutcome | undefined;
   let doneOutcome: RunOutcome | undefined; // what `done` itself said (BL-08)
@@ -2254,6 +2257,7 @@ export async function runAgent(opts: {
     // The resume reuses this run's folder: whatever a tainted run saved there must not come back clean.
     const id = await memory.addScheduledTask(cont, dueMs, { notify: opts.session, dir, resumeAttempt: attempt + 1, person: opts.personId, depth: opts.jobDepth, goal: opts.jobGoal, resumeOf: opts.jobLineage ?? opts.jobId, byRun: runId, urgent: opts.jobUrgent, limits: opts.jobLimits, until: opts.jobUntil, deliver: opts.jobDeliver, tainted: sawUntrustedRead || sawLocalRead, task: opts.jobTask ?? instruction, request: opts.jobRequest });
     if (id) {
+      resumeQueued = true;
       history.push(`(unfinished — queued a resume for ~1 min from now, attempt ${attempt + 1}/${MAX_RESUMES})`);
       emit('schedule', { instruction: `resume: ${instruction.slice(0, 50)}`, due: dueMs, resume: attempt + 1 });
     }
@@ -2349,6 +2353,7 @@ export async function runAgent(opts: {
     ...(doneOutcome !== undefined && doneOutcome === outcome ? { outcomeDeclared: true } : {}),
     ...(staged.length ? { staged } : {}),
     ...(budgetRefusal ? { budgetRefusal } : {}),
+    ...(resumeQueued ? { resumeQueued } : {}),
     ...(watchValue ? { watchValue } : {}),
     ...(runActions.length ? { actionsTaken: runActions.length } : {}),
     ...(runActions.some((a) => a.effect !== 'external') ? { localActions: runActions.filter((a) => a.effect !== 'external').length } : {}),

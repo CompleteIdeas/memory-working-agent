@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { chatStream, getSuggestions, getNotifications, uploadFile, sessionFolder, fileUrl, type SpineStep, type ChatResult } from '../api';
+import { chatStream, getSuggestions, getNotifications, uploadFile, sessionFolder, fileUrl, startWork, type SpineStep, type ChatResult } from '../api';
 import { Markdown, openFile } from './Markdown';
 import { Approvals } from './Approvals';
 import { SetupCards } from './SetupCards';
@@ -11,7 +11,9 @@ import { ActivitySpine } from './ActivitySpine';
  *  2026-10-14, which carried only the summary. */
 interface SchedFacts { steps: number; toolCalls: number; costUsd: number; files: string[]; reason: string; outcome?: string; completion?: string; }
 /** folder: where the turn's files live, relative to the workspace (BL-70), so its links open them. */
-interface Turn { id: number; user: string; steps: SpineStep[]; live: boolean; result?: ChatResult; error?: string; topicReset?: boolean; sched?: SchedFacts; folder?: string; note?: boolean; }
+interface Turn { id: number; user: string; steps: SpineStep[]; live: boolean; result?: ChatResult; error?: string; topicReset?: boolean; sched?: SchedFacts; folder?: string; note?: boolean;
+  /** BL-71b: what became of an offer to work in the background */
+  offerState?: 'sending' | 'started' | 'declined' | 'failed'; offerReply?: string; }
 
 function sessionId(): string {
   let s = localStorage.getItem('mwa-session');
@@ -62,7 +64,7 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
   }, []);
   useEffect(() => { feedEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [turns]);
 
-  function send(text: string) {
+  function send(text: string, opts: { stay?: boolean } = {}) {
     const t = text.trim();
     if (!t) return;
     setInput('');
@@ -77,7 +79,18 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
       // Show a "new topic" marker only when we actually set aside an earlier conversation
       // (not on the first message of a session) — so the user understands the reset.
       onTopic: (tp) => { if (tp.relation === 'fresh' && tp.hadContext) patch((tn) => ({ ...tn, topicReset: true })); },
-    });
+    }, opts);
+  }
+
+  // BL-71b: answer an offer to work in the background.
+  async function answerOffer(tn: Turn, work: boolean) {
+    const message = tn.result?.offer?.message ?? tn.user;
+    const set = (fn: (x: Turn) => Turn) => setTurns((prev) => prev.map((x) => (x.id === tn.id ? fn(x) : x)));
+    if (!work) { set((x) => ({ ...x, offerState: 'declined' })); send(message, { stay: true }); return; }
+    set((x) => ({ ...x, offerState: 'sending' }));
+    const r = await startWork(message, session.current);
+    set((x) => ({ ...x, offerState: r.ok ? 'started' : 'failed', offerReply: r.message }));
+    onActivity?.();
   }
 
   // BL-70: add a file to this chat. It is saved in the chat's folder (uploads/), and the next
@@ -152,6 +165,19 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
                   >
                     <div className="mono text-[11px] text-dim mb-1">MWA</div>
                     <Markdown text={tn.result.summary} folder={tn.folder} />
+                    {tn.result.offer && (
+                      // BL-71b: the person decides where the work happens.
+                      !tn.offerState || tn.offerState === 'sending' ? (
+                        <div className="flex flex-wrap gap-2 mt-3">
+                          <button disabled={tn.offerState === 'sending'} onClick={() => void answerOffer(tn, true)} className="rounded-[3px] bg-signal text-white px-3.5 py-2 text-[14px] font-medium hover:opacity-90 disabled:opacity-50">{tn.offerState === 'sending' ? 'Starting…' : 'Work on it, get back to me'}</button>
+                          <button disabled={tn.offerState === 'sending'} onClick={() => void answerOffer(tn, false)} className="rounded-[3px] border border-line bg-surface px-3.5 py-2 text-[14px] hover:border-signal hover:text-signal disabled:opacity-50">Do it now, I'll wait</button>
+                        </div>
+                      ) : (
+                        <div className={`mono text-[12px] mt-2 ${tn.offerState === 'failed' ? 'text-signal' : 'text-dim'}`}>
+                          {tn.offerState === 'declined' ? 'Doing it now, below.' : tn.offerReply}
+                        </div>
+                      )
+                    )}
                     {tn.sched ? (
                       // Unattended run: no spine to expand, so state the facts outright.
                       <div className="mono text-[11px] text-dim mt-2 break-words">
@@ -167,7 +193,7 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
                           ? <span> · wrote {tn.sched.files.map((f, j) => <span key={f}>{j > 0 && ', '}{tn.folder ? <a href={fileUrl(`${tn.folder}/${f}`)} target="_blank" rel="noreferrer" onClick={(e) => { e.preventDefault(); openFile(`${tn.folder}/${f}`); }} className="underline hover:text-signal">{f}</a> : f}</span>)}</span>
                           : <span> · no files</span>}
                       </div>
-                    ) : tn.note ? null : (
+                    ) : tn.note || tn.result.offer ? null : (
                       <button onClick={() => toggleExpand(tn.id)} className="mono text-[11px] text-dim mt-2 underline hover:text-signal">
                         {expanded.has(tn.id) ? 'hide steps' : `what I did · ${tn.steps.length} steps`}
                       </button>

@@ -86,6 +86,8 @@ import { setSetupDeps, listSetupRequests, submitSetupRequest, cancelSetupRequest
 import { awmCliPath, loadEmbeddings, loadPostgresStore } from './awm-api.js';
 import { MEMORY_OFF, agentMemory } from './memory-off.js';
 import { listFiles, insideRoot, fileHeaders, saveUpload, deleteFile, sessionFolder, uploadsIn, MAX_UPLOAD, readShares, createShare, revokeShare, shareFor } from './files.js';
+import { offersBackground, OFFER_TEXT, startBackgroundWork } from './handoff.js';
+import { resolvePersonId } from './person.js';
 import { exportDoc, exportFormats } from './doc-export.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -349,6 +351,12 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
   const send = (type: string, data: Record<string, unknown>) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
   if (!message) { send('error', { message: 'empty message' }); res.end(); return; }
+  // BL-71b: a request that researches and writes something up is offered to the background first; the
+  // person picks. "Stay here" sends it again with stay=1, and it runs in the chat as before.
+  if (url.searchParams.get('stay') !== '1' && process.env.MWA_OFFER_BACKGROUND !== '0' && offersBackground(message)) {
+    send('result', { reason: 'offer', summary: OFFER_TEXT, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0, offer: { kind: 'start', message } });
+    res.end(); return;
+  }
   // Concurrency cap — reserve the slot ATOMICALLY (before any await) so a burst of near-simultaneous
   // chats can't all pass the gate during the classifyContinuity / preparePersonTurn round-trips.
   if (activeRuns >= MAX_CONCURRENT) { send('error', { message: "I'm at capacity right now (too many chats running) — try again in a moment." }); res.end(); return; }
@@ -415,7 +423,9 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
       onEvent: (type, d) => send(type, d as Record<string, unknown>),
     });
     s.history.push({ instruction: message, summary: r.summary, tainted: r.tainted === true });
-    send('result', { reason: r.reason, summary: r.summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)) });
+    // BL-71b: it ran out of room and already queued a resume — say so, rather than leave a half answer.
+    const summary = r.resumeQueued ? `${r.summary}\n\nI ran out of room in this chat, so I'm continuing in the background. The result will appear here when it's done.` : r.summary;
+    send('result', { reason: r.reason, summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)) });
 
     // S3/S5 — LEARN durable facts about this person + recompress their dossier (suppressed for the
     // shared 'unknown' profile and on an identity mismatch). Runs after the reply is sent.
@@ -854,6 +864,26 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           return;
         }
         json(404, { error: 'not found' }); return;
+      }
+      // BL-71b: the person tapped "Work on it" — a goal and a job that starts now, in this chat's folder.
+      if (p === '/api/work/start' && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        const message = String(b.message ?? '').trim().slice(0, 4000);
+        const session = String(b.session ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 60) || 'default';
+        res.writeHead(200, { 'content-type': 'application/json' });
+        if (!message) { res.end(JSON.stringify({ ok: false, message: 'Nothing to work on.' })); return; }
+        if (MEMORY_OFF) { res.end(JSON.stringify({ ok: false, message: 'Background work needs memory, which is off here.' })); return; }
+        const cfg = loadConfig();
+        const memory = new MwaMemory(SERVE_AGENT, process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
+        try {
+          const personId = resolvePersonId({ channel: 'web', name: String(b.person ?? '').trim() || undefined });
+          const started = await startBackgroundWork(memory, { message, session, personId, workspace: cfg.workspace ?? './mwa-workspace' });
+          res.end(JSON.stringify(started
+            ? { ok: true, goal: started.goalId.slice(0, 8), message: "On it. I'll work on this in the background and post the result here when it's done. You can close this page." }
+            : { ok: false, message: 'I couldn\'t set that up just now. Try again, or ask me to do it here.' }));
+        } finally { memory.close(); }
+        return;
       }
       if (p === '/api/approvals/cancel' && req.method === 'POST') {
         if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }

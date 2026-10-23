@@ -279,7 +279,19 @@ export async function saveKey(body: Record<string, string>): Promise<{ ok: boole
 
 export type StepTone = 'recall' | 'act' | 'learn' | 'think' | 'done';
 export interface SpineStep { id: number; label: string; detail: string; tone: StepTone; }
-export interface ChatResult { reason: string; summary: string; steps: number; dispatches: number; toolCalls: number; costUsd: number; }
+export interface ChatResult { reason: string; summary: string; steps: number; dispatches: number; toolCalls: number; costUsd: number;
+  /** BL-71b: MWA offers to do this in the background instead of now. */
+  offer?: { kind: 'start'; message: string };
+}
+
+/** BL-71b: the person chose "Work on it": a goal and a background job, reported back in the chat. */
+export async function startWork(message: string, session: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    const r = bounceIfLocked(await fetch('/api/work/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message, session }) }));
+    const j = await r.json();
+    return { ok: r.ok && j.ok === true, message: String(j.message ?? j.error ?? '') };
+  } catch (e) { return { ok: false, message: (e as Error).message }; }
+}
 
 // Friendly names for tools — never show the raw tool id to a person.
 const TOOL_LABELS: Record<string, string> = {
@@ -337,8 +349,8 @@ export interface ChatHandlers {
 }
 
 /** Open the SSE chat stream for one message; returns the EventSource so it can be closed. */
-export function chatStream(message: string, session: string, h: ChatHandlers): EventSource {
-  const es = new EventSource(`/api/chat?session=${encodeURIComponent(session)}&message=${encodeURIComponent(message)}`);
+export function chatStream(message: string, session: string, h: ChatHandlers, opts: { stay?: boolean } = {}): EventSource {
+  const es = new EventSource(`/api/chat?session=${encodeURIComponent(session)}&message=${encodeURIComponent(message)}${opts.stay ? '&stay=1' : ''}`);
   const TYPES = ['start', 'recall', 'read', 'remember', 'tool', 'dispatch', 'sleep', 'escalate', 'plan', 'plan_step', 'verify', 'question', 'ask', 'done'];
   for (const t of TYPES) {
     es.addEventListener(t, (e) => {
