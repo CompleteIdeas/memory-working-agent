@@ -19,7 +19,7 @@ function MemoryMeter({ n }: { n: number }) {
   const fill = Math.max(n > 0 ? 1 : 0, Math.min(cells, Math.round((Math.log10(n + 1) / 4) * cells)));
   return (
     <div className="flex items-center gap-2 mono text-[11px] text-dim" title={`${n} memories`}>
-      <span className="uppercase tracking-[0.2em] hidden sm:inline">memory</span>
+      {/* the label made the header wrap once the Work tab was added (BL-71d); the meter keeps its title */}
       <span className="flex gap-[2px]">
         {Array.from({ length: cells }).map((_, i) => (
           <span key={i} className={`w-[6px] h-3 ${i < fill ? 'bg-signal' : 'bg-line'}`} />
