@@ -61,7 +61,9 @@ export interface Access { preset: AccessPreset; grantedRoots: string[] }
 export interface Brain { provider: string; model: string }
 export type InteractionStyle = 'guided' | 'direct';
 export interface StorageBackend { kind: 'sqlite' | 'pglite' | 'postgres'; configured: boolean; }
-export interface Connections { gmail: boolean; gmailMethod: 'oauth' | 'app-password' | null; outlook: boolean; outlookEasy: boolean; telegram: boolean; brain: Brain; imageModel: Brain; connectors: ConnectorItem[]; externalInstall: ExternalInstall; access: Access; style: InteractionStyle; ingestReady: boolean; storage: StorageBackend; }
+export interface Connections { gmail: boolean; gmailMethod: 'oauth' | 'app-password' | null; outlook: boolean; outlookEasy: boolean; telegram: boolean; brain: Brain; imageModel: Brain; connectors: ConnectorItem[]; externalInstall: ExternalInstall; access: Access; style: InteractionStyle; ingestReady: boolean; storage: StorageBackend;
+  /** where MWA runs (2026-10-23): a server deploy words the page for a server and hides what can't work there */
+  hosted?: boolean; host?: string; modelFromEnv?: boolean; imageFromEnv?: boolean; tailscale?: boolean; }
 export async function getConnections(): Promise<Connections> {
   try { const r = await fetch('/api/connections'); return await r.json(); } catch { return { gmail: false, gmailMethod: null, outlook: false, outlookEasy: false, telegram: false, brain: { provider: '', model: '' }, imageModel: { provider: '', model: '' }, connectors: [], externalInstall: { enabled: false, policy: 'review-required', reason: '', model: '' }, access: { preset: 'assistant', grantedRoots: [] }, style: 'guided', ingestReady: false, storage: { kind: 'sqlite', configured: true } }; }
 }

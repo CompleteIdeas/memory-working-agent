@@ -46,7 +46,9 @@ export async function verifyGmailImap(user: string, pass: string): Promise<{ ok:
     return { ok: true, message: `Connected ${u} — read + draft only, never sends.` };
   } catch (e) {
     const msg = (e as Error).message || '';
-    if (/AUTHENTICATIONFAILED|Invalid credentials|LOGIN failed/i.test(msg))
+    // imapflow reports a refused login as "Command failed", with the reason on the error (2026-10-23 settings test).
+    const why = `${msg} ${(e as { responseText?: string }).responseText ?? ''} ${(e as { authenticationFailed?: boolean }).authenticationFailed ? 'AUTHENTICATIONFAILED' : ''}`;
+    if (/AUTHENTICATIONFAILED|Invalid credentials|LOGIN failed|Application-specific password required/i.test(why))
       return { ok: false, message: 'Sign-in failed — check the address and app password (and that 2-Step Verification is on).' };
     return { ok: false, message: `Couldn't reach Gmail: ${msg.slice(0, 120)}` };
   } finally {

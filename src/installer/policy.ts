@@ -10,19 +10,24 @@
 import type { MwaConfig } from '../config.js';
 
 // provider:model specs we consider strong enough to review code. Conservative on purpose.
+// A model name may follow the provider ("anthropic:claude-…") or a vendor path ("openrouter:openai/gpt-…").
+// 2026-10-23: the list stopped at gpt-5, so MWA's own default (openrouter:openai/gpt-6.1-sol) was turned away and
+// "add from npm" was off on every install that kept the default. gpt-6.x and the Claude 5 family are added.
 const CAPABLE = [
-  /(^|:)claude-(opus|sonnet)/i,
-  /(^|:)(gpt-4o|gpt-4\.|gpt-5|o1|o3|o4)/i,
-  /(^|:)gemini-(1\.5-pro|2\.|2\.5)/i,
-  /openrouter:.*(claude-(3|opus|sonnet)|gpt-4|gpt-5|deepseek|qwen2\.5-72|llama-3\.1-(70|405))/i,
+  /[:/]claude-(opus|sonnet|fable)/i,
+  /[:/](gpt-4o|gpt-4\.|gpt-[5-9]|o1|o3|o4)/i,
+  /[:/]gemini-(1\.5-pro|2\.|2\.5|[3-9](\.\d+)?-pro)/i,
+  /openrouter:.*(claude-(3|opus|sonnet)|gpt-4|deepseek|qwen2\.5-72|llama-3\.1-(70|405))/i,
 ];
+// The small tiers of those families are not reviewers: gpt-6-luna, gpt-5-nano, gpt-4.1-mini, claude-haiku.
+const SMALL = /(luna|nano|-mini\b|haiku|flash-lite)/i;
 
 /** Is this provider:model spec strong enough to security-review untrusted code? */
 export function isReviewCapable(spec: string): boolean {
   if (!spec) return false;
   // Local Ollama models: only trust clearly-large ones; small local models are NOT trusted.
   if (/^ollama:/i.test(spec)) return /(70b|72b|405b|qwen2\.5-72|llama3\.[13]-70)/i.test(spec);
-  return CAPABLE.some((re) => re.test(spec));
+  return CAPABLE.some((re) => re.test(spec)) && !SMALL.test(spec);
 }
 
 /** The model spec used for connector reviews (models.installer, else the reason tier). */

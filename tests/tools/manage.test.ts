@@ -40,10 +40,11 @@ afterEach(() => {
 });
 
 describe('runtime tool management', () => {
-  it('list_active_tools shows built-ins and (initially) no MCP servers', async () => {
+  it('list_active_tools shows built-ins and, on a fresh config, only the default web search', async () => {
     const out = await tool('list_active_tools').handler({}, ctx);
     expect(out).toContain('read_file');
-    expect(out).toContain('MCP servers (0)');
+    expect(out).toContain('MCP servers (1)'); // the keyless web search every fresh install runs (src/config.ts DEFAULT_CONFIG)
+    expect(out).toContain('search');
   });
 
   it('add_mcp_server requires approval (does NOT wire until confirmed), then confirm wires it', async () => {

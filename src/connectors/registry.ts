@@ -13,7 +13,7 @@
  *   arbitrary — a random repo/URL; deep scan + strong warnings + typed confirm (Phase 3).
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { configPath } from '../config.js';
+import { configPath, DEFAULT_CONFIG } from '../config.js';
 import type { McpServerSpec } from '../tools/mcp.js';
 
 export type TrustTier = 'curated' | 'known' | 'arbitrary';
@@ -139,10 +139,17 @@ function readConfigRaw(): any {
 function writeConfigRaw(raw: any): void {
   writeFileSync(configPath(), JSON.stringify(raw, null, 2) + '\n');
 }
+/** The config's MCP servers. A config file that never named any runs the default ones (the keyless web search), so
+ *  that is what it has: read as on, and kept when another connector is added. Before 2026-10-23 the first connector
+ *  turned on replaced the list (the loader's merge is shallow) and switched web search off without a word. */
+function serversOf(raw: any): Record<string, McpServerSpec> {
+  raw.tools = raw.tools ?? {};
+  raw.tools.mcpServers = raw.tools.mcpServers ?? JSON.parse(JSON.stringify(DEFAULT_CONFIG.tools.mcpServers ?? {}));
+  return raw.tools.mcpServers;
+}
 
 export function enabledConnectorIds(): string[] {
-  const raw = readConfigRaw();
-  return Object.keys(raw?.tools?.mcpServers ?? {});
+  return Object.keys(serversOf(readConfigRaw()));
 }
 
 /** Enable a curated connector (writes its spec into config.tools.mcpServers). */
@@ -152,36 +159,34 @@ export function enableConnector(id: string): { ok: boolean; message: string } {
   const miss = missingSecrets(entry);
   if (miss.length) return { ok: false, message: `Needs ${miss.map((m) => m.label).join(', ')} first.` };
   const raw = readConfigRaw();
-  raw.tools = raw.tools ?? {};
-  raw.tools.mcpServers = raw.tools.mcpServers ?? {};
-  raw.tools.mcpServers[id] = entry.spec;
+  serversOf(raw)[id] = entry.spec;
   writeConfigRaw(raw);
   return { ok: true, message: `${entry.name} enabled — its tools are available on your next message.` };
 }
 
 export function disableConnector(id: string): void {
   const raw = readConfigRaw();
-  if (raw?.tools?.mcpServers?.[id]) { delete raw.tools.mcpServers[id]; writeConfigRaw(raw); }
+  const servers = serversOf(raw);
+  if (servers[id]) { delete servers[id]; writeConfigRaw(raw); }
 }
 
 /** All MCP servers currently wired in config (curated, external, or hand-added). */
 export function listMcpServers(): Record<string, McpServerSpec> {
-  return (readConfigRaw()?.tools?.mcpServers ?? {}) as Record<string, McpServerSpec>;
+  return serversOf(readConfigRaw());
 }
 
 /** Remove ANY MCP server (by config key) — connector id or hand-added name. */
 export function removeMcpServer(name: string): boolean {
   const raw = readConfigRaw();
-  if (raw?.tools?.mcpServers?.[name]) { delete raw.tools.mcpServers[name]; writeConfigRaw(raw); return true; }
+  const servers = serversOf(raw);
+  if (servers[name]) { delete servers[name]; writeConfigRaw(raw); return true; }
   return false;
 }
 
 /** Add an arbitrary MCP server spec under `name` (used after approval). */
 export function addMcpServer(name: string, spec: McpServerSpec): void {
   const raw = readConfigRaw();
-  raw.tools = raw.tools ?? {};
-  raw.tools.mcpServers = raw.tools.mcpServers ?? {};
-  raw.tools.mcpServers[name] = spec;
+  serversOf(raw)[name] = spec;
   writeConfigRaw(raw);
 }
 
@@ -191,9 +196,7 @@ export function enableExternalNpm(name: string, version?: string): { ok: boolean
   const id = name.replace(/[^a-z0-9_-]/gi, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'connector';
   const pkg = version ? `${name}@${version}` : name; // pin when we know the version
   const raw = readConfigRaw();
-  raw.tools = raw.tools ?? {};
-  raw.tools.mcpServers = raw.tools.mcpServers ?? {};
-  raw.tools.mcpServers[id] = { command: 'npx', args: ['-y', pkg] };
+  serversOf(raw)[id] = { command: 'npx', args: ['-y', pkg] };
   writeConfigRaw(raw);
   return { ok: true, id };
 }

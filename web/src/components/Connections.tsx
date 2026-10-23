@@ -33,6 +33,8 @@ const ACCESS_PRESETS: { id: AccessPreset; label: string; detail: string }[] = [
 // The sign-in opens a window on THIS computer, so connect from the machine running MWA.
 
 type Provider = 'google' | 'microsoft';
+/** Where MWA runs: the page words itself for a server deploy (2026-10-23 settings review). */
+interface Where { hosted: boolean; host: string }
 
 interface ProviderUI {
   key: 'gmail' | 'outlook';
@@ -117,7 +119,7 @@ function Connected({ note, onDisconnect }: { note?: string; onDisconnect: () => 
 
 /** The advanced bring-your-own OAuth flow (Cloud Console / Azure app-id) — the original path,
  *  now tucked behind an "Advanced" expander under the easy options. */
-function AdvancedOAuth({ provider, connected, onDone }: { provider: Provider; connected: boolean; onDone: () => void }) {
+function AdvancedOAuth({ provider, connected, onDone, hosted }: { provider: Provider; connected: boolean; onDone: () => void; hosted?: boolean }) {
   const ui = PROVIDERS[provider];
   const [vals, setVals] = useState<Record<string, string>>({});
   const [readonly, setReadonly] = useState(false);
@@ -140,6 +142,8 @@ function AdvancedOAuth({ provider, connected, onDone }: { provider: Provider; co
       () => { setMsg('Still not connected — finish the sign-in, or try again.'); setBusy(false); });
   }
 
+  // The sign-in returns to localhost on the machine running MWA, so on a server it can never finish (2026-10-23 review).
+  if (hosted) return <p className="text-sm text-dim">This sign-in only works when MWA runs on your own computer: it finishes on that computer's localhost. {provider === 'google' ? 'On a server deploy, use the app password above (email only).' : 'On a server deploy, Outlook needs a Microsoft app set up for one-click sign-in (MWA_DEFAULT_MS_CLIENT_ID).'}</p>;
   return (
     <div className="space-y-3">
       {ui.steps}
@@ -162,7 +166,7 @@ function AdvancedOAuth({ provider, connected, onDone }: { provider: Provider; co
 
 /** Gmail — the EASY default is an app password (no Google Cloud Console); the OAuth flow is
  *  tucked under "Advanced" for people who want scoped tokens + calendar. */
-function GmailConnect({ connected, method, onDone }: { connected: boolean; method: 'oauth' | 'app-password' | null; onDone: () => void }) {
+function GmailConnect({ connected, method, onDone, where }: { connected: boolean; method: 'oauth' | 'app-password' | null; onDone: () => void; where: Where }) {
   const [open, setOpen] = useState(false);
   const [adv, setAdv] = useState(false);
   const [user, setUser] = useState('');
@@ -197,9 +201,9 @@ function GmailConnect({ connected, method, onDone }: { connected: boolean; metho
           <input value={pass} type="password" placeholder="16-letter app password" onChange={(e) => setPass(e.target.value)} className={inputCls} />
           <button disabled={busy || !user.trim() || !pass.trim()} onClick={connect} className={btnCls}>{busy ? 'Working…' : 'Connect'}</button>
           {msg && <p className="mono text-[12px] text-dim">{msg}</p>}
-          <p className="mono text-[11px] text-dim">Stays on this computer. Works for personal Gmail (not accounts on Advanced Protection). Calendar needs the Google sign-in option below.</p>
+          <p className="mono text-[11px] text-dim">{where.hosted ? `Saved only in MWA's own settings on your ${where.host} deploy.` : 'Stays on this computer.'} Works for personal Gmail (not accounts on Advanced Protection). Calendar needs the Google sign-in option below.</p>
           <button onClick={() => setAdv((a) => !a)} className="mono text-[11px] text-signal underline">{adv ? 'Hide' : 'Prefer Google sign-in (OAuth)? Advanced setup ▸'}</button>
-          {adv && <div className="border-t border-line pt-3"><AdvancedOAuth provider="google" connected={connected} onDone={onDone} /></div>}
+          {adv && <div className="border-t border-line pt-3"><AdvancedOAuth provider="google" connected={connected} onDone={onDone} hosted={where.hosted} /></div>}
         </div>
       )}
     </div>
@@ -208,7 +212,7 @@ function GmailConnect({ connected, method, onDone }: { connected: boolean; metho
 
 /** Outlook — the EASY default is device-code (enter a short code at microsoft.com/devicelogin);
  *  the bring-your-own Azure app-id flow is under "Advanced". */
-function OutlookConnect({ connected, easy, onDone }: { connected: boolean; easy: boolean; onDone: () => void }) {
+function OutlookConnect({ connected, easy, onDone, hosted }: { connected: boolean; easy: boolean; onDone: () => void; hosted?: boolean }) {
   const [open, setOpen] = useState(false);
   const [adv, setAdv] = useState(!easy); // no one-click yet → show the Microsoft sign-in straight away
   const [readonly, setReadonly] = useState(false);
@@ -261,7 +265,7 @@ function OutlookConnect({ connected, easy, onDone }: { connected: boolean; easy:
             <p className="text-sm text-dim">Connect with your own Microsoft app — sign in below. (Microsoft now requires this for Outlook.)</p>
           )}
           {easy && <button onClick={() => setAdv((a) => !a)} className="mono text-[11px] text-signal underline">{adv ? 'Hide' : 'Use your own Microsoft app (advanced) ▸'}</button>}
-          {adv && <div className={easy ? 'border-t border-line pt-3' : ''}><AdvancedOAuth provider="microsoft" connected={connected} onDone={onDone} /></div>}
+          {adv && <div className={easy ? 'border-t border-line pt-3' : ''}><AdvancedOAuth provider="microsoft" connected={connected} onDone={onDone} hosted={hosted} /></div>}
         </div>
       )}
     </div>
@@ -309,7 +313,7 @@ function TelegramConnect({ connected, onDone }: { connected: boolean; onDone: ()
  *  tailnet name with NO public port. Takes a Tailscale AUTH key (tskey-auth-…), saved to the
  *  /data .env; the container entrypoint brings up userspace networking on the next restart.
  *  There's no "connected" signal from the server (it activates at boot), so this is a save card. */
-function TailscaleConnect({ onDone }: { onDone: () => void }) {
+function TailscaleConnect({ onDone, saved, hosted }: { onDone: () => void; saved?: boolean; hosted?: boolean }) {
   const [open, setOpen] = useState(false);
   const [key, setKey] = useState('');
   const [hostname, setHostname] = useState('');
@@ -326,10 +330,14 @@ function TailscaleConnect({ onDone }: { onDone: () => void }) {
     <div className="rounded-[4px] border border-line bg-surface">
       <div className="flex items-center justify-between gap-3 px-4 py-3">
         <div><div className="font-medium">Tailscale</div><div className="text-dim text-sm">Reach a cloud deploy privately — no public port</div></div>
-        <button onClick={() => { setMsg(''); setOpen((o) => !o); }} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium">{open ? 'Cancel' : 'Set up'}</button>
+        <div className="flex items-center gap-3 shrink-0">
+          {saved && <span className="mono text-[12px] text-signal">key saved ✓</span>}
+          <button onClick={() => { setMsg(''); setOpen((o) => !o); }} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium">{open ? 'Cancel' : (saved ? 'Change' : 'Set up')}</button>
+        </div>
       </div>
       {open && (
         <div className="border-t border-line px-4 py-4 space-y-3">
+          {!hosted && <p className="text-sm text-dim">Only a Docker or cloud deploy uses this: it joins your tailnet when the container starts. A desktop install has no use for it.</p>}
           <ol className="list-decimal ml-5 text-sm text-dim space-y-1">
             <li>In the <a className="text-signal underline" href="https://login.tailscale.com/admin/settings/keys" target="_blank" rel="noreferrer">Tailscale admin → Settings → Keys</a>, <b>Generate auth key</b> (not the management API key).</li>
             <li>Paste the <span className="mono text-[12px]">tskey-auth-…</span> key below. It takes effect on the next restart.</li>
@@ -352,7 +360,7 @@ function TailscaleConnect({ onDone }: { onDone: () => void }) {
  *  zero-setup). A Postgres server is the "larger install" for always-on / cloud / multi-device;
  *  the server validates the URL by connecting. Takes effect on the next restart. PGlite is not
  *  surfaced (env-var power-user option only — single-process + a known Windows/Node22 crash). */
-function MemoryStorageCard({ storage, onDone }: { storage: StorageBackend; onDone: () => void }) {
+function MemoryStorageCard({ storage, onDone, where }: { storage: StorageBackend; onDone: () => void; where: Where }) {
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState('');
   const [busy, setBusy] = useState(false);
@@ -368,15 +376,15 @@ function MemoryStorageCard({ storage, onDone }: { storage: StorageBackend; onDon
   return (
     <div className="rounded-[4px] border border-line bg-surface">
       <div className="flex items-center justify-between gap-3 px-4 py-3">
-        <div><div className="font-medium">Memory storage</div><div className="text-dim text-sm">{isPg ? 'Database server (Postgres)' : 'This computer · private'}</div></div>
+        <div><div className="font-medium">Memory storage</div><div className="text-dim text-sm">{isPg ? 'Database server (Postgres)' : where.hosted ? `A file on your ${where.host} deploy · private to it` : 'This computer · private'}</div></div>
         <button onClick={() => { setMsg(''); setOpen((o) => !o); }} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium">{open ? 'Cancel' : 'Change'}</button>
       </div>
       {open && (
         <div className="border-t border-line px-4 py-4 space-y-3">
-          <p className="text-dim text-sm">Most people should keep memory <b>on this computer</b> — it's private and needs no setup. Choose a <b>database server</b> only for an always-on, cloud, or multi-device install.</p>
+          <p className="text-dim text-sm">{where.hosted ? <>Memory is a file on your {where.host} deploy's disk: private to it, no setup. It lasts across redeploys only on a mounted volume.</> : <>Most people should keep memory <b>on this computer</b> — it's private and needs no setup.</>} Choose a <b>database server</b> only for an always-on, cloud, or multi-device install.</p>
           <button disabled={busy} onClick={() => save('sqlite')}
             className={`w-full text-left rounded-[4px] border px-4 py-3 transition-colors ${!isPg ? 'border-signal bg-surface' : 'border-line bg-surface hover:border-signal/60'}`}>
-            <div className="font-medium">This computer <span className="mono text-[11px] text-dim">recommended</span></div>
+            <div className="font-medium">{where.hosted ? 'A file on this deploy' : 'This computer'} <span className="mono text-[11px] text-dim">recommended</span></div>
             <div className="text-dim text-sm">Private, zero-setup. The default.</div>
           </button>
           <div className={`rounded-[4px] border px-4 py-3 ${isPg ? 'border-signal' : 'border-line'}`}>
@@ -402,7 +410,7 @@ function MemoryStorageCard({ storage, onDone }: { storage: StorageBackend; onDon
 /** Change the AI brain (provider, model, key) after onboarding — the setting the user
  *  couldn't find. The model list is filtered server-side to tool-capable chat models so an
  *  image/embedding model can't be picked again. */
-function BrainSettings({ brain, onChange }: { brain: Brain; onChange: () => void }) {
+function BrainSettings({ brain, onChange, fromEnv }: { brain: Brain; onChange: () => void; fromEnv?: boolean }) {
   const [open, setOpen] = useState(false);
   const [provider, setProvider] = useState(brain.provider || 'openrouter');
   const [key, setKey] = useState('');
@@ -438,8 +446,9 @@ function BrainSettings({ brain, onChange }: { brain: Brain; onChange: () => void
       <div className={cardCls}>
         <div className="flex items-center justify-between gap-3 px-4 py-3">
           <div className="min-w-0"><div className="font-medium">Model</div><div className="text-dim mono text-[12px] break-all">{brain.provider ? `${brain.provider}:${brain.model}` : 'not set'}</div></div>
-          <button onClick={() => setOpen((o) => !o)} className={open ? 'rounded-[3px] border border-line px-4 py-2 text-sm font-medium' : btnCls}>{open ? 'Cancel' : 'Change'}</button>
+          {!fromEnv && <button onClick={() => setOpen((o) => !o)} className={open ? 'rounded-[3px] border border-line px-4 py-2 text-sm font-medium' : btnCls}>{open ? 'Cancel' : 'Change'}</button>}
         </div>
+        {fromEnv && <p className="border-t border-line px-4 py-2 text-[12px] text-dim">Set by the server's MWA_MODEL setting, which wins over a choice saved here: change it there.</p>}
         {notes.map((n) => (
           <p key={n.text} className={`border-t border-line px-4 py-2 text-[12px] break-words ${n.standing === 'failed' ? 'text-signal' : 'text-dim'}`}>{n.text}</p>
         ))}
@@ -533,7 +542,7 @@ function ImageModelSettings({ image, onChange }: { image: Brain; onChange: () =>
 
 // Offered right after an email account is connected: read recent email to seed memory about
 // the user (people, projects, dates). Streams progress; everything stays on the machine.
-function EmailLearn({ ready, onDone }: { ready: boolean; onDone: () => void }) {
+function EmailLearn({ ready, onDone, where, method }: { ready: boolean; onDone: () => void; where: Where; method: 'oauth' | 'app-password' | null }) {
   const [days, setDays] = useState(30);
   const [busy, setBusy] = useState(false);
   const [lines, setLines] = useState<string[]>([]);
@@ -554,7 +563,7 @@ function EmailLearn({ ready, onDone }: { ready: boolean; onDone: () => void }) {
       <div className={cardCls}>
         <div className="px-4 py-3">
           <div className="font-medium">Learn about me from my email</div>
-          <div className="text-dim text-[12.5px] mt-0.5">I’ll read your recent email and remember the people, projects, and dates that matter — so I’m useful from day one. It stays on your machine; nothing is sent or stored anywhere else.</div>
+          <div className="text-dim text-[12.5px] mt-0.5">I’ll read your recent email ({method === 'app-password' ? 'senders and subjects' : 'senders, subjects and opening lines'}), have your AI model pick out the people, projects and dates that matter, and keep them in my memory {where.hosted ? `on your ${where.host} deploy` : 'on this computer'}. The email itself is not stored.</div>
         </div>
         <div className="border-t border-line px-4 py-3 space-y-3">
           <div className="flex items-center gap-2 text-sm">
@@ -600,24 +609,25 @@ export function Connections() {
   useEffect(() => { load(); }, []);
 
   if (!c) return <div className="py-16 mono text-dim text-sm">loading…</div>;
+  const where: Where = { hosted: !!c.hosted, host: c.host || 'your server' };
 
   return (
     <div className="py-8 max-w-xl space-y-6">
       <StyleSettings style={c.style} onChange={load} />
-      <BrainSettings brain={c.brain} onChange={load} />
+      <BrainSettings brain={c.brain} onChange={load} fromEnv={c.modelFromEnv} />
       <ImageModelSettings image={c.imageModel} onChange={load} />
       <div>
         <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">email & calendar</div>
         <div className="space-y-2">
-          <GmailConnect connected={c.gmail} method={c.gmailMethod} onDone={load} />
-          <OutlookConnect connected={c.outlook} easy={c.outlookEasy} onDone={load} />
+          <GmailConnect connected={c.gmail} method={c.gmailMethod} onDone={load} where={where} />
+          <OutlookConnect connected={c.outlook} easy={c.outlookEasy} onDone={load} hosted={where.hosted} />
           <TelegramConnect connected={c.telegram} onDone={load} />
-          <TailscaleConnect onDone={load} />
-          <MemoryStorageCard storage={c.storage} onDone={load} />
+          <TailscaleConnect onDone={load} saved={c.tailscale} hosted={where.hosted} />
+          <MemoryStorageCard storage={c.storage} onDone={load} where={where} />
         </div>
       </div>
 
-      <EmailLearn ready={c.ingestReady} onDone={load} />
+      <EmailLearn ready={c.ingestReady} onDone={load} where={where} method={c.gmailMethod} />
 
       <div>
         <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">connector library</div>
@@ -627,13 +637,13 @@ export function Connections() {
         </div>
       </div>
 
-      <AccessPanel access={c.access} onChange={load} />
+      <AccessPanel access={c.access} onChange={load} where={where} />
       <ExternalInstaller ext={c.externalInstall} onChange={load} />
     </div>
   );
 }
 
-function AccessPanel({ access, onChange }: { access: Access; onChange: () => void }) {
+function AccessPanel({ access, onChange, where }: { access: Access; onChange: () => void; where: Where }) {
   const [folder, setFolder] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
@@ -650,7 +660,7 @@ function AccessPanel({ access, onChange }: { access: Access; onChange: () => voi
 
   return (
     <div>
-      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">what it can touch on this computer</div>
+      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">{where.hosted ? `what it can touch on the ${where.host} server` : 'what it can touch on this computer'}</div>
       <div className="space-y-2">
         {ACCESS_PRESETS.map((a) => (
           <button key={a.id} onClick={() => setPreset(a.id)} disabled={busy}
@@ -670,10 +680,11 @@ function AccessPanel({ access, onChange }: { access: Access; onChange: () => voi
             </div>
           )) : <p className="text-dim text-sm">None yet — the assistant can only use its own workspace.</p>}
           <div className="flex gap-2 mt-2">
-            <input value={folder} onChange={(e) => setFolder(e.target.value)} placeholder="C:\Users\you\Documents"
+            <input value={folder} onChange={(e) => setFolder(e.target.value)} placeholder={where.hosted ? '/data/files' : /Win/i.test(navigator.userAgent) ? 'C:\\Users\\you\\Documents' : '~/Documents'}
               className="flex-1 rounded-[3px] border border-line bg-bone px-3 py-2 text-sm mono outline-none focus:border-signal" />
             <button onClick={addFolder} disabled={busy || !folder.trim()} className="rounded-[3px] border border-line px-3 py-2 text-sm font-medium disabled:opacity-50">Grant</button>
           </div>
+          {where.hosted && <p className="text-dim text-[12px] mt-1">Folders on the server, not your own computer. Only /data lasts across a redeploy.</p>}
           {msg && <p className="mono text-[12px] text-signal mt-1">{msg}</p>}
         </div>
       )}

@@ -75,6 +75,7 @@ import { mailboxDirs, watchInbox } from './mailbox.js';
 import { googleConfigured, startGmailConnect } from './connectors/google.js';
 import { gmailImapConfigured, verifyGmailImap } from './connectors/gmail-imap.js';
 import { microsoftConfigured, microsoftClientReady, startMicrosoftConnect, startMicrosoftDeviceCode } from './connectors/microsoft.js';
+import { isHosted, hostName } from './hosting.js';
 import { listConnectors, enableConnector, disableConnector, enabledConnectorIds, enableExternalNpm } from './connectors/registry.js';
 import { externalInstallState } from './installer/policy.js';
 import { reviewConnector } from './installer/review.js';
@@ -1162,7 +1163,11 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           outlook: microsoftConfigured(),
           outlookEasy: microsoftClientReady(), // device-code (zero-setup) available
           telegram: !!process.env.TELEGRAM_BOT_TOKEN,
-          brain: ((spec) => { const i = spec.indexOf(':'); return { provider: i > 0 ? spec.slice(0, i) : '', model: i > 0 ? spec.slice(i + 1) : spec }; })(loadConfig().models.fetch || ''),
+          // 2026-10-23 settings review: the page's wording, and the controls a server cannot use, follow where it runs.
+          hosted: isHosted(), host: hostName(),
+          modelFromEnv: !!process.env.MWA_MODEL, imageFromEnv: !!process.env.MWA_MODEL_IMAGE, // a Change here is overridden on load
+          tailscale: !!process.env.TAILSCALE_AUTHKEY,
+          brain:((spec) => { const i = spec.indexOf(':'); return { provider: i > 0 ? spec.slice(0, i) : '', model: i > 0 ? spec.slice(i + 1) : spec }; })(loadConfig().models.fetch || ''),
           imageModel: ((spec) => { const i = spec.indexOf(':'); return { provider: i > 0 ? spec.slice(0, i) : '', model: i > 0 ? spec.slice(i + 1) : spec }; })(loadConfig().models.image || ''),
           externalInstall: externalInstallState(loadConfig()),
           access: accessPolicy(),
@@ -1192,7 +1197,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true }));
         } else if (b.action === 'save-secret') {
           const env = String(b.env ?? '').trim(), value = String(b.value ?? '');
-          if (!/^[A-Z0-9_]+$/.test(env) || !value) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: 'Missing or invalid field.' })); }
+          // Only a key a library connector asks for (2026-10-23 settings test: any name was taken, PATH or
+          // MWA_ACCESS_PASSWORD included, and written to .env and this process).
+          const wanted = new Set(listConnectors().flatMap((c) => (c.secrets ?? []).map((s) => s.env)));
+          if (!/^[A-Z0-9_]+$/.test(env) || !value || !wanted.has(env)) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: 'Missing or invalid field.' })); }
           else { upsertEnv({ [env]: value }); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, message: 'Saved.' })); }
         } else if (b.action === 'review-external') {
           // Run the installation-model security review on an npm package (does NOT install).
@@ -1363,7 +1371,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           const kind = String(b.kind ?? 'sqlite').toLowerCase();
           if (kind === 'sqlite') {
             removeEnv(['AWM_STORE_BACKEND', 'AWM_DATABASE_URL']);
-            result = { ok: true, message: 'Memory will be stored privately on this computer (SQLite) after the next restart.' };
+            result = { ok: true, message: isHosted() ? `Memory will be kept in a file on this ${hostName()} deploy (SQLite) after the next restart.` : 'Memory will be stored privately on this computer (SQLite) after the next restart.' };
           } else if (kind === 'postgres') {
             const url = String(b.url ?? '').trim();
             if (!/^postgres(ql)?:\/\//i.test(url)) {
