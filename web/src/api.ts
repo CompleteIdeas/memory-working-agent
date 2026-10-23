@@ -241,7 +241,37 @@ export interface Notification {
   reason?: string; steps?: number; toolCalls?: number; costUsd?: number; durationMs?: number; files?: string[]; dir?: string; folder?: string;
   /** what the run achieved, and a two-phase completion's state (BL-02). */
   outcome?: string; completion?: 'candidate' | 'stopped';
+  /** BL-71: the job's own words, and the conversation it reports to. */
+  title?: string; session?: string;
 }
+
+// ── BL-71d: conversations and work ─────────────────────────────────────────────────────────────
+export interface ConversationTurn { ts: number; session: string; message: string; reply: string; reason?: string; kind?: 'chat' | 'result' | 'offer' }
+export interface ConversationSummary { session: string; title: string; last: number; turns: number; lastMessage: string }
+export async function getConversations(): Promise<ConversationSummary[]> {
+  try { return (await (bounceIfLocked(await fetch('/api/conversations'))).json()).conversations ?? []; } catch { return []; }
+}
+export async function getConversation(session: string): Promise<ConversationTurn[]> {
+  try { return (await (bounceIfLocked(await fetch(`/api/conversation?session=${encodeURIComponent(session)}`))).json()).turns ?? []; } catch { return []; }
+}
+export interface WorkGoal {
+  id: string; title: string; status: 'open' | 'in_progress' | 'blocked' | 'done'; priority: string; createdAt?: number; jobs: number;
+  record: { text: string; at: number; by: string; conv?: string; untrusted: boolean; files: string[] } | null;
+}
+export async function getWork(): Promise<WorkGoal[]> {
+  try { return (await (bounceIfLocked(await fetch('/api/work'))).json()).goals ?? []; } catch { return []; }
+}
+async function postWork(path: string, body: Record<string, unknown>): Promise<{ ok: boolean; message: string; session?: string }> {
+  try {
+    const r = bounceIfLocked(await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }));
+    const j = await r.json();
+    return { ok: r.ok && j.ok === true, message: String(j.message ?? j.error ?? ''), session: j.session };
+  } catch (e) { return { ok: false, message: (e as Error).message }; }
+}
+export const continueWork = (goal: string) => postWork('/api/work/continue', { goal });
+export const setWorkStatus = (goal: string, status: WorkGoal['status']) => postWork('/api/work/status', { goal, status });
+/** Open a conversation in the chat (the Work view and the conversation list use this). */
+export function openConversation(session: string): void { window.dispatchEvent(new CustomEvent('mwa-open-conversation', { detail: session })); }
 export async function getNotifications(since: number): Promise<Notification[]> {
   try { const r = await fetch('/api/notifications?since=' + since); return (await r.json()).notifications ?? []; } catch { return []; }
 }

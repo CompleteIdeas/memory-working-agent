@@ -7,9 +7,10 @@ import { Memory } from './components/Memory';
 import { Log } from './components/Log';
 import { OnboardWizard } from './components/OnboardWizard';
 import { Files } from './components/Files';
+import { Work } from './components/Work';
 import { FileModal } from './components/FileViewer';
 
-type View = 'chat' | 'files' | 'connections' | 'memory' | 'log';
+type View = 'chat' | 'work' | 'files' | 'connections' | 'memory' | 'log';
 
 // The signature instrument readout: a real count of what the agent remembers, with a
 // 5-cell bar on a log scale (≈10k memories fills it). Honest — wired to /api/stats.
@@ -48,6 +49,7 @@ function Header({ dark, setDark, memN, view, setView, showNav, onWizard }: { dar
           {showNav && (
             <nav className="order-last sm:order-none w-full sm:w-auto sm:mr-auto sm:ml-2 flex items-center gap-3 overflow-x-auto">
               {tab('chat', 'chat')}
+              {tab('work', 'work')}
               {tab('files', 'files')}
               {tab('connections', 'connect')}
               {tab('memory', 'memory')}
@@ -81,6 +83,11 @@ export default function App() {
   useEffect(() => {
     const open = (e: Event) => setViewing(String((e as CustomEvent).detail));
     window.addEventListener('mwa-open-file', open); return () => window.removeEventListener('mwa-open-file', open);
+  }, []);
+  // BL-71d: opening a conversation (from Work, or a result notice) shows the chat.
+  useEffect(() => {
+    const toChat = () => setView('chat');
+    window.addEventListener('mwa-open-conversation', toChat); return () => window.removeEventListener('mwa-open-conversation', toChat);
   }, []);
 
   const refreshStats = () => getStats().then((d) => setMemN(d.memories)).catch(() => {});
@@ -119,6 +126,7 @@ export default function App() {
             <div className={view === 'chat' ? '' : 'hidden'}>
               <Chat onActivity={refreshStats} />
             </div>
+            {view === 'work' && <Work />}
             {view === 'files' && <Files />}
             {view === 'connections' && <Connections />}
             {view === 'memory' && <Memory />}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { chatStream, getSuggestions, getNotifications, uploadFile, sessionFolder, fileUrl, startWork, type SpineStep, type ChatResult } from '../api';
+import { chatStream, getSuggestions, getNotifications, uploadFile, sessionFolder, fileUrl, startWork, getConversation, getConversations, type SpineStep, type ChatResult, type ConversationTurn, type ConversationSummary } from '../api';
 import { Markdown, openFile } from './Markdown';
 import { Approvals } from './Approvals';
 import { SetupCards } from './SetupCards';
@@ -15,10 +15,19 @@ interface Turn { id: number; user: string; steps: SpineStep[]; live: boolean; re
   /** BL-71b: what became of an offer to work in the background */
   offerState?: 'sending' | 'started' | 'declined' | 'failed'; offerReply?: string; }
 
+const newSessionId = () => 'web-' + Math.random().toString(36).slice(2, 9);
 function sessionId(): string {
   let s = localStorage.getItem('mwa-session');
-  if (!s) { s = 'web-' + Math.random().toString(36).slice(2, 9); localStorage.setItem('mwa-session', s); }
+  if (!s) { s = newSessionId(); localStorage.setItem('mwa-session', s); }
   return s;
+}
+
+/** BL-71d: a kept turn, shown again when the conversation is reopened (here or on another device). */
+function restoredTurn(t: ConversationTurn): Turn {
+  return {
+    id: t.ts, user: t.kind === 'result' ? `⏰ ${t.message}` : t.message, steps: [], live: false, folder: sessionFolder(t.session), note: t.kind !== 'chat',
+    result: { reason: t.reason ?? 'done', summary: t.reply, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0 },
+  };
 }
 
 export function Chat({ onActivity }: { onActivity?: () => void }) {
@@ -34,14 +43,46 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
 
   useEffect(() => { getSuggestions().then(setSuggestions); }, []);
 
-  // Proactive delivery: surface fired scheduled-task results in the chat (on open + every 20s).
+  // BL-71d: conversations kept on the server — reopen this one on load, list the rest, start a new one.
+  const [convs, setConvs] = useState<ConversationSummary[]>([]);
+  const [showConvs, setShowConvs] = useState(false);
+  const [elsewhere, setElsewhere] = useState<{ session: string; title: string }[]>([]);
+  const loadedThrough = useRef(0);
+  const opened = useRef<Promise<void>>(Promise.resolve());
+  async function openSession(s: string) {
+    session.current = s;
+    localStorage.setItem('mwa-session', s);
+    setShowConvs(false);
+    setElsewhere((e) => e.filter((x) => x.session !== s));
+    const kept = await getConversation(s);
+    loadedThrough.current = Math.max(loadedThrough.current, ...kept.map((t) => t.ts), 0);
+    setTurns(kept.map(restoredTurn));
+  }
+  function newConversation() { session.current = newSessionId(); localStorage.setItem('mwa-session', session.current); setTurns([]); setShowConvs(false); }
+  useEffect(() => {
+    opened.current = openSession(session.current);
+    const open = (e: Event) => void openSession(String((e as CustomEvent).detail));
+    window.addEventListener('mwa-open-conversation', open); return () => window.removeEventListener('mwa-open-conversation', open);
+  }, []);
+  useEffect(() => { if (showConvs) void getConversations().then(setConvs); }, [showConvs]);
+
+  // Proactive delivery: surface fired scheduled-task results in the chat (on open + every 20s). A result for
+  // another conversation (BL-71) is announced here and kept in that one, not mixed into this one.
   useEffect(() => {
     let seen = Number(localStorage.getItem('mwa-notify-seen') ?? 0);
     const check = async () => {
-      const notes = await getNotifications(seen);
-      if (!notes.length) return;
+      await opened.current; // the reopened conversation first, so its results aren't shown twice
+      const all = await getNotifications(seen);
+      if (!all.length) return;
+      seen = Math.max(seen, ...all.map((n) => n.ts));
+      localStorage.setItem('mwa-notify-seen', String(seen));
+      const others = all.filter((n) => n.session && n.session !== session.current && !n.session.startsWith('tg-'));
+      if (others.length) setElsewhere((e) => [...e.filter((x) => !others.some((n) => n.session === x.session)), ...others.map((n) => ({ session: n.session!, title: n.title ?? n.instruction.slice(0, 80) }))]);
+      // already shown when this conversation was reopened from the server
+      const notes = all.filter((n) => !(n.session && n.session !== session.current) && !(n.session && n.ts <= loadedThrough.current));
+      if (!notes.length) { setApprovalTick((x) => x + 1); return; }
       setTurns((prev) => [...prev, ...notes.map((n) => ({
-        id: n.ts, user: `⏰ Scheduled · ${n.instruction}`, steps: [] as SpineStep[], live: false, folder: n.folder,
+        id: n.ts, user: `⏰ ${n.title ? n.title : `Scheduled · ${n.instruction}`}`, steps: [] as SpineStep[], live: false, folder: n.folder,
         result: {
           reason: n.reason ?? 'done', summary: n.summary, steps: n.steps ?? 0,
           dispatches: 0, toolCalls: n.toolCalls ?? 0, costUsd: n.costUsd ?? 0,
@@ -54,9 +95,7 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
           files: n.files ?? [], reason: n.reason ?? 'done', outcome: n.outcome, completion: n.completion,
         },
       }))]);
-      seen = Math.max(seen, ...notes.map((n) => n.ts));
       setApprovalTick((x) => x + 1);
-      localStorage.setItem('mwa-notify-seen', String(seen));
     };
     check();
     const iv = setInterval(check, 20000);
@@ -116,6 +155,30 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
   return (
     <div className="flex flex-col min-h-[calc(100vh-61px)]">
       <div className="flex-1 py-8">
+        {/* BL-71d: go back to an earlier conversation (from any device), or start a new one. */}
+        <div className="flex items-center gap-3 mb-6 mono text-[11px] uppercase tracking-[0.12em]">
+          <button onClick={() => setShowConvs(!showConvs)} className="text-dim hover:text-signal">{showConvs ? 'hide conversations' : 'conversations ▾'}</button>
+          <button onClick={newConversation} className="text-dim hover:text-signal">+ new</button>
+        </div>
+        {showConvs && (
+          <ul className="mb-6 divide-y divide-line border-y border-line">
+            {!convs.length && <li className="py-2.5 text-[14px] text-dim">No earlier conversations kept yet.</li>}
+            {convs.map((c) => (
+              <li key={c.session}>
+                <button onClick={() => void openSession(c.session)} className={`w-full text-left py-2.5 group ${c.session === session.current ? 'text-signal' : ''}`}>
+                  <div className="truncate text-[15px] group-hover:text-signal">{c.title}</div>
+                  <div className="mono text-[11px] text-dim truncate">{new Date(c.last).toLocaleString()} · {c.turns} turn{c.turns === 1 ? '' : 's'}{c.turns > 1 ? ` · last: ${c.lastMessage}` : ''}</div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {elsewhere.map((e) => (
+          <div key={e.session} className="mb-4 flex flex-wrap items-center gap-2 rounded-[3px] border border-signal px-3 py-2 text-[14px]">
+            <span className="flex-1 min-w-[180px]">⏰ Done in another conversation: {e.title}</span>
+            <button onClick={() => void openSession(e.session)} className="mono text-[11px] uppercase tracking-wide underline hover:text-signal">open it</button>
+          </div>
+        ))}
         {empty ? (
           <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }}>
             <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-3">ready</div>

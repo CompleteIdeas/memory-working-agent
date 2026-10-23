@@ -86,8 +86,9 @@ import { setSetupDeps, listSetupRequests, submitSetupRequest, cancelSetupRequest
 import { awmCliPath, loadEmbeddings, loadPostgresStore } from './awm-api.js';
 import { MEMORY_OFF, agentMemory } from './memory-off.js';
 import { listFiles, insideRoot, fileHeaders, saveUpload, deleteFile, sessionFolder, uploadsIn, MAX_UPLOAD, readShares, createShare, revokeShare, shareFor } from './files.js';
-import { offersBackground, OFFER_TEXT, startBackgroundWork } from './handoff.js';
+import { offersBackground, OFFER_TEXT, startBackgroundWork, continueGoal } from './handoff.js';
 import { resolvePersonId } from './person.js';
+import { appendTurn, readConversation, listConversations } from './conversations.js';
 import { exportDoc, exportFormats } from './doc-export.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -355,6 +356,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
   // person picks. "Stay here" sends it again with stay=1, and it runs in the chat as before.
   if (url.searchParams.get('stay') !== '1' && process.env.MWA_OFFER_BACKGROUND !== '0' && offersBackground(message)) {
     send('result', { reason: 'offer', summary: OFFER_TEXT, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0, offer: { kind: 'start', message } });
+    appendTurn({ ts: Date.now(), session: sessionId, message, reply: OFFER_TEXT, reason: 'offer', kind: 'offer' });
     res.end(); return;
   }
   // Concurrency cap — reserve the slot ATOMICALLY (before any await) so a burst of near-simultaneous
@@ -425,6 +427,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     s.history.push({ instruction: message, summary: r.summary, tainted: r.tainted === true });
     // BL-71b: it ran out of room and already queued a resume — say so, rather than leave a half answer.
     const summary = r.resumeQueued ? `${r.summary}\n\nI ran out of room in this chat, so I'm continuing in the background. The result will appear here when it's done.` : r.summary;
+    appendTurn({ ts: Date.now(), session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat' }); // BL-71d
     send('result', { reason: r.reason, summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)) });
 
     // S3/S5 — LEARN durable facts about this person + recompress their dossier (suppressed for the
@@ -864,6 +867,62 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           return;
         }
         json(404, { error: 'not found' }); return;
+      }
+      // BL-71d: conversations to go back to, from any device.
+      if (p === '/api/conversations' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ conversations: listConversations(40) }));
+        return;
+      }
+      if (p === '/api/conversation' && req.method === 'GET') {
+        const session = String(url.searchParams.get('session') ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 80);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ session, folder: sessionFolder(session), turns: session ? readConversation(session, 80) : [] }));
+        return;
+      }
+      // BL-71d: the Work view — every goal, where it stands, what it waits on.
+      if (p === '/api/work' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        if (MEMORY_OFF) { res.end(JSON.stringify({ goals: [] })); return; }
+        const cfg = loadConfig();
+        const memory = new MwaMemory(SERVE_AGENT, process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
+        try {
+          const me = resolvePersonId({ channel: 'web', name: String(url.searchParams.get('person') ?? '').trim() || undefined });
+          const [goals, records, jobs] = await Promise.all([memory.listGoals(), memory.listGoalRecords(), memory.pendingScheduled()]);
+          const ws = resolve(cfg.workspace ?? './mwa-workspace');
+          const rel = (f: string) => { const r = relative(ws, resolve(f)).split(sep).join('/'); return r.startsWith('..') ? null : r; };
+          res.end(JSON.stringify({ goals: goals.filter((g) => !g.person || g.person === me).map((g) => {
+            const rec = records.find((r) => r.goalId === g.id);
+            const files = rec ? [...rec.text.matchAll(/^Files: (.*)$/gm)].flatMap((m) => m[1].split(', ')).map(rel).filter(Boolean) : [];
+            return { id: g.id.slice(0, 8), title: g.title, status: g.status, priority: g.priority, createdAt: g.createdAt,
+              jobs: jobs.filter((t) => t.goal === g.id).length,
+              record: rec ? { text: rec.text, at: rec.at, by: rec.by, conv: rec.conv, untrusted: rec.trust === 'untrusted', files } : null };
+          }) }));
+        } finally { memory.close(); }
+        return;
+      }
+      if ((p === '/api/work/continue' || p === '/api/work/status') && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        if (MEMORY_OFF) { res.end(JSON.stringify({ ok: false, message: 'Memory is off here.' })); return; }
+        const cfg = loadConfig();
+        const memory = new MwaMemory(SERVE_AGENT, process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
+        try {
+          const me = resolvePersonId({ channel: 'web', name: String(b.person ?? '').trim() || undefined });
+          const goal = await memory.getGoal(String(b.goal ?? ''));
+          if (!goal || (goal.person && goal.person !== me)) { res.end(JSON.stringify({ ok: false, message: 'No such goal.' })); return; }
+          if (p.endsWith('/status')) {
+            const status = String(b.status ?? '');
+            if (!['open', 'in_progress', 'blocked', 'done'].includes(status)) { res.end(JSON.stringify({ ok: false, message: 'Unknown status.' })); return; }
+            await memory.setGoalStatus(goal.id, status as 'open' | 'in_progress' | 'blocked' | 'done');
+            res.end(JSON.stringify({ ok: true, message: status === 'done' ? 'Marked done. Its jobs stop.' : status === 'blocked' ? 'Paused. Its jobs wait.' : 'Updated.' }));
+            return;
+          }
+          const c = await continueGoal(memory, { goalId: goal.id, personId: me, workspace: cfg.workspace ?? './mwa-workspace' });
+          res.end(JSON.stringify(c ? { ok: true, session: c.session, message: "Picking it up now. I'll post the result in its conversation." } : { ok: false, message: 'That goal is finished. Reopen it first.' }));
+        } finally { memory.close(); }
+        return;
       }
       // BL-71b: the person tapped "Work on it" — a goal and a job that starts now, in this chat's folder.
       if (p === '/api/work/start' && req.method === 'POST') {
@@ -1323,7 +1382,11 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
             ts: Date.now(), instruction: task.instruction, summary: r.summary, reason: r.reason, outcome: r.outcome, completion: r.completion,
             steps: r.steps, toolCalls: r.toolCalls, costUsd: r.costUsd, durationMs: r.durationMs,
             files: r.files, dir: r.dir, job: r.job, fire: r.fire,
+            // BL-71: the job's own words for the card (a hand-off's instruction is a page of framing), and its conversation.
+            ...(task.task ? { title: task.task.slice(0, 200) } : {}), ...(task.notify ? { session: task.notify } : {}),
           });
+          // BL-71d: the result belongs to the conversation that asked for it, so it is there when that one is reopened.
+          if (task.notify && !task.notify.startsWith('tg-')) appendTurn({ ts: Date.now(), session: task.notify, message: task.task ?? task.instruction.slice(0, 300), reply: r.summary, reason: r.reason, kind: 'result' });
           // BL-13: saved in the app's feed (or not). Whether an open tab is handed it is recorded when one is.
           if (r.job && r.fire) recordReceipt({ job: r.job, fire: r.fire, channel: 'app', status: saved ? 'stored' : 'failed', ...(saved ? {} : { detail: 'could not write the app feed' }) });
           console.log(`  ⏰ fired: ${task.instruction.slice(0, 60)} → ${r.summary.slice(0, 80)}`);
