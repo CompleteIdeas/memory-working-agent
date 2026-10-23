@@ -15,10 +15,11 @@
  */
 import { appendFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import type { MwaMemory, Goal, GoalRecord } from './awm.js';
 import type { Provider } from './provider.js';
 
-export interface Thought { at: number; goalId: string; title: string; kind: 'next' | 'ask' | 'wait'; text: string; costUsd?: number }
+export interface Thought { at: number; goalId: string; title: string; kind: 'next' | 'ask' | 'wait'; text: string; costUsd?: number; untrusted?: boolean; person?: string }
 
 export const thinkMode = (env: NodeJS.ProcessEnv = process.env): 'off' | 'propose' => (String(env.MWA_THINK ?? '').trim().toLowerCase() === 'propose' ? 'propose' : 'off');
 export const thinkEveryMs = (env: NodeJS.ProcessEnv = process.env) => Math.max(0.25, Number(env.MWA_THINK_EVERY_HOURS ?? 4) || 4) * 3_600_000;
@@ -59,40 +60,45 @@ Answer with JSON only: [{"goal": "<goal id>", "kind": "next" | "ask" | "wait", "
 /** One pass over the person's open goals. Writes the thoughts and returns them; never throws. */
 export async function thinkOnce(memory: MwaMemory, brain: Provider, o: { person: string; now?: number; path?: string; maxGoals?: number }): Promise<Thought[]> {
   const now = o.now ?? Date.now();
+  const path = o.path ?? thoughtsPath();
   try {
     const goals: Goal[] = (await memory.listGoals()).filter((g) => (g.status === 'open' || g.status === 'in_progress') && (!g.person || g.person === o.person)).slice(0, o.maxGoals ?? 5);
     if (!goals.length) return [];
     const records = await memory.listGoalRecords();
+    // A fence this call alone knows: text inside can't close it early (BL-71e review — a fixed marker was forged).
+    const code = randomBytes(6).toString('hex');
+    const fence = (s: string) => `DATA-${code}>>>\n${s}\n<<<DATA-${code}`;
     const blocks: string[] = [];
+    const tainted = new Set<string>();
     for (const g of goals) {
       const rec: GoalRecord | undefined = records.find((r) => r.goalId === g.id);
-      let recalled: string[] = [];
+      let recalled: { text: string; untrusted: boolean }[] = [];
       // goals and their records come in above, with their status — not again through recall (a finished goal leaked in)
-      try { recalled = (await memory.recall(g.title, { limit: 4 })).filter((m) => !/^(where we are|goal):/.test(m.concept)).map((m) => `- ${m.content.replace(/\s+/g, ' ').slice(0, 240)}`); } catch { /* recall is optional */ }
+      try { recalled = (await memory.recall(g.title, { limit: 4 })).filter((m) => !/^(where we are|goal):/.test(m.concept)).map((m) => ({ text: `- ${m.content.replace(/\s+/g, ' ').slice(0, 240)}`, untrusted: m.trust === 'untrusted' })); } catch { /* recall is optional */ }
+      if (rec?.trust === 'untrusted' || recalled.some((x) => x.untrusted)) tainted.add(g.id);
       blocks.push([
         `GOAL ${g.id.slice(0, 8)}: ${g.title} (${g.status.replace('_', ' ')})`,
-        rec ? `Where it stands${rec.trust === 'untrusted' ? ' (noted after reading outside content)' : ''}:\nDATA>>>\n${rec.text.slice(0, 1200)}\n<<<DATA` : 'Where it stands: no note yet.',
-        recalled.length ? `What you remember:\nDATA>>>\n${recalled.join('\n')}\n<<<DATA` : '',
+        rec ? `Where it stands${rec.trust === 'untrusted' ? ' (noted after reading outside content)' : ''}:\n${fence(rec.text.slice(0, 1200))}` : 'Where it stands: no note yet.',
+        recalled.length ? `What you remember:\n${fence(recalled.map((x) => x.text).join('\n'))}` : '',
       ].filter(Boolean).join('\n'));
     }
-    const r = await brain.chat({ system: SYSTEM, messages: [{ role: 'user', content: blocks.join('\n\n') }], maxTokens: 1200 });
+    const r = await brain.chat({ system: SYSTEM.replace('DATA blocks', `DATA-${code} blocks`), messages: [{ role: 'user', content: blocks.join('\n\n') }], maxTokens: 1200 });
     const cost = Number(r.usage?.cost ?? (r.usage.input * brain.price[0] + r.usage.output * brain.price[1]) / 1_000_000) || 0;
-    const m = /\[[\s\S]*\]/.exec(r.text ?? '');
-    const parsed = m ? (JSON.parse(m[0]) as { goal?: string; kind?: string; text?: string }[]) : [];
+    let parsed: { goal?: string; kind?: string; text?: string }[] = [];
+    try { const m = /\[[\s\S]*\]/.exec(r.text ?? ''); parsed = m ? JSON.parse(m[0]) : []; } catch { parsed = []; }
     const out: Thought[] = [];
-    for (const p of parsed) {
+    for (const p of Array.isArray(parsed) ? parsed : []) {
       const g = goals.find((x) => x.id.startsWith(String(p.goal ?? '').slice(0, 8)) && String(p.goal ?? '').length >= 4);
       const kind = (['next', 'ask', 'wait'] as const).find((k) => k === p.kind);
       const text = String(p.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 300);
       if (!g || !kind || text.length < 4 || out.some((t) => t.goalId === g.id)) continue;
-      out.push({ at: now, goalId: g.id, title: g.title, kind, text });
+      // Built from words written after outside content: shown labelled, and never as a question in the welcome card.
+      out.push({ at: now, goalId: g.id, title: g.title, kind, text, ...(tainted.has(g.id) ? { untrusted: true } : {}), person: o.person });
     }
-    // The pass's cost goes on its first thought (or a marker line) so the daily cap counts it.
-    const path = o.path ?? thoughtsPath();
+    // Every pass leaves a line, with its cost: the daily cap counts it, and a restart doesn't repeat it (review).
     mkdirSync(dirname(path), { recursive: true });
-    if (out.length) out[0].costUsd = cost;
+    appendFileSync(path, JSON.stringify({ at: now, goalId: '', title: '', kind: 'wait', text: `(pass: ${out.length} thought${out.length === 1 ? '' : 's'})`, costUsd: cost }) + '\n');
     for (const t of out) appendFileSync(path, JSON.stringify(t) + '\n');
-    if (!out.length && cost) appendFileSync(path, JSON.stringify({ at: now, goalId: '', title: '', kind: 'wait', text: '(no usable thoughts)', costUsd: cost }) + '\n');
     return out;
   } catch { return []; }
 }

@@ -260,7 +260,7 @@ export interface WorkGoal {
   id: string; title: string; status: 'open' | 'in_progress' | 'blocked' | 'done'; priority: string; createdAt?: number; jobs: number;
   record: { text: string; at: number; by: string; conv?: string; untrusted: boolean; files: string[] } | null;
   /** BL-71e: MWA's newest proposal for it, from thinking time */
-  thought: { kind: 'next' | 'ask' | 'wait'; text: string; at: number } | null;
+  thought: { kind: 'next' | 'ask' | 'wait'; text: string; at: number; untrusted?: boolean } | null;
 }
 
 /** BL-71e: what moved while the person was away. */

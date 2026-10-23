@@ -20,7 +20,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFileSync, existsSync, statSync, writeFileSync, appendFileSync, mkdirSync, rmSync, createReadStream } from 'node:fs';
 import { resolve, join, extname, normalize, dirname, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual, createHmac } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -144,9 +144,34 @@ export function sameOriginOk(req: IncomingMessage): boolean {
 // existing one-machine flow is unchanged. Cookie-based on purpose: EventSource (the SSE
 // chat) can't send custom headers but does send same-origin cookies automatically.
 const ACCESS_PW = process.env.MWA_ACCESS_PASSWORD || '';
-const validTokens = new Set<string>(); // in-memory; cleared on restart → re-login (fine)
-
-function issueToken(): string { const t = randomBytes(24).toString('hex'); validTokens.add(t); return t; }
+// BL-71: a session survives a restart or a deploy. It was an in-memory set, so every deploy signed the person out
+// (Robert, 2026-10-22: he came back and couldn't get back to what he was doing). A session is now
+// `<expiry>.<nonce>.<mac>`, signed with a key made from the access password and a random salt kept beside the
+// agent's data — so changing the password still signs every session out, and nothing is stored per session.
+const SESSION_MS = 30 * 24 * 3_600_000;
+let sessionKey: Buffer | null = null;
+function sessionMacKey(): Buffer {
+  if (sessionKey) return sessionKey;
+  const p = join(dirname(process.env.MWA_DB ?? resolve('./data/agent.db')), '.session-salt');
+  let salt = '';
+  try { salt = readFileSync(p, 'utf8').trim(); } catch { /* first start */ }
+  if (salt.length < 32) {
+    salt = randomBytes(32).toString('hex');
+    try { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, salt, { mode: 0o600 }); } catch { /* sessions then last until a restart */ }
+  }
+  sessionKey = createHmac('sha256', ACCESS_PW).update(`mwa-session-v1:${salt}`).digest();
+  return sessionKey;
+}
+const sessionMac = (body: string) => createHmac('sha256', sessionMacKey()).update(body).digest('base64url');
+function issueToken(): string {
+  const body = `${Date.now() + SESSION_MS}.${randomBytes(18).toString('base64url')}`;
+  return `${body}.${sessionMac(body)}`;
+}
+function validToken(t: string): boolean {
+  const m = /^(\d{10,16})\.([A-Za-z0-9_-]{16,64})\.([A-Za-z0-9_-]{20,})$/.exec(t);
+  if (!m || Number(m[1]) < Date.now()) return false;
+  return safeEqual(m[3], sessionMac(`${m[1]}.${m[2]}`));
+}
 function safeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a), bb = Buffer.from(b);
   if (ab.length !== bb.length) return false;
@@ -160,7 +185,7 @@ function cookieToken(req: IncomingMessage): string | null {
 function authed(req: IncomingMessage): boolean {
   if (!ACCESS_PW) return true;
   const t = cookieToken(req);
-  return !!t && validTokens.has(t);
+  return !!t && validToken(t);
 }
 
 // Bundled MCP tools the Connections page can toggle on/off (no file editing).
@@ -905,14 +930,17 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           const memory = new MwaMemory(SERVE_AGENT, process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
           try {
             const [all, records] = await Promise.all([memory.listGoals(), memory.listGoalRecords()]);
+            const me = resolvePersonId({ channel: 'web', name: String(url.searchParams.get('person') ?? '').trim() || undefined });
             goals = records.filter((r) => r.at > since).map((r) => {
               const g = all.find((x) => x.id === r.goalId);
               const state = r.trust === 'untrusted' ? '(noted after reading outside content — open the Work view)' : (r.text.split('\n')[0] ?? '').replace(/^Where we are on "[^"]*" \(goal [^)]*\): /, '').slice(0, 220);
-              return g && g.status !== 'done' ? { id: g.id.slice(0, 8), title: g.title, state, conv: r.conv } : null;
+              return g && g.status !== 'done' && (!g.person || g.person === me) ? { id: g.id.slice(0, 8), title: g.title, state, conv: r.conv } : null;
             }).filter((x) => x !== null).slice(0, 6) as { id: string; title: string; state: string; conv?: string }[];
           } finally { memory.close(); }
         }
-        const thoughts = readThoughts().filter((t) => t.at > since && t.goalId && t.kind !== 'wait').slice(-6).map((t) => ({ title: t.title, kind: t.kind, text: t.text }));
+        // Only questions, only from notes MWA can stand behind, only this person's (BL-71e review).
+        const me = resolvePersonId({ channel: 'web', name: String(url.searchParams.get('person') ?? '').trim() || undefined });
+        const thoughts = readThoughts().filter((t) => t.at > since && t.goalId && t.kind === 'ask' && !t.untrusted && (!t.person || t.person === me)).slice(-6).map((t) => ({ title: t.title, kind: t.kind, text: t.text }));
         res.end(JSON.stringify({ since, results, goals, thoughts, approvals: listPendingActions().length }));
         return;
       }
@@ -934,7 +962,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
             return { id: g.id.slice(0, 8), title: g.title, status: g.status, priority: g.priority, createdAt: g.createdAt,
               jobs: jobs.filter((t) => t.goal === g.id).length,
               record: rec ? { text: rec.text, at: rec.at, by: rec.by, conv: rec.conv, untrusted: rec.trust === 'untrusted', files } : null,
-              thought: (() => { const t = thoughts.get(g.id); return t && (!rec || t.at >= rec.at) ? { kind: t.kind, text: t.text, at: t.at } : null; })() };
+              thought: (() => { const t = thoughts.get(g.id); return t && (!rec || t.at >= rec.at) ? { kind: t.kind, text: t.text, at: t.at, untrusted: t.untrusted === true } : null; })() };
           }) }));
         } finally { memory.close(); }
         return;

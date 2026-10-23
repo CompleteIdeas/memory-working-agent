@@ -51,12 +51,18 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
   // BL-71e: back after a while — what moved meanwhile. Shown once per return, dismissable.
   const [welcome, setWelcome] = useState<Welcome | null>(null);
   useEffect(() => {
-    const now = Date.now();
-    let last = 0; try { last = Number(localStorage.getItem('mwa-last-seen') ?? 0); } catch { /* */ }
+    // Away = the page was hidden or closed, not just idle in a background tab (BL-71e review).
+    const read = () => { try { return Number(localStorage.getItem('mwa-last-seen') ?? 0); } catch { return 0; } };
     const mark = () => { try { localStorage.setItem('mwa-last-seen', String(Date.now())); } catch { /* */ } };
-    mark(); const iv = setInterval(mark, 60_000);
-    if (last && now - last > 2 * 3_600_000) void getWelcome(last).then((w) => { if (w && (w.results.length || w.goals.length || w.thoughts.length || w.approvals)) setWelcome(w); });
-    return () => clearInterval(iv);
+    const check = () => {
+      const last = read();
+      if (last && Date.now() - last > 2 * 3_600_000) void getWelcome(last).then((w) => { if (w && (w.results.length || w.goals.length || w.thoughts.length || w.approvals)) setWelcome(w); });
+      mark();
+    };
+    check();
+    const onVis = () => { if (document.visibilityState === 'visible') check(); else mark(); };
+    document.addEventListener('visibilitychange', onVis); window.addEventListener('pagehide', mark);
+    return () => { document.removeEventListener('visibilitychange', onVis); window.removeEventListener('pagehide', mark); };
   }, []);
   const opened = useRef<Promise<void>>(Promise.resolve());
   async function openSession(s: string) {

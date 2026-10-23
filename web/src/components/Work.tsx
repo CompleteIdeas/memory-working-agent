@@ -67,6 +67,7 @@ export function Work({ refresh }: { refresh?: number }) {
         <p className="mt-2 text-[14px] border-l-2 border-line pl-2.5">
           <span className="mono text-[11px] text-dim uppercase tracking-wide mr-1.5">{g.thought.kind === 'ask' ? 'question for you' : g.thought.kind === 'next' ? 'next step' : 'waiting on'}</span>
           {g.thought.text}
+          {g.thought.untrusted && <span className="mono text-[11px] text-dim"> · from a note written after reading outside content</span>}
         </p>
       )}
       <div className="flex flex-wrap gap-2 mt-3">
