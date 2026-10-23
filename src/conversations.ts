@@ -5,11 +5,13 @@
  * reply — not enough to show a conversation again — so each chat turn is kept here in full: one JSON line per
  * turn, beside the run log (MWA_CONVERSATIONS, else conversations.jsonl next to MWA_RUNLOG).
  */
-import { appendFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 export interface ConversationTurn {
   ts: number; session: string; message: string; reply: string; reason?: string;
+  /** the turn read outside content: it goes back into the model's context only fenced */
+  tainted?: boolean;
   /** a scheduled or background result posted into this conversation, not a turn the person typed */
   kind?: 'chat' | 'result' | 'offer';
 }
@@ -29,10 +31,20 @@ export function appendTurn(t: ConversationTurn, path = conversationsPath()): voi
   } catch { /* best effort */ }
 }
 
+/** The log's last 8 MB at most: it is read on every list and reopen, and only grows. */
+const MAX_READ = 8 * 1024 * 1024;
 function readAll(path: string): ConversationTurn[] {
   if (!existsSync(path)) return [];
   try {
-    return readFileSync(path, 'utf8').split('\n').filter(Boolean)
+    const size = statSync(path).size;
+    let text: string;
+    if (size <= MAX_READ) text = readFileSync(path, 'utf8');
+    else {
+      const fd = openSync(path, 'r');
+      try { const buf = Buffer.alloc(MAX_READ); readSync(fd, buf, 0, MAX_READ, size - MAX_READ); text = buf.toString('utf8'); text = text.slice(text.indexOf('\n') + 1); }
+      finally { closeSync(fd); }
+    }
+    return text.split('\n').filter(Boolean)
       .map((l) => { try { return JSON.parse(l) as ConversationTurn; } catch { return null; } })
       .filter((t): t is ConversationTurn => !!t && typeof t.session === 'string' && typeof t.ts === 'number');
   } catch { return []; }

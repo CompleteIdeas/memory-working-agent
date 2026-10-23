@@ -33,8 +33,10 @@ export async function getApprovals(): Promise<PendingApproval[]> {
 }
 /** Approved here but owned by another app (waiting for it to run), or failed, in the last day (BL-18). */
 export interface ApprovalOutcome { id: string; tool: string; status: 'approved' | 'failed'; owner: string; result?: string; at: number }
-export async function getApprovalsFull(): Promise<{ pending: PendingApproval[]; recent: ApprovalOutcome[] }> {
-  try { const j = await (bounceIfLocked(await fetch('/api/approvals'))).json(); return { pending: j.pending ?? [], recent: j.recent ?? [] }; } catch { return { pending: [], recent: [] }; }
+/** BL-72: what the reviewer ran without asking, in the last day, and why. */
+export interface AutoApproved { id: string; tool: string; summary: string; reason: string; status: string; result?: string; at: number }
+export async function getApprovalsFull(): Promise<{ pending: PendingApproval[]; recent: ApprovalOutcome[]; auto: AutoApproved[] }> {
+  try { const j = await (bounceIfLocked(await fetch('/api/approvals'))).json(); return { pending: j.pending ?? [], recent: j.recent ?? [], auto: j.auto ?? [] }; } catch { return { pending: [], recent: [], auto: [] }; }
 }
 export async function decideApproval(id: string, approve: boolean): Promise<{ ok: boolean; message: string }> {
   try {

@@ -17,7 +17,7 @@ import { classifyCommand, scrubbedEnv, writeRefusal, insideReal } from './shell-
 import { guardedFetch, urlRefusal } from './net-guard.js';
 import { insideRoot, listFiles } from '../files.js';
 import { OTHER_FOLDER_MARK } from './governance.js';
-import { stageAction, registerExecutor, pendingStagedBy } from './approval.js';
+import { stageAction, registerExecutor, pendingStagedBy, tryAutoApprove } from './approval.js';
 import { secondOpinionForCommand, changedSinceReview, type Reviewed } from '../second-opinion.js';
 
 /** A staged command, approved by a person, runs here — in whichever process confirms it (BL-18). */
@@ -160,6 +160,11 @@ const runCommandTool: RegisteredTool = {
     const verdict0 = classifyCommand(command, (p) => readable(ctx, p, true) !== null);
     if (verdict0.kind === 'read-only' && !stageOnly) return run(ctx.sandboxDir, scrubbedEnv());
     const verdict = verdict0.kind === 'read-only' ? { kind: 'needs-approval' as const, reason: 'nobody is watching this run, so nothing runs without your approval' } : verdict0;
+    // BL-72: with the reviewer on, a command it passes runs now — with no secrets in its environment, as a
+    // read-only command does — instead of waiting for the person. The fixed rules see the plain card text.
+    const auto = await tryAutoApprove({ tool: 'run_command', ctx, summary: `Run this command in ${ctx.sandboxDir}:\n  ${command}\n(Needs approval because ${verdict.reason}.)`,
+      run: async () => run(ctx.sandboxDir, scrubbedEnv()) });
+    if (auto.ran) return auto.text;
     // A run nobody watches may stage only a few: a tainted job must not flood the approvals list.
     if (stageOnly && ctx.runId && pendingStagedBy(ctx.runId, 'tool').length >= 3) return '(refused: this run has already asked for 3 approvals — wait for the person, and say in your summary what is waiting)';
     // BL-24: a commit gets a second opinion on its change, at the top of the card (when configured).
@@ -179,7 +184,7 @@ const runCommandTool: RegisteredTool = {
         // command runs whatever code is in that folder — including code MWA wrote.
         'Approving runs it as you, with your files and network. If it runs tests or a build, it runs the code in that folder, including any MWA wrote: look at the change first.',
       ].filter(Boolean).join('\n'),
-      executor: 'run_command_staged', args: { command, ...(second?.reviewed ? { reviewed: second.reviewed } : {}) },
+      executor: 'run_command_staged', args: { command, ...(second?.reviewed ? { reviewed: second.reviewed } : {}) }, reviewed: auto.review,
       ...(ctx.interactive === false ? { ttlMs: 24 * 60 * 60_000 } : {}),
     });
     return (

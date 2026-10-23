@@ -55,7 +55,7 @@ import { recordReceipt, readReceipts, setReceiptProducer } from './receipts.js';
 import { setTranscriptProducer, stopHeartbeat } from './transcript.js';
 import { scanSources } from './onboard.js';
 import { buildRegistry } from './tools/build.js';
-import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, runApproved, recentApprovalOutcomes } from './tools/approval.js';
+import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, runApproved, recentApprovalOutcomes, recentAutoApproved } from './tools/approval.js';
 import { logger, readLogs, type LogLevel } from './logger.js';
 import { runAgent } from './agent.js';
 import { preparePersonTurn, learnFromTurn } from './person-turn.js';
@@ -260,14 +260,23 @@ function evictSessions(): void {
 function sessionFor(id: string, workspaceRoot: string): Session {
   evictSessions();
   let s = sessions.get(id);
-  if (!s) { s = { dir: resolve(workspaceRoot, 'serve', id.replace(/[^a-z0-9_-]/gi, '')), history: [], lastUsed: Date.now(), topicStart: 0 }; sessions.set(id, s); }
+  if (!s) {
+    // BL-71d: after a restart or on another device, carry on from the kept conversation, not from nothing. A turn
+    // with no taint record (or one that read outside content) comes back fenced.
+    const kept = readConversation(id, 12).filter((t) => t.kind === 'chat').map((t) => ({ instruction: t.message, summary: t.reply.slice(0, 1500), tainted: t.tainted !== false }));
+    s = { dir: resolve(workspaceRoot, 'serve', id.replace(/[^a-z0-9_-]/gi, '')), history: kept, lastUsed: Date.now(), topicStart: 0 };
+    sessions.set(id, s);
+  }
   s.lastUsed = Date.now();
   return s;
 }
 
-// A gap this long since the last turn means it's almost certainly a new task/session, so we
-// stop threading the earlier conversation. Tunable; MWA_TOPIC_BOUNDARY=0 disables the whole check.
-const FRESH_IDLE_MS = Number(process.env.MWA_FRESH_IDLE_MS ?? 45 * 60_000);
+// A gap this long since the last turn used to mean a new task, so the earlier conversation was dropped
+// silently — after 45 minutes by default. BL-71d: conversations are explicit now (a list to reopen, and
+// "+ new"), and Robert came back to a chat and could not continue it; so a gap alone no longer starts fresh
+// (0 = off) — what the message says decides, below. MWA_FRESH_IDLE_MS brings the old rule back;
+// MWA_TOPIC_BOUNDARY=0 disables the whole check.
+const FRESH_IDLE_MS = Number(process.env.MWA_FRESH_IDLE_MS ?? 0);
 
 /**
  * Decide how a new chat message relates to the current topic, so we auto-CHAIN follow-ups but
@@ -282,7 +291,7 @@ const FRESH_IDLE_MS = Number(process.env.MWA_FRESH_IDLE_MS ?? 45 * 60_000);
 async function classifyContinuity(brain: Provider, recent: { instruction: string; summary: string }[], message: string, idleMs: number): Promise<'continue' | 'fresh' | 'ask'> {
   if (process.env.MWA_TOPIC_BOUNDARY === '0') return 'continue';
   if (recent.length === 0) return 'fresh';        // nothing to chain onto yet
-  if (idleMs > FRESH_IDLE_MS) return 'fresh';     // long silence ⇒ new task/session
+  if (FRESH_IDLE_MS > 0 && idleMs > FRESH_IDLE_MS) return 'fresh'; // long silence ⇒ new task (only when switched on)
   const t = message.trim().toLowerCase();
   // Clear continuations: a leading connective ("and/also/then/now…"), an opening anaphor
   // ("it/that/them/he/she…" — refers back), or a short answer to a prior turn/offer.
@@ -427,7 +436,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     s.history.push({ instruction: message, summary: r.summary, tainted: r.tainted === true });
     // BL-71b: it ran out of room and already queued a resume — say so, rather than leave a half answer.
     const summary = r.resumeQueued ? `${r.summary}\n\nI ran out of room in this chat, so I'm continuing in the background. The result will appear here when it's done.` : r.summary;
-    appendTurn({ ts: Date.now(), session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat' }); // BL-71d
+    appendTurn({ ts: Date.now(), session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat', tainted: r.tainted === true }); // BL-71d
     send('result', { reason: r.reason, summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)) });
 
     // S3/S5 — LEARN durable facts about this person + recompress their dossier (suppressed for the
@@ -787,7 +796,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       // action but not approve it; the person approves or declines it here (the chat's approvals panel).
       if (p === '/api/approvals' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ pending: listPendingActions(), recent: recentApprovalOutcomes() }));
+        res.end(JSON.stringify({ pending: listPendingActions(), recent: recentApprovalOutcomes(), auto: recentAutoApproved() }));
         return;
       }
       if (p === '/api/approvals/confirm' && req.method === 'POST') {
@@ -920,7 +929,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
             return;
           }
           const c = await continueGoal(memory, { goalId: goal.id, personId: me, workspace: cfg.workspace ?? './mwa-workspace' });
-          res.end(JSON.stringify(c ? { ok: true, session: c.session, message: "Picking it up now. I'll post the result in its conversation." } : { ok: false, message: 'That goal is finished. Reopen it first.' }));
+          res.end(JSON.stringify(c ? { ok: true, session: c.session, message: c.already ? "I'm already on it. The result will appear in its conversation." : "Picking it up now. I'll post the result in its conversation." } : { ok: false, message: 'That goal is finished. Reopen it first.' }));
         } finally { memory.close(); }
         return;
       }
@@ -937,7 +946,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         const memory = new MwaMemory(SERVE_AGENT, process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
         try {
           const personId = resolvePersonId({ channel: 'web', name: String(b.person ?? '').trim() || undefined });
-          const started = await startBackgroundWork(memory, { message, session, personId, workspace: cfg.workspace ?? './mwa-workspace' });
+          // The turns before it: "look those up and write it up" needs them (BL-71 review). Fenced if any read outside content.
+          const recent = (sessions.get(session)?.history ?? []).slice(-3);
+          const context = recent.length ? { text: recent.map((h, i) => `(${i + 1}) ${h.instruction.slice(0, 400)} → ${h.summary.slice(0, 600)}`).join('\n'), tainted: recent.some((h) => h.tainted) } : undefined;
+          const started = await startBackgroundWork(memory, { message, session, personId, workspace: cfg.workspace ?? './mwa-workspace', context });
           res.end(JSON.stringify(started
             ? { ok: true, goal: started.goalId.slice(0, 8), message: "On it. I'll work on this in the background and post the result here when it's done. You can close this page." }
             : { ok: false, message: 'I couldn\'t set that up just now. Try again, or ask me to do it here.' }));
@@ -1378,15 +1390,19 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           // steps/toolCalls/cost hardcoded to 0 and reason to 'done', so an autonomous run that did
           // 7 steps and $0.04 of work displayed as "what I did · 0 steps" — and one that refused
           // displayed as done. This is the only run a person cannot watch happen.
+          // A goal's job is shown by the goal's title (a hand-off's task is a page of framing); else the job's own words.
+          let title: string | undefined;
+          try { title = task.goal ? (await memory.getGoal(task.goal))?.title : undefined; } catch { /* the job's words */ }
+          title = (title ?? (task.task && task.task !== task.instruction ? task.task : undefined))?.slice(0, 200);
           const saved = appendNotification({
             ts: Date.now(), instruction: task.instruction, summary: r.summary, reason: r.reason, outcome: r.outcome, completion: r.completion,
             steps: r.steps, toolCalls: r.toolCalls, costUsd: r.costUsd, durationMs: r.durationMs,
             files: r.files, dir: r.dir, job: r.job, fire: r.fire,
             // BL-71: the job's own words for the card (a hand-off's instruction is a page of framing), and its conversation.
-            ...(task.task ? { title: task.task.slice(0, 200) } : {}), ...(task.notify ? { session: task.notify } : {}),
+            ...(title ? { title } : {}), ...(task.notify ? { session: task.notify } : {}),
           });
           // BL-71d: the result belongs to the conversation that asked for it, so it is there when that one is reopened.
-          if (task.notify && !task.notify.startsWith('tg-')) appendTurn({ ts: Date.now(), session: task.notify, message: task.task ?? task.instruction.slice(0, 300), reply: r.summary, reason: r.reason, kind: 'result' });
+          if (task.notify && !task.notify.startsWith('tg-')) appendTurn({ ts: Date.now(), session: task.notify, message: title ?? task.instruction.slice(0, 300), reply: r.summary, reason: r.reason, kind: 'result' });
           // BL-13: saved in the app's feed (or not). Whether an open tab is handed it is recorded when one is.
           if (r.job && r.fire) recordReceipt({ job: r.job, fire: r.fire, channel: 'app', status: saved ? 'stored' : 'failed', ...(saved ? {} : { detail: 'could not write the app feed' }) });
           console.log(`  ⏰ fired: ${task.instruction.slice(0, 60)} → ${r.summary.slice(0, 80)}`);

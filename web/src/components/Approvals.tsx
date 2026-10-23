@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getApprovals, getApprovalsFull, decideApproval, type PendingApproval, type ApprovalOutcome } from '../api';
+import { getApprovals, getApprovalsFull, decideApproval, type PendingApproval, type ApprovalOutcome, type AutoApproved } from '../api';
 
 function timeLeft(s: number): string {
   if (s >= 3600) return `${Math.round(s / 3600)}h`;
@@ -15,12 +15,15 @@ function timeLeft(s: number): string {
 export function Approvals({ refresh }: { refresh: number }) {
   const [items, setItems] = useState<PendingApproval[]>([]);
   const [recent, setRecent] = useState<ApprovalOutcome[]>([]);
+  // BL-72: what the reviewer ran without asking today — seen at a glance, opened on a tap.
+  const [auto, setAuto] = useState<AutoApproved[]>([]);
+  const [showAuto, setShowAuto] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState('');
 
   useEffect(() => {
     let alive = true;
-    const load = () => getApprovalsFull().then((a) => { if (alive) { setItems(a.pending); setRecent(a.recent); } });
+    const load = () => getApprovalsFull().then((a) => { if (alive) { setItems(a.pending); setRecent(a.recent); setAuto(a.auto); } });
     load();
     const iv = setInterval(load, 15000);
     return () => { alive = false; clearInterval(iv); };
@@ -34,7 +37,7 @@ export function Approvals({ refresh }: { refresh: number }) {
     setItems(await getApprovals());
   }
 
-  if (!items.length && !recent.length && !msg) return null;
+  if (!items.length && !recent.length && !auto.length && !msg) return null;
   return (
     // Capped so several waiting items can't cover the conversation on a phone; the list scrolls.
     <div className="max-w-3xl mx-auto mb-3 space-y-2 max-h-[45vh] overflow-y-auto" aria-live="polite">
@@ -75,6 +78,21 @@ export function Approvals({ refresh }: { refresh: number }) {
             : <span className="text-signal">failed · {r.tool}{r.result ? ` · ${r.result}` : ''}</span>}
         </div>
       ))}
+      {auto.length > 0 && (
+        <div className="mono text-[12px] text-dim">
+          <button onClick={() => setShowAuto(!showAuto)} className="underline hover:text-signal">ran without asking you today · {auto.length}</button>
+          {showAuto && (
+            <ul className="mt-1.5 space-y-1.5 normal-case">
+              {auto.map((x) => (
+                <li key={x.id} className="break-words">
+                  <span className={x.status === 'failed' ? 'text-signal' : ''}>{x.status === 'failed' ? 'failed · ' : ''}{x.summary.split('\n').find((l) => l.startsWith('  '))?.trim() ?? x.summary.split('\n')[0]}</span>
+                  <span> · {x.reason} · {new Date(x.at).toLocaleTimeString()}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       {msg && (
         <div className="mono text-[12px] text-dim flex items-baseline gap-2">
           <span className="break-words min-w-0">{msg}</span>

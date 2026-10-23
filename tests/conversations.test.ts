@@ -56,6 +56,10 @@ describe('Continue a goal', () => {
       expect(job.goal).toBe(id);
       expect(job.tainted).toBeFalsy();
       expect((await mem.getGoal(id))?.status).toBe('in_progress');
+      // a second tap doesn't start a second job (BL-71 review)
+      const again = await continueGoal(mem, { goalId: id, personId: 'unknown', workspace: join(dir, 'ws') });
+      expect(again).toMatchObject({ jobId: c!.jobId, already: true });
+      expect((await mem.pendingScheduled()).filter((t) => t.goal === id)).toHaveLength(1);
     } finally { mem.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 

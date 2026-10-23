@@ -2,12 +2,13 @@
  * BL-72: the approval reviewer — fixed rules first, then Clef — and its shadow mode, which logs what it
  * would have done and changes nothing.
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fixedRule, reviewAction, clefReviewer, reviewMode, commandOf, SAFE_THRESHOLD, type ReviewScores } from '../src/approval-review.js';
-import { stageAction, pendingMeta } from '../src/tools/approval.js';
+import { stageAction, pendingMeta, requireApproval, recentAutoApproved, MAX_AUTO_PER_RUN } from '../src/tools/approval.js';
+import { builtinTools } from '../src/tools/builtins.js';
 // @ts-expect-error — plain JS data
 import { cases } from '../scripts/approval-calibration/cases.mjs';
 
@@ -98,5 +99,62 @@ describe('mode and shadow log', () => {
       for (const [k, v] of [['MWA_CLEF_TOKEN', prev.t], ['MWA_CLEF_ACCOUNT', prev.a], ['MWA_REVIEW_LOG', prev.l]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('live mode (MWA_AUTO_APPROVE=on)', () => {
+  const answers = (safe: number) => vi.fn(async () => new Response(JSON.stringify({ success: true, result: { answers: { matches: { noul: 0.9 }, escalates: { noul: 0.05 }, damage: { noul: 0.05 }, from_outside: { noul: 0.05 }, safe: { noul: safe } } } })));
+  let prev: Record<string, string | undefined> = {};
+  let dir = '';
+  const set = (k: string, v: string | undefined) => { if (v === undefined) delete process.env[k]; else process.env[k] = v; };
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'mwa-bl72-live-'));
+    prev = { t: process.env.MWA_CLEF_TOKEN, a: process.env.MWA_CLEF_ACCOUNT, m: process.env.MWA_AUTO_APPROVE, l: process.env.MWA_REVIEW_LOG, c: process.env.MWA_CONFIG_PATH };
+    process.env.MWA_CLEF_TOKEN = 't'; process.env.MWA_CLEF_ACCOUNT = `acct-live-${Math.random()}`; process.env.MWA_AUTO_APPROVE = 'on';
+    process.env.MWA_REVIEW_LOG = join(dir, 'r.jsonl');
+    writeFileSync(join(dir, 'mwa.config.json'), JSON.stringify({ tools: { access: { preset: 'assistant', grantedRoots: [] } } }));
+    process.env.MWA_CONFIG_PATH = join(dir, 'mwa.config.json');
+  });
+  afterEach(() => {
+    set('MWA_CLEF_TOKEN', prev.t); set('MWA_CLEF_ACCOUNT', prev.a); set('MWA_AUTO_APPROVE', prev.m); set('MWA_REVIEW_LOG', prev.l); set('MWA_CONFIG_PATH', prev.c);
+    vi.unstubAllGlobals(); rmSync(dir, { recursive: true, force: true });
+  });
+  const inner = (calls: string[]) => ({ def: { name: 'knowledge_write', description: 'write a note', parameters: { type: 'object', properties: {} } }, handler: async () => { calls.push('ran'); return 'wrote it'; } });
+
+  it('runs what the reviewer passes, now, and records it', async () => {
+    vi.stubGlobal('fetch', answers(0.9));
+    const calls: string[] = [];
+    const out = await requireApproval(inner(calls) as any).handler({}, { sandboxDir: dir, interactive: true, runId: 'run-a', personMessage: 'save a note' });
+    expect(calls).toEqual(['ran']);
+    expect(out).toMatch(/wrote it[\s\S]*ran without asking the person/);
+    expect(recentAutoApproved().some((x) => x.tool === 'knowledge_write' && x.status === 'done')).toBe(true);
+  });
+
+  it('stages what the reviewer is unsure about, and what a fixed rule keeps for the person', async () => {
+    vi.stubGlobal('fetch', answers(0.4));
+    const calls: string[] = [];
+    expect(await requireApproval(inner(calls) as any).handler({}, { sandboxDir: dir, interactive: true, runId: 'run-b' })).toMatch(/APPROVAL REQUIRED/);
+    vi.stubGlobal('fetch', answers(0.99));
+    const policy = { ...inner(calls), def: { ...inner(calls).def, name: 'policy_save' } };
+    expect(await requireApproval(policy as any).handler({}, { sandboxDir: dir, interactive: true, runId: 'run-b' })).toMatch(/APPROVAL REQUIRED/);
+    expect(calls).toEqual([]);
+  });
+
+  it('a background job\'s read-only command runs instead of waiting a day, and a risky one still waits', async () => {
+    vi.stubGlobal('fetch', answers(0.9));
+    writeFileSync(join(dir, 'notes.md'), 'line one\nline two\n');
+    const [run] = builtinTools(['run_command']);
+    const out = await run.handler({ command: 'head -1 notes.md' }, { sandboxDir: dir, interactive: false, runId: 'job-run' });
+    expect(out).toMatch(/line one[\s\S]*ran without asking/);
+    expect(await run.handler({ command: 'git push origin main' }, { sandboxDir: dir, interactive: false, runId: 'job-run' })).toMatch(/APPROVAL REQUIRED|staged|approve/i);
+  });
+
+  it('stops running without asking after MAX_AUTO_PER_RUN in one run', async () => {
+    vi.stubGlobal('fetch', answers(0.9));
+    const calls: string[] = [];
+    const t = requireApproval(inner(calls) as any);
+    for (let i = 0; i < MAX_AUTO_PER_RUN; i++) await t.handler({}, { sandboxDir: dir, interactive: true, runId: 'run-cap' });
+    expect(await t.handler({}, { sandboxDir: dir, interactive: true, runId: 'run-cap' })).toMatch(/APPROVAL REQUIRED/);
+    expect(calls).toHaveLength(MAX_AUTO_PER_RUN);
   });
 });

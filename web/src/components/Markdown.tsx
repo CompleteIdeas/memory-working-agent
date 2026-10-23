@@ -57,6 +57,10 @@ export function linkTarget(href: string, folder?: string): { url: string; file: 
   if (/^[a-z][a-z0-9+.-]*:/i.test(h) || h.startsWith('//') || h.startsWith('#') || !folder) return null;
   let path = h.replace(/^\.\//, '');
   try { path = decodeURIComponent(path); } catch { /* keep as written */ }
+  // BL-71c: a full server path to another chat's file (/data/mwa-workspace/serve/web-x/notes.md) — keep it from
+  // the workspace folder down
+  const abs = /^(?:[A-Za-z]:)?[\\/].*?[\\/]((?:serve|scheduled)[\\/].+)$/.exec(path);
+  if (abs) path = abs[1].replace(/\\/g, '/');
   // a path written from the workspace root (serve/…, scheduled/…) is used as is
   const full = /^(serve|scheduled|outbox|outputs|done|inbox)\//.test(path) ? path : `${folder}/${path.replace(/^\/+/, '')}`;
   return { url: fileUrl(full), file: true, path: full };

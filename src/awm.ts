@@ -954,7 +954,7 @@ export class MwaMemory implements Memory {
       `Where we are on "${goal.title}" (goal ${goal.id.slice(0, 8)}, ${goal.status.replace('_', ' ')}): ${rec.state.replace(/\s+/g, ' ').trim().slice(0, 700)}`,
       rec.next ? `Next step: ${rec.next.replace(/\s+/g, ' ').trim().slice(0, 300)}` : '',
       rec.open?.length ? `Open items: ${rec.open.slice(0, 8).map((o) => o.replace(/\s+/g, ' ').trim().slice(0, 160)).join('; ')}` : '',
-      rec.files?.length ? `Files: ${rec.files.slice(0, 12).join(', ')}` : '',
+      rec.files?.length ? `Files: ${rec.files.slice(0, 12).map((f) => f.replace(/[\r\n,]+/g, ' ').trim().slice(0, 300)).join(', ')}` : '', // one line: a note can't forge a "Next step:" line
       rec.conv ? `From conversation ${rec.conv}.` : '',
       `Updated ${new Date(at).toISOString().slice(0, 16).replace('T', ' ')} UTC by ${rec.by === 'run' ? 'a run' : rec.by === 'note' ? 'MWA' : 'the person'}.`,
     ].filter(Boolean).join('\n');

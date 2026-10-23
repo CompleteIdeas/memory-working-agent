@@ -531,7 +531,7 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
       if (state.length < 4) return '(say where it stands in a sentence)';
       const list = (v: unknown) => (Array.isArray(v) ? v.map((x) => clip(x, 300)).filter(Boolean) : []);
       const id = await memory.setGoalRecord(g, { state, next: args.next ? clip(args.next, 300) : undefined, open: list(args.open), files: list(args.files),
-        conv: ctx.session, by: 'note', untrusted: ctx.tainted === true || ctx.readLocal === true });
+        conv: ctx.session, by: 'note', untrusted: ctx.tainted === true }); // as run outcomes: outside content taints, local files don't (BL-71 review)
       return id ? `noted where "${clip(g.title, 60)}" stands` : '(not noted — try again)';
     },
   };

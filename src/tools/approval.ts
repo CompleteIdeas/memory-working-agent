@@ -38,7 +38,7 @@
 import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { reviewAction, reviewMode, configuredClef, logReview } from '../approval-review.js';
+import { reviewAction, reviewMode, configuredClef, logReview, type Review } from '../approval-review.js';
 import Database from 'better-sqlite3';
 import { ToolRefusal, type RegisteredTool, type ToolContext } from './registry.js';
 import { isStepUpSatisfied } from '../step-up.js';
@@ -101,8 +101,10 @@ function store(): Db {
     offer_chat TEXT, offer_message INTEGER, result TEXT, owner TEXT)`);
   const cols = (db.prepare(`PRAGMA table_info(approvals)`).all() as { name: string }[]).map((c) => c.name);
   if (!cols.includes('owner')) db.exec('ALTER TABLE approvals ADD COLUMN owner TEXT');
+  // BL-72: why the reviewer ran it without asking (null for an action a person decided).
+  if (!cols.includes('auto')) db.exec('ALTER TABLE approvals ADD COLUMN auto TEXT');
   db.exec('CREATE INDEX IF NOT EXISTS approvals_status ON approvals(status)');
-  db.pragma('user_version = 2');
+  db.pragma('user_version = 3');
   return db;
 }
 
@@ -190,10 +192,57 @@ function prune(): void {
  * with, whoever approves it. `executor` (default: `tool`) names the registered code that runs it with
  * `args`; `execute`, when given, is a process-local closure tried first.
  */
+/** BL-72: how many actions one run may have run without asking — a loop the reviewer keeps passing still stops. */
+export const MAX_AUTO_PER_RUN = 12;
+const autoByRun = new Map<string, number>();
+
+/**
+ * BL-72 live (MWA_AUTO_APPROVE=on): review an action before it is staged; when the reviewer passes it, run it
+ * now, record it (status done/failed, with the reviewer's reason in `auto`) and return what to tell the model.
+ * Returns `{ ran: false, review }` when it must go to the person — the caller stages it as before, passing the
+ * review on so stageAction logs it rather than asking Clef twice. Off or shadow: `{ ran: false }` at once.
+ */
+export async function tryAutoApprove(a: { tool: string; summary: string; kind?: ApprovalKind; ctx?: ToolContext; args?: Record<string, unknown>; run: () => Promise<string> }): Promise<{ ran: true; text: string } | { ran: false; review?: Review }> {
+  if (reviewMode() !== 'on') return { ran: false };
+  const c = a.ctx ?? { sandboxDir: '.' };
+  const input = { tool: a.tool, summary: a.summary, kind: a.kind, request: c.personMessage, tainted: c.tainted === true, interactive: c.interactive, sandboxDir: c.sandboxDir };
+  const review = await reviewAction(input, configuredClef());
+  if (review.decision !== 'auto') return { ran: false, review };
+  const runKey = c.runId ?? '';
+  const used = autoByRun.get(runKey) ?? 0;
+  if (runKey && used >= MAX_AUTO_PER_RUN) return { ran: false, review: { ...review, decision: 'ask', by: 'run-cap', reason: `this run already ran ${MAX_AUTO_PER_RUN} actions without asking` } };
+  if (runKey) { autoByRun.set(runKey, used + 1); if (autoByRun.size > 500) autoByRun.delete(autoByRun.keys().next().value!); }
+  const id = newId();
+  logReview(id, input, review, 'on');
+  const now = Date.now();
+  const ctx: ToolContext = { sandboxDir: c.sandboxDir, tainted: c.tainted === true, interactive: c.interactive, personId: c.personId, runId: c.runId, session: c.session };
+  store().prepare(`INSERT INTO approvals (id, tool, executor, args, summary, ctx, kind, tainted, status, created_at, expires_at, updated_at, owner, auto)
+    VALUES (?, ?, ?, '{}', ?, ?, ?, ?, 'executing', ?, ?, ?, ?, ?)`)
+    .run(id, a.tool, a.tool, a.summary, JSON.stringify(ctx), a.kind ?? 'tool', c.tainted === true ? 1 : 0, now, now, now, owner, review.reason);
+  audit?.('confirm', { id, tool: a.tool, summary: `auto: ${review.reason} — ${a.summary.slice(0, 200)}` });
+  try {
+    const out = await a.run();
+    store().prepare(`UPDATE approvals SET status = 'done', result = ?, updated_at = ? WHERE id = ?`).run(tail(out), Date.now(), id);
+    return { ran: true, text: `${out}\n(ran without asking the person: the reviewer judged it safe — ${review.reason})` };
+  } catch (e) {
+    const msg = (e as Error).message;
+    store().prepare(`UPDATE approvals SET status = 'failed', result = ?, updated_at = ? WHERE id = ?`).run(tail(msg), Date.now(), id);
+    return { ran: true, text: `(it ran without asking — the reviewer judged it safe — and failed: ${msg.slice(0, 300)})` };
+  }
+}
+
+/** What the reviewer ran without asking in the last day, newest first — shown to the person (BL-72). */
+export function recentAutoApproved(): { id: string; tool: string; summary: string; reason: string; status: ApprovalStatus; result?: string; at: number }[] {
+  const rows = store().prepare(`SELECT * FROM approvals WHERE auto IS NOT NULL AND created_at > ? ORDER BY created_at DESC LIMIT 30`).all(Date.now() - 24 * 60 * 60_000) as (Row & { auto: string })[];
+  return rows.map((r) => ({ id: r.id, tool: r.tool, summary: r.summary, reason: r.auto, status: r.status as ApprovalStatus, ...(r.result ? { result: r.result } : {}), at: r.created_at }));
+}
+
 export function stageAction(a: {
   tool: string; summary: string; ctx?: ToolContext; ttlMs?: number; kind?: ApprovalKind;
   args?: Record<string, unknown>; executor?: string;
   execute?: (ctx: ToolContext) => Promise<string>;
+  /** BL-72: the review tryAutoApprove already did — logged, not repeated */
+  reviewed?: Review;
 }): string {
   prune();
   const id = newId();
@@ -214,7 +263,8 @@ export function stageAction(a: {
   const mode = reviewMode();
   if (mode !== 'off') {
     const input = { tool: a.tool, summary: a.summary, kind: a.kind, request: c.personMessage, tainted: c.tainted === true, interactive: c.interactive, sandboxDir: c.sandboxDir };
-    void reviewAction(input, configuredClef()).then((r) => logReview(id, input, r, mode)).catch(() => { /* best effort */ });
+    if (a.reviewed) logReview(id, input, a.reviewed, mode);
+    else void reviewAction(input, configuredClef()).then((r) => logReview(id, input, r, mode)).catch(() => { /* best effort */ });
   }
   return id;
 }
@@ -271,9 +321,12 @@ export function requireApproval(
       const summary = opts?.preview
         ? opts.preview(args)
         : `${tool.def.name} ${JSON.stringify(args).slice(0, 300)}`;
+      // BL-72: with the reviewer on, an action it passes runs now instead of waiting for the person.
+      const auto = await tryAutoApprove({ tool: tool.def.name, summary, ctx, args, run: () => tool.handler(args, ctx) });
+      if (auto.ran) return auto.text;
       // An unattended run's request waits a day: nobody is there to see it within ten minutes (BL-03 review).
       const life = ctx?.interactive === false ? 24 * 60 * 60_000 : ttlMs();
-      const id = stageAction({ tool: tool.def.name, summary, ctx, ttlMs: life, args });
+      const id = stageAction({ tool: tool.def.name, summary, ctx, ttlMs: life, args, reviewed: auto.review });
       return (
         `[APPROVAL REQUIRED] "${tool.def.name}" will NOT run until the person approves it.\n` +
         `confirmation_id: ${id}\n` +
