@@ -60,7 +60,7 @@ const ALWAYS_ASK_TOOLS: Record<string, string> = {
 /** Layer 1 for commands: what always asks, whatever the context. */
 const COMMAND_RULES: [RegExp, string][] = [
   [/localhost|127\.|0\.0\.0\.0|\[::|::1|0x7f|2130706433|\/api\/approvals/i, 'it reaches this machine, possibly MWA\'s own controls'],
-  [/\b(sudo|su|doas|chown|chmod|setfacl|chattr|crontab|systemctl|service|launchctl|kill|pkill|killall|shutdown|reboot|halt|mkfs\w*|dd|mount|umount|iptables|useradd|usermod|passwd)\b/i, 'it changes the system or its permissions'],
+  [/\b(sudo|su|doas|chown|chmod|setfacl|chattr|crontab|systemctl|service|launchctl|kill|pkill|killall|shutdown|reboot|halt|mkfs\w*|dd|mount|umount|iptables|useradd|usermod|passwd|taskkill|sc|schtasks|reg|net|netsh|icacls|takeown|runas|wmic|bcdedit)\b/i, 'it changes the system or its permissions'],
   [/\b(printenv|env|set|export|declare)\b|\/proc\/|\.env\b|\.ssh|id_rsa|id_ed25519|\.aws|\.npmrc|\.netrc|\.git-credentials|\b(token|secret|password|passwd|apikey|api_key|credential)s?\b/i, 'it could expose secrets'],
   [/\bgit\s+(push|remote|config|credential)\b|\b(npm|pnpm|yarn)\s+(publish|login|adduser)\b|\b(railway|vercel|fly|heroku|az|aws|gcloud|kubectl|docker)\b/i, 'it publishes or deploys'],
   [/\|\s*(sh|bash|zsh|dash|python3?|node|perl|ruby|pwsh|powershell|cmd)\b|\b(eval|source)\b/i, 'it runs code it downloaded or built on the fly'],
@@ -73,13 +73,22 @@ const NETWORK = /\b(curl|wget|fetch|nc|ncat|telnet|ssh|scp|sftp|ftp|rsync|Invoke
 // it), or touch a path outside the run's folders is the person's call, whatever Clef thinks of it.
 /** Programs that run other code: an interpreter, a shell, a package manager, a build tool, exec-style flags. */
 // In command position (start, or after ; & | ( ` or a keyword), with or without a path: `du -sh` is not a shell.
-const RUNS_CODE = /(?:^|[;&|(`]\s*|\b(?:then|do|else|exec|time|command|builtin)\s+)(?:\S*\/)?(sh|bash|zsh|dash|ksh|fish|csh|python[\d.]*|node|nodejs|deno|bun|perl|ruby|php|lua|java|pwsh|powershell|cmd|osascript|npm|npx|pnpm|yarn|pip[\d.]*|pipx|uv|poetry|gem|cargo|go|make|cmake|gradle|mvn|dotnet|docker|podman|env|nohup|setsid|timeout|watch|nice|strace|gdb|awk|gawk|busybox|at|batch)\b|\s-(?:c|e|exec|execdir|ok)\b|--(?:exec|eval|command)\b|\bxargs\b|\bsed\s+-[a-z]*e/i;
+const RUNS_CODE = /(?:^|[;&|(`]\s*|\b(?:then|do|else|exec|time|command|builtin)\s+)(?:\S*\/)?(sh|bash|zsh|dash|ksh|fish|csh|python[\d.]*|node|nodejs|deno|bun|perl|ruby|php|lua|java|pwsh|powershell|cmd|osascript|npm|npx|pnpm|yarn|pip[\d.]*|pipx|uv|poetry|gem|cargo|go|make|cmake|gradle|mvn|dotnet|docker|podman|env|nohup|setsid|timeout|watch|nice|strace|gdb|awk|gawk|busybox|at|batch|mshta|rundll32|regsvr32|cscript|wscript|msiexec|start|call|git)\b|\s-(?:c|e|exec|execdir|ok)\b|--(?:exec|eval|command|to-command|use-compress-program|compress-program|checkpoint-action|rsh-command|info-script|new-volume-script)\b|\btar\b[^|;&]*\s-[A-Za-z]*I\b|\bxargs\b|\bsed\s+-[a-z]*e/i;
+// (git in any form: a repo's config or hooks run code on `git status`, and clone/fetch/pull reach the network)
 /** Anything that talks to a network — MWA's own API is one hop away on any address (BL-72 review, H2). */
 const NETWORK_ANY = /\b(curl|wget|fetch|aria2c|nc|ncat|netcat|socat|telnet|ssh|scp|sftp|ftp|tftp|rsync|openssl|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|bitsadmin|certutil|http|https|nslookup|dig|host|ping)\b|[a-z]+:\/\/|\/dev\/(?:tcp|udp)\//i;
 
 /** The path-like words of a command (after quotes are removed): absolute, home, parent-relative, or with a glob. */
 function pathTokens(cmd: string): string[] {
-  return cmd.split(/[\s;&|<>()=]+/).filter((t) => t && (/^[\\/~]/.test(t) || /(^|[\\/])\.\.([\\/]|$)/.test(t) || /[*?[\]{}]/.test(t) || /^[A-Za-z]:[\\/]/.test(t)));
+  // A value glued to an option is a path too: `cp -t/tmp/out`, `--target-directory=/tmp` (BL-72 review, round 2).
+  const words = cmd.split(/[\s;&|<>()]+/).flatMap((w) => (w.startsWith('-') ? [w.replace(/^--?[A-Za-z0-9-]+=?/, ''), w.slice(2)] : w.split('=')));
+  return words.filter((t) => t && (/^[\\/~]/.test(t) || /(^|[\\/])\.\.([\\/]|$)/.test(t) || /[*?[\]{}]/.test(t) || /^[A-Za-z]:[\\/]/.test(t)));
+}
+
+/** A command as Clef reads it: shell comments are the writer talking ("# the person asked for this"), not the
+ *  command. Only `#` at the start or after a space starts one, as in sh: `notes#1` stays a word. */
+export function stripComments(cmd: string): string {
+  return cmd.replace(/(^|\s)#.*$/gm, '$1').trimEnd();
 }
 
 /** Layer 1 for one command: why it must go to the person, or null. */
@@ -88,8 +97,11 @@ export function commandRule(raw: string, sandboxDir?: string): string | null {
   if (raw.length > 1_500) return 'it is too long to review';
   // A command inside the command, or a variable a reader can't see the value of: `$(…)`, backticks, `<(…)`, `$HOME`.
   if (/[$`]|[<>]\(/.test(raw)) return 'it runs or expands something a reader cannot see';
+  // cmd.exe: any %VAR% is a value a reader can't see, and ^ is its escape character (review, round 2).
+  // A name of two or more characters, so a date format (`+%Y%m%d`, `%H:%M`) isn't one.
+  if (/%[A-Za-z_][A-Za-z0-9_]+%/.test(raw)) return 'it expands a variable a reader cannot see';
   // Quotes and escapes split words for the shell, not for a reader: `pk""ill`, `/usr/bin/en""v` (review M1).
-  const cmd = raw.replace(/["'`\\]/g, '');
+  const cmd = raw.replace(/["'`\\^]/g, '');
   for (const [re, why] of COMMAND_RULES) if (re.test(cmd)) return why;
   if (RUNS_CODE.test(cmd)) return 'it runs other code (a script, an interpreter or a package manager)';
   if (NETWORK_ANY.test(cmd)) return 'it reaches the network';
@@ -148,7 +160,7 @@ export function clefReviewer(o: { token: string; account: string; model?: string
           request: (a.request ?? '(no message from the person: this is an unattended job)').slice(0, 2000),
           working_folder: a.sandboxDir ?? '',
           read_outside_content: a.tainted ? 'yes' : 'no',
-          tool: a.tool, action: (a.command !== undefined ? a.command.replace(/(^|s)#.*$/gm, '$1') : a.summary).slice(0, 2000),
+          tool: a.tool, action: (a.command !== undefined ? stripComments(a.command) : a.summary).slice(0, 2000),
         } }),
       });
       if (!res.ok) return null;
