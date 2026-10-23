@@ -380,6 +380,27 @@ async function deliverStepUpCode(personId: string, code: string): Promise<boolea
   return false;
 }
 
+/** BL-71: the work in progress, so a chat knows about it. Hard test 2026-10-23: "shorten the newsletter" in the
+ *  newsletter's own conversation asked the person to upload it — the job had paused before writing it, and the
+ *  chat had no idea there was a goal. Titles are the person's own words; a state noted after outside content is
+ *  left out (the Work tab shows it). At most five, kept short. */
+async function workNote(memory: MwaMemory, sessionId: string, person: string | null): Promise<string> {
+  try {
+    const me = resolvePersonId({ channel: 'web', name: (person ?? '').trim() || undefined });
+    const [goals, records, jobs] = await Promise.all([memory.listGoals(), memory.listGoalRecords(), memory.pendingScheduled()]);
+    const open = goals.filter((g) => g.status !== 'done' && (!g.person || g.person === me)).slice(0, 5);
+    if (!open.length) return '';
+    const lines = open.map((g) => {
+      const rec = records.find((r) => r.goalId === g.id);
+      const state = !rec ? 'no note yet' : rec.trust === 'untrusted' ? 'see the Work tab' : (rec.text.split('\n')[0] ?? '').replace(/^Where we are on "[^"]*" \(goal [^)]*\): /, '').slice(0, 160);
+      const here = rec?.conv === sessionId ? ' (from this conversation)' : '';
+      const running = jobs.some((t) => t.goal === g.id && !t.recur) ? '; a background job is on it' : '';
+      return `- goal ${g.id.slice(0, 8)} "${g.title.slice(0, 90)}"${here}: ${g.status.replace('_', ' ')}${running}; ${state}`;
+    });
+    return `\n\n(Work you are doing for the person — they see it in the Work tab. If they ask about one of these, say where it stands; if it stopped partway, offer to continue it rather than asking them for files:\n${lines.join('\n')})`;
+  } catch { return ''; }
+}
+
 /** Stream one runAgent over SSE: every onEvent becomes an SSE event for the spine. */
 async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const message = (url.searchParams.get('message') ?? '').trim();
@@ -436,7 +457,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     // BL-70: the person sees this chat's folder in the Files tab, and a link by file name opens it there.
     const added = uploadsIn(resolve(cfg.workspace ?? './mwa-workspace'), sessionFolder(sessionId));
     const filesNote = `\n\n(Files you write here are saved for the person and appear in their Files tab; when you mention one, link it by its path, e.g. [the notes](notes.md). Files from their earlier chats and jobs are theirs too: list_files with \`search\` finds one by name, and read_file opens it by that full path.${added.length ? ` Files they added to this chat: ${added.join(', ')}.` : ''})`;
-    const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${message}` : message) + askNote + filesNote;
+    const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${message}` : message) + askNote + filesNote + await workNote(memory, sessionId, url.searchParams.get('person'));
 
     // Per-person Profile (S1–S6): resolve who's talking, build their prompt context (identity guard +
     // primer + intake hint, with PII redacted on an identity mismatch). Off-switch MWA_PERSON_PROFILE=0.

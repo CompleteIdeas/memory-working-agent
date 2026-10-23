@@ -203,3 +203,23 @@ describe('what Clef reads of a command', () => {
     expect(stripComments('cat notes#1')).toBe('cat notes#1');
   });
 });
+
+describe('a background job is reviewed against its own request (hard test 2026-10-23)', () => {
+  it('passes the job request to Clef when there is no person message', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-bl72-job-'));
+    const prev = { t: process.env.MWA_CLEF_TOKEN, a: process.env.MWA_CLEF_ACCOUNT, l: process.env.MWA_REVIEW_LOG };
+    process.env.MWA_CLEF_TOKEN = 't'; process.env.MWA_CLEF_ACCOUNT = `acct-job-${Math.random()}`; process.env.MWA_REVIEW_LOG = join(dir, 'r.jsonl');
+    let sent: any = null;
+    vi.stubGlobal('fetch', vi.fn(async (_u: string, init: RequestInit) => { sent = JSON.parse(String(init.body)); return new Response(JSON.stringify({ success: true, result: { answers: { matches: { noul: 0.9 }, escalates: { noul: 0.1 }, damage: { noul: 0.1 }, from_outside: { noul: 0.1 }, safe: { noul: 0.8 } } } })); }));
+    try {
+      stageAction({ tool: 'run_command', summary: 'Run this command in /w:\n  ls -la', ctx: { sandboxDir: '/w', interactive: false, jobRequest: 'Gather the file sizes in this folder and write a report' } });
+      await vi.waitFor(() => expect(sent).not.toBeNull());
+      expect(sent.state.request).toBe('Gather the file sizes in this folder and write a report');
+      expect(sent.state.note).toMatch(/background job/);
+    } finally {
+      vi.unstubAllGlobals();
+      for (const [k, v] of [['MWA_CLEF_TOKEN', prev.t], ['MWA_CLEF_ACCOUNT', prev.a], ['MWA_REVIEW_LOG', prev.l]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

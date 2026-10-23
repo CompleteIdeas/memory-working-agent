@@ -19,6 +19,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     name: 'fetch_url',
     description: 'Fetch a web page or API URL and return its readable text (HTML stripped). Use after web_search to read a result page.',
     inputSchema: { type: 'object', properties: { url: { type: 'string' }, max_chars: { type: 'number', description: 'cap returned text, default 4000' } }, required: ['url'] },
+    // A GET that only reads (like search.mjs): MWA classes it a read, so a background research job isn't paused
+    // after three pages as if it had acted three times (hard test 2026-10-23). What it reads still taints the run.
+    annotations: { readOnlyHint: true },
   }],
 }));
 

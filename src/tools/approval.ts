@@ -210,7 +210,7 @@ export async function tryAutoApprove(a: { tool: string; summary: string; command
   if (!c.runId) return { ran: false };
   // Pasted text in the person's message is someone else's words: the run counts as tainted here (review M3).
   const tainted = c.tainted === true || (c.personMessage ? hasPasted(c.personMessage) : false);
-  const input = { tool: a.tool, summary: a.summary, command: a.command, kind: a.kind, request: c.personMessage, tainted, interactive: c.interactive, sandboxDir: c.sandboxDir };
+  const input = { tool: a.tool, summary: a.summary, command: a.command, kind: a.kind, request: c.personMessage ?? c.jobRequest, tainted, interactive: c.interactive, sandboxDir: c.sandboxDir };
   const review = await reviewAction(input, configuredClef());
   if (review.decision !== 'auto') return { ran: false, review };
   const runKey = c.runId;
@@ -268,7 +268,7 @@ export function stageAction(a: {
   // Changes nothing: the action waits for the person exactly as before.
   const mode = reviewMode();
   if (mode !== 'off') {
-    const input = { tool: a.tool, summary: a.summary, kind: a.kind, request: c.personMessage, tainted: c.tainted === true, interactive: c.interactive, sandboxDir: c.sandboxDir };
+    const input = { tool: a.tool, summary: a.summary, kind: a.kind, request: c.personMessage ?? c.jobRequest, tainted: c.tainted === true, interactive: c.interactive, sandboxDir: c.sandboxDir };
     if (a.reviewed) logReview(id, input, a.reviewed, mode);
     else void reviewAction(input, configuredClef()).then((r) => logReview(id, input, r, mode)).catch(() => { /* best effort */ });
   }

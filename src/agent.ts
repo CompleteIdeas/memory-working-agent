@@ -1710,6 +1710,7 @@ export async function runAgent(opts: {
       const { action: _n, ...args } = action as Record<string, unknown> & { action: string };
       const callCtx = { sandboxDir: dir, interactive: opts.interactive, personId: opts.personId, identityInDoubt: opts.identityInDoubt, extraRoots: opts.extraRoots, tainted: sawUntrustedRead, readLocal: sawLocalRead, runId, session: opts.session,
         personMessage: opts.jobId === undefined ? opts.userMessage ?? (opts.interactive === true ? instruction : undefined) : undefined,
+        jobRequest: opts.jobId !== undefined ? (opts.jobRequest ?? opts.jobTask)?.slice(0, 2000) : undefined, // BL-72: what the job was asked, for the reviewer
         jobId: opts.jobLineage ?? opts.jobId,
         ...(intent ? { asksJobChange: intent.category === 'change_job' } : {}) };
       // BL-54: an email draft goes only to an address this run met, and once per recipient (src/draft-guard.ts).

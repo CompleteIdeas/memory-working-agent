@@ -158,6 +158,7 @@ export function clefReviewer(o: { token: string; account: string; model?: string
         signal: AbortSignal.timeout(o.timeoutMs ?? TIMEOUT_MS),
         body: JSON.stringify({ model, questions: QUESTIONS, state: {
           request: (a.request ?? '(no message from the person: this is an unattended job)').slice(0, 2000),
+          ...(a.interactive === false && a.request ? { note: 'This is a background job the person started with the request above; the person is not watching.' } : {}),
           working_folder: a.sandboxDir ?? '',
           read_outside_content: a.tainted ? 'yes' : 'no',
           tool: a.tool, action: (a.command !== undefined ? stripComments(a.command) : a.summary).slice(0, 2000),

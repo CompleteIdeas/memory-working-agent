@@ -63,7 +63,10 @@ export async function thinkOnce(memory: MwaMemory, brain: Provider, o: { person:
   const now = o.now ?? Date.now();
   const path = o.path ?? thoughtsPath();
   try {
-    const goals: Goal[] = (await memory.listGoals()).filter((g) => (g.status === 'open' || g.status === 'in_progress') && (!g.person || g.person === o.person)).slice(0, o.maxGoals ?? 5);
+    // A goal with a one-off job waiting or running is being worked on: thinking about it then only restates the job
+    // (hard test 2026-10-23: three bland 'research the past week…' proposals while the jobs ran).
+    const busy = new Set((await memory.pendingScheduled()).filter((t) => t.goal && !t.recur).map((t) => t.goal));
+    const goals: Goal[] = (await memory.listGoals()).filter((g) => (g.status === 'open' || g.status === 'in_progress') && (!g.person || g.person === o.person) && !busy.has(g.id)).slice(0, o.maxGoals ?? 5);
     if (!goals.length) return [];
     const records = await memory.listGoalRecords();
     // A fence this call alone knows: text inside can't close it early (BL-71e review — a fixed marker was forged).

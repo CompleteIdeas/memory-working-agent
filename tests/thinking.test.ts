@@ -98,3 +98,19 @@ describe('thinking time', () => {
     } finally { mem.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe('thinking time leaves busy goals alone', () => {
+  it('skips a goal whose job is still waiting or running (hard test 2026-10-23)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-71e-'));
+    const mem = new MwaMemory('think-test5', join(dir, 'm.db'));
+    try {
+      const busy = (await mem.addGoal('Busy goal', '', 'medium', 'unknown'))!;
+      const idle = (await mem.addGoal('Idle goal', '', 'medium', 'unknown'))!;
+      await mem.addScheduledTask('do the busy thing', Date.now(), { goal: busy, person: 'unknown' });
+      const brain = brainSaying(() => JSON.stringify([{ goal: idle.slice(0, 8), kind: 'ask', text: 'Which day suits you?' }]));
+      const out = await thinkOnce(mem, brain, { person: 'unknown', path: join(dir, 't.jsonl') });
+      expect(String(brain.seen[0].messages[0].content)).not.toContain('Busy goal');
+      expect(out.map((t) => t.title)).toEqual(['Idle goal']);
+    } finally { mem.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+});

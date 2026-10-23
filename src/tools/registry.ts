@@ -35,6 +35,9 @@ export interface ToolContext {
   /** BL-45/47: the person's own message this turn (not on a job's fire) — what a job change is kept as, and
    *  what a cancel must answer to. */
   personMessage?: string;
+  /** BL-72: a background job's own request — the person's words that started it — for the approval reviewer, which
+   *  otherwise sees no request on a job and judges its own `ls` "not what you asked for" (hard test 2026-10-23). */
+  jobRequest?: string;
   /** BL-47: the job this run is a fire of (its lineage) — a fire may stop its own job. */
   jobId?: string;
   /** BL-52: the request classifier's reading — the person asks to change or stop an existing job. Absent when
