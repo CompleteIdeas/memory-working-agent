@@ -79,17 +79,19 @@ describe('approval_results: a later run sees what its staged gates did', () => {
 describe('BL-14a review fixes', () => {
   const withDir = async (fn: (dir: string) => Promise<void>) => { const d = mkdtempSync(join(tmpdir(), 'mwa-sb-')); try { await fn(d); } finally { rmSync(d, { recursive: true, force: true }); } };
 
-  it('an unattended run in Assistant mode STAGES commands (never runs them), at most 3 per run, for a day', async () => {
+  it('an unattended run in Assistant mode runs read-only commands and STAGES the rest, at most 3 per run, for a day', async () => {
     const [run] = builtinTools(['run_command']);
     await withDir(async (dir) => {
       writeFileSync(join(dir, 'notes.txt'), 'x');
       const ctx = { sandboxDir: dir, interactive: false, runId: 'unattended-run-1', session: 'job-x' };
-      const read = await run.handler({ command: 'ls' }, ctx);               // even a read waits for a person
-      expect(read).toContain('[APPROVAL REQUIRED]');
-      const id = /confirmation_id: (\S+)/.exec(read)![1];
+      // a read runs, as in a watched chat (Robert, 2026-10-23); everything else waits for a person
+      expect(await run.handler({ command: 'ls' }, ctx)).not.toContain('[APPROVAL REQUIRED]');
+      const staged = await run.handler({ command: 'npm test' }, ctx);
+      expect(staged).toContain('[APPROVAL REQUIRED]');
+      const id = /confirmation_id: (\S+)/.exec(staged)![1];
       expect(pendingMeta(id)).toBeDefined();
-      await run.handler({ command: 'npm test' }, ctx);
       await run.handler({ command: 'npm run typecheck' }, ctx);
+      await run.handler({ command: 'npm run lint' }, ctx);
       expect(await run.handler({ command: 'npm run build' }, ctx)).toMatch(/already asked for 3 approvals/);
     });
   });

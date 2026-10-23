@@ -166,7 +166,8 @@ describe('live mode (MWA_AUTO_APPROVE=on)', () => {
     writeFileSync(join(dir, 'notes.md'), 'line one\nline two\n');
     const [run] = builtinTools(['run_command']);
     const out = await run.handler({ command: 'head -1 notes.md' }, { sandboxDir: dir, interactive: false, runId: 'job-run' });
-    expect(out).toMatch(/line one[\s\S]*ran without asking/);
+    expect(out).toMatch(/line one/); // a read-only command runs in a background job, as in a chat (2026-10-23)
+    expect(out).not.toMatch(/APPROVAL REQUIRED/);
     expect(await run.handler({ command: 'git push origin main' }, { sandboxDir: dir, interactive: false, runId: 'job-run' })).toMatch(/APPROVAL REQUIRED|staged|approve/i);
     // a job's command that isn't read-only waits for the person even when Clef would pass it (review H4)
     expect(await run.handler({ command: 'mkdir q4' }, { sandboxDir: dir, interactive: false, runId: 'job-run' })).not.toMatch(/ran without asking/);

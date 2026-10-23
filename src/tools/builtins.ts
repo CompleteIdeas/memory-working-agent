@@ -158,12 +158,16 @@ const runCommandTool: RegisteredTool = {
     // Read-only commands only read; another chat's file only by its full path (the shell resolves a relative
     // one against this run's folder). Their output is already outside content, so needs no mark.
     const verdict0 = classifyCommand(command, (p) => readable(ctx, p, true) !== null);
-    if (verdict0.kind === 'read-only' && !stageOnly) return run(ctx.sandboxDir, scrubbedEnv());
-    const verdict = verdict0.kind === 'read-only' ? { kind: 'needs-approval' as const, reason: 'nobody is watching this run, so nothing runs without your approval' } : verdict0;
+    // A parsed read-only command runs whether or not anyone is watching (Robert, 2026-10-23: "yes"). Unattended runs
+    // used to stage even these, and the hard test's background jobs left ten approval cards for their own `tail` and
+    // `ls`. The list is the same one a watched chat runs from: no shell features, every path inside what this run may
+    // read, no secrets in the environment; the output still taints the run. Everything else still waits.
+    if (verdict0.kind === 'read-only') return run(ctx.sandboxDir, scrubbedEnv());
+    const verdict = verdict0;
     // BL-72: with the reviewer on, a command it passes runs now — with no secrets in its environment, as a
     // read-only command does — instead of waiting for the person. The fixed rules see the command itself.
-    // A run nobody watches only ever ran read-only commands without a person: that stays (BL-72 review, H4).
-    const auto = stageOnly && verdict0.kind !== 'read-only' ? { ran: false as const, review: undefined }
+    // A run nobody watches runs read-only commands (above) and nothing else without a person (BL-72 review, H4).
+    const auto = stageOnly ? { ran: false as const, review: undefined }
       : await tryAutoApprove({ tool: 'run_command', ctx, command, summary: `Run this command in ${ctx.sandboxDir}:\n  ${command}\n(Needs approval because ${verdict.reason}.)`,
         run: async () => run(ctx.sandboxDir, scrubbedEnv()) });
     if (auto.ran) return auto.text;

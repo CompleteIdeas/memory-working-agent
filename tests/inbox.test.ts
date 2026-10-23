@@ -162,7 +162,7 @@ describe('the inbox', () => {
     await withWorkspace(async (root, config) => {
       const dirs = mailboxDirs(root);
       drop(join(dirs.inbox, 'cmd.md'), 'List the files.');
-      const { brain } = stubBrain({ action: 'run_command', command: 'ls' });
+      const { brain } = stubBrain({ action: 'run_command', command: 'npm test' });
       await processInbox({ config, dbPath: join(root, 'a.db'), agentId: 'mwa-serve', brain, worker: brain, onLog: () => {} });
       expect(listPendingActions().some((a) => a.tool === 'run_command' && (a.session ?? '').startsWith('task-cmd-'))).toBe(true);
     }, ['run_command']);
