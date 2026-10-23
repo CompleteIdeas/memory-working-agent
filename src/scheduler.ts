@@ -26,6 +26,18 @@ export interface InterruptedRun { runId: string; instruction: string; session?: 
  *  BL-40's broken price watch spent 13 to 26 a morning hunting for a page, at up to $0.25 a fire. */
 export const RECURRING_MAX_STEPS = 16;
 
+/**
+ * A fire's budget. A one-off job that works on a goal — a hand-off ("work on it and get back to me"), a Continue,
+ * their resumes — is a whole piece of work, not a check: 60 steps and 20 minutes (MWA_GOAL_JOB_STEPS /
+ * MWA_GOAL_JOB_MIN). Cost test 2026-10-23: at 30 steps the newsletter's research used the budget and the writing
+ * never ran. Recurring fires stay at RECURRING_MAX_STEPS; other one-off jobs at the deployment's default.
+ */
+export function jobBudget(task: { recur?: string; goal?: string }, deps: { maxSteps?: number; maxMin?: number }, env: NodeJS.ProcessEnv = process.env): { maxSteps: number; maxWallMs: number; consolidateEvery: number } {
+  if (task.recur) return { maxSteps: Math.min(deps.maxSteps ?? 30, RECURRING_MAX_STEPS), maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 };
+  if (task.goal) return { maxSteps: Math.max(deps.maxSteps ?? 30, Number(env.MWA_GOAL_JOB_STEPS ?? 60) || 60), maxWallMs: Math.max(deps.maxMin ?? 8, Number(env.MWA_GOAL_JOB_MIN ?? 20) || 20) * 60_000, consolidateEvery: 10 };
+  return { maxSteps: deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 };
+}
+
 /** Mirrors agent.ts's cap: a job is resumed at most twice in all, whatever stopped it. */
 const MAX_RESUMES = 2;
 
@@ -280,7 +292,7 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       // dueNow: tell the run the timing is already settled (a resume carries its own framing, and
       // "do only the remaining work" must not be overridden by "do it all now").
       // extraRoots: the folder the task was created in, so a baked-in absolute path still resolves.
-      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt || task.recur ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: { maxSteps: task.recur ? Math.min(deps.maxSteps ?? 30, RECURRING_MAX_STEPS) : deps.maxSteps ?? 30, maxWallMs: (deps.maxMin ?? 8) * 60_000, consolidateEvery: 10 } });
+      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt || task.recur ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: jobBudget(task, deps) });
       ranOk = true;
     } catch (e) {
       r = { summary: `failed: ${(e as Error).message.slice(0, 120)}`, reason: 'error', steps: 0, toolCalls: 0, costUsd: 0, durationMs: 0 } as any;

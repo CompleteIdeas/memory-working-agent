@@ -2535,6 +2535,23 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   if (brain instanceof RoutedProvider) costUsd += brain.spentUsd();
 
   const reason: AgentResult['reason'] = allDone ? 'done' : 'budget';
+  // A planned run that ran out of room queues a resume, as a direct run does (agent.ts, SCHEDULER-DRIVEN RESUME).
+  // Cost test 2026-10-23: the newsletter's research step used the job's budget, the writing step never ran, and
+  // nothing picked it up — the person got research notes and "the newsletter isn't finished". The resume runs
+  // unplanned (the scheduler turns planning off for resumes) with the plan and how far it got.
+  let planResumeQueued = false;
+  const planAttempt = opts.resumeAttempt ?? 0;
+  if (!allDone && opts.memory.enabled && !opts.subRun && !opts.jobRecur && aggToolCalls > 0 && planAttempt < 2) {
+    const plan = steps.map((s, i) => `${i + 1}. ${s.task}${i < stepOutcomes.length ? ' (ran)' : ' (not started)'}`).join('\n');
+    const cont = `Resume and finish this task — an earlier attempt ran out of room before completing it (resume ${planAttempt + 1} of 2). It was planned as:\n${plan}\nFIRST recall what you already did and check the files already in the working folder; then do ONLY the remaining steps and finish. Do not start over.\n\nTHE TASK: ${instruction}`;
+    const id = await opts.memory.addScheduledTask(cont, now() + 60_000, { notify: opts.session, dir: opts.dir, resumeAttempt: planAttempt + 1, person: opts.personId, depth: opts.jobDepth, goal: opts.jobGoal,
+      resumeOf: opts.jobLineage ?? opts.jobId, byRun: opts.rootRunId, urgent: opts.jobUrgent, limits: opts.jobLimits, until: opts.jobUntil, deliver: opts.jobDeliver, tainted: chainTainted, task: opts.jobTask ?? instruction, request: opts.jobRequest });
+    if (id) {
+      planResumeQueued = true;
+      history.push(`(unfinished — queued a resume for ~1 min from now, attempt ${planAttempt + 1}/2)`);
+      if (opts.jobId) finalSummary += `\n\n(I ran out of room partway through, so I'm continuing in the background; the finished result will come here.)`;
+    }
+  }
   appendRunLog({
     ts: start, session: opts.session ?? '', instruction: instruction.slice(0, 160), reason,
     steps: aggSteps, dispatches: aggDispatches, toolCalls: aggToolCalls, reRecalls: 0, supersedes: 0, consolidations: 0,
@@ -2556,6 +2573,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     ...(planValue ? { watchValue: planValue } : {}),
     ...(planActions ? { actionsTaken: planActions } : {}),
     ...(planLocal ? { localActions: planLocal } : {}),
+    ...(planResumeQueued ? { resumeQueued: true } : {}),
     reason, summary: finalSummary, steps: aggSteps, dispatches: aggDispatches, toolCalls: aggToolCalls,
     reRecalls: 0, supersedes: 0, consolidations: 0, durationMs: now() - start, usage, costUsd: Number(costUsd.toFixed(6)), history,
   };
