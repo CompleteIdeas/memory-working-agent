@@ -84,8 +84,12 @@ export interface Provider {
  * OpenRouter provider tags ("anthropic,google-vertex/us,amazon-bedrock/us-east-1"), limits calls to those hosts and
  * turns off fallback to others, so a deployment can keep its data in one country.
  */
-/** BL-61: where OpenRouter may send a call when nobody says otherwise — first-party US labs and US-region hosts. */
-export const US_OPENROUTER_HOSTS = ['openai', 'anthropic', 'google-vertex/us', 'azure/us', 'amazon-bedrock/us-east-1', 'amazon-bedrock/us-east-2', 'amazon-bedrock/us-west-2'];
+/** BL-61: where OpenRouter may send a call when nobody says otherwise — first-party US labs and US-region hosts.
+ *  BL-73: and US companies serving open-weight models from US data centers, so a model such as DeepSeek V4.1 Flash
+ *  can be the background worker while chats stay on OpenAI — never its maker's own endpoint (deepseek, alibaba,
+ *  minimax, z-ai) or a host outside the US. DeepInfra and Crusoe by their 8-bit endpoints, not the 4-bit ones. */
+export const US_OPENROUTER_HOSTS = ['openai', 'anthropic', 'google-vertex/us', 'azure/us', 'amazon-bedrock/us-east-1', 'amazon-bedrock/us-east-2', 'amazon-bedrock/us-west-2',
+  'deepinfra/fp8', 'deepinfra/bf16', 'together', 'fireworks', 'baseten', 'crusoe/fp8', 'parasail/fp8', 'inference-net/us'];
 
 /**
  * Cost (2026-10-23): calls nobody waits on — a scheduled job, a hand-off, thinking time — run inside this, and an
@@ -661,14 +665,37 @@ export function getProvider(role: ProviderRole): Provider {
   const main = tierProvider(role);
   const bg = loadConfig().models.background;
   if (!bg) return main;
+  // BL-73: the strong tier stays the usual model — the boss a background run escalates to.
+  if (role === 'high' && backgroundBoss()) return main;
   try { return new BackgroundSwitch(main, resolveProvider(bg)); } catch { return main; }
 }
 
 /**
+ * BL-73 (Robert, 2026-10-23: "a solid citizen that can just run on short, ongoing tasks … when it does [complex work],
+ * it can have a coworker or a boss that can review the work"). With a background model, a background run starts on
+ * it and escalates to the usual strong model (the boss) — when it stalls for 3 steps, ignores a check or gives up
+ * (src/agent.ts) — when MWA_BACKGROUND_BOSS=on. Off (the default), both tiers are the background model.
+ */
+export function backgroundBoss(env: NodeJS.ProcessEnv = process.env): boolean {
+  // Off unless asked for. The job bake-off (2026-10-23, round 3) measured it: with MWA's checks, Luna alone scored
+  // 27/28 at $0.0044 a brief and with Sol as boss 28/28 at $0.074; DeepSeek V4.1 Flash 27/28 either way, $0.0046
+  // against $0.063. The boss stepped in on 8-10 of 28 fires and was over 90% of the cost.
+  return /^(1|on|true|yes)$/i.test(String(env.MWA_BACKGROUND_BOSS ?? '').trim());
+}
+
+/** True when this call is background work handed to a background model: it starts on the worker, with a boss above. */
+export function backgroundWorker(): boolean {
+  if (backgroundCalls.getStore() !== true || !backgroundBoss()) return false;
+  try { return Boolean(loadConfig().models.background); } catch { return false; }
+}
+
+/**
  * Cost (2026-10-23): a call made inside backgroundCalls (a scheduled job, a hand-off, thinking time) goes to
- * models.background (MWA_BACKGROUND_MODEL), at both tiers; a chat the person is waiting on keeps the usual model.
+ * models.background (MWA_BACKGROUND_MODEL); a chat the person is waiting on keeps the usual model.
  * Measured on three research jobs: $0.14 on gpt-6-luna against $2.08-2.62 on gpt-6.1-sol, all three files written.
  * Decided per call, not per provider object, because one router serves both chats and jobs.
+ * BL-73: at MWA_BACKGROUND_EFFORT (default high) — the job bake-off measured every worker at high, where a brief cost
+ * $0.003 on DeepSeek V4.1 Flash; the cheap tier's usual "minimal" is for quick chat turns, not unattended work.
  */
 class BackgroundSwitch implements Provider {
   constructor(private readonly main: Provider, private readonly bg: Provider) {}
@@ -676,7 +703,12 @@ class BackgroundSwitch implements Provider {
   get id(): string { return this.active().id; }
   get model(): string { return this.active().model; }
   get price(): [number, number] { return this.active().price; }
-  chat(input: ChatInput): Promise<ChatResult> { return this.active().chat(input); }
+  chat(input: ChatInput): Promise<ChatResult> {
+    if (backgroundCalls.getStore() !== true) return this.main.chat(input);
+    const e = String(process.env.MWA_BACKGROUND_EFFORT ?? 'high').trim().toLowerCase();
+    const effort = (['minimal', 'low', 'medium', 'high'] as const).find((x) => x === e);
+    return this.bg.chat(effort ? { ...input, reasoningEffort: effort } : input);
+  }
 }
 
 function tierProvider(role: ProviderRole): Provider {

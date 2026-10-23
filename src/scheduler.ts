@@ -19,6 +19,7 @@ import { runAgent } from './agent.js';
 import { detectorArmed, scoreDryRun } from './detector.js';
 import { recordReceipt } from './receipts.js';
 import { claimInterrupted, describeSteps, startHeartbeat, STALE_MS } from './transcript.js';
+import { configuredWatchGate, SAME_THRESHOLD, type WatchGate } from './watch-gate.js';
 
 export interface InterruptedRun { runId: string; instruction: string; session?: string; personId?: string; jobId?: string; recurring: boolean; resumed: boolean; steps: number; unfinished: number }
 
@@ -139,6 +140,8 @@ export interface SchedulerDeps {
   /** A run this process lost to a crash or restart that is NOT resumed automatically — a chat, the
    *  inbox, or a job past its resume cap (BL-10). The channel tells the person. */
   onInterrupted?: (info: InterruptedRun) => void | Promise<void>;
+  /** BL-73: the check before a change-only watch speaks (Clef). Defaults to the configured one; null turns it off. */
+  watchGate?: WatchGate | null;
 }
 
 /** A message compared for "the same as last time": case, spacing and end punctuation don't count. */
@@ -386,6 +389,25 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       if (score) log(`🔎 detector dry run scored ${score}${rec ? ` (${rec.ev.n} agreeing)` : ''}: ${task.instruction.slice(0, 40)}`);
     }
     if (detectorNews) summary += `\n\n${detectorNews}`;
+    // BL-73: a change-only watch about to speak — a change, or "confirmed finished" with a reading that moved — is
+    // checked by Clef against what it said last; the same situation in other words stays quiet (src/watch-gate.ts).
+    // Only ever toward silence, and not for a run that staged something (that is news of its own).
+    const gate = deps.watchGate === undefined ? configuredWatchGate() : deps.watchGate;
+    const lastSaid = task.lastRun?.value ?? task.lastRun?.summary;
+    // "Acted" as in quietStop below: staged or done on this machine. A watch opens its page every fire, and counted as
+    // acting it skipped the gate on every page watch (job bake-off round 2: 0 checks, 7 unwanted messages).
+    const actedLocally = Boolean((r as { staged?: string[] }).staged?.length) || Number((r as { localActions?: number }).localActions) > 0;
+    const aboutToSpeak = (outcome === 'changed' && !actedLocally) || (completion === 'stopped' && valueChanged);
+    if (gate && ranOk && !task.resumeAttempt && task.deliver === 'changed' && isWatch(task) && aboutToSpeak && lastSaid?.trim()
+        && !(r as { staged?: string[] }).staged?.length) {
+      const same = await gate({ request: task.request ?? task.task ?? task.instruction, until: task.until, previous: lastSaid,
+        reading: (r as { watchValue?: string }).watchValue, message: String(r.summary ?? '') });
+      if (same !== null && same >= SAME_THRESHOLD) {
+        log(`· watch gate: the same situation as last time (Clef ${same.toFixed(2)}): ${task.instruction.slice(0, 40)}`);
+        if (outcome === 'changed') { outcome = 'no-change'; overridden = true; }
+        valueChanged = false;
+      }
+    }
     const policy = task.deliver ?? 'always';
     // BL-51, NOISE (BL-40: 13 unwanted messages in 13 days for Maya with memory on \u2014 8 from one price watch that
     // could not verify the page, "so I did not send an alert" itself sent every morning, and a repeat brief).

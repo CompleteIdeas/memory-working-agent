@@ -15,6 +15,7 @@ import { microsoftConfigured, listRecentOutlook } from './connectors/microsoft.j
 import { parseJsonLoose } from './util.js';
 import { loadEnv } from './env.js';
 import { resolve } from 'node:path';
+import { FACT_SHAPE, factTags, type LearnedFact } from './fact-shape.js';
 
 interface ScannedMessage { id: string; from: string; subject: string; date: string; snippet: string; }
 
@@ -40,7 +41,8 @@ const EXTRACT_SYSTEM = [
   'You are building a durable knowledge base from a person\'s email.',
   'From the messages below, extract facts worth remembering LONG-TERM: people (name → who they are / role / relationship), recurring topics & projects, commitments, and dates/deadlines.',
   'Skip marketing, receipts, notifications, security alerts, and one-off trivia.',
-  'Output ONLY JSON: {"facts":[{"concept":"short title (3-8 words)","content":"the fact, lead with it; include names/dates/specifics"}]}. Return 0 to 10 facts.',
+  FACT_SHAPE,
+  'Output ONLY JSON: {"facts":[{"concept":"…","content":"…","topic":"…","kind":"…","people":["…"],"date":"YYYY-MM-DD","valid_to":"YYYY-MM-DD"}]}. Return 0 to 10 facts.',
 ].join('\n');
 
 export interface IngestResult { unique: number; learned: number; }
@@ -70,13 +72,14 @@ export async function runIngest(opts: { days?: number; max?: number; dbPath?: st
     const block = batch.map((m, j) => `${i + j + 1}. ${m.date} | ${m.from} | ${m.subject} | ${m.snippet}`).join('\n');
     try {
       const r = await brain.chat({ system: EXTRACT_SYSTEM, messages: [{ role: 'user', content: `EMAILS:\n${block}\n\nExtract the durable facts now.` }], maxTokens: 900 });
-      const parsed = parseJsonLoose<{ facts?: { concept?: string; content?: string }[] }>(r.text);
+      const parsed = parseJsonLoose<{ facts?: (LearnedFact & { concept?: string; content?: string })[] }>(r.text);
       for (const f of parsed?.facts ?? []) {
         if (!f?.concept || !f?.content) continue;
         // SPINE: facts mined from inbox content are UNTRUSTED — provenance:'ingested' stamps
         // trust=untrusted so a planted instruction in an email can never drive a privileged
         // action later (F2). canonical here only affects storage salience, not trust.
-        const id = await memory.write(String(f.concept).slice(0, 80), String(f.content), ['topic=world', 'intent=finding', 'confidence_level=observed', 'source=email-ingest'], { canonical: true, eventType: 'observation', provenance: 'ingested', origin: `email/${source}` });
+        const shape = factTags(f); // BL-74: specific topic, people, date, end date
+        const id = await memory.write(String(f.concept).slice(0, 80), String(f.content), [...shape.tags, 'confidence_level=observed', 'source=email-ingest'], { canonical: true, eventType: shape.decision ? 'decision' : 'observation', provenance: 'ingested', origin: `email/${source}`, ...(shape.validTo ? { validTo: shape.validTo } : {}) });
         if (id) learned++;
       }
       log(`  batch ${Math.floor(i / BATCH) + 1}/${batches} → ${learned} facts learned so far`);

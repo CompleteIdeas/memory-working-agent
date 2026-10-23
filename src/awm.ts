@@ -106,6 +106,10 @@ export interface WriteOpts {
   reservedConcept?: boolean;
   /** the PERSON named this memory themselves (onboarding): their concept is kept as written (BL-38). */
   ownName?: boolean;
+  /** BL-74: the last day the fact holds (YYYY-MM-DD) — recalled after it as old, not as current (AWM temporal validity). */
+  validTo?: string;
+  /** BL-74: MWA's own logs (run records): short-lived, never canonical. */
+  ephemeral?: boolean;
 }
 
 export { isReservedConcept, unreservedConcept } from './reserved-concept.js';
@@ -526,7 +530,8 @@ export class MwaMemory implements Memory {
           concept: concept.slice(0, 80),
           content,
           tags: stamped,
-          memoryClass: opts.canonical ? 'canonical' : 'working',
+          memoryClass: opts.ephemeral ? 'ephemeral' : opts.canonical ? 'canonical' : 'working',
+          ...(opts.validTo ? { validTo: opts.validTo } : {}),
           memoryType: 'semantic',
           enableReinforcement: mayMerge,
           // An untrusted write never reaches AWM as a correction: its supersede path has no stage check, so

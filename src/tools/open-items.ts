@@ -17,6 +17,7 @@ import type { MwaMemory } from '../awm.js';
 import { normalizePersonId } from '../person.js';
 
 const MAX_ADDS_PER_RUN = 12;
+export const EMPTY_OPEN_ITEMS = '(no open items recorded: nothing is known to be open. That is the full list; go on to the inbox and calendar.)';
 const clip = (s: unknown, n: number) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n)}…` : t; };
 
 export function openItemTools(memory: MwaMemory | null | undefined): RegisteredTool[] {
@@ -73,7 +74,8 @@ export function openItemTools(memory: MwaMemory | null | undefined): RegisteredT
     },
     handler: async (_args, ctx) => {
       const items = await memory.listOpenItems(person(ctx));
-      if (!items.length) return '(no open items recorded)';
+      // BL-73: an empty list is an answer, and says what comes next — the job bake-off's cheap models called it again and again.
+      if (!items.length) return EMPTY_OPEN_ITEMS;
       return `OPEN ITEMS (${items.length}):\n${items.slice(0, 30).map((o) => `${o.id.slice(0, 8)} — ${clip(o.what, 160)}${o.due ? ` · due ${o.due}` : ''}${o.who ? ` · ${clip(o.who, 60)}` : ''}${o.source ? ` · from ${clip(o.source, 80)}` : ''}`).join('\n')}`;
     },
   };

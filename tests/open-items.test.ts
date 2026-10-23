@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MwaMemory } from '../src/awm.js';
-import { openItemTools } from '../src/tools/open-items.js';
+import { openItemTools, EMPTY_OPEN_ITEMS } from '../src/tools/open-items.js';
 import { ToolRegistry } from '../src/tools/registry.js';
 import { KNOWLEDGE_TOOLS } from '../src/memory-off.js';
 import { jobContext } from '../src/agent.js';
@@ -45,10 +45,10 @@ describe('open items', () => {
       await reg.call('open_item_add', { what: 'Pay Ocean State Power $142.37', due: '2026-11-09' }, maya());
       const [item] = await mem.listOpenItems('maya');
       expect(await reg.call('open_item_close', { id: item.id.slice(0, 8), why: 'paid' }, maya())).toMatch(/^closed/);
-      expect(await reg.call('open_items', {}, maya())).toBe('(no open items recorded)');
+      expect(await reg.call('open_items', {}, maya())).toBe(EMPTY_OPEN_ITEMS);
       expect((await mem.listOpenItems('maya', true))[0]).toMatchObject({ status: 'closed', closedWhy: 'paid' });
       await reg.call('open_item_add', { what: 'Maya only' }, maya());
-      expect(await reg.call('open_items', {}, maya({ personId: 'sam' }))).toBe('(no open items recorded)');
+      expect(await reg.call('open_items', {}, maya({ personId: 'sam' }))).toBe(EMPTY_OPEN_ITEMS);
     });
   });
 
