@@ -161,9 +161,11 @@ const runCommandTool: RegisteredTool = {
     if (verdict0.kind === 'read-only' && !stageOnly) return run(ctx.sandboxDir, scrubbedEnv());
     const verdict = verdict0.kind === 'read-only' ? { kind: 'needs-approval' as const, reason: 'nobody is watching this run, so nothing runs without your approval' } : verdict0;
     // BL-72: with the reviewer on, a command it passes runs now — with no secrets in its environment, as a
-    // read-only command does — instead of waiting for the person. The fixed rules see the plain card text.
-    const auto = await tryAutoApprove({ tool: 'run_command', ctx, summary: `Run this command in ${ctx.sandboxDir}:\n  ${command}\n(Needs approval because ${verdict.reason}.)`,
-      run: async () => run(ctx.sandboxDir, scrubbedEnv()) });
+    // read-only command does — instead of waiting for the person. The fixed rules see the command itself.
+    // A run nobody watches only ever ran read-only commands without a person: that stays (BL-72 review, H4).
+    const auto = stageOnly && verdict0.kind !== 'read-only' ? { ran: false as const, review: undefined }
+      : await tryAutoApprove({ tool: 'run_command', ctx, command, summary: `Run this command in ${ctx.sandboxDir}:\n  ${command}\n(Needs approval because ${verdict.reason}.)`,
+        run: async () => run(ctx.sandboxDir, scrubbedEnv()) });
     if (auto.ran) return auto.text;
     // A run nobody watches may stage only a few: a tainted job must not flood the approvals list.
     if (stageOnly && ctx.runId && pendingStagedBy(ctx.runId, 'tool').length >= 3) return '(refused: this run has already asked for 3 approvals — wait for the person, and say in your summary what is waiting)';

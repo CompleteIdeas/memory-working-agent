@@ -21,11 +21,14 @@
  * action, the person's request and the run's taint go to Cloudflare; nothing else does.
  */
 import { appendFileSync, mkdirSync } from 'node:fs';
+import { inGitControlPath, runsLaterReason } from './tools/shell-gate.js';
 import { dirname, join, resolve } from 'node:path';
 
 export type ReviewMode = 'off' | 'shadow' | 'on';
 export interface ReviewInput {
   tool: string; summary: string; kind?: string;
+  /** run_command: the command itself, exactly as it will run (the card's text is for people) */
+  command?: string;
   /** what the person asked, in their words; absent for an unattended job */
   request?: string;
   tainted?: boolean; interactive?: boolean; sandboxDir?: string;
@@ -50,6 +53,8 @@ const ALWAYS_ASK_TOOLS: Record<string, string> = {
   policy_save: 'it saves a standing rule for every future task', policy_forget: 'it removes a standing rule',
   schedule_detector: 'it lets a job skip its own runs', quiet_hours: 'it changes when MWA may message you',
   vault_request: 'it touches stored credentials', vault_forget: 'it touches stored credentials',
+  // a knowledge note is loaded into future tasks like a standing rule, and its preview is cut short (BL-72 review, M2)
+  knowledge_write: 'it saves a note every future task may load',
 };
 
 /** Layer 1 for commands: what always asks, whatever the context. */
@@ -63,16 +68,53 @@ const COMMAND_RULES: [RegExp, string][] = [
 ];
 const NETWORK = /\b(curl|wget|fetch|nc|ncat|telnet|ssh|scp|sftp|ftp|rsync|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|bitsadmin|certutil)\b|https?:\/\//i;
 
+// BL-72 live review (4 high): a command the reviewer may run without asking must be a plain, local, one-line
+// command over the run's own files. Anything that can run other code, reach the network (MWA's own API among
+// it), or touch a path outside the run's folders is the person's call, whatever Clef thinks of it.
+/** Programs that run other code: an interpreter, a shell, a package manager, a build tool, exec-style flags. */
+// In command position (start, or after ; & | ( ` or a keyword), with or without a path: `du -sh` is not a shell.
+const RUNS_CODE = /(?:^|[;&|(`]\s*|\b(?:then|do|else|exec|time|command|builtin)\s+)(?:\S*\/)?(sh|bash|zsh|dash|ksh|fish|csh|python[\d.]*|node|nodejs|deno|bun|perl|ruby|php|lua|java|pwsh|powershell|cmd|osascript|npm|npx|pnpm|yarn|pip[\d.]*|pipx|uv|poetry|gem|cargo|go|make|cmake|gradle|mvn|dotnet|docker|podman|env|nohup|setsid|timeout|watch|nice|strace|gdb|awk|gawk|busybox|at|batch)\b|\s-(?:c|e|exec|execdir|ok)\b|--(?:exec|eval|command)\b|\bxargs\b|\bsed\s+-[a-z]*e/i;
+/** Anything that talks to a network — MWA's own API is one hop away on any address (BL-72 review, H2). */
+const NETWORK_ANY = /\b(curl|wget|fetch|aria2c|nc|ncat|netcat|socat|telnet|ssh|scp|sftp|ftp|tftp|rsync|openssl|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|bitsadmin|certutil|http|https|nslookup|dig|host|ping)\b|[a-z]+:\/\/|\/dev\/(?:tcp|udp)\//i;
+
+/** The path-like words of a command (after quotes are removed): absolute, home, parent-relative, or with a glob. */
+function pathTokens(cmd: string): string[] {
+  return cmd.split(/[\s;&|<>()=]+/).filter((t) => t && (/^[\\/~]/.test(t) || /(^|[\\/])\.\.([\\/]|$)/.test(t) || /[*?[\]{}]/.test(t) || /^[A-Za-z]:[\\/]/.test(t)));
+}
+
+/** Layer 1 for one command: why it must go to the person, or null. */
+export function commandRule(raw: string, sandboxDir?: string): string | null {
+  if (/[\r\n]/.test(raw)) return 'it is more than one line';
+  if (raw.length > 1_500) return 'it is too long to review';
+  // A command inside the command, or a variable a reader can't see the value of: `$(…)`, backticks, `<(…)`, `$HOME`.
+  if (/[$`]|[<>]\(/.test(raw)) return 'it runs or expands something a reader cannot see';
+  // Quotes and escapes split words for the shell, not for a reader: `pk""ill`, `/usr/bin/en""v` (review M1).
+  const cmd = raw.replace(/["'`\\]/g, '');
+  for (const [re, why] of COMMAND_RULES) if (re.test(cmd)) return why;
+  if (RUNS_CODE.test(cmd)) return 'it runs other code (a script, an interpreter or a package manager)';
+  if (NETWORK_ANY.test(cmd)) return 'it reaches the network';
+  if (/(^|\s)~|\$HOME|%USERPROFILE%/i.test(cmd)) return 'it reaches the home folder';
+  const box = sandboxDir ? sandboxDir.replace(/[\\/]+$/, '') : '';
+  for (const t of pathTokens(cmd)) {
+    if (inGitControlPath(t) || runsLaterReason(t)) return 'it touches a file that runs later (a git hook or a shell profile)';
+    // Only the run's own folder, by its plain full path, and never with a glob or `..` (`/pr?c`, `../../data/.e*`).
+    const inside = box && (t === box || t.startsWith(`${box}/`) || t.startsWith(`${box}\\`)) && !/[*?[\]{}]/.test(t) && !/(^|[\\/])\.\.([\\/]|$)/.test(t);
+    if (!inside) return 'it names a path outside its own folder';
+  }
+  for (const w of cmd.split(/\s+/)) if (inGitControlPath(w) || runsLaterReason(w)) return 'it touches a file that runs later (a git hook or a shell profile)';
+  return null;
+}
+
 /** Layer 1: a fixed rule's verdict, or null when the reviewer decides. */
 export function fixedRule(a: ReviewInput): { decision: 'ask'; rule: string; reason: string } | null {
   if (a.kind === 'captured-policy') return { decision: 'ask', rule: 'standing-rule', reason: 'it saves a standing rule for every future task' };
   const t = ALWAYS_ASK_TOOLS[a.tool];
   if (t) return { decision: 'ask', rule: `tool:${a.tool}`, reason: t };
   if (a.tool === 'run_command') {
-    const cmd = commandOf(a.summary);
-    for (const [re, why] of COMMAND_RULES) if (re.test(cmd)) return { decision: 'ask', rule: 'command', reason: why };
+    const why = commandRule(a.command ?? commandOf(a.summary), a.sandboxDir);
+    if (why) return { decision: 'ask', rule: 'command', reason: why };
     // After outside content, the network is where a planted instruction sends what it found.
-    if (a.tainted && NETWORK.test(cmd)) return { decision: 'ask', rule: 'tainted-network', reason: 'it reaches the network after this run read outside content' };
+    if (a.tainted && NETWORK.test(a.command ?? commandOf(a.summary))) return { decision: 'ask', rule: 'tainted-network', reason: 'it reaches the network after this run read outside content' };
   }
   return null;
 }
@@ -106,7 +148,7 @@ export function clefReviewer(o: { token: string; account: string; model?: string
           request: (a.request ?? '(no message from the person: this is an unattended job)').slice(0, 2000),
           working_folder: a.sandboxDir ?? '',
           read_outside_content: a.tainted ? 'yes' : 'no',
-          tool: a.tool, action: a.summary.slice(0, 2000),
+          tool: a.tool, action: (a.command !== undefined ? a.command.replace(/(^|s)#.*$/gm, '$1') : a.summary).slice(0, 2000),
         } }),
       });
       if (!res.ok) return null;

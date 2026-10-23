@@ -39,6 +39,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { reviewAction, reviewMode, configuredClef, logReview, type Review } from '../approval-review.js';
+import { hasPasted } from '../handoff.js';
 import Database from 'better-sqlite3';
 import { ToolRefusal, type RegisteredTool, type ToolContext } from './registry.js';
 import { isStepUpSatisfied } from '../step-up.js';
@@ -202,16 +203,20 @@ const autoByRun = new Map<string, number>();
  * Returns `{ ran: false, review }` when it must go to the person — the caller stages it as before, passing the
  * review on so stageAction logs it rather than asking Clef twice. Off or shadow: `{ ran: false }` at once.
  */
-export async function tryAutoApprove(a: { tool: string; summary: string; kind?: ApprovalKind; ctx?: ToolContext; args?: Record<string, unknown>; run: () => Promise<string> }): Promise<{ ran: true; text: string } | { ran: false; review?: Review }> {
+export async function tryAutoApprove(a: { tool: string; summary: string; command?: string; kind?: ApprovalKind; ctx?: ToolContext; args?: Record<string, unknown>; run: () => Promise<string> }): Promise<{ ran: true; text: string } | { ran: false; review?: Review }> {
   if (reviewMode() !== 'on') return { ran: false };
   const c = a.ctx ?? { sandboxDir: '.' };
-  const input = { tool: a.tool, summary: a.summary, kind: a.kind, request: c.personMessage, tainted: c.tainted === true, interactive: c.interactive, sandboxDir: c.sandboxDir };
+  // A run with no id can't be counted against the cap: the person decides (BL-72 review).
+  if (!c.runId) return { ran: false };
+  // Pasted text in the person's message is someone else's words: the run counts as tainted here (review M3).
+  const tainted = c.tainted === true || (c.personMessage ? hasPasted(c.personMessage) : false);
+  const input = { tool: a.tool, summary: a.summary, command: a.command, kind: a.kind, request: c.personMessage, tainted, interactive: c.interactive, sandboxDir: c.sandboxDir };
   const review = await reviewAction(input, configuredClef());
   if (review.decision !== 'auto') return { ran: false, review };
-  const runKey = c.runId ?? '';
+  const runKey = c.runId;
   const used = autoByRun.get(runKey) ?? 0;
-  if (runKey && used >= MAX_AUTO_PER_RUN) return { ran: false, review: { ...review, decision: 'ask', by: 'run-cap', reason: `this run already ran ${MAX_AUTO_PER_RUN} actions without asking` } };
-  if (runKey) { autoByRun.set(runKey, used + 1); if (autoByRun.size > 500) autoByRun.delete(autoByRun.keys().next().value!); }
+  if (used >= MAX_AUTO_PER_RUN) return { ran: false, review: { ...review, decision: 'ask', by: 'run-cap', reason: `this run already ran ${MAX_AUTO_PER_RUN} actions without asking` } };
+  autoByRun.set(runKey, used + 1); if (autoByRun.size > 500) autoByRun.delete(autoByRun.keys().next().value!);
   const id = newId();
   logReview(id, input, review, 'on');
   const now = Date.now();
@@ -225,8 +230,9 @@ export async function tryAutoApprove(a: { tool: string; summary: string; kind?: 
     store().prepare(`UPDATE approvals SET status = 'done', result = ?, updated_at = ? WHERE id = ?`).run(tail(out), Date.now(), id);
     return { ran: true, text: `${out}\n(ran without asking the person: the reviewer judged it safe — ${review.reason})` };
   } catch (e) {
-    const msg = (e as Error).message;
+    const msg = e instanceof ToolRefusal ? e.text : (e as Error).message;
     store().prepare(`UPDATE approvals SET status = 'failed', result = ?, updated_at = ? WHERE id = ?`).run(tail(msg), Date.now(), id);
+    if (e instanceof ToolRefusal) throw e; // the tool's own refusal keeps its meaning for the registry
     return { ran: true, text: `(it ran without asking — the reviewer judged it safe — and failed: ${msg.slice(0, 300)})` };
   }
 }
@@ -314,8 +320,10 @@ export function requireApproval(
       ...tool.def,
       description:
         `${tool.def.description} ` +
-        `(WRITE — does NOT run now: it is staged for the person to approve in the app or with the ` +
-        `Approve button in Telegram. You cannot approve it yourself.)`,
+        (reviewMode() === 'on'
+          ? `(WRITE — MWA's reviewer may run it now if it is clearly safe; otherwise it is staged for the person to approve. You cannot approve it yourself.)`
+          : `(WRITE — does NOT run now: it is staged for the person to approve in the app or with the ` +
+            `Approve button in Telegram. You cannot approve it yourself.)`),
     },
     handler: async (args, ctx) => {
       const summary = opts?.preview
