@@ -289,7 +289,7 @@ function sessionFor(id: string, workspaceRoot: string): Session {
   if (!s) {
     // BL-71d: after a restart or on another device, carry on from the kept conversation, not from nothing. A turn
     // with no taint record (or one that read outside content) comes back fenced.
-    const kept = readConversation(id, 12).filter((t) => t.kind === 'chat').map((t) => ({ instruction: t.message, summary: t.reply.slice(0, 1500), tainted: t.tainted !== false }));
+    const kept = readConversation(id, 12).filter((t) => t.kind === 'chat' || t.kind === 'result').map((t) => ({ instruction: t.kind === 'result' ? `(background result) ${t.message}` : t.message, summary: t.reply.slice(0, 1500), tainted: t.tainted !== false }));
     s = { dir: resolve(workspaceRoot, 'serve', id.replace(/[^a-z0-9_-]/gi, '')), history: kept, lastUsed: Date.now(), topicStart: 0 };
     sessions.set(id, s);
   }
