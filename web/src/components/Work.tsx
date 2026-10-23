@@ -62,6 +62,13 @@ export function Work({ refresh }: { refresh?: number }) {
       ) : (
         <p className="mt-2 text-[14px] text-dim">No note on where this stands yet.{g.jobs ? ` ${g.jobs} job${g.jobs > 1 ? 's' : ''} waiting to run.` : ''}</p>
       )}
+      {g.thought && g.status !== 'done' && (
+        // BL-71e: what MWA proposes, from thinking time. A proposal only: Continue acts on it.
+        <p className="mt-2 text-[14px] border-l-2 border-line pl-2.5">
+          <span className="mono text-[11px] text-dim uppercase tracking-wide mr-1.5">{g.thought.kind === 'ask' ? 'question for you' : g.thought.kind === 'next' ? 'next step' : 'waiting on'}</span>
+          {g.thought.text}
+        </p>
+      )}
       <div className="flex flex-wrap gap-2 mt-3">
         {g.status !== 'done' && (
           <button disabled={busy === g.id} onClick={() => void act(g, 'continue')} className="rounded-[3px] bg-signal text-white px-3 py-1.5 text-[13px] font-medium hover:opacity-90 disabled:opacity-50">Continue</button>

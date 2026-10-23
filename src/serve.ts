@@ -89,6 +89,7 @@ import { listFiles, insideRoot, fileHeaders, saveUpload, deleteFile, sessionFold
 import { offersBackground, OFFER_TEXT, startBackgroundWork, continueGoal } from './handoff.js';
 import { resolvePersonId } from './person.js';
 import { appendTurn, readConversation, listConversations } from './conversations.js';
+import { thinkMode, thinkDue, thinkOnce, thinkEveryMs, thinkDailyUsd, readThoughts, latestThoughts } from './thinking.js';
 import { exportDoc, exportFormats } from './doc-export.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -889,6 +890,32 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         res.end(JSON.stringify({ session, folder: sessionFolder(session), turns: session ? readConversation(session, 80) : [] }));
         return;
       }
+      // BL-71e: welcome back — what moved while the person was away. No model call: results that came in, goals
+      // whose record changed, what MWA thought about, approvals waiting.
+      if (p === '/api/welcome' && req.method === 'GET') {
+        const since = Number(url.searchParams.get('since') ?? 0) || Date.now() - 24 * 3_600_000;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        const np = process.env.MWA_NOTIFY ?? resolve('./data/notifications.jsonl');
+        let results: { title: string; session?: string; outcome?: string }[] = [];
+        try { results = readFileSync(np, 'utf8').trim().split('\n').map((l) => { try { return JSON.parse(l); } catch { return null; } })
+          .filter((n: any) => n && Number(n.ts) > since).slice(-10).map((n: any) => ({ title: String(n.title ?? n.instruction ?? '').slice(0, 120), session: n.session, outcome: n.outcome })); } catch { /* none */ }
+        let goals: { id: string; title: string; state: string; conv?: string }[] = [];
+        if (!MEMORY_OFF) {
+          const cfg = loadConfig();
+          const memory = new MwaMemory(SERVE_AGENT, process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
+          try {
+            const [all, records] = await Promise.all([memory.listGoals(), memory.listGoalRecords()]);
+            goals = records.filter((r) => r.at > since).map((r) => {
+              const g = all.find((x) => x.id === r.goalId);
+              const state = r.trust === 'untrusted' ? '(noted after reading outside content — open the Work view)' : (r.text.split('\n')[0] ?? '').replace(/^Where we are on "[^"]*" \(goal [^)]*\): /, '').slice(0, 220);
+              return g && g.status !== 'done' ? { id: g.id.slice(0, 8), title: g.title, state, conv: r.conv } : null;
+            }).filter((x) => x !== null).slice(0, 6) as { id: string; title: string; state: string; conv?: string }[];
+          } finally { memory.close(); }
+        }
+        const thoughts = readThoughts().filter((t) => t.at > since && t.goalId && t.kind !== 'wait').slice(-6).map((t) => ({ title: t.title, kind: t.kind, text: t.text }));
+        res.end(JSON.stringify({ since, results, goals, thoughts, approvals: listPendingActions().length }));
+        return;
+      }
       // BL-71d: the Work view — every goal, where it stands, what it waits on.
       if (p === '/api/work' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -899,13 +926,15 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           const me = resolvePersonId({ channel: 'web', name: String(url.searchParams.get('person') ?? '').trim() || undefined });
           const [goals, records, jobs] = await Promise.all([memory.listGoals(), memory.listGoalRecords(), memory.pendingScheduled()]);
           const ws = resolve(cfg.workspace ?? './mwa-workspace');
-          const rel = (f: string) => { const r = relative(ws, resolve(f)).split(sep).join('/'); return r.startsWith('..') ? null : r; };
+          const rel = (f: string) => { const r = relative(ws, resolve(f)).split(sep).join('/'); return r.startsWith('..') || isAbsolute(r) ? null : r; };
+          const thoughts = latestThoughts(); // BL-71e
           res.end(JSON.stringify({ goals: goals.filter((g) => !g.person || g.person === me).map((g) => {
             const rec = records.find((r) => r.goalId === g.id);
             const files = rec ? [...rec.text.matchAll(/^Files: (.*)$/gm)].flatMap((m) => m[1].split(', ')).map(rel).filter(Boolean) : [];
             return { id: g.id.slice(0, 8), title: g.title, status: g.status, priority: g.priority, createdAt: g.createdAt,
               jobs: jobs.filter((t) => t.goal === g.id).length,
-              record: rec ? { text: rec.text, at: rec.at, by: rec.by, conv: rec.conv, untrusted: rec.trust === 'untrusted', files } : null };
+              record: rec ? { text: rec.text, at: rec.at, by: rec.by, conv: rec.conv, untrusted: rec.trust === 'untrusted', files } : null,
+              thought: (() => { const t = thoughts.get(g.id); return t && (!rec || t.at >= rec.at) ? { kind: t.kind, text: t.text, at: t.at } : null; })() };
           }) }));
         } finally { memory.close(); }
         return;
@@ -1372,6 +1401,19 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       const memory = new MwaMemory(SERVE_AGENT, process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
       const brain = new RoutedProvider(getProvider('brain'), getProvider('high'));
       const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
+      // BL-71e: thinking time — between conversations, one proposal per open goal (MWA_THINK=propose; off by default).
+      if (thinkMode() !== 'off' && !MEMORY_OFF) {
+        let lastAt = Math.max(0, ...readThoughts().map((t) => t.at));
+        let thinking = false;
+        setInterval(() => {
+          if (thinking || !thinkDue({ lastAt, now: Date.now() })) return;
+          thinking = true; lastAt = Date.now();
+          void thinkOnce(memory, getProvider('brain'), { person: resolvePersonId({ channel: 'web' }) })
+            .then((t) => { if (t.length) logger.info('think', `${t.length} thought(s)`, { asks: t.filter((x) => x.kind === 'ask').length }); })
+            .finally(() => { thinking = false; });
+        }, 5 * 60_000).unref();
+        console.log(`  💭 thinking time on — proposals only, every ${Math.round(thinkEveryMs() / 3_600_000 * 10) / 10} h, at most $${thinkDailyUsd()} a day`);
+      }
       // PASS `memory`. Without it memoryTools()/workTools() register nothing, so every SCHEDULED
       // run — the only autonomous path in the web app and therefore in Docker — had no
       // schedule_list, schedule_cancel, policy_save/forget, routine_propose, memory_profile,

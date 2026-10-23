@@ -259,6 +259,14 @@ export async function getConversation(session: string): Promise<ConversationTurn
 export interface WorkGoal {
   id: string; title: string; status: 'open' | 'in_progress' | 'blocked' | 'done'; priority: string; createdAt?: number; jobs: number;
   record: { text: string; at: number; by: string; conv?: string; untrusted: boolean; files: string[] } | null;
+  /** BL-71e: MWA's newest proposal for it, from thinking time */
+  thought: { kind: 'next' | 'ask' | 'wait'; text: string; at: number } | null;
+}
+
+/** BL-71e: what moved while the person was away. */
+export interface Welcome { since: number; results: { title: string; session?: string; outcome?: string }[]; goals: { id: string; title: string; state: string; conv?: string }[]; thoughts: { title: string; kind: string; text: string }[]; approvals: number }
+export async function getWelcome(since: number): Promise<Welcome | null> {
+  try { return await (bounceIfLocked(await fetch(`/api/welcome?since=${since}`))).json(); } catch { return null; }
 }
 export async function getWork(): Promise<WorkGoal[]> {
   try { return (await (bounceIfLocked(await fetch('/api/work'))).json()).goals ?? []; } catch { return []; }

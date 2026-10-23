@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { chatStream, getSuggestions, getNotifications, uploadFile, sessionFolder, fileUrl, startWork, getConversation, getConversations, type SpineStep, type ChatResult, type ConversationTurn, type ConversationSummary } from '../api';
+import { chatStream, getSuggestions, getNotifications, uploadFile, sessionFolder, fileUrl, startWork, getConversation, getConversations, getWelcome, openConversation, type SpineStep, type ChatResult, type ConversationTurn, type ConversationSummary, type Welcome } from '../api';
 import { Markdown, openFile } from './Markdown';
 import { Approvals } from './Approvals';
 import { SetupCards } from './SetupCards';
@@ -48,6 +48,16 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
   const [showConvs, setShowConvs] = useState(false);
   const [elsewhere, setElsewhere] = useState<{ session: string; title: string }[]>([]);
   const loadedThrough = useRef(0);
+  // BL-71e: back after a while — what moved meanwhile. Shown once per return, dismissable.
+  const [welcome, setWelcome] = useState<Welcome | null>(null);
+  useEffect(() => {
+    const now = Date.now();
+    let last = 0; try { last = Number(localStorage.getItem('mwa-last-seen') ?? 0); } catch { /* */ }
+    const mark = () => { try { localStorage.setItem('mwa-last-seen', String(Date.now())); } catch { /* */ } };
+    mark(); const iv = setInterval(mark, 60_000);
+    if (last && now - last > 2 * 3_600_000) void getWelcome(last).then((w) => { if (w && (w.results.length || w.goals.length || w.thoughts.length || w.approvals)) setWelcome(w); });
+    return () => clearInterval(iv);
+  }, []);
   const opened = useRef<Promise<void>>(Promise.resolve());
   async function openSession(s: string) {
     session.current = s;
@@ -172,6 +182,22 @@ export function Chat({ onActivity }: { onActivity?: () => void }) {
               </li>
             ))}
           </ul>
+        )}
+        {welcome && (
+          <div className="mb-6 rounded-[3px] border border-signal px-3.5 py-3 text-[14px]">
+            <div className="flex items-baseline justify-between gap-3 mb-1.5">
+              <span className="mono text-[11px] uppercase tracking-[0.14em] text-signal">welcome back · since {new Date(welcome.since).toLocaleString()}</span>
+              <button onClick={() => setWelcome(null)} className="mono text-[11px] text-dim hover:text-signal">close</button>
+            </div>
+            <ul className="space-y-1.5">
+              {welcome.goals.map((g) => (
+                <li key={g.id}><strong>{g.title}</strong>: {g.state}{g.conv && <> · <button onClick={() => { openConversation(g.conv!); setWelcome(null); }} className="underline hover:text-signal">open</button></>}</li>
+              ))}
+              {welcome.results.length > 0 && <li>{welcome.results.length} result{welcome.results.length > 1 ? 's' : ''} came in: {welcome.results.map((r) => r.title).slice(0, 3).join('; ')}</li>}
+              {welcome.thoughts.filter((t) => t.kind === 'ask').map((t, i) => <li key={i}>Question on <strong>{t.title}</strong>: {t.text}</li>)}
+              {welcome.approvals > 0 && <li>{welcome.approvals} action{welcome.approvals > 1 ? 's' : ''} waiting for your approval, below.</li>}
+            </ul>
+          </div>
         )}
         {elsewhere.map((e) => (
           <div key={e.session} className="mb-4 flex flex-wrap items-center gap-2 rounded-[3px] border border-signal px-3 py-2 text-[14px]">
