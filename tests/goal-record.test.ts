@@ -95,3 +95,11 @@ describe('goal records', () => {
     expect((await mem.getGoalRecord(id))?.text).toMatch(/prices unchanged/);
   }));
 });
+
+describe('goal list', () => {
+  it("ignores a memory that only shares the goal topic tag, such as AWM's session summary (hard test 2026-10-23)", () => withMemory(async (_dir, mem) => {
+    await mem.addGoal('A real goal', '');
+    await mem.write('Session summary (topic=goal, 3 turns)', 'Key topics: draft, write', ['topic=goal'], { noMerge: true });
+    expect((await mem.listGoals()).map((g) => g.title)).toEqual(['A real goal']);
+  }));
+});

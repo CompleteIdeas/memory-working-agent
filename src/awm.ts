@@ -900,7 +900,9 @@ export class MwaMemory implements Memory {
 
   private toGoal(e: any): Goal | null {
     const tags = this.parseTags(e.tags);
-    if (!tags.includes('topic=goal')) return null;
+    // gstatus= too: AWM's own session summaries inherit the topic tag of what they summarize, and one came back as
+    // a goal called "Session summary (topic=goal, 3 turns)" (hard test 2026-10-23). Every real goal carries a status.
+    if (!tags.includes('topic=goal') || !tags.some((t) => t.startsWith('gstatus='))) return null;
     const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
     const [title, ...rest] = String(e.content ?? '').split('\n\n');
     const status = get('gstatus=') as GoalStatus;
