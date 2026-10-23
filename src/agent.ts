@@ -25,7 +25,7 @@ import { loadDomainPack, buildDomainContext } from './domain-pack.js';
 import { ONBOARD_PROTOCOL } from './onboard.js';
 import type { Memory, RecalledMemory, TrustTier } from './awm.js';
 import { isReservedConcept, unreservedConcept, isStoreConcept } from './reserved-concept.js';
-import { effectOf, isSensitive, classifyTool, buildDoneReport, checkTripwires, readsUntrustedContent, markToolOutput, newFenceCode, outputSource, OTHER_FOLDER_MARK } from './tools/governance.js';
+import { effectOf, isSensitive, classifyTool, buildDoneReport, checkTripwires, countsAsReach, readsUntrustedContent, markToolOutput, newFenceCode, outputSource, OTHER_FOLDER_MARK } from './tools/governance.js';
 import { unbackedClaims, unbackedNote, unbackedNudge, asksForLater, type ClaimKind } from './claim-check.js';
 import { intentClassifier, type IntentClassifier, type RequestIntent } from './request-intent.js';
 import { TAINTED_JOB_MARK, parseLocalAt, ownWords, groundedInMessage } from './schedule-request.js';
@@ -1708,8 +1708,8 @@ export async function runAgent(opts: {
       // F3 PRE-GATE: on an unattended run, pause BEFORE executing the action that would exceed the
       // outward-action limit — so the (N+1)th external side effect never happens (post-hoc halting
       // would let it through). A human-watched run isn't pre-gated; per-action approval covers it.
-      if (opts.interactive === false && effectOf(action.action) === 'external'
-          && runActions.filter((a) => a.effect === 'external').length >= MAX_EXTERNAL) {
+      if (opts.interactive === false && countsAsReach(action.action)
+          && runActions.filter((a) => countsAsReach(a.tool)).length >= MAX_EXTERNAL) {
         reason = 'paused';
         finalSummary = `Paused for your review: I've reached outside your machine ${MAX_EXTERNAL} times and would rather check with you before doing more.`;
         emit('escalate', { reason: 'external-action limit reached' });

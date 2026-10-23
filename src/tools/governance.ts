@@ -205,6 +205,11 @@ function reachOf(a: ActionLike): 'external' | 'local' | 'read' { return a.effect
 export interface TripwireConfig { maxExternal?: number; maxLocalWrites?: number }
 export interface TripwireResult { tripped: boolean; reason?: string }
 
+/** Hard test 2026-10-23: opening a page in the agent browser is a read, as a fetch is — round 1 paused two research
+ *  jobs after three browser_open calls. It stays 'external' for the action log; clicks and typing still count, and
+ *  the page budget (MWA_PAGE_BUDGET) is what bounds reading. */
+export function countsAsReach(tool: string): boolean { return effectOf(tool) === 'external' && tool !== 'browser_open'; }
+
 /**
  * Watch the run's TRAJECTORY (not just the next action) and pause-and-ask when it crosses a
  * threshold — the defense against an agent that quietly does too much (touches 50 files, fires
@@ -213,7 +218,7 @@ export interface TripwireResult { tripped: boolean; reason?: string }
 export function checkTripwires(actions: ActionLike[], cfg: TripwireConfig = {}): TripwireResult {
   const maxExternal = cfg.maxExternal ?? 3;
   const maxLocal = cfg.maxLocalWrites ?? 12;
-  const ext = actions.filter((a) => reachOf(a) === 'external').length;
+  const ext = actions.filter((a) => reachOf(a) === 'external' && a.tool !== 'browser_open').length;
   if (ext > maxExternal) return { tripped: true, reason: `I've reached outside your machine ${ext} times (limit ${maxExternal}) — pausing to check with you before doing more.` };
   const local = actions.filter((a) => reachOf(a) === 'local').length;
   if (local > maxLocal) return { tripped: true, reason: `I've made ${local} changes on your machine (limit ${maxLocal}) — pausing to check with you before doing more.` };

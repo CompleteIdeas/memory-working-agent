@@ -48,4 +48,29 @@ describe('F3 tripwire hard-halt (unattended)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it('does not count opening pages in the agent browser (a read, as a fetch is) — hard test 2026-10-23', async () => {
+    let n = 0;
+    const browseBrain: Provider = {
+      id: 'stub', model: 'stub', price: [0, 0],
+      chat: async (): Promise<ChatResult> => ({ text: n < 6 ? JSON.stringify({ action: 'browser_open', url: `https://example.test/p${++n}` }) : JSON.stringify({ action: 'done', summary: 'read six pages' }), usage: { input: 1, output: 1 } }),
+    };
+    let calls = 0;
+    const tools = {
+      defs: () => [{ name: 'browser_open', description: 'open a page', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } }],
+      has: (x: string) => x === 'browser_open',
+      call: async () => `page text #${++calls}`,
+    } as unknown as Parameters<typeof runAgent>[0]['tools'];
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-trip-'));
+    const mem = new MwaMemory('trip-test-b', join(dir, 'trip.db'));
+    try {
+      const r = await runAgent({ instruction: 'read six pages about volunteer scheduling', dir, memory: mem, brain: browseBrain, worker: browseBrain,
+        tools, interactive: false, budget: { maxSteps: 25, maxWallMs: 30_000 } });
+      expect(r.summary).not.toMatch(/Paused for your review/);
+      expect(calls).toBe(6);
+    } finally {
+      mem.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
