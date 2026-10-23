@@ -38,6 +38,7 @@ const TOOL_CATEGORY: Record<string, ActionCategory> = {
   open_item_add: 'memory', open_item_close: 'memory', open_items: 'read',
   // goals (BL-05): local writes; goal_list echoes stored text, so its output is local content.
   goal_list: 'read', goal_add: 'schedule', goal_update: 'schedule',
+  goal_note: 'memory', // BL-71a: where a goal stands — a local note, changes nothing that runs
   // approval_results echoes what an approved command printed — output of code the model may have
   // written — so it reads as outside content (not in LOCAL_CONTENT_TOOLS or the own list): fenced
   // as external and it taints the run (BL-14a).
@@ -127,7 +128,7 @@ export function isSensitive(name: string): boolean { return SENSITIVE.has(classi
 // echo no third-party text — a review found these were wrongly tainting runs as external).
 const OWN_OUTPUT_TOOLS = new Set([
   'write_file', 'knowledge_write', 'schedule_cancel', 'policy_save', 'policy_forget', 'routine_propose',
-  'memory_learn_person', 'memory_feedback', 'goal_add', 'goal_update', 'goal_list', 'quiet_hours', 'schedule_detector', 'cancel_action', 'list_pending',
+  'memory_learn_person', 'memory_feedback', 'goal_add', 'goal_update', 'goal_list', 'goal_note', 'quiet_hours', 'schedule_detector', 'cancel_action', 'list_pending',
   'onboard_questions', 'draft_email', 'draft_outlook', 'propose_event', 'propose_outlook_event',
   'generate_image', 'install_connector', 'uninstall_connector', 'remove_mcp_server', 'connect_account', 'connection_status', 'vault_list', 'vault_request', 'vault_forget',
 ]);

@@ -35,6 +35,7 @@ import { EMAIL_DRAFT_TOOL, addressesIn, draftKey, draftRefusal, repeatDraftOf } 
 import { lessonJudge, judgeLesson, lessonDisposition, LESSON_PROMPT_RULE, MAX_LESSON_CHARS } from './lesson-gate.js';
 import { COMPACTION_MODE, summaryCompaction, type Compaction } from './compaction.js';
 import { answerConfidence, type Confidence } from './tools/honesty.js';
+import { recordGoalProgress } from './goal-record.js';
 import { isRoutineWorthy, scanPolicy } from './tools/routines.js';
 import { BRAIN_TOOLS } from './brain.js';
 import type { ToolDef } from './provider.js';
@@ -540,6 +541,8 @@ export async function runAgent(opts: {
   /** this fire's job lineage depth and owning goal (BL-05) — jobs it creates inherit from them. */
   jobDepth?: number;
   jobGoal?: string;
+  /** BL-71: the goal a chat run works on (a hand-off, or a Continue) — its record is updated at the end. */
+  goalId?: string;
   /** the job this run continues: a scheduled fire's own id, or for a resume the original job's. */
   jobLineage?: string;
   /** the job skips quiet hours (BL-07) — carried into its resumes. */
@@ -618,8 +621,11 @@ export async function runAgent(opts: {
       resumeAttempt: opts.resumeAttempt,
     });
     try {
+      const since = Date.now();
       const r = await runAgent({ ...opts, transcript: tx, rootRunId: tx.runId });
       tx.end(r.reason, r.outcome);
+      // BL-71a: a run on a goal leaves where the goal stands (unless it noted that itself).
+      await recordGoalProgress(memory, { goalId: opts.goalId ?? opts.jobGoal, since, dir: opts.dir, conv: opts.session, result: r });
       return r;
     } catch (e) { tx.end('error'); throw e; }
   }

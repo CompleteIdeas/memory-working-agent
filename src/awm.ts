@@ -153,6 +153,10 @@ export interface Memory {
   setJobFails?(id: string, n: number): Promise<void>;
   /** A goal by id or short id (BL-05). Absent when AWM is off. */
   getGoal?(idOrPrefix: string): Promise<Goal | null>;
+  /** BL-71a: where a goal stands. Absent when AWM is off. */
+  setGoalRecord?(goal: Goal, rec: { state: string; next?: string; open?: string[]; files?: string[]; conv?: string; by: GoalRecord['by']; untrusted?: boolean }): Promise<string | null>;
+  getGoalRecord?(goalId: string): Promise<GoalRecord | null>;
+  listGoalRecords?(): Promise<GoalRecord[]>;
   /** Persist a reusable procedure ("skill") recalled on similar future tasks. */
   saveSkill(name: string, steps: string, opts?: LearnOpts): Promise<string | null>;
   /** Persist a verbal failure reflection ("X failed because Y; next time Z") recalled
@@ -225,6 +229,8 @@ export interface JobLastRun {
  *  whether those jobs run: done stops them, blocked pauses them. */
 export type GoalStatus = 'open' | 'in_progress' | 'blocked' | 'done';
 export type GoalPriority = 'urgent' | 'high' | 'medium' | 'low';
+/** BL-71a: where a goal stands — its newest record. `by`: a run's end ('run'), MWA's own note ('note'), the person ('person'). */
+export interface GoalRecord { id: string; goalId: string; text: string; at: number; by: 'run' | 'note' | 'person'; conv?: string; trust?: TrustTier }
 export interface Goal { id: string; title: string; detail: string; status: GoalStatus; priority: GoalPriority; person?: string; createdAt?: number }
 export const GOAL_STATUSES: GoalStatus[] = ['open', 'in_progress', 'blocked', 'done'];
 export const GOAL_PRIORITIES: GoalPriority[] = ['urgent', 'high', 'medium', 'low'];
@@ -933,6 +939,55 @@ export class MwaMemory implements Memory {
     if (!GOAL_STATUSES.includes(status)) return;
     await this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('gstatus=')), `gstatus=${status}`]);
     await this.mirrorGoal(id, status);
+  }
+
+  // ── Where a goal stands (BL-71a) ──────────────────────────────────────────────────────────────
+  // Memory kept what a run DID ("agent run: …") but not where the work STANDS — so "what were you working
+  // on?" got a recap with nothing to resume from (Robert, 2026-10-22: "if I say hey report back what you
+  // were working on I should be able to jump right to it"). One record per goal, replaced on each update
+  // (the old one superseded, so recall prefers the newest), written in the words a later question uses.
+
+  /** Replace a goal's record. `untrusted`: written by a run that read outside content. */
+  async setGoalRecord(goal: Goal, rec: { state: string; next?: string; open?: string[]; files?: string[]; conv?: string; by: GoalRecord['by']; untrusted?: boolean }): Promise<string | null> {
+    const at = Date.now();
+    const lines = [
+      `Where we are on "${goal.title}" (goal ${goal.id.slice(0, 8)}, ${goal.status.replace('_', ' ')}): ${rec.state.replace(/\s+/g, ' ').trim().slice(0, 700)}`,
+      rec.next ? `Next step: ${rec.next.replace(/\s+/g, ' ').trim().slice(0, 300)}` : '',
+      rec.open?.length ? `Open items: ${rec.open.slice(0, 8).map((o) => o.replace(/\s+/g, ' ').trim().slice(0, 160)).join('; ')}` : '',
+      rec.files?.length ? `Files: ${rec.files.slice(0, 12).join(', ')}` : '',
+      rec.conv ? `From conversation ${rec.conv}.` : '',
+      `Updated ${new Date(at).toISOString().slice(0, 16).replace('T', ' ')} UTC by ${rec.by === 'run' ? 'a run' : rec.by === 'note' ? 'MWA' : 'the person'}.`,
+    ].filter(Boolean).join('\n');
+    const tags = ['topic=goal-record', `goalrec=${goal.id}`, `goal=${goal.id.slice(0, 8)}`, `person=${normalizePersonId(goal.person)}`, `grby=${rec.by}`, `grat=${at}`,
+      ...(rec.conv ? [`conv=${rec.conv.slice(0, 60)}`] : [])];
+    const opts: WriteOpts = { canonical: !rec.untrusted, eventType: 'observation', global: true, noMerge: true, ...(rec.untrusted ? { provenance: 'ingested' as const } : {}) };
+    const prev = await this.getGoalRecord(goal.id);
+    return prev ? this.supersede(prev.id, `where we are: ${goal.title}`.slice(0, 80), lines, tags, opts) : this.write(`where we are: ${goal.title}`.slice(0, 80), lines, tags, opts);
+  }
+
+  /** A goal's newest record, or null. */
+  async getGoalRecord(goalId: string): Promise<GoalRecord | null> {
+    return (await this.listGoalRecords()).find((r) => r.goalId === goalId) ?? null;
+  }
+
+  /** Every goal's newest record, newest first. */
+  async listGoalRecords(): Promise<GoalRecord[]> {
+    try {
+      await this.init();
+      const all: any[] = (await this.store.getEngramsByAgent(this.agentId)) ?? [];
+      const newest = new Map<string, GoalRecord>();
+      for (const e of all) {
+        if (e.retracted) continue;
+        const tags = this.parseTags(e.tags);
+        if (!tags.includes('topic=goal-record')) continue;
+        const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
+        const r: GoalRecord = { id: e.id, goalId: get('goalrec='), text: String(e.content ?? ''), at: Number(get('grat=')) || 0, by: (get('grby=') || 'run') as GoalRecord['by'],
+          conv: get('conv=') || undefined, trust: this.trustOf(e) };
+        const cur = newest.get(r.goalId);
+        if (!cur || r.at > cur.at) newest.set(r.goalId, r);
+      }
+      return [...newest.values()].sort((a, b) => b.at - a.at);
+    } catch { return []; }
   }
 
   // ── Open items (BL-50) ───────────────────────────────────────────────────────────────────────

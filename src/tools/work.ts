@@ -461,9 +461,18 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
       const goals = (await memory.listGoals()).filter((g) => !g.person || g.person === person);
       if (!goals.length) return '(no goals yet)';
       const jobs = await memory.pendingScheduled();
+      const records = await memory.listGoalRecords();
       return goals.slice(0, MAX_LIST).map((g) => {
         const n = jobs.filter((t) => t.goal === g.id).length;
-        return `${goalLine(g)}${n ? ` · owns ${n} scheduled job${n > 1 ? 's' : ''}` : ''}`;
+        // BL-71a: where it stands — the record's own lines, so "what were you working on?" has something to resume.
+        const rec = records.find((r) => r.goalId === g.id);
+        // goal_list is MWA's own output, shown unfenced: a note written after outside content could carry that
+        // content's words, so its text stays out of here (recall shows it, labelled untrusted).
+        const when = rec ? `updated ${new Date(rec.at).toISOString().slice(0, 16).replace('T', ' ')} UTC` : '';
+        const where = !rec ? '' : rec.trust === 'untrusted'
+          ? `\n    (a note on where it stands was written after reading outside content, ${when}; recall "where we are: ${clip(g.title, 60)}" to read it)`
+          : `\n    ${rec.text.split('\n').filter((l) => !/^Updated /.test(l)).join('\n    ').slice(0, 900)}\n    (${when})`;
+        return `${goalLine(g)}${n ? ` · owns ${n} scheduled job${n > 1 ? 's' : ''}` : ''}${where}`;
       }).join('\n');
     },
   };
@@ -491,6 +500,39 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
       const effect = status === 'done' ? (jobs ? ` — its ${jobs} scheduled job${jobs > 1 ? 's' : ''} will stop` : '')
         : status === 'blocked' ? (jobs ? ` — its ${jobs} scheduled job${jobs > 1 ? 's are' : ' is'} paused` : '') : '';
       return `goal ${g.id.slice(0, HANDLE_LEN)} is now ${status.replace('_', ' ')}${effect}`;
+    },
+  };
+
+  // BL-71a: where a goal stands, in MWA's own words — what is done, the next step, what is open, the files.
+  // It changes nothing that runs, so an unattended job may write it; after outside content it is kept untrusted.
+  const goalNote: RegisteredTool = {
+    def: {
+      name: 'goal_note',
+      description:
+        'Record WHERE A GOAL STANDS, so the person (or a later run) can pick it up: what is done, the next ' +
+        'step, open questions, and the files (full paths). Call it when you finish a stretch of work on a ' +
+        'goal or stop partway. It replaces the goal\'s previous note; goal_list shows the notes.',
+      parameters: {
+        type: 'object',
+        properties: {
+          goal: { type: 'string', description: 'the short id from goal_list' },
+          state: { type: 'string', description: 'where it stands now, in a sentence or three' },
+          next: { type: 'string', description: 'OPTIONAL: the next step' },
+          open: { type: 'array', items: { type: 'string' }, description: 'OPTIONAL: open questions or items' },
+          files: { type: 'array', items: { type: 'string' }, description: 'OPTIONAL: full paths of the files that matter' },
+        },
+        required: ['goal', 'state'], additionalProperties: false,
+      },
+    },
+    handler: async (args, ctx) => {
+      const g = await memory.getGoal(String(args.goal ?? ''));
+      if (!g || (g.person && g.person !== personOf(ctx))) return `(no goal with id "${clip(args.goal, 16)}" — call goal_list for the current ids)`;
+      const state = clip(args.state, 700);
+      if (state.length < 4) return '(say where it stands in a sentence)';
+      const list = (v: unknown) => (Array.isArray(v) ? v.map((x) => clip(x, 300)).filter(Boolean) : []);
+      const id = await memory.setGoalRecord(g, { state, next: args.next ? clip(args.next, 300) : undefined, open: list(args.open), files: list(args.files),
+        conv: ctx.session, by: 'note', untrusted: ctx.tainted === true || ctx.readLocal === true });
+      return id ? `noted where "${clip(g.title, 60)}" stands` : '(not noted — try again)';
     },
   };
 
@@ -628,5 +670,5 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
     },
   };
 
-  return [scheduleList, scheduleCancel, scheduleUpdate, policySave, policyForget, routinePropose, goalAdd, goalList, goalUpdate, quietHours, scheduleDetector];
+  return [scheduleList, scheduleCancel, scheduleUpdate, policySave, policyForget, routinePropose, goalAdd, goalList, goalUpdate, goalNote, quietHours, scheduleDetector];
 }
