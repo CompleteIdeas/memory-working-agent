@@ -184,7 +184,7 @@ describe('a job that checks a web page', () => {
     expect(linked.jobs).toHaveLength(1);
     // A reminder — even with the kind left for the harness to settle (review: it was sent back for a link).
     const r = 'Remind me every day at 9 AM to check the order status page';
-    const reminded = await schedule(r, 'Check the order status page', { kind: undefined });
+    const reminded = await schedule(r, 'Check the order status page', { kind: undefined, daily_at: '09:00' });
     expect(reminded.history).not.toMatch(/no link/);
     expect(reminded.jobs).toHaveLength(1);
   }, 60_000);

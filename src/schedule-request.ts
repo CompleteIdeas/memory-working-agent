@@ -51,6 +51,56 @@ export function ampmMismatch(message: string, hour: number, minute: number): str
   return flipped ? flipped.text : null;
 }
 
+const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+// A time worked out from the one the person said ("15 minutes before my 5 PM call") or a day named some other way.
+const RELATIVE = /\b(before|after|ahead|prior|earlier|later|minutes?|hours?|mins?|hrs?|early|beforehand)\b/i;
+const OTHER_DAY = /\b(today|tonight|tomorrow|tmrw)\b/i;
+
+/**
+ * BL-69: the day or time a job contradicts, beyond a flipped half of the day. The BL-68 rerun on gpt-6.1-sol stored
+ * "Tuesday at 2:00 PM" as 12:00 PM, and gpt-6-luna (2026-10-23) stored "Wednesday at 3:00 PM" as Wednesday 1:00 PM
+ * and "Friday at 11:00 AM" as Thursday 11:15 AM; ampmMismatch caught none of them. A clock time the person wrote
+ * with AM/PM that the job matches none of, or a weekday they named that the job is not on (one-time jobs only).
+ * Times worked out from another ("15 minutes before") and days named another way ("tomorrow") are left alone. In a
+ * message that sets up several jobs, only the part about this job counts ("Thursday at 7:00 PM to sign the slip,
+ * and Friday Nov 13 to pick up the cake": the cake has no time), and nothing is checked when that part is unclear.
+ */
+export function whenMismatch(message: string, due: Date, oneTime: boolean, jobText = ''): string | null {
+  const flipped = ampmMismatch(message, due.getHours(), due.getMinutes());
+  if (flipped) return `"${flipped}"`;
+  if (RELATIVE.test(message)) return null;
+  const days = (s: string) => WEEKDAYS.filter((d) => new RegExp(`\\b${d}\\b`, 'i').test(s));
+  const several = statedTimes(message).length > 1 || days(message).length > 1;
+  const part = several ? partAbout(message, jobText) : message;
+  if (part === null) return null;
+  const said: string[] = [];
+  const stated = statedTimes(part);
+  if (stated.length && !stated.some((t) => t.h === due.getHours() && t.m === due.getMinutes())) {
+    // The stored time written some other way ("at 13:00", "at 1:30") counts as said.
+    const h12 = due.getHours() % 12 === 0 ? 12 : due.getHours() % 12;
+    const mm = String(due.getMinutes()).padStart(2, '0');
+    const other = new RegExp(`\\b(?:${due.getHours()}:${mm}|${h12}:${mm}(?!\\s*[ap]\\.?\\s*m\\b))\\b`, 'i');
+    if (!other.test(part)) said.push(...stated.map((t) => `"${t.text}"`));
+  }
+  if (oneTime && !OTHER_DAY.test(part)) {
+    const named = days(part);
+    if (named.length && !named.includes(WEEKDAYS[due.getDay()])) said.unshift(...named.map((d) => `"${d[0].toUpperCase()}${d.slice(1)}"`));
+  }
+  return said.length ? said.join(' and ') : null;
+}
+
+/** The one part of a several-job message that shares the most words with the job, or null when none or a tie. */
+function partAbout(message: string, jobText: string): string | null {
+  const words = (s: string) => new Set(s.toLowerCase().match(/[a-z]{4,}/g) ?? []);
+  const job = words(jobText);
+  let best: string | null = null, bestN = 0;
+  for (const p of message.split(/[,;]?\s+and\s+|;\s+|\.\s+/i)) {
+    const n = [...words(p)].filter((w) => job.has(w)).length;
+    if (n > bestN) { best = p; bestN = n; } else if (n === bestN) best = null;
+  }
+  return bestN ? best : null;
+}
+
 /**
  * BL-49: the sources a scheduled job depends on that this run has not read — only sources a connected tool
  * can read. With memory on, BL-40's morning plan searched email on 4 of 14 mornings and missed the failed

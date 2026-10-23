@@ -32,7 +32,7 @@ import { TAINTED_JOB_MARK, parseLocalAt, ownWords, groundedInMessage } from './s
 import { MAX_PENDING_TAINTED_CHAT } from './fanout.js';
 // Moved to schedule-request.ts (the work tools use them too); exported here as before.
 export { parseLocalAt, ownWords };
-import { expectedJobCount, ampmMismatch, clock12, friendlySchedule, friendlyWhen, unreadSources, asksToChangeJob, parseDaysArg, nextDailyDue, asksChangesOnly, latestReadings, namesWebPage, hasLink, isWatch } from './schedule-request.js';
+import { expectedJobCount, whenMismatch, clock12, friendlySchedule, friendlyWhen, unreadSources, asksToChangeJob, parseDaysArg, nextDailyDue, asksChangesOnly, latestReadings, namesWebPage, hasLink, isWatch } from './schedule-request.js';
 import { EMAIL_DRAFT_TOOL, addressesIn, draftKey, draftRefusal, repeatDraftOf } from './draft-guard.js';
 import { lessonJudge, judgeLesson, lessonDisposition, LESSON_PROMPT_RULE, MAX_LESSON_CHARS } from './lesson-gate.js';
 import { COMPACTION_MODE, summaryCompaction, type Compaction } from './compaction.js';
@@ -685,7 +685,8 @@ export async function runAgent(opts: {
   const jobsCreated: { instruction: string; dueMs: number; recur?: string; kind?: 'reminder' }[] = [];
   const jobsCancelled: string[] = []; // BL-47: what schedule_cancel stopped, named in the reply
   let draftAskRejections = 0, valueAsks = 0;
-  let ampmRejections = 0, countRejections = 0, sourceRejections = 0, changeRejections = 0, kindRejections = 0, kindFollowups = 0, linkRejections = 0;
+  const whenRejected = new Set<string>();
+  let countRejections = 0, sourceRejections = 0, changeRejections = 0, kindRejections = 0, kindFollowups = 0, linkRejections = 0;
   // BL-54: the email addresses this run has met (the person's words, the conversation, memory, each tool result),
   // and the recipients it has drafted to — kept as they arrive, so folding older steps into a summary loses none.
   const seenAddresses = new Set<string>();
@@ -1573,14 +1574,18 @@ export async function runAgent(opts: {
       // BL-43: the hour against the person's own words. "Thursday at 7:00 PM" was stored as 07:00 (BL-40) and
       // fired at 7:01 in the morning. Once, and only for a clock time (at / daily_at). The nudge leaves both
       // readings open, and the refused call is forgotten so resending it unchanged is not skipped as a repeat.
+      // BL-69: and the day, and any stated time, once per job ("two reminders" can both be wrong: gpt-6-luna set
+      // "Wednesday at 3:00 PM" for 1:00 PM and "Friday at 11:00 AM" for Thursday 11:15 AM).
       const personWords = opts.userMessage ?? instruction;
-      if ((typeof action.at === 'string' || typeof action.daily_at === 'string') && ampmRejections < 1) {
+      const jobSig = String(action.instruction ?? '').slice(0, 200);
+      if ((typeof action.at === 'string' || typeof action.daily_at === 'string') && !whenRejected.has(jobSig) && whenRejected.size < 3) {
         const due = new Date(dueMs);
-        const said = ampmMismatch(personWords, due.getHours(), due.getMinutes());
+        const said = whenMismatch(personWords, due, typeof action.at === 'string', jobSig);
         if (said) {
-          ampmRejections++; consecNoProgress++; gatesFired.push('am-pm'); lastSig = '';
-          history.push(`(schedule refused once: ${clock12(due.getHours(), due.getMinutes())} where the person wrote "${said}")`);
-          nudge = `The person's message says "${said}", but this job is set for ${clock12(due.getHours(), due.getMinutes())}. If they meant ${said}, use the 24-hour time (7 PM is 19:00); if ${clock12(due.getHours(), due.getMinutes())} is right, call schedule again unchanged.`;
+          const set = typeof action.at === 'string' ? friendlyWhen(dueMs) : clock12(due.getHours(), due.getMinutes());
+          whenRejected.add(jobSig); consecNoProgress++; gatesFired.push('am-pm'); lastSig = '';
+          history.push(`(schedule refused once: ${set} where the person wrote ${said})`);
+          nudge = `The person's message says ${said}, but this job is set for ${set}. Check the day and time against their words (7 PM is 19:00) and call schedule with the right ones; if ${set} is right, call schedule again unchanged.`;
           continue;
         }
       }

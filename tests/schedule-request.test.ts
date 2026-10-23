@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { asksForLater } from '../src/claim-check.js';
-import { expectedJobCount, ampmMismatch, friendlyWhen, friendlySchedule, parseDaysArg, nextDailyDue, recurWords } from '../src/schedule-request.js';
+import { expectedJobCount, ampmMismatch, whenMismatch, friendlyWhen, friendlySchedule, parseDaysArg, nextDailyDue, recurWords } from '../src/schedule-request.js';
 import { tickScheduler } from '../src/scheduler.js';
 import { workTools } from '../src/tools/work.js';
 
@@ -81,6 +81,30 @@ describe('reading the request', () => {
     expect(ampmMismatch('Flight lands 6:30 PM. Remind me at 6:30 tomorrow morning to pack.', 6, 30)).toBeNull();
   });
 
+  it('a stored day or time the person never said is caught too (BL-69)', () => {
+    process.env.TZ = 'America/New_York';
+    // gpt-6-luna, 2026-10-23, Jordan's world (Mon 2 Nov 2026 start): both reminders landed wrong.
+    const JORDAN_TWO = 'Set two reminders: Wednesday at 3:00 PM remind me to send Grace Liu the horse ownership transfer form, and Friday at 11:00 AM remind me to submit my timesheet.';
+    const at = (d: number, h: number, m = 0) => new Date(2026, 10, d, h, m);
+    const GRACE = 'Send Grace Liu the horse ownership transfer form.', TIMESHEET = 'Submit your timesheet.';
+    expect(whenMismatch(JORDAN_TWO, at(4, 13), true, GRACE)).toBe('"3:00 PM"');
+    expect(whenMismatch(JORDAN_TWO, at(5, 11, 15), true, TIMESHEET)).toBe('"Friday" and "11:00 AM"');
+    expect(whenMismatch(JORDAN_TWO, at(4, 15), true, GRACE)).toBeNull();
+    expect(whenMismatch(JORDAN_TWO, at(6, 11), true, TIMESHEET)).toBeNull();
+    expect(whenMismatch(JORDAN_TWO, at(4, 11), true, 'Do the thing.')).toBeNull(); // which part is unclear: not checked
+    // SAM_TWO's second job has a day and no time: not held to the first job's 7:00 PM.
+    expect(whenMismatch(SAM_TWO, at(13, 9), true, 'Pick up the cake for Jess’s birthday dinner.')).toBeNull();
+    // gpt-6.1-sol, BL-68, Casey: 2:00 PM stored as noon.
+    expect(whenMismatch('Next Tuesday, Nov 10 at 2:00 PM ET remind me to call the venue', at(10, 12), true)).toBe('"2:00 PM"');
+    expect(whenMismatch(SAM_TWO, at(5, 7), true)).toBe('"7:00 PM"'); // the BL-40 flip still reads as before
+    // Left alone: a time worked out from another, a day named another way, a time written in 24-hour form, a weekday on a daily job.
+    expect(whenMismatch('Remind me 15 minutes before my 5:00 PM call on Friday', at(6, 16, 45), true)).toBeNull();
+    expect(whenMismatch('Tomorrow at 9:00 AM remind me about Friday’s board call', at(3, 9), true)).toBeNull();
+    expect(whenMismatch('Remind me at 13:00 on Wednesday, after the 11 AM meeting', at(4, 13), true)).toBeNull();
+    expect(whenMismatch('Every weekday at 8:30 AM, and on Monday put the week ahead first', at(3, 8, 30), false)).toBeNull();
+    expect(whenMismatch('Remind me at 7 to call', at(3, 7), true)).toBeNull();
+  });
+
   it('reads a time back with its weekday', () => {
     process.env.TZ = 'America/New_York';
     expect(friendlyWhen(Date.UTC(2026, 10, 6, 0, 0))).toBe('Thu 5 Nov 2026 at 7:00 PM');
@@ -144,8 +168,19 @@ describe('a run that sets up jobs', () => {
       { action: 'schedule', kind: 'reminder', instruction: 'Pick up the cake for Jess’s birthday dinner.', at: '2026-11-13 09:00' },
       DONE,
     ]);
-    expect(prompts.some((p) => /The person's message says "7:00 PM", but this job is set for 7:00 AM/.test(p))).toBe(true);
+    expect(prompts.some((p) => /The person's message says "7:00 PM", but this job is set for Thu 5 Nov 2026 at 7:00 AM/.test(p))).toBe(true);
     expect(jobs.map((j) => new Date(j.due).getHours()).sort((a, b) => a - b)).toEqual([9, 19]);
+  }, 60_000);
+
+  it('both of two wrong reminders go back once each, and the corrected days and times are kept (BL-69)', async () => {
+    process.env.TZ = 'America/New_York';
+    const msg = 'Set two reminders: Wednesday at 3:00 PM remind me to send Grace Liu the horse ownership transfer form, and Friday at 11:00 AM remind me to submit my timesheet.';
+    const grace = (at: string) => ({ action: 'schedule', kind: 'reminder', instruction: 'Send Grace Liu the horse ownership transfer form.', at });
+    const sheet = (at: string) => ({ action: 'schedule', kind: 'reminder', instruction: 'Submit your timesheet.', at });
+    const { jobs, prompts } = await run(msg, [grace('2026-11-04 13:00'), grace('2026-11-04 15:00'), sheet('2026-11-05 11:15'), sheet('2026-11-06 11:00'), DONE]);
+    expect(prompts.some((p) => /says "3:00 PM", but this job is set for Wed 4 Nov 2026 at 1:00 PM/.test(p))).toBe(true);
+    expect(prompts.some((p) => /says "Friday" and "11:00 AM", but this job is set for Thu 5 Nov 2026 at 11:15 AM/.test(p))).toBe(true);
+    expect(jobs.map((j) => new Date(j.due).toString().slice(0, 21)).sort()).toEqual(['Fri Nov 06 2026 11:00', 'Wed Nov 04 2026 15:00']);
   }, 60_000);
 
   it('a time the model keeps after the push is set — the resent call is not skipped as a repeat (BL-43 review)', async () => {
