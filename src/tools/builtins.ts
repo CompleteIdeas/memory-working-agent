@@ -6,15 +6,17 @@
  * Safety: file/command tools are scoped to the sandbox dir (path-traversal
  * guarded), mirroring the worker. http_request is network egress — opt-in.
  */
-import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { resolveVaultRefs, hasVaultRef } from '../vault/vault.js';
-import { resolve, join, dirname, basename } from 'node:path';
+import { resolve, join, dirname, basename, relative, isAbsolute } from 'node:path';
 import { runCommand, runCommandAsync } from '../util.js';
 import { resolveAllowed, runCommandAllowed, allowedRoots, accessPolicy } from './access.js';
 import { loadConfig } from '../config.js';
 import { ToolRefusal, type RegisteredTool, type ToolContext } from './registry.js';
 import { classifyCommand, scrubbedEnv, writeRefusal, insideReal } from './shell-gate.js';
 import { guardedFetch, urlRefusal } from './net-guard.js';
+import { insideRoot, listFiles } from '../files.js';
+import { OTHER_FOLDER_MARK } from './governance.js';
 import { stageAction, registerExecutor, pendingStagedBy } from './approval.js';
 import { secondOpinionForCommand, changedSinceReview, type Reviewed } from '../second-opinion.js';
 
@@ -67,6 +69,47 @@ function allowed(ctx: ToolContext, p: string): string | null {
   return resolveAllowed(ctx.sandboxDir, p, [...allowedRoots(ctx.sandboxDir), ...extra]);
 }
 
+/** BL-71c: the person's workspace — every chat's folder, scheduled jobs' folders, the outbox. */
+function personRoot(): string {
+  return resolve(process.env.MWA_WORKSPACE ?? loadConfig().workspace ?? './mwa-workspace');
+}
+
+/** The folders that hold the web owner's work: their chats (serve/) and the jobs those chats set up
+ *  (scheduled/). Not outputs/ — Telegram's chats, which may be other people (a group, a second allowed
+ *  chat) — and not the inbox, outbox or the connector log at the root (BL-71c review). */
+export const PERSON_FOLDERS = ['serve', 'scheduled'];
+
+
+const topFolder = (rel: string) => rel.split(/[\\/]/)[0];
+/** Whether this run is one of the web owner's (its folder under serve/ or scheduled/). */
+function ownersRun(ctx: ToolContext): boolean {
+  return PERSON_FOLDERS.includes(topFolder(relative(personRoot(), resolve(ctx.sandboxDir))));
+}
+
+/** A file the web owner already has in another chat's or job's folder, for READING only — or null.
+ *  Measured 2026-10-22: a new chat knew from memory that the newsletter notes were in serve/web-l1fs27p,
+ *  could not open them, and told the person to "grant access in Settings". Only for the owner's own runs.
+ *  Takes an absolute path, or (not for the shell, which resolves against its own folder) one relative to
+ *  the workspace as the Files tab shows it. insideRoot refuses dot-files and links out of the workspace. */
+function personFile(ctx: ToolContext, p: string, absoluteOnly = false): string | null {
+  if (!ownersRun(ctx) || (absoluteOnly && !isAbsolute(p))) return null;
+  const root = personRoot();
+  const rel = isAbsolute(p) ? relative(root, resolve(p)) : String(p).replace(/^\.?[\\/]+/, '');
+  if (!rel || rel.startsWith('..') || isAbsolute(rel) || !PERSON_FOLDERS.includes(topFolder(rel))) return null;
+  const abs = insideRoot(root, rel);
+  return abs && existsSync(abs) ? abs : null;
+}
+
+/** Where a READ may go: the run's own folders first; failing that, a file the owner already has (`other`
+ *  says which, for the mark). Writes keep using allowed(): a run writes only in its own folder. */
+function readable(ctx: ToolContext, p: string, absoluteOnly = false): { path: string; other: boolean } | null {
+  const own = allowed(ctx, p);
+  if (own && existsSync(own)) return { path: own, other: false };
+  const pf = personFile(ctx, p, absoluteOnly);
+  if (pf) return { path: pf, other: true };
+  return own ? { path: own, other: false } : null;
+}
+
 /** The REAL path (short names expanded, links followed) lands inside an allowed folder's REAL path —
  *  both sides resolved, so a short-name temp folder (C:\Users\ROBERT~1) doesn't refuse ordinary writes. */
 function realAllowed(ctx: ToolContext, full: string): boolean {
@@ -112,7 +155,9 @@ const runCommandTool: RegisteredTool = {
     // Assistant mode (BL-04, folded into BL-03): a person watching a chat is not a person approving
     // each command. Read-only commands run; anything else is staged for approval — otherwise a
     // backgrounded `curl` to MWA's own approvals endpoint approves whatever the model just staged.
-    const verdict0 = classifyCommand(command, (p) => allowed(ctx, p) !== null);
+    // Read-only commands only read; another chat's file only by its full path (the shell resolves a relative
+    // one against this run's folder). Their output is already outside content, so needs no mark.
+    const verdict0 = classifyCommand(command, (p) => readable(ctx, p, true) !== null);
     if (verdict0.kind === 'read-only' && !stageOnly) return run(ctx.sandboxDir, scrubbedEnv());
     const verdict = verdict0.kind === 'read-only' ? { kind: 'needs-approval' as const, reason: 'nobody is watching this run, so nothing runs without your approval' } : verdict0;
     // A run nobody watches may stage only a few: a tainted job must not flood the approvals list.
@@ -150,12 +195,30 @@ const runCommandTool: RegisteredTool = {
 const listFilesTool: RegisteredTool = {
   def: {
     name: 'list_files',
-    description: 'List files in the sandbox (skips node_modules and dotfiles). Optional subdir.',
-    parameters: { type: 'object', properties: { dir: { type: 'string', description: 'optional subdirectory, default root' } }, required: [] },
+    description: 'List files in your working folder (skips node_modules and dotfiles). Optional subdir. With `search`, ' +
+      'finds the person\'s files by name across ALL their chats and jobs instead (newest first, with full paths you can read): ' +
+      'use it when they mention a file from an earlier conversation.',
+    parameters: { type: 'object', properties: {
+      dir: { type: 'string', description: 'optional subdirectory, default root' },
+      search: { type: 'string', description: 'optional: words in the file name or folder, to search every file the person has (e.g. "newsletter"); "*" lists the newest' },
+    }, required: [] },
   },
   handler: async (args, ctx) => {
-    const base = allowed(ctx, String(args.dir ?? '.'));
-    if (!base) return outsideRefusal(ctx, String(args.dir ?? '.'), 'folder');
+    if (args.search !== undefined && String(args.search).trim()) {
+      // BL-71c: the person's files from every chat and job, the same list as their Files tab.
+      if (!ownersRun(ctx)) return '(searching other chats\' files is only for the owner\'s own chats and jobs)';
+      const root = personRoot();
+      const words = String(args.search).toLowerCase().split(/\s+/).filter((w) => w && w !== '*');
+      // insideRoot again: the listing follows links, and a link must not even name a file outside.
+      const hits = listFiles(root).filter((f) => PERSON_FOLDERS.includes(topFolder(f.path)) && insideRoot(root, f.path)
+        && words.every((w) => f.path.toLowerCase().includes(w))).slice(0, 40);
+      if (!hits.length) return `(no files match "${String(args.search).slice(0, 60)}" — try fewer or other words, or "*" for the newest)`;
+      // File names were chosen by earlier runs, some of which read outside content: marked like the files.
+      return `${OTHER_FOLDER_MARK}\n` + hits.map((f) => `${join(root, f.path)} · ${new Date(f.mtime).toISOString().slice(0, 16).replace('T', ' ')} · ${f.size} bytes`).join('\n');
+    }
+    const found = readable(ctx, String(args.dir ?? '.'));
+    if (!found) return outsideRefusal(ctx, String(args.dir ?? '.'), 'folder');
+    const base = found.path;
     const out: string[] = [];
     const walk = (d: string, rel: string) => {
       let ents; try { ents = readdirSync(d, { withFileTypes: true }); } catch { return; }
@@ -167,22 +230,25 @@ const listFilesTool: RegisteredTool = {
       }
     };
     walk(base, '');
-    return out.slice(0, 200).join('\n') || '(empty)';
+    const listing = out.slice(0, 200).join('\n') || '(empty)';
+    return found.other ? `${OTHER_FOLDER_MARK}\n${listing}` : listing;
   },
 };
 
 const readFileTool: RegisteredTool = {
   def: {
     name: 'read_file',
-    description: 'Read a file in the sandbox (size-capped). For ground truth / verifying generated code.',
+    description: 'Read a file (size-capped): one in your working folder, or any file the person already has from another chat or job (give its full path — list_files with `search` finds it).',
     parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
   },
   handler: async (args, ctx) => {
-    const full = allowed(ctx, String(args.path ?? ''));
-    if (!full) return outsideRefusal(ctx, String(args.path ?? ''), 'file');
+    const found = readable(ctx, String(args.path ?? ''));
+    if (!found) return outsideRefusal(ctx, String(args.path ?? ''), 'file');
+    const full = found.path;
+    const mark = found.other ? `${OTHER_FOLDER_MARK}\n` : '';
     try {
-      if (statSync(full).size > CAP * 6) return `(large file; first ${CAP} bytes)\n` + readFileSync(full, 'utf8').slice(0, CAP);
-      return readFileSync(full, 'utf8').slice(0, CAP);
+      if (statSync(full).size > CAP * 6) return `${mark}(large file; first ${CAP} bytes)\n` + readFileSync(full, 'utf8').slice(0, CAP);
+      return mark + readFileSync(full, 'utf8').slice(0, CAP);
     } catch (e) {
       // Not-found is an ANSWER, not a failure: a run checking "does this exist yet?" before writing
       // it got "(could not read: ENOENT…)", which both reads as an error and counts as one in the
@@ -305,9 +371,10 @@ const readDocumentTool: RegisteredTool = {
         buf = Buffer.from(await res.arrayBuffer());
       } else {
         // Local file: confine to the allowed folders (workspace + granted) — not arbitrary paths.
-        const full = allowed(ctx, src);
-        if (!full) throw new ToolRefusal(outsideRefusal(ctx, src, 'file'));
-        buf = readFileSync(full);
+        // read_document's output is outside content already (classed external): another chat's file needs no mark.
+        const found = readable(ctx, src);
+        if (!found) throw new ToolRefusal(outsideRefusal(ctx, src, 'file'));
+        buf = readFileSync(found.path);
       }
       const lower = src.toLowerCase();
       if (lower.endsWith('.pdf') || buf.subarray(0, 5).toString('latin1') === '%PDF-') {

@@ -390,7 +390,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
       : '';
     // BL-70: the person sees this chat's folder in the Files tab, and a link by file name opens it there.
     const added = uploadsIn(resolve(cfg.workspace ?? './mwa-workspace'), sessionFolder(sessionId));
-    const filesNote = `\n\n(Files you write here are saved for the person and appear in their Files tab; when you mention one, link it by its path, e.g. [the notes](notes.md).${added.length ? ` Files they added to this chat: ${added.join(', ')}.` : ''})`;
+    const filesNote = `\n\n(Files you write here are saved for the person and appear in their Files tab; when you mention one, link it by its path, e.g. [the notes](notes.md). Files from their earlier chats and jobs are theirs too: list_files with \`search\` finds one by name, and read_file opens it by that full path.${added.length ? ` Files they added to this chat: ${added.join(', ')}.` : ''})`;
     const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${message}` : message) + askNote + filesNote;
 
     // Per-person Profile (S1–S6): resolve who's talking, build their prompt context (identity guard +

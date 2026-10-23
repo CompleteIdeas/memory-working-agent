@@ -23,7 +23,7 @@ import { loadDomainPack, buildDomainContext } from './domain-pack.js';
 import { ONBOARD_PROTOCOL } from './onboard.js';
 import type { Memory, RecalledMemory, TrustTier } from './awm.js';
 import { isReservedConcept, unreservedConcept, isStoreConcept } from './reserved-concept.js';
-import { effectOf, isSensitive, classifyTool, buildDoneReport, checkTripwires, readsUntrustedContent, markToolOutput, newFenceCode, outputSource } from './tools/governance.js';
+import { effectOf, isSensitive, classifyTool, buildDoneReport, checkTripwires, readsUntrustedContent, markToolOutput, newFenceCode, outputSource, OTHER_FOLDER_MARK } from './tools/governance.js';
 import { unbackedClaims, unbackedNote, unbackedNudge, asksForLater, type ClaimKind } from './claim-check.js';
 import { intentClassifier, type IntentClassifier, type RequestIntent } from './request-intent.js';
 import { TAINTED_JOB_MARK, parseLocalAt, ownWords, groundedInMessage } from './schedule-request.js';
@@ -1764,6 +1764,8 @@ export async function runAgent(opts: {
       // F2: once this run has pulled in untrusted external content, taint later `remember` writes.
       // Taint on any external call, refused or not — fail-closed.
       if (readsUntrustedContent(action.action) && !draftNo) sawUntrustedRead = true; // a guard refusal reached nothing outside
+      // BL-71c: a file from another chat or job may hold what an earlier run fetched — outside content.
+      else if (!refused && result.startsWith(OTHER_FOLDER_MARK)) sawUntrustedRead = true;
       // A schedule listing shows instructions MWA stored; it counts as local content only when one came from a
       // job set up after outside content (BL-52 review: listing first turned every reminder after it into a task).
       else if (!refused && outputSource(action.action) === 'local' && !(action.action === 'schedule_list' && !result.includes(TAINTED_JOB_MARK))) sawLocalRead = true;

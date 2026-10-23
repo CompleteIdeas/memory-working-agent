@@ -17,7 +17,7 @@
  *
  * MWA_AUTO_APPROVE: `off`; `shadow` (the default when Clef is configured) reviews every staged action and
  * logs what it WOULD have done next to what the person did, changing nothing; `on` lets it run them.
- * Clef needs MWA_CLEF_TOKEN (or CLOUDFLARE_API_TOKEN) and MWA_CLEF_ACCOUNT (or CLOUDFLARE_ACCOUNT_ID). The
+ * Clef needs MWA_CLEF_TOKEN and MWA_CLEF_ACCOUNT (not the generic Cloudflare variables: setting them is the opt-in). The
  * action, the person's request and the run's taint go to Cloudflare; nothing else does.
  */
 import { appendFileSync, mkdirSync } from 'node:fs';
@@ -140,8 +140,10 @@ export async function reviewAction(a: ReviewInput, clef: ClefFn | null): Promise
 let cached: { key: string; clef: ClefFn | null } | null = null;
 /** The configured Clef reviewer, or null. */
 export function configuredClef(env: NodeJS.ProcessEnv = process.env): ClefFn | null {
-  const token = env.MWA_CLEF_TOKEN ?? env.CLOUDFLARE_API_TOKEN ?? '';
-  const account = env.MWA_CLEF_ACCOUNT ?? env.CLOUDFLARE_ACCOUNT_ID ?? '';
+  // Only MWA's own settings: a generic Cloudflare token set for something else must not start sending
+  // every staged action to Cloudflare without anyone opting in (BL-72 review).
+  const token = env.MWA_CLEF_TOKEN ?? '';
+  const account = env.MWA_CLEF_ACCOUNT ?? '';
   const key = `${token.length}:${account}`;
   if (cached?.key === key) return cached.clef;
   cached = { key, clef: token && account ? clefReviewer({ token, account }) : null };

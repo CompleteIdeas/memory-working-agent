@@ -29,14 +29,30 @@ export type ShellVerdict = { kind: 'read-only' } | { kind: 'needs-approval'; rea
 const META_POSIX = /[;&|<>`$(){}!#^\\\r\n]/;
 const META_WIN = /[;&|<>`$(){}!#%^\r\n]/;
 
-/** `sed` only as a line printer: `-n` (or -E/-r) and one script like `55,260p`, `10q` or `$p` (BL-72: the
- *  newsletter run waited a day on approval to read its own notes this way). Anything else — `w file`, `e`,
- *  `-i`, `s///` — can write or run something, so it is staged. */
+/** `sed` only as a line printer: options -n (or -E/-r) and, as the FIRST non-option argument — GNU sed's
+ *  script — one of `55,260p`, `10q` or `5p`; every later argument is a file to read (path-checked below).
+ *  BL-72 review: picking "the argument that looks like a script" let `sed -n 'e touch x' 1p f` run a command
+ *  and `sed -n 'w out' 1p f` write a file. -e/-f/-s/-i/-z and `--` are staged. (`$p` can't pass the shell-feature
+ *  check, since `$` is banned, so the last line is reached as `sed -n '1,99999p'`.) */
 function sedPrintOnly(args: string[]): string | null {
-  const flags = args.filter((a) => a.startsWith('-'));
-  if (flags.some((f) => !['-n', '--quiet', '--silent', '-E', '-r', '-nE', '-En', '-nr', '-rn'].includes(f))) return '"sed" with that option can write files';
-  const scripts = args.filter((a) => !a.startsWith('-') && !looksLikePath(a) && /^[\d,$pq]+$/.test(a));
-  if (scripts.length !== 1 || !/^(\d+|\$)(,(\d+|\$))?[pq]$/.test(scripts[0])) return '"sed" is only read-only as a line printer (like sed -n \'10,40p\' file)';
+  const ok = new Set(['-n', '--quiet', '--silent', '-E', '-r', '-nE', '-En', '-nr', '-rn', '--regexp-extended']);
+  let script: string | null = null;
+  for (const a of args) {
+    if (a.startsWith('-')) { if (!ok.has(a) || script !== null) return '"sed" with that option can write files or run commands'; continue; }
+    if (script === null) script = a;
+  }
+  if (script === null || !/^\d+(,\d+)?[pq]$/.test(script)) return '"sed" is only read-only as a line printer (like sed -n 10,40p file)';
+  return null;
+}
+
+/** POSIX `date` may only print: -u/--utc, -R, -I…/--iso-8601…, --rfc-3339=…, and a +FORMAT. Anything else
+ *  (-s sets the clock; -f/--file and -r/--reference read a file — GNU also takes `--fi=`) is staged. */
+function datePrintOnly(args: string[]): string | null {
+  for (const a of args) {
+    if (a.startsWith('+')) continue;
+    if (/^(-u|--utc|--universal|-R|--rfc-email|-I[a-z]*|--iso-8601(=[a-z]+)?|--rfc-3339=[a-z]+)$/.test(a)) continue;
+    return `"date ${a.split('=')[0]}" can set the clock or read a file`;
+  }
   return null;
 }
 
@@ -51,14 +67,13 @@ const READ_ONLY: Record<string, { deny?: string[]; noArgs?: boolean; noArgsWin?:
   // BL-72: more plain readers. None writes, runs a program, or reaches the network.
   nl: {}, tac: {}, rev: {}, comm: {}, paste: {}, cmp: {}, column: {}, basename: {}, dirname: {}, realpath: {}, readlink: {},
   // -c reads whatever files a checksum list names, wherever they are
-  md5sum: { deny: ['-c', '--check'] }, sha1sum: { deny: ['-c', '--check'] }, sha256sum: { deny: ['-c', '--check'] }, sha512sum: { deny: ['-c', '--check'] }, cksum: {},
+  md5sum: { deny: ['-c', '--check'] }, sha1sum: { deny: ['-c', '--check'] }, sha256sum: { deny: ['-c', '--check'] }, sha512sum: { deny: ['-c', '--check'] }, cksum: { deny: ['-c', '--check'] },
   cal: {}, id: {}, nproc: {}, uptime: {}, free: {}, pdfinfo: {},
   hostname: { noArgs: true }, uniq: { check: oneFile('uniq') },
   sed: { check: sedPrintOnly },
   echo: { textArgs: true },
-  // POSIX `date` prints with any format; -s/--set changes the clock, -f and -r read a file (any file: the
-  // format is text, so its paths aren't checked). On Windows `date` with arguments sets the clock.
-  date: { noArgsWin: true, textArgs: true, deny: ['-s', '--set', '-f', '--file', '-r', '--reference'] },
+  // On Windows `date` with arguments sets the clock.
+  date: { noArgsWin: true, textArgs: true, check: datePrintOnly },
   grep: {},
   rg: { deny: ['--pre', '--pre-glob'] },
   find: { deny: ['-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprint0', '-fprintf', '-fls'] },
@@ -88,6 +103,14 @@ function looksLikePath(a: string): boolean {
   return /[\\/:]/.test(a) || a.startsWith('.') || a.startsWith('~');
 }
 
+/** The value attached to a short option or a cluster of them (`-f/etc/x`, `-nf/etc/x`): everything from the
+ *  first character that isn't a letter, or the rest after the first letter when it looks like a path. */
+function attachedValue(a: string): string {
+  const m = /^-[A-Za-z]+([^A-Za-z].*)$/.exec(a);
+  if (m && looksLikePath(m[1])) return m[1];
+  return a.length > 2 && looksLikePath(a.slice(2)) ? a.slice(2) : '';
+}
+
 export function classifyCommand(cmd: string, pathAllowed: (p: string) => boolean, platform: NodeJS.Platform = process.platform): ShellVerdict {
   const text = cmd.trim();
   if (!text) return { kind: 'needs-approval', reason: 'empty command' };
@@ -103,15 +126,20 @@ export function classifyCommand(cmd: string, pathAllowed: (p: string) => boolean
   const why = rule.check?.(args);
   if (why) return { kind: 'needs-approval', reason: why };
   for (const a of args) {
+    // `~` is the home folder to the shell, but an ordinary name to the path check (BL-72 review: `cat ~/.ssh/id_rsa`).
+    if (a.startsWith('~') || a.includes('=~')) return { kind: 'needs-approval', reason: 'it reaches the home folder' };
     const denied = (rule.deny ?? []).some((d) => {
-      if (d.startsWith('--')) return a === d || a.startsWith(`${d}=`);
+      // GNU takes any unambiguous prefix of a long option (`sort --compress-prog=sh`, `date --fi=`): BL-72 review.
+      if (d.startsWith('--')) { const n = a.split('=')[0]; return a === d || a.startsWith(`${d}=`) || (n.startsWith('--') && n.length >= 3 && d.startsWith(n)); }
       // a one-letter flag also hides in a cluster (`sort -ro out`) or with its value attached (`-oout`)
       if (d.length === 2) return /^-[A-Za-z0-9]+$/.test(a) ? a.slice(1).includes(d[1]) : a.startsWith(d) && !a.startsWith('--');
       return a === d;
     });
     if (denied) return { kind: 'needs-approval', reason: `"${name} ${a.split('=')[0]}" can write or run something` };
     if (rule.textArgs) continue;
-    const value = a.startsWith('-') ? (a.includes('=') ? a.slice(a.indexOf('=') + 1) : '') : a;
+    // A short option can carry its value attached (`grep -f/etc/shadow`): check that too (BL-72 review).
+    const value = a.startsWith('--') ? (a.includes('=') ? a.slice(a.indexOf('=') + 1) : '')
+      : a.startsWith('-') ? (a.includes('=') ? a.slice(a.indexOf('=') + 1) : attachedValue(a)) : a;
     if (value && looksLikePath(value) && !pathAllowed(value)) {
       return { kind: 'needs-approval', reason: `it reads outside the folders this assistant may access (${value.slice(0, 60)})` };
     }

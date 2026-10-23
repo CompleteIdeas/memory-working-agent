@@ -79,8 +79,13 @@ describe('classifyCommand', () => {
   it.each([
     'date -s 2020-01-01', 'date --set=2020-01-01', 'date -us 2020', 'date -r /etc/shadow', 'date -f /etc/shadow', 'date --reference=/etc/shadow',
     "sed -i 's/a/b/' notes.md", "sed 's/a/b/' notes.md", "sed -n '1w out.txt' notes.md", "sed -n 1e notes.md", 'sed -n 10p /etc/passwd',
-    "sed --in-place -n 1p notes.md", 'sed -n 1p 2p notes.md', 'uniq in.txt out.txt', 'md5sum -c sums.txt', 'sha256sum --check sums.txt',
+    "sed --in-place -n 1p notes.md", 'uniq in.txt out.txt', 'md5sum -c sums.txt', 'sha256sum --check sums.txt',
     'hostname evil', 'nl /etc/passwd', "date '+%H' ; id",
+    // the BL-72 review's attacks: sed's script is its FIRST argument; GNU long-option prefixes; ~; attached values
+    "sed -n 'e touch pwned' 1p notes.txt", "sed -n 'w out.txt' 1p notes.txt", "sed -n 'w /x' 1p notes.txt", 'sed -e 1p notes.txt', 'sed -n 1p -i notes.txt', 'sed -n -- 1p notes.txt',
+    'date --fi=/etc/shadow', 'date --se=2020-01-01', 'date --ref=/etc/shadow', 'date -d @0', 'date --date=@0',
+    'sort -S 1 --compress-prog=sh cmds.txt', 'sort --out=.git/hooks/post-checkout notes.txt', 'md5sum --ch sums.txt', 'cksum --check sums.txt',
+    'cat ~/.ssh/id_rsa', 'sed -n 1,99p ~/x', 'grep -f/etc/shadow notes.txt', 'grep -nf/etc/shadow notes.txt', 'rg -nf/etc/shadow x', 'diff --from-file=~/x a',
   ])('BL-72 still needs approval: %s', (c) => {
     expect(classifyCommand(c, inside, 'linux').kind).toBe('needs-approval');
   });
