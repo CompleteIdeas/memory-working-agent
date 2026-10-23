@@ -20,7 +20,7 @@ export const INTERACTION_STYLES: InteractionStyle[] = ['guided', 'direct'];
 export interface MwaConfig {
   /** model tiers: fetch = cheap workhorse, reason = escalation ceiling, installer = the
    *  model that reviews/vets connectors from outside the curated library (defaults to reason) */
-  models: { fetch: string; reason: string; installer?: string; image?: string };
+  models: { fetch: string; reason: string; installer?: string; image?: string; background?: string };
   /** interaction style (plain-language/proactive vs concise/technical). Default 'guided'. */
   style?: InteractionStyle;
   /** awm.workspace (OPT-IN): a shared workspace name. When set, all MWA surfaces (web, CLI,
@@ -129,5 +129,7 @@ export function loadConfig(path = configPath()): MwaConfig {
   // fetch + reason; MWA_MODEL_IMAGE sets the image model. (Railway/Azure deploys use this.)
   if (process.env.MWA_MODEL) { cfg.models.fetch = process.env.MWA_MODEL; cfg.models.reason = process.env.MWA_MODEL; }
   if (process.env.MWA_MODEL_IMAGE) cfg.models.image = process.env.MWA_MODEL_IMAGE;
+  // Cost (2026-10-23): work nobody waits on (scheduled jobs, hand-offs, thinking time) on its own model, both tiers.
+  if (process.env.MWA_BACKGROUND_MODEL) cfg.models.background = process.env.MWA_BACKGROUND_MODEL;
   return cfg;
 }

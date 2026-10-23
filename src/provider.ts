@@ -658,6 +658,28 @@ function filterChatModels(rows: ModelRow[]): { id: string; name?: string }[] {
  * Falls back to whatever IS configured so the agent always runs.
  */
 export function getProvider(role: ProviderRole): Provider {
+  const main = tierProvider(role);
+  const bg = loadConfig().models.background;
+  if (!bg) return main;
+  try { return new BackgroundSwitch(main, resolveProvider(bg)); } catch { return main; }
+}
+
+/**
+ * Cost (2026-10-23): a call made inside backgroundCalls (a scheduled job, a hand-off, thinking time) goes to
+ * models.background (MWA_BACKGROUND_MODEL), at both tiers; a chat the person is waiting on keeps the usual model.
+ * Measured on three research jobs: $0.14 on gpt-6-luna against $2.08-2.62 on gpt-6.1-sol, all three files written.
+ * Decided per call, not per provider object, because one router serves both chats and jobs.
+ */
+class BackgroundSwitch implements Provider {
+  constructor(private readonly main: Provider, private readonly bg: Provider) {}
+  private active(): Provider { return backgroundCalls.getStore() === true ? this.bg : this.main; }
+  get id(): string { return this.active().id; }
+  get model(): string { return this.active().model; }
+  get price(): [number, number] { return this.active().price; }
+  chat(input: ChatInput): Promise<ChatResult> { return this.active().chat(input); }
+}
+
+function tierProvider(role: ProviderRole): Provider {
   loadEnv();
   const cfg = loadConfig();
   const spec = role === 'high' ? cfg.models.reason : cfg.models.fetch;
