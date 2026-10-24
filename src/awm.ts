@@ -130,6 +130,10 @@ export interface Memory {
    *  the cron, not memory. */
   readonly keepsSchedules?: boolean;
   recall(query: string, opts?: { limit?: number; workspace?: string; full?: boolean; fast?: boolean; rerank?: boolean; expand?: boolean; namespace?: string }): Promise<RecalledMemory[]>;
+  /** BL-75: the memories an abstract one (an `insight:`, a `position:`) rests on — its `causal` links, strongest
+   *  first — so a conclusion is primed with the numbers under it. Optional: the comparison arms (src/gauntlet) have
+   *  no links; AWM reads them. */
+  sourcesOf?(id: string, limit?: number): Promise<RecalledMemory[]>;
   write(concept: string, content: string, tags?: string[], opts?: WriteOpts): Promise<string | null>;
   supersede(oldId: string, concept: string, content: string, tags?: string[], opts?: WriteOpts): Promise<string | null>;
   /** SPINE — record a side-effecting action (Glass Box history + undo). */
@@ -445,6 +449,27 @@ export class MwaMemory implements Memory {
       }));
     } catch (err) {
       console.error('[awm] recall error:', (err as Error).message);
+      return [];
+    }
+  }
+
+  /**
+   * BL-75 — what an abstract memory rests on. Reconsolidation links an insight to its sources both ways with `causal`
+   * associations (experience pilot, 2026-10-24); AWM's own spreading activation is off (D11), so the links are read here.
+   * Only live memories come back: active, not superseded, not retracted.
+   */
+  async sourcesOf(id: string, limit = 3): Promise<RecalledMemory[]> {
+    try {
+      await this.init();
+      const links = this.store.getAssociationsFor(id).filter((a: any) => a.type === 'causal').sort((a: any, b: any) => b.weight - a.weight);
+      const ids = [...new Set(links.map((a: any) => (a.fromEngramId === id ? a.toEngramId : a.fromEngramId)))].filter((x) => x !== id).slice(0, limit * 2);
+      if (!ids.length) return [];
+      return (this.store.getEngramsByIds(ids) as any[])
+        .filter((e) => e.stage === 'active' && !e.supersededBy && !e.retracted)
+        .slice(0, limit)
+        .map((e) => ({ id: e.id, concept: e.concept, content: e.content, score: 0, trust: this.trustOf(e), ...(e.createdAt ? { at: new Date(e.createdAt).getTime() } : {}) }));
+    } catch (err) {
+      console.error('[awm] sourcesOf error:', (err as Error).message);
       return [];
     }
   }
@@ -1484,6 +1509,9 @@ export class MwaMemory implements Memory {
 export class NullMemory implements Memory {
   readonly enabled = false;
   async recall(): Promise<RecalledMemory[]> {
+    return [];
+  }
+  async sourcesOf(): Promise<RecalledMemory[]> {
     return [];
   }
   async write(): Promise<string | null> {

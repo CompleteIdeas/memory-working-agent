@@ -55,7 +55,7 @@ export const DEFAULT_CONFIG: MwaConfig = {
   awm: {},
   workspace: './mwa-workspace',
   tools: {
-    builtins: ['run_command', 'read_file', 'write_file', 'list_files', 'read_document'],
+    builtins: ['run_command', 'read_file', 'write_file', 'list_files', 'search_files', 'read_document'],
     mcpServers: { search: { command: 'node', args: ['mcp-servers/search.mjs'] } }, // keyless web search (Brave if BRAVE_API_KEY set)
     installPolicy: 'review-required', // curated installs are automatic; external needs review + approval
     access: { preset: 'assistant', grantedRoots: [] }, // least-privilege-ish default; pick at setup

@@ -5,7 +5,7 @@
  * the person's family ("agent run: What is 17 times 23?").
  */
 import { describe, it, expect } from 'vitest';
-import { recallQuery, rankForPrime } from '../src/agent.js';
+import { recallQuery, rankForPrime, requestOf } from '../src/agent.js';
 
 const NOTE = '\n\n(Files you write here are saved for the person and appear in their Files tab; when you mention one, link it by its path.)';
 
@@ -22,6 +22,48 @@ describe('the first recall', () => {
   it('a job, or a run with no separate message, asks with its instruction', () => {
     expect(recallQuery('Prepare the morning brief')).toBe('Prepare the morning brief');
     expect(recallQuery('Prepare the morning brief', 'Prepare the morning brief')).toBe('Prepare the morning brief');
+  });
+  // Experience pilot (2026-10-23): the words around a question pulled memories about the project in general.
+  it('a message built from a template asks with the request after its label, not the template', () => {
+    const framed = 'Answer this question about the MWA project (an AI assistant we are building).\n\nQuestion: What are BL-05\'s numeric limits?';
+    expect(requestOf(framed)).toBe('What are BL-05\'s numeric limits?');
+    expect(recallQuery(framed + NOTE, framed)).toBe('What are BL-05\'s numeric limits?');
+    expect(recallQuery('Task: file the receipts from last week')).toBe('file the receipts from last week');
+    const q = recallQuery(`Recent conversation so far:\n(1) Who teaches Eli guitar? → Jonathan McCormick\n\nNew request: ${framed}`, framed);
+    expect(q).toContain('Jonathan McCormick');
+    expect(q.endsWith('What are BL-05\'s numeric limits?')).toBe(true);
+    expect(q).not.toContain('an AI assistant we are building');
+  });
+  it('an ordinary message, or a label with nothing after it, is asked as it is', () => {
+    expect(requestOf('Who is Nancy Jones?')).toBe('Who is Nancy Jones?');
+    expect(requestOf('I have a question: when is the recital?')).toBe('I have a question: when is the recital?');
+    expect(requestOf('Question:')).toBe('Question:');
+  });
+});
+
+describe('abstract memories do not fill the primed slots', () => {
+  const m = (concept: string, score: number) => ({ concept, score });
+  it('insights and positions beyond the cap move behind the specifics; the rest keep their order', () => {
+    const out = rankForPrime([
+      m('insight: Preserve evidence while limiting its authority', 0.5),
+      m('BL-08 detector check and arming rules', 0.45),
+      m('position: Tested model over cheapest model', 0.44),
+      m('insight: Local-access presets form graduated tiers', 0.43),
+      m('insight: Clef thresholds need task-specific calibration', 0.42),
+      m('Claude Haiku 5.5, MWA OpenRouter completion decision', 0.41),
+      m('agent run: What is 17 times 23?', 0.40),
+    ], 2).map((x) => x.concept);
+    expect(out).toEqual([
+      'insight: Preserve evidence while limiting its authority',
+      'BL-08 detector check and arming rules',
+      'position: Tested model over cheapest model',
+      'Claude Haiku 5.5, MWA OpenRouter completion decision',
+      'insight: Local-access presets form graduated tiers',
+      'insight: Clef thresholds need task-specific calibration',
+    ]);
+  });
+  it('a cap of 0 primes no abstract memory ahead of a specific one', () => {
+    expect(rankForPrime([m('insight: x', 0.9), m('fact y', 0.1)], 0).map((x) => x.concept)).toEqual(['fact y', 'insight: x']);
   });
 });
 

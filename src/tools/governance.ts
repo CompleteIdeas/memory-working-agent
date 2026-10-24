@@ -11,7 +11,7 @@ export type ActionCategory = 'read' | 'write-local' | 'execute' | 'external' | '
 
 // Map the real MWA tool names (builtins + connectors) to a semantic category.
 const TOOL_CATEGORY: Record<string, ActionCategory> = {
-  list_files: 'read', read_file: 'read', read_document: 'read', read_email: 'read', search_email: 'read', web_search: 'read',
+  list_files: 'read', search_files: 'read', read_file: 'read', read_document: 'read', read_email: 'read', search_email: 'read', web_search: 'read',
   // Warm-start: reads the owner's OWN granted-folder docs (trusted, like read_file) — a local read,
   // NOT egress, and deliberately absent from UNTRUSTED_CONTENT_TOOLS so seed memories stay canonical.
   onboard_scan: 'read', onboard_questions: 'read',
@@ -137,7 +137,7 @@ const OWN_OUTPUT_TOOLS = new Set([
 // instructions, tool and connector descriptions — an MCP server writes its own descriptions).
 // NOT run_command: a command can fetch anything (`curl …`), so its output is external.
 const LOCAL_CONTENT_TOOLS = new Set([
-  'read_file', 'list_files', 'read', 'dispatch', 'onboard_scan',
+  'read_file', 'list_files', 'search_files', 'read', 'dispatch', 'onboard_scan',
   'knowledge_list', 'memory_profile', 'memory_store_map', 'schedule_list', 'schedule_update', 'list_active_tools', 'list_connectors',
 ]);
 /** BL-71c: put at the top of what a run reads from ANOTHER chat's or job's folder. The agent counts such a

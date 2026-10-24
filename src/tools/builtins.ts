@@ -270,6 +270,63 @@ const readFileTool: RegisteredTool = {
   },
 };
 
+/**
+ * BL-75: a search over the text of files, without the shell. In the experience pilot (2026-10-23) a model with its
+ * documents in a granted folder listed that folder 369 times and read a file 14 times: its `grep -rn … | head` was
+ * staged for approval (a pipe), and it answered "I couldn't verify" in 17 of 54 answers. The same search over the
+ * folders this run may read needs no card — it reads what read_file may read.
+ */
+const SEARCH_SKIP_EXT = /\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|tgz|7z|jar|exe|dll|so|dylib|db|sqlite|wal|shm|mp[34]|mov|wav|woff2?|ttf|otf|lock)$/i;
+const SEARCH_MAX_FILE = 2_000_000;
+const SEARCH_MAX_HITS = 60;
+const SEARCH_HITS_PER_FILE = 8;
+const searchFilesTool: RegisteredTool = {
+  def: {
+    name: 'search_files',
+    description: 'Search the TEXT of files (case-insensitive) in your working folder or a granted folder, and get the matching lines with ' +
+      'their file and line number — use it to find which file says something before reading it. Optional subdir; `regex: true` reads the query as a regular expression.',
+    parameters: { type: 'object', properties: {
+      query: { type: 'string', description: 'words or a phrase to find in file contents' },
+      dir: { type: 'string', description: 'optional folder (relative to your working folder, or a granted folder\'s path), default root' },
+      regex: { type: 'boolean', description: 'treat the query as a regular expression' },
+    }, required: ['query'] },
+  },
+  handler: async (args, ctx) => {
+    const q = String(args.query ?? '').trim();
+    if (!q) return '(no query given)';
+    const found = readable(ctx, String(args.dir ?? '.'));
+    if (!found) return outsideRefusal(ctx, String(args.dir ?? '.'), 'folder');
+    let re: RegExp;
+    try { re = new RegExp(args.regex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'); } catch (e) { return `(bad regular expression: ${(e as Error).message.slice(0, 80)})`; }
+    const hits: string[] = []; let files = 0; let matched = 0;
+    const walk = (d: string, rel: string) => {
+      let ents; try { ents = readdirSync(d, { withFileTypes: true }); } catch { return; }
+      for (const e of ents) {
+        if (hits.length >= SEARCH_MAX_HITS) return;
+        if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
+        const r = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) { walk(join(d, e.name), r); continue; }
+        if (SEARCH_SKIP_EXT.test(e.name)) continue;
+        let text: string;
+        try { if (statSync(join(d, e.name)).size > SEARCH_MAX_FILE) continue; text = readFileSync(join(d, e.name), 'utf8'); } catch { continue; }
+        files++;
+        let inFile = 0;
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length && inFile < SEARCH_HITS_PER_FILE && hits.length < SEARCH_MAX_HITS; i++) {
+          if (!re.test(lines[i])) continue;
+          hits.push(`${r}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
+          inFile++;
+        }
+        if (inFile) matched++;
+      }
+    };
+    walk(found.path, '');
+    if (!hits.length) return `(nothing in ${files} files matches "${q.slice(0, 60)}" — try fewer or other words)`;
+    const body = `${matched} file${matched === 1 ? '' : 's'} match; ${hits.length}${hits.length >= SEARCH_MAX_HITS ? ' (first ' + SEARCH_MAX_HITS + ')' : ''} lines (file:line: text) — read_file opens one:\n${hits.join('\n')}`;
+    return found.other ? `${OTHER_FOLDER_MARK}\n${body}` : body;
+  },
+};
+
 const writeFileTool: RegisteredTool = {
   def: {
     name: 'write_file',
@@ -417,6 +474,7 @@ const readDocumentTool: RegisteredTool = {
 export const BUILTIN_TOOLS: Record<string, RegisteredTool> = {
   run_command: runCommandTool,
   list_files: listFilesTool,
+  search_files: searchFilesTool,
   read_file: readFileTool,
   write_file: writeFileTool,
   read_document: readDocumentTool,

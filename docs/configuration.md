@@ -76,6 +76,8 @@ Provider API keys live in `.env` (never committed): `ANTHROPIC_API_KEY`, `AZURE_
 | `MWA_FRESH_IDLE_MS` | `2700000` (45 min) | Idle gap that forces a "new topic". |
 | `MWA_AUTO_ROUTINES` | (default) | Auto self-crystallizing routines (F6). |
 | `MWA_ENTITY_BRIDGE` | (default) | Entity-bridge recall boost toggle. |
+| `MWA_PRIME_SOURCES` | on | A primed `insight:` or `position:` brings up to three of the memories it rests on (its `causal` links, written by reconsolidation), scored just under it, so the conclusion arrives with its numbers. On the pilot's replay (2026-10-24) it moved the memory that answers to #1 on three more questions. `0` turns it off. |
+| `MWA_PRIME_ABSTRACT_CAP` | `3` | How many `insight:` / `position:` memories (patterns read across memories, standing views) may take primed slots at the start of a run; the rest move behind the specific facts. In the experience pilot (2026-10-23) five general memories were primed on 11–17 of 18 unrelated questions, pushing the memories holding the asked-for numbers out of the twelve primed. |
 | `MWA_AGENT_ID` | `mwa-serve` | The AWM agent id the serve process recalls/writes under. |
 | `MWA_DOMAIN_PACK` | unset | Path to a domain pack (`AGENT.md` + `topics/`) — plugs a domain agent onto MWA. |
 | `MWA_HTTP_TIMEOUT_MS` | (default) | Timeout for the `http_request`/`read_document` tools. |
