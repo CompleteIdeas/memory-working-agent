@@ -43,6 +43,7 @@ import { hasPasted } from '../handoff.js';
 import Database from 'better-sqlite3';
 import { ToolRefusal, type RegisteredTool, type ToolContext } from './registry.js';
 import { isStepUpSatisfied } from '../step-up.js';
+import { dbFile } from '../paths.js';
 
 export type ApprovalKind = 'tool' | 'captured-policy';
 export type ApprovalStatus = 'pending' | 'executing' | 'done' | 'failed' | 'cancelled' | 'expired';
@@ -65,6 +66,8 @@ export interface PendingAction {
   session?: string;
   /** staged by a run that had read outside content — shown to the person beside the preview. */
   tainted?: boolean;
+  /** staged by a run that had read the person's own files (F02: not "outside content", and the card says which). */
+  readLocal?: boolean;
   kind?: ApprovalKind;
 }
 
@@ -85,7 +88,7 @@ let dbPath: string | null = null;
 function defaultPath(): string {
   if (process.env.MWA_APPROVALS_DB) return process.env.MWA_APPROVALS_DB;
   if (process.env.VITEST) return ':memory:';
-  return join(dirname(process.env.MWA_DB ?? resolve('./data/agent.db')), 'approvals.db');
+  return join(dirname(dbFile()), 'approvals.db');
 }
 
 function store(): Db {
@@ -162,8 +165,15 @@ function toAction(r: Row): PendingAction {
   return {
     id: r.id, tool: r.tool, summary: r.summary, createdAt: r.created_at, expiresAt: r.expires_at, status: r.status as ApprovalStatus,
     personId: ctx.personId, identityInDoubt: ctx.identityInDoubt, runId: ctx.runId, session: ctx.session,
-    tainted: r.tainted === 1, kind: (r.kind as ApprovalKind) ?? 'tool',
+    tainted: r.tainted === 1, readLocal: ctx.readLocal === true, kind: (r.kind as ApprovalKind) ?? 'tool',
   };
+}
+/** Two stagings of the same thing: same tool, same arguments (or the same summary when there are none). */
+function sameStaging(a: { tool: string; args: string; summary: string }, tool: string, args: Record<string, unknown>, summary: string): boolean {
+  if (a.tool !== tool) return false;
+  const norm = (o: unknown) => JSON.stringify(o, Object.keys((o as Record<string, unknown>) ?? {}).sort()).toLowerCase().replace(/\s+/g, ' ');
+  const mine = Object.keys(args).length ? norm(args) : '';
+  return mine ? norm(parse(a.args, {})) === mine : a.summary.trim().toLowerCase() === summary.trim().toLowerCase();
 }
 const INTERRUPTED_MS = 15 * 60_000;
 
@@ -251,9 +261,17 @@ export function stageAction(a: {
   reviewed?: Review;
 }): string {
   prune();
+  const c = a.ctx ?? { sandboxDir: '.' };
+  // One card per proposal (usability review 2026-10-24, F03): the same tool with the same arguments, staged again
+  // by the same conversation (or the same run) while the first card still waits, is the first card. One
+  // preference request had produced three identical policy_save cards beside the captured one.
+  if (c.session || c.runId) {
+    const open = store().prepare(`SELECT * FROM approvals WHERE status = 'pending' AND tool = ? ORDER BY created_at DESC`).all(a.tool) as Row[];
+    const twin = open.find((r) => { const x = toAction(r); return (c.session ? x.session === c.session : x.runId === c.runId) && sameStaging(r, a.tool, a.args ?? {}, a.summary); });
+    if (twin) { if (a.execute) localClosures.set(twin.id, a.execute); return twin.id; }
+  }
   const id = newId();
   const now = Date.now();
-  const c = a.ctx ?? { sandboxDir: '.' };
   // Plain data only: the context is JSON, so it survives a restart and another process can run it.
   const ctx: ToolContext = {
     sandboxDir: c.sandboxDir, extraRoots: c.extraRoots, tainted: c.tainted === true, readLocal: c.readLocal,
@@ -356,13 +374,15 @@ function inScope(a: PendingAction, scope: { session?: string; personId?: string 
 
 /** What happened recently to actions approved elsewhere — waiting for their own app, or failed — so
  *  the person isn't left with "[APPROVED]" and nothing after it (BL-18 review). Last 24 hours. */
-export function recentApprovalOutcomes(): { id: string; tool: string; status: ApprovalStatus; owner: string; result?: string; at: number }[] {
+export function recentApprovalOutcomes(): { id: string; tool: string; status: ApprovalStatus; owner: string; summary: string; kind: ApprovalKind; session?: string; result?: string; at: number }[] {
   prune();
-  const rows = store().prepare(`SELECT * FROM approvals WHERE status IN ('approved','failed') AND updated_at > ? ORDER BY updated_at DESC LIMIT 20`).all(Date.now() - CLEAR_MS) as Row[];
-  return rows.map((r) => ({ id: r.id, tool: r.tool, status: r.status as ApprovalStatus, owner: ownerLabel(r.owner), ...(r.result ? { result: r.result.slice(0, 300) } : {}), at: r.updated_at }));
+  // Every ending, with the card's words, for a day (F02, 2026-10-24): an expired or declined card used to vanish
+  // with no trace, and the chat still said "approve it in the app".
+  const rows = store().prepare(`SELECT * FROM approvals WHERE status IN ('approved','failed','done','cancelled','expired') AND auto IS NULL AND updated_at > ? ORDER BY updated_at DESC LIMIT 40`).all(Date.now() - CLEAR_MS) as Row[];
+  return rows.map((r) => { const a = toAction(r); return { id: r.id, tool: r.tool, status: r.status as ApprovalStatus, owner: ownerLabel(r.owner), summary: r.summary, kind: a.kind ?? 'tool', ...(a.session ? { session: a.session } : {}), ...(r.result ? { result: r.result.slice(0, 300) } : {}), at: r.updated_at }; });
 }
 
-export interface PendingView { id: string; tool: string; summary: string; expiresInSec: number; tainted: boolean; kind: ApprovalKind; session?: string; }
+export interface PendingView { id: string; tool: string; summary: string; expiresInSec: number; expiresAt: number; tainted: boolean; readLocal: boolean; kind: ApprovalKind; session?: string; runId?: string; }
 
 /** List pending actions, newest first. With `scope`, only those from that session or person — the
  *  model's own list/cancel tools are scoped (BL-03 review); the person's app lists everything. */
@@ -372,7 +392,7 @@ export function listPendingActions(scope?: { session?: string; personId?: string
   const rows = store().prepare(`SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at DESC`).all() as Row[];
   return rows.map(toAction)
     .filter((a) => !scope || inScope(a, scope))
-    .map((a) => ({ id: a.id, tool: a.tool, summary: a.summary, expiresInSec: Math.max(0, Math.round((a.expiresAt - now) / 1000)), tainted: a.tainted === true, kind: a.kind ?? 'tool', session: a.session }));
+    .map((a) => ({ id: a.id, tool: a.tool, summary: a.summary, expiresInSec: Math.max(0, Math.round((a.expiresAt - now) / 1000)), expiresAt: a.expiresAt, tainted: a.tainted === true, readLocal: a.readLocal === true, kind: a.kind ?? 'tool', session: a.session, ...(a.runId ? { runId: a.runId } : {}) }));
 }
 
 /** Confirm + execute a pending action by id (omit id → the single most recent). Called only by

@@ -12,9 +12,10 @@
 import { readdirSync, statSync, readFileSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { MwaMemory } from './awm.js';
+import { dataDir } from './paths.js';
 
 const DOCS_ROOT = 'C:/Users/robert/project/equihub-docs';
-const SNAPSHOT = './data/work-snapshot.db';
+const SNAPSHOT = join(dataDir(), 'work-snapshot.db');
 const tok = (s: string) => Math.ceil(s.length / 4);
 
 const QUESTIONS: { q: string; kw: string[] }[] = [

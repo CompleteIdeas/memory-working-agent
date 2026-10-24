@@ -7,20 +7,24 @@
  */
 import { appendFileSync, mkdirSync, readFileSync, existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { runLogPath } from './paths.js';
 
 export interface ConversationTurn {
   ts: number; session: string; message: string; reply: string; reason?: string;
   /** the turn read outside content: it goes back into the model's context only fenced */
   tainted?: boolean;
-  /** a scheduled or background result posted into this conversation, not a turn the person typed */
-  kind?: 'chat' | 'result' | 'offer';
+  /** a scheduled or background result posted into this conversation, not a turn the person typed; `running` is a
+   *  turn whose run has started and not finished (F09, 2026-10-24) — the page re-attaches to it after a reload */
+  kind?: 'chat' | 'result' | 'offer' | 'running';
+  /** the live run this turn belongs to: the `running` turn and its finished turn share it */
+  runId?: string;
 }
 export interface ConversationSummary { session: string; title: string; last: number; turns: number; lastMessage: string }
 
 const MAX_TEXT = 20_000;
 
 export function conversationsPath(env: NodeJS.ProcessEnv = process.env): string {
-  return env.MWA_CONVERSATIONS ?? join(dirname(env.MWA_RUNLOG ?? resolve('./data/runs.jsonl')), 'conversations.jsonl');
+  return env.MWA_CONVERSATIONS ?? join(dirname(runLogPath(env)), 'conversations.jsonl');
 }
 
 /** Keep one turn. Best effort: a chat never fails because its log couldn't be written. */
@@ -52,7 +56,10 @@ function readAll(path: string): ConversationTurn[] {
 
 /** A conversation's turns, oldest first (the last `limit`). */
 export function readConversation(session: string, limit = 60, path = conversationsPath()): ConversationTurn[] {
-  return readAll(path).filter((t) => t.session === session).sort((a, b) => a.ts - b.ts).slice(-limit);
+  const turns = readAll(path).filter((t) => t.session === session).sort((a, b) => a.ts - b.ts);
+  // A `running` turn stands only until its run's finished turn is written (F09).
+  const finished = new Set(turns.filter((t) => t.kind !== 'running' && t.runId).map((t) => t.runId));
+  return turns.filter((t) => t.kind !== 'running' || !finished.has(t.runId)).slice(-limit);
 }
 
 /** Conversations, most recently active first, titled by their first message. */

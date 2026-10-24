@@ -8,9 +8,9 @@
  */
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { resolveVaultRefs, hasVaultRef } from '../vault/vault.js';
-import { resolve, join, dirname, basename, relative, isAbsolute } from 'node:path';
+import { resolve, join, dirname, basename, relative, isAbsolute, sep } from 'node:path';
 import { runCommand, runCommandAsync } from '../util.js';
-import { resolveAllowed, runCommandAllowed, allowedRoots, accessPolicy } from './access.js';
+import { resolveAllowed, runCommandAllowed, allowedRoots, accessPolicy, grantedFolders } from './access.js';
 import { loadConfig } from '../config.js';
 import { ToolRefusal, type RegisteredTool, type ToolContext } from './registry.js';
 import { classifyCommand, scrubbedEnv, writeRefusal, insideReal } from './shell-gate.js';
@@ -203,14 +203,35 @@ const runCommandTool: RegisteredTool = {
   },
 };
 
+/** The files under a folder, relative to it (skips node_modules and dot-files), at most `cap`. */
+function filesUnder(base: string, cap = 200): string[] {
+  const out: string[] = [];
+  const walk = (d: string, rel: string) => {
+    let ents; try { ents = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (out.length >= cap) return;
+      if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(join(d, e.name), r);
+      else out.push(r);
+    }
+  };
+  walk(base, '');
+  return out;
+}
+
+/** The person's granted folders this run may read, for a listing or search with no `dir` (F07, 2026-10-24). */
+const grantedFor = (ctx: ToolContext) => grantedFolders(ctx.sandboxDir).filter((r) => r.readable).map((r) => r.path);
+
 const listFilesTool: RegisteredTool = {
   def: {
     name: 'list_files',
-    description: 'List files in your working folder (skips node_modules and dotfiles). Optional subdir. With `search`, ' +
+    description: 'List files in your working folder and in the person\'s granted folders (skips node_modules and dotfiles). ' +
+      'With `dir`, lists that folder only (a subfolder of yours, or a granted folder\'s path). With `search`, ' +
       'finds the person\'s files by name across ALL their chats and jobs instead (newest first, with full paths you can read): ' +
       'use it when they mention a file from an earlier conversation.',
     parameters: { type: 'object', properties: {
-      dir: { type: 'string', description: 'optional subdirectory, default root' },
+      dir: { type: 'string', description: 'optional: one folder to list (a subfolder, or a granted folder\'s path); default: your working folder and every granted folder' },
       search: { type: 'string', description: 'optional: words in the file name or folder, to search every file the person has (e.g. "newsletter"); "*" lists the newest' },
     }, required: [] },
   },
@@ -227,21 +248,18 @@ const listFilesTool: RegisteredTool = {
       // File names were chosen by earlier runs, some of which read outside content: marked like the files.
       return `${OTHER_FOLDER_MARK}\n` + hits.map((f) => `${join(root, f.path)} · ${new Date(f.mtime).toISOString().slice(0, 16).replace('T', ' ')} · ${f.size} bytes`).join('\n');
     }
+    const dirGiven = args.dir !== undefined && String(args.dir).trim() !== '' && String(args.dir).trim() !== '.';
+    // No `dir`: the working folder AND the person's granted folders, each under its own heading, so a question
+    // about "my files" is answered from the folders they granted rather than "I couldn't find any files" (F07).
+    const granted = dirGiven ? [] : grantedFor(ctx);
+    if (granted.length) {
+      const sections = [`== your working folder (${ctx.sandboxDir}) ==\n${filesUnder(resolve(ctx.sandboxDir)).join('\n') || '(empty)'}`];
+      for (const g of granted) sections.push(`== the person's folder ${g} (read_file takes ${g}${sep}<name>) ==\n${filesUnder(g).join('\n') || '(empty)'}`);
+      return sections.join('\n\n');
+    }
     const found = readable(ctx, String(args.dir ?? '.'));
     if (!found) return outsideRefusal(ctx, String(args.dir ?? '.'), 'folder');
-    const base = found.path;
-    const out: string[] = [];
-    const walk = (d: string, rel: string) => {
-      let ents; try { ents = readdirSync(d, { withFileTypes: true }); } catch { return; }
-      for (const e of ents) {
-        if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
-        const r = rel ? `${rel}/${e.name}` : e.name;
-        if (e.isDirectory()) walk(join(d, e.name), r);
-        else out.push(r);
-      }
-    };
-    walk(base, '');
-    const listing = out.slice(0, 200).join('\n') || '(empty)';
+    const listing = filesUnder(found.path).join('\n') || '(empty)';
     return found.other ? `${OTHER_FOLDER_MARK}\n${listing}` : listing;
   },
 };
@@ -283,29 +301,32 @@ const SEARCH_HITS_PER_FILE = 8;
 const searchFilesTool: RegisteredTool = {
   def: {
     name: 'search_files',
-    description: 'Search the TEXT of files (case-insensitive) in your working folder or a granted folder, and get the matching lines with ' +
-      'their file and line number — use it to find which file says something before reading it. Optional subdir; `regex: true` reads the query as a regular expression.',
+    description: 'Search the TEXT of files (case-insensitive) in your working folder and the person\'s granted folders, and get the matching lines with ' +
+      'their file and line number — use it to find which file says something before reading it. With `dir`, searches that folder only; `regex: true` reads the query as a regular expression.',
     parameters: { type: 'object', properties: {
       query: { type: 'string', description: 'words or a phrase to find in file contents' },
-      dir: { type: 'string', description: 'optional folder (relative to your working folder, or a granted folder\'s path), default root' },
+      dir: { type: 'string', description: 'optional: one folder to search (relative to your working folder, or a granted folder\'s path); default: your working folder and every granted folder' },
       regex: { type: 'boolean', description: 'treat the query as a regular expression' },
     }, required: ['query'] },
   },
   handler: async (args, ctx) => {
     const q = String(args.query ?? '').trim();
     if (!q) return '(no query given)';
+    const dirGiven = args.dir !== undefined && String(args.dir).trim() !== '' && String(args.dir).trim() !== '.';
     const found = readable(ctx, String(args.dir ?? '.'));
     if (!found) return outsideRefusal(ctx, String(args.dir ?? '.'), 'folder');
     let re: RegExp;
     try { re = new RegExp(args.regex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'); } catch (e) { return `(bad regular expression: ${(e as Error).message.slice(0, 80)})`; }
     const hits: string[] = []; let files = 0; let matched = 0;
-    const walk = (d: string, rel: string) => {
+    // `at` prefixes a hit's path: empty in the working folder (a relative path), the folder's own path in a granted
+    // folder (so read_file can open the hit as printed).
+    const walk = (d: string, rel: string, at = '') => {
       let ents; try { ents = readdirSync(d, { withFileTypes: true }); } catch { return; }
       for (const e of ents) {
         if (hits.length >= SEARCH_MAX_HITS) return;
         if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
         const r = rel ? `${rel}/${e.name}` : e.name;
-        if (e.isDirectory()) { walk(join(d, e.name), r); continue; }
+        if (e.isDirectory()) { walk(join(d, e.name), r, at); continue; }
         if (SEARCH_SKIP_EXT.test(e.name)) continue;
         let text: string;
         try { if (statSync(join(d, e.name)).size > SEARCH_MAX_FILE) continue; text = readFileSync(join(d, e.name), 'utf8'); } catch { continue; }
@@ -314,13 +335,15 @@ const searchFilesTool: RegisteredTool = {
         const lines = text.split('\n');
         for (let i = 0; i < lines.length && inFile < SEARCH_HITS_PER_FILE && hits.length < SEARCH_MAX_HITS; i++) {
           if (!re.test(lines[i])) continue;
-          hits.push(`${r}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
+          hits.push(`${at}${r}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
           inFile++;
         }
         if (inFile) matched++;
       }
     };
     walk(found.path, '');
+    // No `dir`: the person's granted folders too (F07) — their hits carry full paths.
+    if (!dirGiven) for (const g of grantedFor(ctx)) walk(g, '', g + sep);
     if (!hits.length) return `(nothing in ${files} files matches "${q.slice(0, 60)}" — try fewer or other words)`;
     const body = `${matched} file${matched === 1 ? '' : 's'} match; ${hits.length}${hits.length >= SEARCH_MAX_HITS ? ' (first ' + SEARCH_MAX_HITS + ')' : ''} lines (file:line: text) — read_file opens one:\n${hits.join('\n')}`;
     return found.other ? `${OTHER_FOLDER_MARK}\n${body}` : body;
@@ -345,6 +368,20 @@ const writeFileTool: RegisteredTool = {
     // agent that could write one could launder a tainted run into a clean one and dodge BL-05's job
     // limits, whatever folders are granted (BL-06 review).
     if (inMailbox(full)) return '(refused: the agent never writes into the inbox, outbox or done folders — a file in the inbox is an instruction, and only the person gives those.)';
+    // A write OUTSIDE the run's own folders — into a folder the person granted — waits for their approval like a
+    // command does (usability review 2026-10-24, F02: a copy into the granted folder ran at once through write_file
+    // while the shell copy's card still waited, so Decline changed nothing). The run's own folder stays immediate.
+    const own = [ctx.sandboxDir, ...(ctx.extraRoots ?? [])].some((r) => insideReal(r, full));
+    if (!own) {
+      const content = String(args.content ?? '');
+      const exists = existsSync(full);
+      const summary = `${exists ? 'Overwrite' : 'Create'} the file ${full} (${content.length} bytes) in a folder you granted.${exists ? ' The current contents are replaced.' : ''}`;
+      const auto = await tryAutoApprove({ tool: 'write_file', summary, ctx, args: { path: full, content }, run: () => writeGranted(full, content) });
+      if (auto.ran) return auto.text;
+      const id = stageAction({ tool: 'write_file', ctx, summary, executor: 'write_file_granted', args: { path: full, content }, reviewed: auto.review, ...(ctx.interactive === false ? { ttlMs: 24 * 60 * 60_000 } : {}) });
+      return `[APPROVAL REQUIRED] Writing ${full} is in a folder the person granted, not in your working folder, so it waits for their approval. It has NOT been written.\n` +
+        `confirmation_id: ${id}\nThe person approves or declines it in the app. You cannot approve it yourself. Say what is waiting for their approval; do not say the file was written.`;
+    }
     try {
       mkdirSync(dirname(full), { recursive: true });
       writeFileSync(full, String(args.content ?? ''), 'utf8');
@@ -354,6 +391,20 @@ const writeFileTool: RegisteredTool = {
     }
   },
 };
+async function writeGranted(full: string, content: string): Promise<string> {
+  mkdirSync(dirname(full), { recursive: true });
+  writeFileSync(full, content, 'utf8');
+  return `wrote ${full} (${content.length} bytes)`;
+}
+/** An approved write into a granted folder runs here, in whichever process confirms it (BL-18). The access policy at
+ *  run time wins: a folder revoked after staging refuses it. */
+registerExecutor('write_file_granted', async (args, ctx) => {
+  const full = String(args.path ?? '');
+  if (!full || !resolveAllowed(ctx.sandboxDir, full) || !realAllowed(ctx, full)) throw new Error('that folder is no longer granted, so nothing was written');
+  const unsafe = writeRefusal(full);
+  if (unsafe) throw new Error(unsafe);
+  return writeGranted(full, String(args.content ?? ''));
+});
 
 const httpRequestTool: RegisteredTool = {
   def: {

@@ -18,6 +18,7 @@
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync, utimesSync, existsSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { runLogPath } from './paths.js';
 
 export const INSTANCE = randomBytes(6).toString('hex');
 const HEARTBEAT_MS = 30_000;
@@ -29,7 +30,7 @@ let producer = 'mwa';
 export function setTranscriptProducer(name: string): void { producer = name.replace(/[^a-z0-9-]/gi, '').slice(0, 24) || 'mwa'; }
 
 export function transcriptsDir(): string {
-  return process.env.MWA_TRANSCRIPTS_DIR ?? join(dirname(process.env.MWA_RUNLOG ?? resolve('./data/runs.jsonl')), 'transcripts');
+  return process.env.MWA_TRANSCRIPTS_DIR ?? join(dirname(runLogPath()), 'transcripts');
 }
 const heartbeatPath = (instance: string) => join(transcriptsDir(), `.instance-${instance}`);
 

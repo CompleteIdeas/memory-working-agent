@@ -8,12 +8,36 @@ open). All bodies are JSON unless noted.
 ## Chat
 
 ### `GET /api/chat?message=<text>&session=<id>` → SSE
-Streams one agent run as Server-Sent Events. Events: `start`, `recall`, `read`,
-`remember`, `tool`, `dispatch`, `sleep`, `escalate`, `verify`, `ask`, then a final
-`result` (`{reason, summary, steps, dispatches, toolCalls, costUsd}`) or `error`
+Streams one agent run as Server-Sent Events. Events: `run` (`{runId, startedAt}`), `start`, `recall`, `read`,
+`remember`, `tool`, `step` (`{n, of, tool, detail, elapsedMs}` — one per tool call, with the file, folder, query or
+address it touches), `dispatch`, `sleep`, `escalate`, `verify`, `ask`, `steered`, `stopping`, `stopped`, then a final
+`result` (`{reason, summary, steps, dispatches, toolCalls, costUsd, runId, turnId, elapsedMs, staged?}`) or `error`
 (`{message}`). `session` groups follow-ups (per-session working dir + brief history).
 Concurrency is capped (`MWA_MAX_CONCURRENT`, default 4) — over the cap returns an
-`error` event ("at capacity").
+`error` event ("at capacity"). One run per conversation: a message sent while one is going gets a `busy` event
+(`{runId, message, startedAt, elapsedMs, stopping, stage?}`) and no second run.
+
+### Live runs (usability review 2026-10-24)
+| Route | Method | Body / effect |
+|---|---|---|
+| `/api/chat/live?session=` | GET | `{live: {runId, message, startedAt, elapsedMs, stopping, stage?} \| null, running}` |
+| `/api/chat/attach?session=` | GET → SSE | replays the live run's events so far and follows it to `result`; `gone` when nothing is running (a reload re-attaches instead of losing the answer) |
+| `/api/chat/stop` | POST | `{session}` — the run ends at its next step with reason `stopped` and a summary of what it kept |
+| `/api/chat/steer` | POST | `{session, message}` — queued into the run; the model gets it at its next step as the person's own words |
+
+### Sources
+| Route | Method | Returns |
+|---|---|---|
+| `/api/sources?session=` | GET | `{preset, folders:[{path, files, capped, readable}], added:[…]}` — the granted folders the run can read and the files added to this chat |
+
+### Schedule
+| Route | Method | Body / effect |
+|---|---|---|
+| `/api/schedule?person=` | GET | `{scheduled:[{id, kind: reminder\|watch\|task, request, instruction, due, recur, when, paused, tainted, goal?, lastRun?, fails?}]}` — this person's jobs |
+| `/api/schedule/cancel` | POST | `{id}` — stops it; undo within ten minutes |
+| `/api/schedule/uncancel` | POST | `{id}` — the undo |
+| `/api/schedule/pause` · `/resume` | POST | `{id}` — a paused job keeps its settings and does not run; resume sets its next natural slot |
+| `/api/schedule/update` | POST | `{id, instruction?, at?, daily_at?, days?, every_minutes?}` — the same fields as the model's `schedule_update` |
 
 ## Status & observability
 
@@ -42,7 +66,7 @@ a human can review here instead).
 
 | Route | Method | Body / effect |
 |---|---|---|
-| `/api/approvals` | GET | `{pending:[{id,tool,summary,expiresInSec}]}` |
+| `/api/approvals` | GET | `{pending:[{id,tool,summary,expiresInSec,expiresAt,tainted,readLocal,kind,session,runId?}], recent:[{id,tool,status,summary,kind,session?,result?,at}], auto:[…]}` — `recent` keeps every ending (done, approved, failed, declined as `cancelled`, expired) for a day |
 | `/api/approvals/confirm` | POST | `{id?}` — execute a pending action (omit id = the single most recent) |
 | `/api/approvals/cancel` | POST | `{id}` — discard a pending action |
 

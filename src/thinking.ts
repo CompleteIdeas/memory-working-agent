@@ -18,6 +18,7 @@ import { dirname, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { MwaMemory, Goal, GoalRecord } from './awm.js';
 import type { Provider } from './provider.js';
+import { runLogPath } from './paths.js';
 
 export interface Thought { at: number; goalId: string; title: string; kind: 'next' | 'ask' | 'wait' | 'done'; text: string; costUsd?: number; untrusted?: boolean; person?: string }
 
@@ -26,7 +27,7 @@ export const thinkEveryMs = (env: NodeJS.ProcessEnv = process.env) => Math.max(0
 export const thinkDailyUsd = (env: NodeJS.ProcessEnv = process.env) => Math.max(0, Number(env.MWA_THINK_DAILY_USD ?? 1) || 0);
 
 export function thoughtsPath(env: NodeJS.ProcessEnv = process.env): string {
-  return env.MWA_THOUGHTS ?? join(dirname(env.MWA_RUNLOG ?? resolve('./data/runs.jsonl')), 'thoughts.jsonl');
+  return env.MWA_THOUGHTS ?? join(dirname(runLogPath(env)), 'thoughts.jsonl');
 }
 export function readThoughts(path = thoughtsPath()): Thought[] {
   if (!existsSync(path)) return [];

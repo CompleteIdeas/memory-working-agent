@@ -11,10 +11,11 @@ import { listConnectors, getConnector, enableConnector, enabledConnectorIds, mis
 import { externalInstallState } from '../installer/policy.js';
 import { reviewConnector } from '../installer/review.js';
 import type { MwaConfig } from '../config.js';
+import { installLogPath } from '../paths.js';
 
 function auditInstall(entry: ConnectorEntry): void {
   try {
-    const p = process.env.MWA_INSTALL_LOG ?? resolve('./data/installs.jsonl');
+    const p = installLogPath();
     mkdirSync(dirname(p), { recursive: true });
     appendFileSync(p, JSON.stringify({ ts: Date.now(), id: entry.id, name: entry.name, tier: entry.tier, source: entry.source ?? 'bundled' }) + '\n');
   } catch { /* best-effort */ }

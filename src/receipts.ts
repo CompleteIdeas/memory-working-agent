@@ -14,6 +14,7 @@
  */
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, renameSync, openSync, readSync, closeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { notifyPath } from './paths.js';
 
 export type ReceiptChannel = 'app' | 'telegram' | 'none';
 /** stored: written to the app's feed · served: handed to an open app tab (not proof it was read) · sent: accepted by
@@ -35,7 +36,7 @@ let producer = 'mwa';
 export function setReceiptProducer(name: string): void { producer = name.replace(/[^a-z0-9-]/gi, '').slice(0, 24) || 'mwa'; }
 
 function receiptsDir(): string {
-  return process.env.MWA_RECEIPTS_DIR ?? dirname(process.env.MWA_NOTIFY ?? resolve('./data/notifications.jsonl'));
+  return process.env.MWA_RECEIPTS_DIR ?? dirname(notifyPath());
 }
 
 function endsTorn(p: string): boolean {

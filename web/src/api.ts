@@ -250,7 +250,7 @@ export interface Notification {
 }
 
 // ── BL-71d: conversations and work ─────────────────────────────────────────────────────────────
-export interface ConversationTurn { ts: number; session: string; message: string; reply: string; reason?: string; kind?: 'chat' | 'result' | 'offer' }
+export interface ConversationTurn { ts: number; session: string; message: string; reply: string; reason?: string; kind?: 'chat' | 'result' | 'offer' | 'running'; runId?: string }
 export interface ConversationSummary { session: string; title: string; last: number; turns: number; lastMessage: string }
 export async function getConversations(): Promise<ConversationSummary[]> {
   try { return (await (bounceIfLocked(await fetch('/api/conversations'))).json()).conversations ?? []; } catch { return []; }
@@ -376,6 +376,11 @@ export function plainStep(type: string, data: any): { label: string; detail: str
     case 'question': return { label: 'Noted a question to look into later', tone: 'learn', detail: data?.question ?? '' };
     case 'ask': return { label: 'Asking you something', tone: 'think', detail: '' };
     case 'done': return { label: 'Finishing up', tone: 'done', detail: '' };
+    // F06 (2026-10-24): a real stage — the tool and the thing it touches, with the time so far.
+    case 'step': return { label: `Step ${data?.n ?? ''}: ${TOOL_LABELS[data?.tool] ?? String(data?.tool ?? 'working').replace(/_/g, ' ')}`, tone: 'act', detail: `${shortPath(data?.detail)}${data?.elapsedMs ? ` · ${Math.round(Number(data.elapsedMs) / 1000)}s` : ''}` };
+    case 'stopping': return { label: 'Stopping after this step', tone: 'think', detail: '' };
+    case 'stopped': return { label: 'Stopped', tone: 'done', detail: data?.step ? `after step ${data.step}` : '' };
+    case 'steered': return { label: 'Took your added message into account', tone: 'think', detail: '' };
     default: return null; // 'end'/'result' handled separately
   }
 }
@@ -393,7 +398,7 @@ export interface ChatHandlers {
 /** Open the SSE chat stream for one message; returns the EventSource so it can be closed. */
 export function chatStream(message: string, session: string, h: ChatHandlers, opts: { stay?: boolean } = {}): EventSource {
   const es = new EventSource(`/api/chat?session=${encodeURIComponent(session)}&message=${encodeURIComponent(message)}${opts.stay ? '&stay=1' : ''}`);
-  const TYPES = ['start', 'recall', 'read', 'remember', 'tool', 'dispatch', 'sleep', 'escalate', 'plan', 'plan_step', 'verify', 'question', 'ask', 'done'];
+  const TYPES = ['start', 'recall', 'read', 'remember', 'tool', 'dispatch', 'sleep', 'escalate', 'plan', 'plan_step', 'verify', 'question', 'ask', 'done', 'step', 'stopping', 'stopped', 'steered'];
   for (const t of TYPES) {
     es.addEventListener(t, (e) => {
       let data: any = {}; try { data = JSON.parse((e as MessageEvent).data); } catch { /* */ }
@@ -408,6 +413,13 @@ export function chatStream(message: string, session: string, h: ChatHandlers, op
   es.addEventListener('result', (e) => {
     es.close();
     try { h.onResult(JSON.parse((e as MessageEvent).data)); } catch { h.onResult({ reason: 'done', summary: 'Done.', steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0 }); }
+  });
+  // F08 (2026-10-24): a run is already going in this conversation; the server did not start a second one.
+  es.addEventListener('busy', (e) => {
+    es.close();
+    let d: any = {}; try { d = JSON.parse((e as MessageEvent).data); } catch { /* */ }
+    const since = d?.elapsedMs ? `${Math.round(Number(d.elapsedMs) / 1000)}s ago` : 'a moment ago';
+    h.onResult({ reason: 'busy', summary: `I'm still working on your previous message here (started ${since}). Wait for it to finish, then send this again${d?.stage?.tool ? ` — I'm on ${String(d.stage.tool).replace(/_/g, ' ')}` : ''}.`, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0 });
   });
   es.addEventListener('error', (e) => {
     es.close();

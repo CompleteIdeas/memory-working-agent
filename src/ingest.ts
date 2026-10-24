@@ -16,6 +16,7 @@ import { parseJsonLoose } from './util.js';
 import { loadEnv } from './env.js';
 import { resolve } from 'node:path';
 import { FACT_SHAPE, factTags, type LearnedFact } from './fact-shape.js';
+import { dbFile } from './paths.js';
 
 interface ScannedMessage { id: string; from: string; subject: string; date: string; snippet: string; }
 
@@ -53,7 +54,7 @@ export async function runIngest(opts: { days?: number; max?: number; dbPath?: st
   if (!ingestAvailable()) throw new Error('No email account is connected yet — connect Gmail or Outlook first.');
 
   const days = opts.days ?? 30;
-  const dbPath = opts.dbPath ?? process.env.MWA_DB ?? resolve('./data/agent.db');
+  const dbPath = opts.dbPath ?? dbFile();
 
   log(`Reading your last ${days} days of email…`);
   const { source, msgs } = await gatherMessages(days, opts.max ?? 400, opts.query,

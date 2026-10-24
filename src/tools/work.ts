@@ -45,7 +45,7 @@ import { quietWindow, setQuietHours, quietEnvInvalid, timeZoneName } from '../qu
 import { detectorLine, detectorArmed, readyToArm, checkHash, formatEvidence, READY_N } from '../detector.js';
 import { deliveryLine, readReceipts } from '../receipts.js';
 import { runCommandAllowed } from './access.js';
-import { parseDaily, daysLabel, nextDailyDue, parseDaysArg, parseLocalAt, ownWords, groundedInMessage, quietFromWords, TAINTED_JOB_MARK } from '../schedule-request.js';
+import { parseDaily, daysLabel, nextDailyDue, parseDaysArg, parseLocalAt, ownWords, groundedInMessage, quietFromWords, TAINTED_JOB_MARK, STOP_WORDS } from '../schedule-request.js';
 
 /** Hard caps so a tool call can never flood the context window. */
 const MAX_LIST = 20;
@@ -54,8 +54,6 @@ const MAX_INSTRUCTION_CHARS = 160;
 /** Short enough to type back, long enough not to collide across a realistic task list. */
 const HANDLE_LEN = 8;
 
-/** The person asks to stop or remove something (BL-47) — a cancel is only ever the answer to that. */
-const STOP_WORDS = /\b(?:cancel\w*|stop\w*|delete|remove|pause|turn\b[^.?!]{0,30}\boff|disable|unschedule|no longer|no more|never ?mind|done with|(?:don'?t|do not) (?:need|want)|get rid of|end (?:the|my|that|this)|kill|quit|drop (?:the|my|that|this))\b/i;
 
 /** Said after every listing: the list never creates anything, and a job not in it is not a reason to stop. */
 const LIST_ONLY = '(This only lists jobs. If the person asked for one that is not here, call `schedule` to create it — one call per job.)';
@@ -98,7 +96,7 @@ function recurLabel(recur?: string): string {
  * profile, so a single-user install (CLI, an unidentified web session) keeps seeing the tasks it
  * already had, while an identified person (tg-1000000001, an email address) never sees them.
  */
-function visibleTo(task: ScheduledTask, person: string): boolean {
+export function visibleTo(task: ScheduledTask, person: string): boolean {
   return task.person ? task.person === person : person === 'unknown';
 }
 
@@ -150,7 +148,7 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
         // The job contract (BL-02): a person checking what is scheduled sees what bounds each job.
         const contract = [t.tainted ? TAINTED_JOB_MARK : '', t.until ? `stops when: ${clip(t.until, 80)}` : '', t.limits ? `limits: ${clip(t.limits, 80)}` : '', t.deliver && t.deliver !== 'always' ? `tells you: ${t.deliver === 'changed' ? 'only when something changes' : 'only if it fails'}` : '', t.pendingComplete ? 'looks finished — confirming' : '', t.goal ? `for goal ${t.goal.slice(0, HANDLE_LEN)}` : '', t.depth ? `created by another job (level ${t.depth})` : ''].filter(Boolean).join(' · ');
         const delivery = deliveryLine(t.resumeOf ?? t.id, receipts);
-        return `${t.id.slice(0, HANDLE_LEN)} — ${whenLabel(t.due, now)} — ${recurLabel(t.recur)}${t.kind === 'reminder' ? ' — reminder' : ''}\n    "${clip(t.instruction, MAX_INSTRUCTION_CHARS)}"${contract ? `\n    ${contract}` : ''}${gate}${delivery ? `\n    ${delivery}` : ''}`;
+        return `${t.id.slice(0, HANDLE_LEN)} — ${t.paused ? 'PAUSED by the person — ' : ''}${whenLabel(t.due, now)} — ${recurLabel(t.recur)}${t.kind === 'reminder' ? ' — reminder' : ''}\n    "${clip(t.instruction, MAX_INSTRUCTION_CHARS)}"${contract ? `\n    ${contract}` : ''}${gate}${delivery ? `\n    ${delivery}` : ''}`;
       });
       const more = mine.length > MAX_LIST ? `\n(+${mine.length - MAX_LIST} more)` : '';
       // BL-43: four BL-40 runs listed the schedule three times and stopped, never creating the job asked for.

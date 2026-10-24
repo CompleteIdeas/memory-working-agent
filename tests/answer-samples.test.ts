@@ -124,4 +124,22 @@ describe('sampled answers in a run', () => {
     expect(r.summary).toBe(DONE);
     expect(b.seen.map((s) => s.kind)).toEqual(['step']);
   }, 30_000);
+
+  it('a run that only READ (a listing, a search, a recall) is still sampled; one that wrote is not', async () => {
+    // Pilot arm F4 (2026-10-24): with "no tool call at all" as the gate, the drafts ran on a third of the questions.
+    vi.stubEnv('MWA_ANSWER_SAMPLES', '2');
+    const tools = (names: string[]) => ({ defs: () => names.map((name) => ({ name, description: name, parameters: { type: 'object', properties: {} } })), has: (x: string) => names.includes(x), callDetailed: async () => ({ text: 'ok', failed: false }), call: async () => 'ok' }) as never;
+    const reads = fake('luna', { done: DONE, draft: DRAFT, merge: `${MERGED}\nDRAFTS: agree` });
+    let first = true;
+    const readFirst = { ...reads.p, chat: async (input: any) => { if (first && String(input.system ?? '').includes('TRUST BOUNDARY')) { first = false; return { text: JSON.stringify({ action: 'schedule_list' }), usage: { input: 1, output: 1 } }; } return reads.p.chat(input); } };
+    const r1 = await run(readFirst, { tools: tools(['schedule_list']) });
+    expect(r1.summary).toBe(MERGED);
+    expect(r1.history.join('\n')).toMatch(/2 drafts of the answer merged/);
+    const writes = fake('luna', { done: DONE, draft: DRAFT, merge: `${MERGED}\nDRAFTS: agree` });
+    let w = true;
+    const writeFirst = { ...writes.p, chat: async (input: any) => { if (w && String(input.system ?? '').includes('TRUST BOUNDARY')) { w = false; return { text: JSON.stringify({ action: 'write_file', path: 'a.txt', content: 'x' }), usage: { input: 1, output: 1 } }; } return writes.p.chat(input); } };
+    const r2 = await run(writeFirst, { tools: tools(['write_file']) });
+    expect(r2.summary).toBe(DONE);
+    expect(r2.history.join('\n')).not.toMatch(/drafts of the answer merged/);
+  }, 30_000);
 });

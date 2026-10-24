@@ -9,11 +9,12 @@
  */
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
+import { mwaLogPath } from './paths.js';
 
 export type LogLevel = 'info' | 'warn' | 'error';
 export interface LogEntry { ts: number; level: LogLevel; category: string; msg: string; data?: Record<string, unknown>; }
 
-function logPath(): string { return process.env.MWA_LOG ?? resolve('./data/mwa.log'); }
+function logPath(): string { return mwaLogPath(); }
 
 export function log(level: LogLevel, category: string, msg: string, data?: Record<string, unknown>): void {
   const entry: LogEntry = { ts: Date.now(), level, category, msg: String(msg).slice(0, 1000), ...(data ? { data } : {}) };

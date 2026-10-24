@@ -12,7 +12,8 @@ environment, or in the `.env` file on the data volume (`MWA_ENV_PATH`, default `
 ## Core / serve
 | Var | Default | Purpose |
 |---|---|---|
-| `MWA_ROOT` / `MWA_HOME` | `~/.mwa` (app), cwd (dev) | Config home (`.env`, `agent.db`, workspace). |
+| `MWA_DATA_DIR` | `./data` | Where every runtime file goes: the store (`agent.db`, `approvals.db`), `runs.jsonl`, `tokens.jsonl`, `conversations.jsonl`, `notifications.jsonl`, receipts, `mwa.log`, `installs.jsonl`, `vault.json`, transcripts and browser profiles. `mwa serve --data <dir>` sets it. Each file's own var below still wins when set. Before 2026-10-24 every default was relative to the current directory, so a server started from the repo wrote into the repo's `data/` (usability review F16). |
+| `MWA_ROOT` / `MWA_HOME` | unset | A home folder: the data folder is then `<home>/data` (`MWA_DATA_DIR` wins). `.env` and `mwa.config.json` are configuration, not data, and keep `MWA_ENV_PATH` / `MWA_CONFIG_PATH`. |
 | `MWA_WORKSPACE` | `./mwa-workspace` | Working-files root (per-run output folders, mailbox). |
 | `MWA_DB` | `<data>/agent.db` | SQLite memory DB path (ignored when a non-SQLite backend is selected). |
 | `MWA_ENV_PATH` | `<data>/.env` | Where secrets are read/written. |

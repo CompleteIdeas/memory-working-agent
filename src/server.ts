@@ -12,11 +12,13 @@
  * full /front-end-designer polish pass is a good awake follow-up.)
  */
 import { createServer } from 'node:http';
+import { join } from 'node:path';
 import { getProvider } from './provider.js';
 import { MwaMemory, NullMemory, type Memory } from './awm.js';
 import { TASKS } from './tasks.js';
 import { runBrain } from './brain.js';
 import { loadEnv } from './env.js';
+import { dataDir } from './paths.js';
 
 loadEnv();
 const PORT = Number(process.env.PORT ?? 7878);
@@ -138,7 +140,7 @@ createServer(async (req, res) => {
       const brainRole = arm === 'C' ? 'high' : 'brain';
       const useAwm = arm === 'A';
       const provider = getProvider(brainRole);
-      const mem: Memory = useAwm ? new MwaMemory('mwa-ui', './data/ui.db') : new NullMemory();
+      const mem: Memory = useAwm ? new MwaMemory('mwa-ui', join(dataDir(), 'ui.db')) : new NullMemory();
       const dir = `./sandbox/ui/${taskId ?? 'custom'}-${Date.now()}`;
       if (task) task.setup(dir);
       send('start', { arm, brainRole, useAwm, provider: provider.id, goal: goal.slice(0, 120) });

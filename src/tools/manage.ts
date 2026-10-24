@@ -21,10 +21,11 @@ import {
   listMcpServers, removeMcpServer, addMcpServer,
 } from '../connectors/registry.js';
 import type { MwaConfig } from '../config.js';
+import { installLogPath } from '../paths.js';
 
 function auditManage(event: string, data: Record<string, unknown>): void {
   try {
-    const p = process.env.MWA_INSTALL_LOG ?? resolve('./data/installs.jsonl');
+    const p = installLogPath();
     mkdirSync(dirname(p), { recursive: true });
     appendFileSync(p, JSON.stringify({ ts: Date.now(), event, ...data }) + '\n');
   } catch { /* best-effort */ }

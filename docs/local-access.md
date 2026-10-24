@@ -62,5 +62,11 @@ command goes where it wants), so it's gated by **posture**, not a path check.
       `run_command` gating (off / interactive-only / on) threaded via `ToolContext.interactive`.
 - [x] Setup-time preset picker (onboarding) + permissions panel in Connections
       (switch preset, grant/revoke folders).
+- [x] The run is told its granted folders (2026-10-24, usability review F07): a `FOLDERS YOU CAN READ`
+      line in the prompt names each one with a file count (`sourcesLine()` in `access.ts`; absent when
+      nothing is granted), `list_files` and `search_files` with no `dir` cover the working folder and
+      every granted folder, and `GET /api/sources?session=` returns them with the chat's added files for
+      an "I can read" line in the app. Before this the tools allowed the folders but nothing named them,
+      and "what is in my files?" was answered "I couldn't find any files".
 - [ ] **Future:** true per-command approval prompts for `run_command` in Assistant mode
       (today: allowed when interactive, off when unattended). Per-connector OS sandbox.

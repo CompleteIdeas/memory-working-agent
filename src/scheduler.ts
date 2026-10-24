@@ -200,6 +200,8 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
   const due = (await deps.memory.pendingScheduled()).filter((t) => t.due <= now());
   let fired = 0;
   for (const task of due) {
+    // Paused by the person (F04): skipped, untouched, until resumed — resume sets the next due itself.
+    if (task.paused) continue;
     // A GOAL owns its jobs (BL-05): a finished goal stops them for good; a blocked goal pauses them,
     // and the paused job backs off to its next interval (an hour for a one-off) instead of being
     // re-checked every tick. Costs no model call either way.
@@ -442,6 +444,27 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // reruns, Jordan and Casey). The cost: an outward WRITE on the confirming check (say, an email the job sends
     // again) is not announced here either; unattended, it is still in the action log.
     const actedHere = Boolean((r as { staged?: string[] }).staged?.length) || Number((r as { localActions?: number }).localActions) > 0;
+    // F05 (usability review 2026-10-24): a one-off job that works on a goal — a hand-off, a Continue — ends the goal's
+    // "working on it" when it ends. Nothing set a goal `done` before, so Work said WORKING ON IT 17 minutes after the
+    // result was in the chat. Only when no resume was queued and no other job of the goal is waiting (a watch keeps
+    // its goal open: a done goal stops its jobs), and never over the model's own goal_update: a goal already done or
+    // blocked is left as it is. A run that could not finish, or waits for an approval, pauses the goal with the reason
+    // in the log, so Work says "paused" and Continue picks it up.
+    if (task.goal && !task.recur && ranOk && !(r as { resumeQueued?: boolean }).resumeQueued && deps.memory.getGoal && deps.memory.setGoalStatus) {
+      try {
+        const others = (await deps.memory.pendingScheduled()).some((t) => t.goal === task.goal && t.id !== task.id);
+        const g = others ? null : await deps.memory.getGoal(task.goal);
+        if (g && (g.status === 'in_progress' || g.status === 'open')) {
+          if (r.reason === 'done' && ['changed', 'complete', 'no-change'].includes(outcome)) {
+            await deps.memory.setGoalStatus(g.id, 'done');
+            log(`· goal done (its job finished): ${g.title.slice(0, 40)}`);
+          } else if (outcome === 'could-not' || outcome === 'blocked' || r.reason !== 'done') {
+            await deps.memory.setGoalStatus(g.id, 'blocked');
+            log(`· goal paused (its job ${outcome === 'blocked' ? 'waits for an approval' : 'could not finish'}): ${g.title.slice(0, 40)}`);
+          }
+        }
+      } catch (e) { log(`goal status not updated: ${(e as Error).message.slice(0, 80)}`); }
+    }
     const quietStop = completion === 'stopped' && policy === 'changed' && !valueChanged && !actedHere;
     if (quietStop) log(`· stopped quietly (finished, and already told): ${task.instruction.slice(0, 40)}`);
     const forced = (completion !== undefined && !quietStop) || budgetNews !== undefined || detectorNews !== undefined || (outcome === 'complete' && !quietStop) || outcome === 'blocked' || recovered;

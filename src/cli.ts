@@ -29,6 +29,7 @@ import { runServe } from './serve.js';
 import { runIngest } from './ingest.js';
 import { loadEnv } from './env.js';
 import { logger } from './logger.js';
+import { dbFile } from './paths.js';
 
 // Production safety net. A stray background rejection (scheduler tick, SSE stream,
 // MCP child) must not silently take the process down. Log unhandled rejections and
@@ -72,7 +73,7 @@ async function runCommand(args: string[]): Promise<void> {
   }
   await warnModels();
   const dir = resolve(flags.dir ?? process.cwd()); // absolute — tools/worker spawnSync need it on Windows
-  const dbPath = flags.db ?? process.env.MWA_DB ?? './data/agent.db';
+  const dbPath = flags.db ?? dbFile();
   const cfg = loadConfig();
 
   const brain = new RoutedProvider(getProvider('brain'), getProvider('high')); // conductor: cheap → escalate on struggle/filter
@@ -126,7 +127,7 @@ async function watchCommand(args: string[]): Promise<void> {
   console.log(`  results → ${dirs.outbox}   outputs → ${dirs.outputs}\n`);
   await watchInbox({
     config: cfg,
-    dbPath: flags.db ?? process.env.MWA_DB ?? './data/agent.db',
+    dbPath: flags.db ?? dbFile(),
     once: 'once' in flags,
     intervalMs: flags.interval ? Number(flags.interval) * 1000 : undefined,
     maxSteps: flags['max-steps'] ? Number(flags['max-steps']) : undefined,
@@ -139,7 +140,7 @@ async function connectCommand(args: string[]): Promise<void> {
   const { flags, positional } = parseFlags(args);
   const channel = positional[0];
   const cfg = loadConfig();
-  const common = { config: cfg, dbPath: flags.db ?? process.env.MWA_DB ?? './data/agent.db', maxSteps: flags['max-steps'] ? Number(flags['max-steps']) : undefined, maxMin: flags['max-min'] ? Number(flags['max-min']) : undefined, onLog: (m: string) => console.log(`  ${m}`) };
+  const common = { config: cfg, dbPath: flags.db ?? dbFile(), maxSteps: flags['max-steps'] ? Number(flags['max-steps']) : undefined, maxMin: flags['max-min'] ? Number(flags['max-min']) : undefined, onLog: (m: string) => console.log(`  ${m}`) };
   if (channel === 'telegram') { console.log('\n▶ mwa connect telegram'); await warnModels(); return runTelegram(common); }
   if (channel === 'gmail' || channel === 'google') { console.log('\n▶ mwa connect gmail'); loadEnv(); return connectGmailGuided((m) => console.log(m)); }
   if (channel === 'outlook' || channel === 'microsoft') { console.log('\n▶ mwa connect outlook'); loadEnv(); return connectOutlookGuided((m) => console.log(m)); }
@@ -149,7 +150,13 @@ async function connectCommand(args: string[]): Promise<void> {
 
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
-  if (!cmd || cmd === 'serve') { const { flags } = parseFlags(rest); return runServe(flags.port ? Number(flags.port) : undefined); }
+  if (!cmd || cmd === 'serve') {
+    const { flags } = parseFlags(rest);
+    // F16: `mwa serve --data <dir>` puts every runtime file (the store, logs, notifications, transcripts) under one
+    // folder, whatever the current directory is. Set before any module reads a path (they read at call time).
+    if (flags.data) process.env.MWA_DATA_DIR = resolve(String(flags.data));
+    return runServe(flags.port ? Number(flags.port) : undefined);
+  }
   if (cmd === 'setup') return runSetup();
   if (cmd === 'check-runner') {
     // BL-14c: YOU run this; it is the only thing with Docker access. MWA gets a URL and a token.
@@ -173,7 +180,7 @@ async function main(): Promise<void> {
     loadEnv();
     const cfg = loadConfig();
     const { flags } = parseFlags(rest);
-    const dbPath = flags.db ?? process.env.MWA_DB ?? resolve('./data/agent.db');
+    const dbPath = flags.db ?? dbFile();
     for (const agent of ['mwa-agent', 'mwa-serve']) {
       const m = new MwaMemory(agent, dbPath, cfg.awm.workspace);
       const before = await m.memoryCount();

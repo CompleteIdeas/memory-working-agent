@@ -27,6 +27,7 @@ import { dirname } from 'node:path';
 import { isQuietNow, holdPush, flushHeld, firesOf } from '../quiet.js';
 import { recordReceipt, setReceiptProducer } from '../receipts.js';
 import { setTranscriptProducer } from '../transcript.js';
+import { dbFile } from '../paths.js';
 
 async function tg(token: string, method: string, body?: Record<string, unknown>): Promise<any> {
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {});
@@ -170,11 +171,11 @@ export async function runTelegram(opts: { config: MwaConfig; dbPath?: string; ma
 
   const brain = new RoutedProvider(getProvider('brain'), getProvider('high')); // conductor escalates on struggle/filter
   const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
-  const memory = new MwaMemory('mwa-agent', opts.dbPath ?? './data/agent.db', opts.config.awm.workspace);
+  const memory = new MwaMemory('mwa-agent', opts.dbPath ?? dbFile(), opts.config.awm.workspace);
   // Approvals: this process owns what it stages under its memory identity, and shares the store with
   // the web app — beside the agent DB it was given, not wherever the working directory points (BL-18).
   setApprovalOwner('mwa-agent');
-  if (!process.env.MWA_APPROVALS_DB) setApprovalStorePath(resolve(dirname(opts.dbPath ?? './data/agent.db'), 'approvals.db'));
+  if (!process.env.MWA_APPROVALS_DB) setApprovalStorePath(resolve(dirname(opts.dbPath ?? dbFile()), 'approvals.db'));
   const { registry } = await buildRegistry(opts.config, memory);
   const deps: Deps = { memory, brain, worker, registry, maxSteps: opts.maxSteps ?? 40, maxMin: opts.maxMin ?? 10, outRoot: join(opts.config.workspace ?? './mwa-workspace', 'outputs') };
 

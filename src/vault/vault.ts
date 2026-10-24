@@ -17,11 +17,12 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { vaultPath as vaultFile } from '../paths.js';
 
 export interface VaultEntryView { name: string; site?: string; fields: string[]; savedAt: number }
 interface StoredEntry { site?: string; fields: Record<string, string>; savedAt: number }
 
-const vaultPath = () => process.env.MWA_VAULT_PATH ?? resolve('./data/vault.json');
+const vaultPath = () => vaultFile();
 
 function vaultKey(): Buffer {
   const env = (process.env.MWA_VAULT_KEY ?? '').trim();

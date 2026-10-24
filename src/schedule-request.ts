@@ -131,6 +131,11 @@ export function unreadSources(jobText: string, available: string[], used: Set<st
  * BL-40 corrections were acknowledged and never reached the job. A standing change in the person's words,
  * about something a job produces.
  */
+/** The person asks to stop or remove something (BL-47) — a cancel is only ever the answer to that. Shared by the
+ *  cancel tool's guard and the harness check that a cancel request ended with a cancel (F04, 2026-10-24). */
+export const STOP_WORDS = /\b(?:cancel\w*|stop\w*|delete|remove|pause|turn\b[^.?!]{0,30}\boff|disable|unschedule|no longer|no more|never ?mind|done with|(?:don'?t|do not) (?:need|want)|get rid of|end (?:the|my|that|this)|kill|quit|drop (?:the|my|that|this))\b/i;
+export function asksToStopJob(message: string): boolean { return STOP_WORDS.test(message); }
+
 export function asksToChangeJob(message: string): boolean {
   const standing = /\b(?:from now on|going forward|in (?:the )?future|next time|each time|every time|starting tomorrow|from tomorrow)\b/i.test(message)
     || /\b(?:keep|make|limit|cap)\s+(?:it|them|the\s+[\w ]{1,30}?)\s+(?:to|under|at most|shorter|longer)\b/i.test(message)

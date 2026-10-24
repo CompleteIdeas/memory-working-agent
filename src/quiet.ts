@@ -21,6 +21,7 @@ import { dirname, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { loadConfig, configPath } from './config.js';
 import { recordReceipt } from './receipts.js';
+import { notifyPath } from './paths.js';
 
 /** Every fire a held item speaks for: its own and those it replaced. */
 export function firesOf(i: { fire?: string; replaced?: string[] }): string[] {
@@ -132,7 +133,7 @@ export interface HeldPush {
 }
 
 function heldPath(): string {
-  return process.env.MWA_HELD ?? join(dirname(process.env.MWA_NOTIFY ?? resolve('./data/notifications.jsonl')), 'held.jsonl');
+  return process.env.MWA_HELD ?? join(dirname(notifyPath()), 'held.jsonl');
 }
 
 /** Raw lines: parsed items, plus lines that wouldn't parse (kept, never silently dropped). */

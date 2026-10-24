@@ -23,6 +23,7 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { inGitControlPath, runsLaterReason } from './tools/shell-gate.js';
 import { dirname, join, resolve } from 'node:path';
+import { dbFile } from './paths.js';
 
 export type ReviewMode = 'off' | 'shadow' | 'on';
 export interface ReviewInput {
@@ -216,7 +217,7 @@ export function reviewMode(env: NodeJS.ProcessEnv = process.env): ReviewMode {
 /** The shadow log: one line per reviewed action, beside the approvals store. */
 export function reviewLogPath(env: NodeJS.ProcessEnv = process.env): string {
   if (env.MWA_REVIEW_LOG) return env.MWA_REVIEW_LOG;
-  const base = env.MWA_APPROVALS_DB ? dirname(env.MWA_APPROVALS_DB) : dirname(env.MWA_DB ?? resolve('./data/agent.db'));
+  const base = env.MWA_APPROVALS_DB ? dirname(env.MWA_APPROVALS_DB) : dirname(dbFile(env));
   return join(base, 'approval-reviews.jsonl');
 }
 

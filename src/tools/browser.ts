@@ -23,6 +23,7 @@ import type { RegisteredTool, ToolContext } from './registry.js';
 import { ToolRefusal } from './registry.js';
 import { urlRefusal } from './net-guard.js';
 import { resolveVaultRefs, hasVaultRef, siteHost } from '../vault/vault.js';
+import { browserDir } from '../paths.js';
 
 type Page = { goto(u: string, o?: object): Promise<unknown>; url(): string; title(): Promise<string>; evaluate<T>(fn: string | ((...a: never[]) => T), arg?: unknown): Promise<T>; locator(s: string): { first(): { click(o?: object): Promise<void>; fill(v: string, o?: object): Promise<void>; screenshot?(o?: object): Promise<Buffer> } }; screenshot(o?: object): Promise<Buffer>; goBack(o?: object): Promise<unknown>; waitForLoadState(s?: string, o?: object): Promise<void>; isClosed(): boolean };
 type Context = { newPage(): Promise<Page>; pages(): Page[]; route(m: string, h: (route: { request(): { url(): string }; abort(r?: string): Promise<void>; continue(): Promise<void> }) => Promise<void>): Promise<void>; close(): Promise<void> };
@@ -42,7 +43,7 @@ async function launch(person: string): Promise<{ ctx: Context; page: Page }> {
   let pw: { chromium: { launchPersistentContext(dir: string, o: object): Promise<Context> } };
   try { pw = await import('playwright-core' as string) as never; }
   catch { throw new ToolRefusal('(the browser isn\'t installed on this machine: it needs playwright-core and Chromium — see docs/browser.md)'); }
-  const dir = resolve(process.env.MWA_BROWSER_DIR ?? './data/browser', person.replace(/[^a-z0-9_-]/gi, '_') || 'default');
+  const dir = resolve(browserDir(), person.replace(/[^a-z0-9_-]/gi, '_') || 'default');
   mkdirSync(dir, { recursive: true });
   const ctx = await pw.chromium.launchPersistentContext(dir, {
     headless: true, executablePath: process.env.MWA_CHROMIUM_PATH || undefined,

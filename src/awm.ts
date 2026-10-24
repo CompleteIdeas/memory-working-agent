@@ -21,6 +21,7 @@ import { dirname } from 'node:path';
 import { isReservedConcept, unreservedConcept } from './reserved-concept.js';
 import { scanRoutine, nextVersion } from './tools/routines.js';
 import { normalizePersonId, type PersonNote, type PersonNoteKind } from './person.js';
+import { nextDailyDue } from './schedule-request.js';
 import { parseEvidence, formatEvidence, evidenceAfter, readyToArm, type DetectorEvidence, type DryScore } from './detector.js';
 
 export interface RecalledMemory {
@@ -288,6 +289,8 @@ export interface ScheduledTask {
   resumeOf?: string;
   budgetNotified?: boolean;
   urgent?: boolean;
+  /** Paused by the person (usability review 2026-10-24, F04): the scheduler skips it until resumed. */
+  paused?: boolean;
   /** BL-43: delivered as written when due — see ScheduleOpts.kind. */
   kind?: 'reminder';
   /** BL-44 — see ScheduleOpts.request and JobLastRun. */
@@ -799,11 +802,48 @@ export class MwaMemory implements Memory {
           checkMode: (get('checkmode=') || undefined) as ScheduledTask['checkMode'], checkArm: get('checkarm=') || undefined, checkEv: get('checkev=') ? parseEvidence(get('checkev=')) : undefined, checkReady: tags.includes('checkready=1') || undefined, checkMissed: tags.includes('checkmissed=1') || undefined,
           task: get('task64=') ? Buffer.from(get('task64='), 'base64').toString('utf8') : undefined,
           ...(tags.includes('kind=reminder') ? { kind: 'reminder' as const } : {}),
+          ...(tags.includes('paused=1') ? { paused: true } : {}),
           ...(get('request64=') ? { request: Buffer.from(get('request64='), 'base64').toString('utf8') } : {}),
           ...(get('lastrun64=') ? { lastRun: parseLastRun(get('lastrun64=')) } : {}) });
       }
       return out.sort((a, b) => a.due - b.due);
     } catch (err) { console.error('[awm] pendingScheduled error:', (err as Error).message); return []; }
+  }
+
+  // ── Schedule controls (usability review 2026-10-24, F04: a job could not be stopped from the app) ──
+  /** A scheduled job by id, whatever its status (pending, done, canceled) — for the controls' ownership checks. */
+  async getScheduled(id: string): Promise<{ id: string; status: string; person?: string; instruction: string; recur?: string; due: number; canceledAt?: number; paused: boolean } | null> {
+    try {
+      await this.init();
+      const e = await this.store.getEngram(id);
+      if (!e) return null;
+      const tags = this.parseTags(e.tags);
+      if (!tags.includes('topic=scheduled-task')) return null;
+      const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
+      return { id: e.id, status: get('status=') || 'pending', person: get('person=') || undefined, instruction: e.content, recur: get('recur=') || undefined,
+        due: Number(get('due=')) || 0, canceledAt: Number(get('canceledat=')) || undefined, paused: tags.includes('paused=1') };
+    } catch { return null; }
+  }
+  /** Pause a pending job: it keeps its place and settings, and the scheduler skips it until resumed. */
+  async pauseScheduled(id: string): Promise<void> {
+    await this.setScheduledTags(id, (tags) => [...tags.filter((t) => t !== 'paused=1'), 'paused=1']);
+  }
+  /** Resume a paused job at its next natural slot (a daily job at its time, an interval job one interval from now,
+   *  a one-off at its own time, which is now if that has passed). */
+  async resumeScheduled(id: string, nowMs = Date.now()): Promise<void> {
+    const cur = await this.getScheduled(id);
+    if (!cur) return;
+    const due = cur.recur?.startsWith('daily:') ? nextDailyDue(cur.recur, nowMs)
+      : cur.recur?.startsWith('every:') ? nowMs + (Number(cur.recur.slice(6)) || 60) * 60_000
+        : Math.max(cur.due, nowMs);
+    await this.setScheduledTags(id, (tags) => [...tags.filter((t) => t !== 'paused=1' && !t.startsWith('due=')), `due=${Math.round(due)}`]);
+  }
+  /** Undo a cancel made in the last `withinMs` (ten minutes): the job is pending again, as it was. */
+  async uncancelScheduled(id: string, withinMs = 10 * 60_000, nowMs = Date.now()): Promise<boolean> {
+    const cur = await this.getScheduled(id);
+    if (!cur || cur.status !== 'canceled' || !cur.canceledAt || nowMs - cur.canceledAt > withinMs) return false;
+    await this.setScheduledTags(id, (tags) => tags.filter((t) => !t.startsWith('canceledat=')).map((t) => (t.startsWith('status=') ? 'status=pending' : t)));
+    return true;
   }
 
   private async setScheduledTags(id: string, mutate: (tags: string[]) => string[]): Promise<void> {
@@ -901,8 +941,9 @@ export class MwaMemory implements Memory {
   /** Cancel a pending scheduled task (status=canceled). Deliberately NOT completeScheduled: "the
    *  person called it off" and "it ran to completion" are different facts, and collapsing them
    *  destroys the only audit trail of an automation that was stopped. Both leave pendingScheduled. */
-  async cancelScheduled(id: string): Promise<void> {
-    await this.setScheduledTags(id, (tags) => tags.map((t) => (t.startsWith('status=') ? 'status=canceled' : t)));
+  async cancelScheduled(id: string, nowMs = Date.now()): Promise<void> {
+    // `canceledat` lets the person undo a cancel for a few minutes (uncancelScheduled).
+    await this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('canceledat=')).map((t) => (t.startsWith('status=') ? 'status=canceled' : t)), `canceledat=${Math.round(nowMs)}`]);
   }
 
   // ── Goals (BL-05) ────────────────────────────────────────────────────────────────────────────

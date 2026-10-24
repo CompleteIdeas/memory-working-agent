@@ -24,9 +24,12 @@ function sessionId(): string {
 
 /** BL-71d: a kept turn, shown again when the conversation is reopened (here or on another device). */
 function restoredTurn(t: ConversationTurn): Turn {
+  // A `running` turn is a run still going on the server (F09, 2026-10-24): the page can re-attach to it at
+  // /api/chat/attach; until that lands in the interface slice, it is shown as still in progress.
+  const running = t.kind === 'running';
   return {
     id: t.ts, user: t.kind === 'result' ? `⏰ ${t.message}` : t.message, steps: [], live: false, folder: sessionFolder(t.session), note: t.kind !== 'chat',
-    result: { reason: t.reason ?? 'done', summary: t.reply, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0 },
+    result: { reason: running ? 'running' : t.reason ?? 'done', summary: running ? 'I\'m still working on this. The answer appears here when it is done — refresh in a moment.' : t.reply, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0 },
   };
 }
 

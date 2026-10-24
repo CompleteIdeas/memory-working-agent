@@ -16,7 +16,7 @@
 import { readFileSync, statSync, appendFileSync, mkdirSync, existsSync } from 'node:fs';
 import { redactVault } from './vault/vault.js';
 import { randomUUID } from 'node:crypto';
-import { resolve, sep, dirname, join } from 'node:path';
+import { resolve, sep, dirname, join, basename } from 'node:path';
 import type { Provider } from './provider.js';
 import { backgroundCalls, callTags, backgroundWorker } from './provider.js';
 import { isCalendarList, calendarCheck } from './calendar-check.js';
@@ -34,7 +34,7 @@ import { TAINTED_JOB_MARK, parseLocalAt, ownWords, groundedInMessage } from './s
 import { MAX_PENDING_TAINTED_CHAT } from './fanout.js';
 // Moved to schedule-request.ts (the work tools use them too); exported here as before.
 export { parseLocalAt, ownWords };
-import { expectedJobCount, whenMismatch, clock12, friendlySchedule, friendlyWhen, unreadSources, asksToChangeJob, parseDaysArg, nextDailyDue, asksChangesOnly, latestReadings, namesWebPage, hasLink, isWatch } from './schedule-request.js';
+import { expectedJobCount, whenMismatch, clock12, friendlySchedule, friendlyWhen, unreadSources, asksToChangeJob, asksToStopJob, parseDaysArg, nextDailyDue, asksChangesOnly, latestReadings, namesWebPage, hasLink, isWatch } from './schedule-request.js';
 import { EMAIL_DRAFT_TOOL, addressesIn, draftKey, draftRefusal, repeatDraftOf } from './draft-guard.js';
 import { lessonJudge, judgeLesson, lessonDisposition, LESSON_PROMPT_RULE, MAX_LESSON_CHARS } from './lesson-gate.js';
 import { COMPACTION_MODE, summaryCompaction, type Compaction } from './compaction.js';
@@ -46,7 +46,8 @@ import type { ToolDef } from './provider.js';
 import { RoutedProvider, classifyIntent, startTier, isComplexTask } from './model-router.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { runWorker } from './worker.js';
-import { stageAction, pendingStagedBy, listPendingActions } from './tools/approval.js';
+import { stageAction, pendingStagedBy, listPendingActions, cancelPending } from './tools/approval.js';
+import { sourcesLine } from './tools/access.js';
 import { fanoutRefusal, newJobDepth } from './fanout.js';
 import { normalizePersonId } from './person.js';
 import { parseJsonLoose, runCommand } from './util.js';
@@ -69,6 +70,7 @@ import type { InteractionStyle } from './config.js';
 export { primeable } from './prime.js';
 import { primeable } from './prime.js';
 import { openTranscript, type Transcript } from './transcript.js';
+import { runLogPath } from './paths.js';
 
 /** A per-step fade factor in (0, 1]; anything else (unset, 0, negative, > 1, not a number) is off. */
 export function primeDecayFrom(opt?: number, env?: string): number {
@@ -139,7 +141,8 @@ export type RunOutcome = 'changed' | 'no-change' | 'could-not' | 'blocked' | 'co
 const RUN_OUTCOMES: readonly RunOutcome[] = ['changed', 'no-change', 'could-not', 'blocked', 'complete'];
 
 export interface AgentResult {
-  reason: 'done' | 'budget' | 'stuck' | 'error' | 'paused';
+  /** `stopped`: the person pressed Stop (F06) — the summary says what was kept. */
+  reason: 'done' | 'budget' | 'stuck' | 'error' | 'paused' | 'stopped';
   /** what the run achieved (BL-02) — see RunOutcome. */
   outcome?: RunOutcome;
   /** the run itself declared `outcome` in `done`, and nothing overrode it — not derived from activity.
@@ -591,7 +594,7 @@ function readFileInDir(dir: string, rel: string): string {
 /** Append one line to the run log (JSONL) — the record reviewed to iterate on quality. */
 function appendRunLog(entry: Record<string, unknown>): void {
   try {
-    const p = process.env.MWA_RUNLOG ?? resolve('./data/runs.jsonl');
+    const p = runLogPath();
     mkdirSync(dirname(p), { recursive: true });
     appendFileSync(p, JSON.stringify(entry) + '\n');
   } catch { /* logging is best-effort */ }
@@ -704,6 +707,12 @@ export async function runAgent(opts: {
   personId?: string;
   identityInDoubt?: boolean;
   onEvent?: (type: string, data: Record<string, unknown>) => void;
+  /** F06 (usability review 2026-10-24): the person's Stop. Checked at the top of every step; the run ends with reason
+   *  `stopped` and a summary of what it kept. The current step finishes; nothing new starts. */
+  signal?: AbortSignal;
+  /** F08: words the person sent while this run was going. Drained at the top of every step and given to the model as
+   *  the person's own words (unfenced: they are the user). */
+  inbox?: () => string[];
   /** Compaction in place of the fixed window (BL-30 measured it; BL-32 made a running summary the
    *  default, src/compaction.ts). Once the unfolded history passes twice HIST_WINDOW, every line but the
    *  last HIST_WINDOW goes to `fold`, and `block()` is shown above RECENT STEPS. Set this only to
@@ -794,7 +803,9 @@ export async function runAgent(opts: {
   const jobsCancelled: string[] = []; // BL-47: what schedule_cancel stopped, named in the reply
   let draftAskRejections = 0, valueAsks = 0;
   const whenRejected = new Set<string>();
+  const nearRejected = new Set<string>(); // F04: a job with the same words at another time, held once
   let countRejections = 0, sourceRejections = 0, changeRejections = 0, kindRejections = 0, kindFollowups = 0, linkRejections = 0;
+  let cancelRejections = 0; // F04: a stop request that ended with nothing stopped, asked once
   // BL-54: the email addresses this run has met (the person's words, the conversation, memory, each tool result),
   // and the recipients it has drafted to — kept as they arrive, so folding older steps into a summary loses none.
   const seenAddresses = new Set<string>();
@@ -1047,6 +1058,9 @@ export async function runAgent(opts: {
     `INSTRUCTION: ${instruction}`,
     nowLine(now()),
     `FENCE CODE for this run: ${fence}`,
+    // F07 (usability review 2026-10-24): the run is told which of the person's folders it can read. Empty, so the
+    // prefix is unchanged, when nothing is granted or the run has no file tools.
+    opts.tools?.has('list_files') ? sourcesLine(dir) : '',
     // A job scheduled by a run that read outside content carries settings that may relay that content:
     // fence them as information instead of promoting them to the strongest authority in the prompt.
     // Settings from a job created by a run that had read outside content may relay that content. They
@@ -1203,6 +1217,23 @@ export async function runAgent(opts: {
 
   for (; steps < maxSteps; steps++) {
     if (PRIME_DECAY < 1) for (const r of recalled) primeWeight.set(r.id, weightOf(r) * PRIME_DECAY);
+    // F06: the person's Stop. The step that was running has finished; nothing new starts. The summary says what
+    // was kept (files written) and what still waits for approval, so nothing is lost silently.
+    if (opts.signal?.aborted) {
+      reason = 'stopped';
+      const kept = [...writtenPaths].map((p) => basename(p)).slice(0, 12);
+      const waiting = pendingStagedBy(runId, 'tool').length;
+      finalSummary = `Stopped after step ${steps}.${kept.length ? ` Kept: ${kept.join(', ')}.` : ' Nothing was written.'}${waiting ? ` ${waiting} action${waiting > 1 ? 's' : ''} still wait${waiting > 1 ? '' : 's'} for your approval.` : ' Nothing was sent or changed outside this folder.'}`;
+      modelAnswered = true;
+      history.push(`(stopped by the person after step ${steps})`); emit('stopped', { step: steps });
+      break;
+    }
+    // F08: words the person sent while this run was going reach it here, as their own words.
+    const added = opts.inbox?.() ?? [];
+    if (added.length) {
+      nudge = `${nudge ? `${nudge}\n\n` : ''}THE PERSON ADDS (their own words, sent while you were working — take them into account from here on): ${added.map((m) => `"${m.slice(0, 1500)}"`).join(' ')}`;
+      history.push(`(the person added: ${added.join(' | ').slice(0, 120)})`); emit('steered', { n: added.length });
+    }
     if (now() - start > maxWallMs) { reason = 'budget'; finalSummary = 'wall-clock budget reached'; break; }
     if (maxTokens && usage.brainIn + usage.brainOut + usage.workerIn + usage.workerOut >= maxTokens) {
       reason = 'budget'; finalSummary = 'token budget reached'; break;
@@ -1418,6 +1449,23 @@ export async function runAgent(opts: {
           continue;
         }
       }
+      // F04 (usability review 2026-10-24): "Cancel the Harbour Works reminder" and "Stop watching the budget file" each
+      // ended after three schedule_list calls with "I can't cancel them from here" — no cancel was ever called, and the
+      // guard that refuses an unasked cancel never ran. Once: when the person asked to stop something and the run
+      // listed the schedule without cancelling or changing anything, name the ids and ask for the call.
+      if (opts.interactive === true && opts.jobId === undefined && cancelRejections < 1 && opts.tools?.has('schedule_cancel')
+          && toolsUsed.has('schedule_list') && ![...toolsUsed].some((t) => t === 'schedule_cancel' || t === 'schedule_update')
+          && ((intent ? intent.category === 'change_job' : false) || asksToStopJob(opts.userMessage ?? '')) && memory.pendingScheduled) {
+        const me = normalizePersonId(opts.personId);
+        const jobs = (await memory.pendingScheduled()).filter((t) => normalizePersonId(t.person) === me && !t.resumeAttempt);
+        if (jobs.length) {
+          cancelRejections++; gatesFired.push('cancel-asked'); consecNoProgress = 0;
+          const listed = jobs.slice(0, 8).map((t) => `${t.id.slice(0, 8)} — "${t.instruction.slice(0, 70)}"${t.recur ? ` (${friendlySchedule(t.due, t.recur)})` : ''}`).join('\n');
+          nudge = `The person asked to stop or change a scheduled job, and nothing was stopped or changed. You CAN cancel: call schedule_cancel with the id of the job they mean (schedule_update if they are changing it). Their jobs:\n${listed}\nIf you cannot tell which one they mean, ask them which. Do not say you are unable to cancel.`;
+          history.push('(a stop request ended with nothing stopped — asked for the cancel)');
+          continue;
+        }
+      }
       // BL-62: "Draft a quick note to Carter…" answered with the note's text in the reply and no draft made (USEA Casey
       // run, D1): the person has nothing in Drafts to send. Once, when their own message asks for a draft and a draft
       // tool is there; the draft guard still decides whether the address may be used.
@@ -1536,7 +1584,10 @@ export async function runAgent(opts: {
       // times, escalate to Sol". Nothing at runtime knows an answer is wrong, so the hand-off fires on what is visible:
       // the drafts disagree on a figure or a verdict, or every draft hedges. A stronger tier then takes the run over,
       // as BL-73's boss does; with none above, one more recall on the question's own identifiers, and the merge stands.
-      if (!sampled && answerSamples() >= 2 && !opts.planStep && summ.trim().length >= 40 && !actedAtAll() && runActions.length === 0 && jobsCreated.length === 0 && now() - start < maxWallMs * 0.8) {
+      // Reads (recall, files, listings) are how the answer was gathered, so they do not stop the sampling; anything
+      // written, sent or scheduled does. (Pilot arm F4, 2026-10-24: with `runActions.length === 0` the drafts ran on
+      // a third of the questions — only those answered from primed memory with no tool at all.)
+      if (!sampled && answerSamples() >= 2 && !opts.planStep && summ.trim().length >= 40 && !actedAtAll() && runActions.every((a) => a.effect === 'read') && jobsCreated.length === 0 && now() - start < maxWallMs * 0.8) {
         sampled = true;
         const drafts = [summ];
         for (let k = 1; k < answerSamples(); k++) {
@@ -1781,11 +1832,27 @@ export async function runAgent(opts: {
           continue;
         }
       }
-      // The same job twice in one run is not two jobs.
-      if (jobsCreated.some((j) => j.dueMs === dueMs && j.recur === recur && sameTask(j.instruction, String(action.instruction)))) {
-        consecNoProgress++;
-        history.push('(already scheduled in this run — not added twice)');
-        nudge = 'That job is already scheduled in this run. Schedule any OTHER job the person asked for, or call done.';
+      // The same job twice is not two jobs — in this run, or already waiting in the store (usability review
+      // 2026-10-24, F04: "Remind me tomorrow at 9am to call Harbour Works" made four reminders at 8:59, 9:00 and
+      // 9:10 — each re-ask after the am-pm and missing-output gates created another). A twin is the same words at
+      // the same time (a one-off within 15 minutes, or the same repeat). The same words at ANOTHER time are
+      // flagged once: usually the person is moving a job (schedule_update), and resending unchanged adds it.
+      const twinOf = (j: { instruction: string; dueMs: number; recur?: string }) => sameTask(j.instruction, String(action.instruction))
+        && (j.recur === recur) && (recur !== undefined || Math.abs(j.dueMs - dueMs) <= 15 * 60_000);
+      const nearOf = (j: { instruction: string; dueMs: number; recur?: string }) => !twinOf(j) && sameTask(j.instruction, String(action.instruction));
+      const waiting = pendingJobs.filter((t) => !t.resumeAttempt).map((t) => ({ instruction: t.instruction, dueMs: t.due, recur: t.recur, id: t.id }));
+      const twin = jobsCreated.find(twinOf) ?? waiting.find(twinOf);
+      if (twin) {
+        consecNoProgress++; gatesFired.push('twin-job');
+        history.push(`(already scheduled${'id' in twin ? ` as ${twin.id.slice(0, 8)}` : ' in this run'} — not added twice)`);
+        nudge = `That job is already scheduled${'id' in twin ? ` (${twin.id.slice(0, 8)}, ${friendlySchedule(twin.dueMs, twin.recur)})` : ' in this run'}. Do not add it again. Schedule any OTHER job the person asked for, or call done.`;
+        continue;
+      }
+      const near = jobsCreated.find(nearOf) ?? waiting.find(nearOf);
+      if (near && !nearRejected.has(jobSig)) {
+        nearRejected.add(jobSig); consecNoProgress++; gatesFired.push('near-job'); lastSig = '';
+        history.push(`(schedule held once: a job with these words exists at ${friendlySchedule(near.dueMs, near.recur)})`);
+        nudge = `A job with these words already exists${'id' in near ? ` (${near.id.slice(0, 8)})` : ''}, set for ${friendlySchedule(near.dueMs, near.recur)}. If the person is moving it, call schedule_update with that id and the new time instead. If they really want a second job at ${friendlySchedule(dueMs, recur)} as well, call schedule again unchanged.`;
         continue;
       }
       // A REMINDER is delivered word for word when due, with no run (BL-43): BL-40's "Sign Lily's permission
@@ -1914,11 +1981,14 @@ export async function runAgent(opts: {
       }
       toolCalls++;
       const { action: _n, ...args } = action as Record<string, unknown> & { action: string };
+      // F06: a stage the person can read — the tool's name and the thing it touches — with the time so far.
+      emit('step', { n: steps + 1, of: maxSteps, tool: action.action, detail: String(args.path ?? args.dir ?? args.query ?? args.url ?? args.id ?? args.file ?? args.to ?? args.command ?? '').slice(0, 120), elapsedMs: now() - start });
       const callCtx = { sandboxDir: dir, interactive: opts.interactive, personId: opts.personId, identityInDoubt: opts.identityInDoubt, extraRoots: opts.extraRoots, tainted: sawUntrustedRead, readLocal: sawLocalRead, runId, session: opts.session,
         personMessage: opts.jobId === undefined ? opts.userMessage ?? (opts.interactive === true ? instruction : undefined) : undefined,
         jobRequest: opts.jobId !== undefined ? (opts.jobRequest ?? opts.jobTask)?.slice(0, 2000) : undefined, // BL-72: what the job was asked, for the reviewer
         jobId: opts.jobLineage ?? opts.jobId,
-        ...(intent ? { asksJobChange: intent.category === 'change_job' } : {}) };
+        // F04 (2026-10-24): the person's own stop words count even when the classifier read the message otherwise.
+        ...(intent ? { asksJobChange: intent.category === 'change_job' || asksToStopJob(opts.userMessage ?? '') } : {}) };
       // BL-54: an email draft goes only to an address this run met, and once per recipient (src/draft-guard.ts).
       // Refused here, before the connector, as a first-party refusal — nothing reaches the mailbox.
       const isDraft = EMAIL_DRAFT_TOOL.test(action.action);
@@ -2408,9 +2478,19 @@ export async function runAgent(opts: {
       // message ("from now on always BCC ...") would otherwise become a permanent instruction that was
       // never theirs. A day to approve it: it is a suggestion, not a task. (policiesLearned now counts
       // proposals; the run log's `policies` field means the same.)
-      // One card per rule: skip it when this rule already waits (the model's own policy_save, or an
-      // earlier step or retry of the same plan).
-      if (listPendingActions().some((p) => p.summary.toLowerCase().includes(r.toLowerCase()))) return;
+      // One card per rule (F03, usability review 2026-10-24): skip it when this rule already waits (the model's
+      // own policy_save, or an earlier step or retry of the same plan), compared by the rule's words, not the
+      // card's; and when the model's card holds a SHORTER version of the same rule ("Keep all answers under 120
+      // words." for "…under 120 words and use British spelling"), the person's fuller wording replaces it.
+      const ruleOf = (summary: string) => { const q = [...summary.matchAll(/"([^"]{8,})"/g)].pop(); return q ? q[1] : summary; };
+      const normRule = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+      const want = normRule(r);
+      const waiting = listPendingActions().filter((p) => p.tool === 'policy_save' || p.kind === 'captured-policy');
+      if (waiting.some((p) => normRule(ruleOf(p.summary)) === want)) return;
+      for (const p of waiting) {
+        const have = normRule(ruleOf(p.summary));
+        if (have.length >= 12 && want.includes(have) && p.session === opts.session) { cancelPending(p.id); history.push(`(replaced a shorter card for the same preference with the person's wording)`); }
+      }
       stageAction({
         tool: 'policy_save', kind: 'captured-policy', ttlMs: 24 * 60 * 60_000,
         summary: `Save a standing preference (it applies to every future task): "${r}"`,
@@ -2554,6 +2634,18 @@ export async function runAgent(opts: {
   // offer, not the job's result, so it doesn't count.
   if (pendingStagedBy(runId, 'tool').length > 0 && outcome !== 'could-not') outcome = 'blocked';
   const staged = pendingStagedBy(runId);
+  // The reply never says done while a card for the effect waits (F02, usability review 2026-10-24: "Copied the
+  // supplier list" with the copy's card still pending). When something this run staged is waiting and the reply
+  // does not say so, it opens with what waits. Not for a reminder-only reply (a captured preference is an offer).
+  if (staged.length && !opts.planStep) {
+    const waiting = listPendingActions().filter((p) => staged.includes(p.id) && p.kind !== 'captured-policy');
+    const saysSo = /\b(approv|waiting|pending|confirm|not (?:yet )?(?:run|done|written|sent|copied|made|saved)|has(?:n't| not) (?:run|been)|until you|before it runs|needs your)\b/i.test(finalSummary);
+    if (waiting.length && !saysSo) {
+      gatesFired.push('claimed-staged');
+      finalSummary = `Waiting for your approval before anything changes: ${waiting.map((p) => p.summary.split('\n')[0].replace(/^Run this command in .*:$/, 'a command').slice(0, 140)).join('; ')}.\n\n${finalSummary}`;
+      history.push('(the reply did not say an action was waiting for approval — said so)');
+    }
+  }
 
   appendRunLog({
     ts: start, session: opts.session ?? '', instruction: instruction.slice(0, 160), reason, outcome, ...(opts.jobId ? { job: opts.jobId } : {}),

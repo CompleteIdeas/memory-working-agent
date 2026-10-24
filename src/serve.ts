@@ -79,7 +79,7 @@ import { isHosted, hostName } from './hosting.js';
 import { listConnectors, enableConnector, disableConnector, enabledConnectorIds, enableExternalNpm } from './connectors/registry.js';
 import { externalInstallState } from './installer/policy.js';
 import { reviewConnector } from './installer/review.js';
-import { accessPolicy, setAccess, ACCESS_PRESETS, type AccessPreset } from './tools/access.js';
+import { accessPolicy, setAccess, ACCESS_PRESETS, grantedFolders, type AccessPreset } from './tools/access.js';
 import { status, testAnthropic, testAzure, testTelegram, testProvider, envKeyForProvider, upsertEnv, removeEnv } from './wizard.js';
 import { disconnectGoogle } from './connectors/google.js';
 import { disconnectMicrosoft } from './connectors/microsoft.js';
@@ -88,10 +88,13 @@ import { awmCliPath, loadEmbeddings, loadPostgresStore } from './awm-api.js';
 import { MEMORY_OFF, agentMemory } from './memory-off.js';
 import { listFiles, insideRoot, fileHeaders, saveUpload, deleteFile, sessionFolder, uploadsIn, MAX_UPLOAD, readShares, createShare, revokeShare, shareFor } from './files.js';
 import { offersBackground, OFFER_TEXT, startBackgroundWork, continueGoal } from './handoff.js';
+import { scheduleRows, scheduleControl, type ScheduleAction } from './schedule-api.js';
+import { liveRuns, FINAL_EVENTS } from './live-runs.js';
 import { resolvePersonId } from './person.js';
 import { appendTurn, readConversation, listConversations } from './conversations.js';
 import { thinkMode, thinkDue, thinkOnce, thinkEveryMs, thinkDailyUsd, readThoughts, latestThoughts } from './thinking.js';
 import { exportDoc, exportFormats } from './doc-export.js';
+import { dbFile, runLogPath, notifyPath, installLogPath } from './paths.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 // dist-ui sits next to dist/ (built) or at repo root in dev.
@@ -153,7 +156,7 @@ const SESSION_MS = 30 * 24 * 3_600_000;
 let sessionKey: Buffer | null = null;
 function sessionMacKey(): Buffer {
   if (sessionKey) return sessionKey;
-  const p = join(dirname(process.env.MWA_DB ?? resolve('./data/agent.db')), '.session-salt');
+  const p = join(dirname(dbFile()), '.session-salt');
   let salt = '';
   try { salt = readFileSync(p, 'utf8').trim(); } catch { /* first start */ }
   if (salt.length < 32) {
@@ -194,7 +197,7 @@ function authed(req: IncomingMessage): boolean {
  *  non-interactively → its auto-learn writes the answers as facts), then mark them resolved. */
 async function resolveOpenQuestionsBg(): Promise<void> {
   const cfg = loadConfig();
-  const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+  const dbPath = dbFile();
   const memory = new MwaMemory(SERVE_AGENT, dbPath, cfg.awm.workspace);
   const open = MEMORY_OFF ? [] : (await memory.listOpenQuestions()).slice(0, 3); // memory off: no open questions
   if (!open.length) { memory.close(); return; }
@@ -217,7 +220,7 @@ let servedFires: Set<string> | null = null;
 /** Record a fired scheduled-task result so the UI can surface it (proactive delivery). */
 function appendNotification(entry: Record<string, unknown>): boolean {
   try {
-    const p = process.env.MWA_NOTIFY ?? resolve('./data/notifications.jsonl');
+    const p = notifyPath();
     mkdirSync(dirname(p), { recursive: true });
     appendFileSync(p, JSON.stringify(entry) + '\n');
     return true;
@@ -351,7 +354,7 @@ async function ingestScan(req: IncomingMessage, res: ServerResponse, url: URL): 
   if (activeRuns >= MAX_CONCURRENT) { send('error', { message: "I'm busy right now — try again in a moment." }); res.end(); return; }
   const hb = setInterval(() => { try { res.write(': keepalive\n\n'); } catch { /* */ } }, 15_000);
   req.on('close', () => clearInterval(hb));
-  const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+  const dbPath = dbFile();
   try {
     activeRuns++;
     const r = await runIngest({ days, dbPath, onLog: (m) => send('log', { message: m }) });
@@ -416,20 +419,33 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     appendTurn({ ts: Date.now(), session: sessionId, message, reply: OFFER_TEXT, reason: 'offer', kind: 'offer' });
     res.end(); return;
   }
+  // F08 (usability review 2026-10-24): one live run per conversation. A message sent while one is going is not a
+  // second run: the page hears `busy` and offers to add it to the running task (/api/chat/steer), send it
+  // separately (a new conversation) or stop the run (/api/chat/stop) and send it.
+  const busy = liveRuns.describe(sessionId);
+  if (busy) { send('busy', busy); res.end(); return; }
   // Concurrency cap — reserve the slot ATOMICALLY (before any await) so a burst of near-simultaneous
   // chats can't all pass the gate during the classifyContinuity / preparePersonTurn round-trips.
   if (activeRuns >= MAX_CONCURRENT) { send('error', { message: "I'm at capacity right now (too many chats running) — try again in a moment." }); res.end(); return; }
   activeRuns++;
+  // The live run: its events are kept and handed to every reader attached to this conversation — this response
+  // first, and any page that re-attaches after a reload (F09). Its abort handle is the person's Stop (F06).
+  const run = liveRuns.start(sessionId, message);
+  const off = liveRuns.attach(sessionId, (e) => { res.write(`event: ${e.type}\ndata: ${JSON.stringify(e.data)}\n\n`); });
+  const emitLive = (type: string, data: Record<string, unknown>) => liveRuns.record(sessionId, type, data);
+  appendTurn({ ts: run.startedAt, session: sessionId, message, reply: '', kind: 'running', runId: run.runId });
+  emitLive('run', { runId: run.runId, startedAt: run.startedAt });
   // Heartbeat: keep the SSE stream alive during slow steps so proxies/browsers don't drop it mid-run.
   const hb = setInterval(() => { try { res.write(': keepalive\n\n'); } catch { /* */ } }, 15_000);
-  req.on('close', () => clearInterval(hb));
+  // The page going away does not stop the run (it re-attaches); only its reader is detached.
+  req.on('close', () => { clearInterval(hb); off?.(); });
 
   // Hoisted so the finally can always release them even if setup (buildRegistry etc.) throws.
   let memory: MwaMemory | undefined;
   let close: (() => Promise<void>) | undefined;
   try {
     const cfg = loadConfig();
-    const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+    const dbPath = dbFile();
     // Idle gap BEFORE sessionFor() bumps lastUsed — a long gap signals a new task.
     const idleMs = sessions.has(sessionId) ? Date.now() - (sessions.get(sessionId)!.lastUsed) : Infinity;
     const s = sessionFor(sessionId, cfg.workspace ?? './mwa-workspace');
@@ -446,7 +462,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     if (relation === 'fresh') s.topicStart = s.history.length;
     // F5: topic-scoped memory is OPT-IN (MWA_TOPIC_NAMESPACE=1). Default OFF preserves cross-session continuity.
     if (process.env.MWA_TOPIC_NAMESPACE === '1') memory.setNamespace(`${sessionId}-t${s.topicStart}`);
-    send('topic', { relation, hadContext });
+    emitLive('topic', { relation, hadContext });
     const carriedTurns = relation === 'continue' ? s.history.slice(Math.max(CARRY_ALL ? 0 : s.topicStart, s.history.length - CARRY_TURNS)) : [];
     const ctx = carriedTurns.map((h, i) => `(${i + 1}) ${h.instruction} → ${h.summary}`).join('\n');
     // If any carried turn read external content, its replies may quote that content: send the whole
@@ -465,10 +481,10 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     const personName = (url.searchParams.get('person') ?? '').trim() || undefined;
     const prepared = await preparePersonTurn(memory, { channel: 'web', name: personName }, message);
     const personContext = prepared.personContext;
-    send('person', { id: prepared.personId, notes: prepared.notes }); // Glass-Box: who + how much we know
+    emitLive('person', { id: prepared.personId, notes: prepared.notes }); // Glass-Box: who + how much we know
     // Surface the DOUBT to the UI, but NOT the reasons — they contain the real stored name/contact, and
     // this stream goes to the very client we're flagging as a possible impersonator (S6 redaction).
-    if (prepared.mismatch) send('identity', { level: 'mismatch' });
+    if (prepared.mismatch) emitLive('identity', { level: 'mismatch' });
 
     const r = await runAgent({
       instruction, userMessage: message, dir: s.dir, memory: agentMemory(memory), brain, worker, tools: registry, transcript: true, // BL-10
@@ -479,25 +495,27 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
       personId: prepared.personId, identityInDoubt: prepared.mismatch, // S6 v2: gate sensitive confirms on step-up
       domainPackDir: process.env.MWA_DOMAIN_PACK, // optional domain pack (AGENT.md + topics) for a domain agent
       budget: { maxSteps: 40, maxWallMs: 10 * 60_000, consolidateEvery: 10, maxTokens: Number(process.env.MWA_MAX_TOKENS ?? 400_000) },
-      onEvent: (type, d) => send(type, d as Record<string, unknown>),
+      onEvent: (type, d) => emitLive(type, d as Record<string, unknown>),
+      signal: run.controller.signal, inbox: () => liveRuns.takeInbox(sessionId), // F06 Stop, F08 steer
     });
     s.history.push({ instruction: message, summary: r.summary, tainted: r.tainted === true });
     // BL-71b: it ran out of room and already queued a resume — say so, rather than leave a half answer.
     const summary = r.resumeQueued ? `${r.summary}\n\nI ran out of room in this chat, so I'm continuing in the background. The result will appear here when it's done.` : r.summary;
-    appendTurn({ ts: Date.now(), session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat', tainted: r.tainted === true }); // BL-71d
-    send('result', { reason: r.reason, summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)) });
-
+    const turnTs = Date.now();
+    appendTurn({ ts: turnTs, session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat', tainted: r.tainted === true, runId: run.runId }); // BL-71d; the runId retires the `running` turn (F09)
     // S3/S5 — LEARN durable facts about this person + recompress their dossier (suppressed for the
-    // shared 'unknown' profile and on an identity mismatch). Runs after the reply is sent.
-    // Not from a reply that read external content: person notes are primed into every turn with them.
+    // shared 'unknown' profile and on an identity mismatch). Before the result closes the stream, so an attached
+    // page hears it too; it is quick and runs on the reply, not the person's wait.
     const learned = r.tainted || MEMORY_OFF ? 0 : await learnFromTurn(brain, memory, prepared, message, r.summary);
-    if (learned) send('learned', { about: prepared.personId, count: learned });
+    if (learned) emitLive('learned', { about: prepared.personId, count: learned });
+    emitLive('result', { reason: r.reason, summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)), runId: run.runId, turnId: turnTs, elapsedMs: turnTs - run.startedAt, ...(r.staged?.length ? { staged: r.staged } : {}) });
   } catch (e) {
     logger.error('chat', 'agent run failed', { session: sessionId, error: (e as Error).message.slice(0, 200) });
-    send('error', { message: (e as Error).message });
+    emitLive('error', { message: (e as Error).message, runId: run.runId });
   } finally {
     activeRuns--;
     clearInterval(hb);
+    liveRuns.finish(sessionId); off?.();
     if (close) await close();
     memory?.close();
     res.end();
@@ -568,7 +586,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       const inboxDir = mailboxDirs(icfg.workspace ?? './mwa-workspace').inbox;
       console.log(`  📥 inbox on — drop instruction files (.md / .txt) in ${inboxDir}`);
       void watchInbox({
-        config: icfg, dbPath: process.env.MWA_DB ?? resolve('./data/agent.db'), agentId: SERVE_AGENT,
+        config: icfg, dbPath: dbFile(), agentId: SERVE_AGENT,
         intervalMs: Number(process.env.MWA_INBOX_POLL_MS ?? 5_000),
         onLog: (m) => logger.info('inbox', m),
         onDone: (r) => appendNotification({
@@ -671,8 +689,20 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         res.end(JSON.stringify({ suggestions: SUGGESTIONS }));
         return;
       }
+      // F07 (usability review 2026-10-24): what MWA can read for this chat — the person's granted folders (with a
+      // capped file count, and whether each still exists) and the files added to the chat — for an "I can read"
+      // line above the input, where the review found the granted folder listed only at the foot of Connect.
+      if (p === '/api/sources') {
+        const session = String(url.searchParams.get('session') ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 60);
+        const ws = resolve(loadConfig().workspace ?? './mwa-workspace');
+        const folders = grantedFolders(session ? resolve(ws, 'serve', session) : ws);
+        const added = session ? uploadsIn(ws, sessionFolder(session)) : [];
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ preset: accessPolicy().preset, folders, added }));
+        return;
+      }
       if (p === '/api/stats') {
-        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        const dbPath = dbFile();
         let memories = 0;
         try { const m = new MwaMemory(SERVE_AGENT, dbPath); memories = await m.memoryCount(); m.close(); } catch { /* */ }
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -680,7 +710,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         return;
       }
       if (p === '/api/memories') {
-        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        const dbPath = dbFile();
         let memories: Awaited<ReturnType<MwaMemory['recentMemories']>> = [];
         try { const m = new MwaMemory(SERVE_AGENT, dbPath); memories = await m.recentMemories(40); m.close(); } catch { /* */ }
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -689,7 +719,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       }
       // F1 Glass Box — "what I did" history (the side-effecting action log).
       if (p === '/api/actions') {
-        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        const dbPath = dbFile();
         let actions: Awaited<ReturnType<MwaMemory['recentActions']>> = [];
         try { const m = new MwaMemory(SERVE_AGENT, dbPath); actions = await m.recentActions(40); m.close(); } catch { /* */ }
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -698,7 +728,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       }
       // F1 Glass Box — export everything MWA knows as portable Markdown ("it's yours").
       if (p === '/api/memory/export') {
-        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        const dbPath = dbFile();
         let md = '# What MWA knows about you\n';
         try { const m = new MwaMemory(SERVE_AGENT, dbPath); md = await m.exportMarkdown(); m.close(); } catch { /* */ }
         res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8', 'content-disposition': 'attachment; filename="mwa-memory.md"' });
@@ -709,7 +739,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       if (p === '/api/memory/forget' && req.method === 'POST') {
         if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
-        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        const dbPath = dbFile();
         let ok = false;
         try { const m = new MwaMemory(SERVE_AGENT, dbPath); ok = await m.forget(String(b.id ?? '')); m.close(); } catch { /* */ }
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -720,7 +750,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       if (p === '/api/memory/correct' && req.method === 'POST') {
         if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
-        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        const dbPath = dbFile();
         let ok = false; let id: string | null = null;
         try {
           const m = new MwaMemory(SERVE_AGENT, dbPath);
@@ -756,7 +786,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
         const items: { concept?: string; content?: string; tags?: string[] }[] = Array.isArray(b.memories) ? b.memories : [];
-        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        const dbPath = dbFile();
         let saved = 0;
         try {
           const m = new MwaMemory(SERVE_AGENT, dbPath);
@@ -774,16 +804,34 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         res.end(JSON.stringify({ ok: true, saved }));
         return;
       }
-      if (p === '/api/schedule') {
-        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
-        let scheduled: { instruction: string; due: number; recur: string | null }[] = [];
-        try { const m = new MwaMemory(SERVE_AGENT, dbPath); scheduled = (await m.pendingScheduled()).map((t) => ({ instruction: t.instruction, due: t.due, recur: t.recur ?? null })); m.close(); } catch { /* */ }
-        res.writeHead(200, { 'content-type': 'application/json' });
+      // The person's scheduled jobs, with ids and state, and the controls on them (F04, 2026-10-24: the list had no
+      // ids and no controls, and a watch could not be stopped from the app). `scheduled` keeps the old shape plus
+      // the new fields, so the Log tab's list still renders.
+      if (p === '/api/schedule' && req.method === 'GET') {
+        const me = resolvePersonId({ channel: 'web', name: String(url.searchParams.get('person') ?? '').trim() || undefined });
+        let scheduled: unknown[] = [];
+        if (!MEMORY_OFF) { const m = new MwaMemory(SERVE_AGENT, dbFile(), loadConfig().awm.workspace); try { scheduled = await scheduleRows(m, me); } catch { /* */ } finally { m.close(); } }
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
         res.end(JSON.stringify({ scheduled }));
         return;
       }
+      if (/^\/api\/schedule\/(cancel|uncancel|pause|resume|update)$/.test(p) && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        const action = p.split('/').pop() as ScheduleAction;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        if (MEMORY_OFF) { res.end(JSON.stringify({ ok: false, message: 'Memory is off here, so there are no scheduled jobs.' })); return; }
+        const me = resolvePersonId({ channel: 'web', name: String(b.person ?? '').trim() || undefined });
+        const m = new MwaMemory(SERVE_AGENT, dbFile(), loadConfig().awm.workspace);
+        try {
+          const out = await scheduleControl(m, me, action, b);
+          logger.info('schedule', `${action} ${out.ok ? 'ok' : 'refused'}: ${String(b.id ?? '').slice(0, 8)} — ${out.message.slice(0, 120)}`);
+          res.end(JSON.stringify(out));
+        } finally { m.close(); }
+        return;
+      }
       if (p === '/api/notifications') {
-        const np = process.env.MWA_NOTIFY ?? resolve('./data/notifications.jsonl');
+        const np = notifyPath();
         const since = Number(url.searchParams.get('since') ?? 0);
         let notifications: any[] = [];
         try { notifications = readFileSync(np, 'utf8').trim().split('\n').map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean).filter((n: any) => Number(n.ts) > since).slice(-20); } catch { /* none yet */ }
@@ -808,7 +856,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         return;
       }
       if (p === '/api/runs') {
-        const logp = process.env.MWA_RUNLOG ?? resolve('./data/runs.jsonl');
+        const logp = runLogPath();
         let runs: any[] = [];
         try {
           runs = readFileSync(logp, 'utf8').trim().split('\n').slice(-60).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean).reverse();
@@ -820,7 +868,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       // Operational health — for the Docker/NAS healthcheck and operators. 503 if the DB
       // (the substrate) is unreachable; reports scheduler liveness + load.
       if (p === '/api/health') {
-        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        const dbPath = dbFile();
         let memoryCount = -1, db = false;
         try { const m = new MwaMemory(SERVE_AGENT, dbPath); memoryCount = await m.memoryCount(); m.close(); db = true; } catch { /* db down */ }
         const schedulerLastTickAgoSec = lastSchedulerTick ? Math.round((Date.now() - lastSchedulerTick) / 1000) : -1;
@@ -942,14 +990,14 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       if (p === '/api/welcome' && req.method === 'GET') {
         const since = Number(url.searchParams.get('since') ?? 0) || Date.now() - 24 * 3_600_000;
         res.writeHead(200, { 'content-type': 'application/json' });
-        const np = process.env.MWA_NOTIFY ?? resolve('./data/notifications.jsonl');
+        const np = notifyPath();
         let results: { title: string; session?: string; outcome?: string }[] = [];
         try { results = readFileSync(np, 'utf8').trim().split('\n').map((l) => { try { return JSON.parse(l); } catch { return null; } })
           .filter((n: any) => n && Number(n.ts) > since).slice(-10).map((n: any) => ({ title: String(n.title ?? n.instruction ?? '').slice(0, 120), session: n.session, outcome: n.outcome })); } catch { /* none */ }
         let goals: { id: string; title: string; state: string; conv?: string }[] = [];
         if (!MEMORY_OFF) {
           const cfg = loadConfig();
-          const memory = new MwaMemory(SERVE_AGENT, process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
+          const memory = new MwaMemory(SERVE_AGENT, dbFile(), cfg.awm.workspace);
           try {
             const [all, records] = await Promise.all([memory.listGoals(), memory.listGoalRecords()]);
             const me = resolvePersonId({ channel: 'web', name: String(url.searchParams.get('person') ?? '').trim() || undefined });
@@ -971,7 +1019,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         res.writeHead(200, { 'content-type': 'application/json' });
         if (MEMORY_OFF) { res.end(JSON.stringify({ goals: [] })); return; }
         const cfg = loadConfig();
-        const memory = new MwaMemory(SERVE_AGENT, process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
+        const memory = new MwaMemory(SERVE_AGENT, dbFile(), cfg.awm.workspace);
         try {
           const me = resolvePersonId({ channel: 'web', name: String(url.searchParams.get('person') ?? '').trim() || undefined });
           const [goals, records, jobs] = await Promise.all([memory.listGoals(), memory.listGoalRecords(), memory.pendingScheduled()]);
@@ -995,7 +1043,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         res.writeHead(200, { 'content-type': 'application/json' });
         if (MEMORY_OFF) { res.end(JSON.stringify({ ok: false, message: 'Memory is off here.' })); return; }
         const cfg = loadConfig();
-        const memory = new MwaMemory(SERVE_AGENT, process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
+        const memory = new MwaMemory(SERVE_AGENT, dbFile(), cfg.awm.workspace);
         try {
           const me = resolvePersonId({ channel: 'web', name: String(b.person ?? '').trim() || undefined });
           const goal = await memory.getGoal(String(b.goal ?? ''));
@@ -1022,7 +1070,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         if (!message) { res.end(JSON.stringify({ ok: false, message: 'Nothing to work on.' })); return; }
         if (MEMORY_OFF) { res.end(JSON.stringify({ ok: false, message: 'Background work needs memory, which is off here.' })); return; }
         const cfg = loadConfig();
-        const memory = new MwaMemory(SERVE_AGENT, process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
+        const memory = new MwaMemory(SERVE_AGENT, dbFile(), cfg.awm.workspace);
         try {
           const personId = resolvePersonId({ channel: 'web', name: String(b.person ?? '').trim() || undefined });
           // The turns before it: "look those up and write it up" needs them (BL-71 review). Fenced if any read outside content.
@@ -1033,6 +1081,39 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
             ? { ok: true, goal: started.goalId.slice(0, 8), message: "On it. I'll work on this in the background and post the result here when it's done. You can close this page." }
             : { ok: false, message: 'I couldn\'t set that up just now. Try again, or ask me to do it here.' }));
         } finally { memory.close(); }
+        return;
+      }
+      // Live runs (F06, F08, F09 — usability review 2026-10-24). `live` says whether this conversation has a run
+      // going; `attach` replays its events so far and follows it to the end (a reload re-attaches instead of
+      // losing the answer); `stop` is the person's Stop; `steer` queues a message into the run.
+      if (p === '/api/chat/live' && req.method === 'GET') {
+        const session = String(url.searchParams.get('session') ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 60);
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ live: session ? liveRuns.describe(session) : null, running: liveRuns.all().length }));
+        return;
+      }
+      if (p === '/api/chat/attach' && req.method === 'GET') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'cross-origin request blocked' })); return; }
+        const session = String(url.searchParams.get('session') ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 60);
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+        const write = (type: string, data: Record<string, unknown>) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+        let detach: (() => void) | null = null;
+        detach = liveRuns.attach(session, (e) => { write(e.type, e.data); if (FINAL_EVENTS.has(e.type)) { detach?.(); clearInterval(hb); res.end(); } });
+        if (!detach) { write('gone', { session }); res.end(); return; }
+        const hb = setInterval(() => { try { res.write(': keepalive\n\n'); } catch { /* */ } }, 15_000);
+        req.on('close', () => { detach?.(); clearInterval(hb); });
+        return;
+      }
+      if ((p === '/api/chat/stop' || p === '/api/chat/steer') && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        const session = String(b.session ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 60);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        if (p.endsWith('/stop')) { const ok = liveRuns.stop(session); res.end(JSON.stringify({ ok, message: ok ? 'Stopping. The step that is running finishes; nothing new starts.' : 'Nothing is running in this conversation.' })); return; }
+        const message = String(b.message ?? '').trim().slice(0, 4000);
+        if (!message) { res.end(JSON.stringify({ ok: false, message: 'Nothing to add.' })); return; }
+        const ok = liveRuns.steer(session, message);
+        res.end(JSON.stringify({ ok, message: ok ? 'Added to the running task. It is taken into account from the next step.' : 'Nothing is running in this conversation — send it as a message.' }));
         return;
       }
       if (p === '/api/approvals/cancel' && req.method === 'POST') {
@@ -1059,7 +1140,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         return;
       }
       if (p === '/api/questions' && req.method === 'GET') {
-        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        const dbPath = dbFile();
         let questions: { id: string; question: string }[] = [];
         try { const m = new MwaMemory(SERVE_AGENT, dbPath); questions = await m.listOpenQuestions(); m.close(); } catch { /* */ }
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -1072,7 +1153,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         // their validated connection (currently: their authenticated Telegram chat).
         const b = await readBody(req);
         const personId = String(b.personId ?? '');
-        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        const dbPath = dbFile();
         let out: unknown = { ok: false, reason: 'no-factor' };
         try {
           const m = new MwaMemory(SERVE_AGENT, dbPath);
@@ -1092,7 +1173,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         return;
       }
       if (p === '/api/people' && req.method === 'GET') {
-        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        const dbPath = dbFile();
         let people: unknown[] = [];
         try {
           const m = new MwaMemory(SERVE_AGENT, dbPath);
@@ -1119,7 +1200,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       // Both stores that share this database: the web app's and the Telegram connector's (BL-12 review —
       // a routine proposed in Telegram must be promotable here, into the store its runs recall from).
       if (p === '/api/routines' && req.method === 'GET') {
-        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        const dbPath = dbFile();
         const routines: unknown[] = [];
         for (const agent of ROUTINE_AGENTS) {
           try { const m = new MwaMemory(agent, dbPath); routines.push(...(await m.listRoutines()).map((r) => ({ ...r, agent }))); m.close(); } catch { /* */ }
@@ -1131,7 +1212,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       if ((p === '/api/routines/promote' || p === '/api/routines/retire') && req.method === 'POST') {
         if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
-        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        const dbPath = dbFile();
         let out: { ok: boolean; error?: string } = { ok: false, error: 'not done' };
         const agent = ROUTINE_AGENTS.includes(String(b.agent ?? SERVE_AGENT)) ? String(b.agent ?? SERVE_AGENT) : null;
         if (!agent) out = { ok: false, error: 'unknown store' };
@@ -1145,7 +1226,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         return;
       }
       if (p === '/api/skills') {
-        const dbPath = process.env.MWA_DB ?? resolve('./data/agent.db');
+        const dbPath = dbFile();
         let skills: { name: string; content: string }[] = [];
         let lessons: { topic: string; content: string }[] = [];
         let policies: string[] = [];
@@ -1218,7 +1299,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           else if (!source) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: 'No package given.' })); }
           else {
             const r = enableExternalNpm(source, b.version ? String(b.version) : undefined);
-            try { const lp = process.env.MWA_INSTALL_LOG ?? resolve('./data/installs.jsonl'); mkdirSync(dirname(lp), { recursive: true }); appendFileSync(lp, JSON.stringify({ ts: Date.now(), id: r.id, name: source, tier: 'approved-external', version: b.version ?? null, verdict: b.verdict ?? null, integrity: b.integrity ?? null }) + '\n'); } catch { /* */ }
+            try { const lp = installLogPath(); mkdirSync(dirname(lp), { recursive: true }); appendFileSync(lp, JSON.stringify({ ts: Date.now(), id: r.id, name: source, tier: 'approved-external', version: b.version ?? null, verdict: b.verdict ?? null, integrity: b.integrity ?? null }) + '\n'); } catch { /* */ }
             res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, message: `Installed ${source}${b.version ? '@' + b.version : ''} — its tools are available on your next message.` }));
           }
         } else if (b.action === 'connect-gmail') {
@@ -1388,7 +1469,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
                 // you on an empty store). If the copy fails, do NOT switch.
                 const lead = 'Connected ✓ — your database server becomes the memory store on the next restart.';
                 if (b.migrate) {
-                  const sqlitePath = process.env.MWA_DB ?? resolve('./data/agent.db');
+                  const sqlitePath = dbFile();
                   const m = await migrateMemoryToPostgres(sqlitePath, url);
                   if (!m.ok) {
                     result = { ok: false, message: `Connected, but ${m.message} — staying on this computer so nothing is lost.` };
@@ -1455,7 +1536,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   (async () => {
     try {
       const cfg = loadConfig();
-      const memory = new MwaMemory(SERVE_AGENT, process.env.MWA_DB ?? resolve('./data/agent.db'), cfg.awm.workspace);
+      const memory = new MwaMemory(SERVE_AGENT, dbFile(), cfg.awm.workspace);
       const brain = new RoutedProvider(getProvider('brain'), getProvider('high'));
       const worker = new RoutedProvider(getProvider('brain'), getProvider('high'));
       // BL-71e: thinking time — between conversations, one proposal per open goal (MWA_THINK=propose; off by default).

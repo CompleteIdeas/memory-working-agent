@@ -16,6 +16,7 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { loadEnv } from './env.js';
 import { loadConfig } from './config.js';
+import { runLogPath } from './paths.js';
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -110,7 +111,7 @@ export const callTags = new AsyncLocalStorage<{ session?: string; job?: string; 
 function logCall(rec: Record<string, unknown>): void {
   if (process.env.MWA_TOKEN_LOG === '0' || process.env.VITEST) return;
   try {
-    const p = process.env.MWA_TOKEN_LOG ?? join(dirname(process.env.MWA_RUNLOG ?? resolve('./data/runs.jsonl')), 'tokens.jsonl');
+    const p = process.env.MWA_TOKEN_LOG ?? join(dirname(runLogPath()), 'tokens.jsonl');
     mkdirSync(dirname(p), { recursive: true });
     appendFileSync(p, JSON.stringify({ ts: Date.now(), bg: backgroundCalls.getStore() === true, ...callTags.getStore(), ...rec }) + '\n');
   } catch { /* best effort */ }

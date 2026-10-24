@@ -22,6 +22,7 @@ import { MwaMemory } from './awm.js';
 import { agentMemory } from './memory-off.js';
 import { buildRegistry } from './tools/build.js';
 import { runAgent } from './agent.js';
+import { dbFile } from './paths.js';
 
 export interface MailboxDirs { root: string; inbox: string; outputs: string; outbox: string; done: string }
 
@@ -139,10 +140,10 @@ export async function processInbox(opts: {
   const brain = opts.brain ?? new RoutedProvider(getProvider('brain'), getProvider('high')); // conductor escalates on struggle/filter
   const worker = opts.worker ?? new RoutedProvider(getProvider('brain'), getProvider('high'));
   const agentId = opts.agentId ?? 'mwa-agent';
-  const memory = new MwaMemory(agentId, opts.dbPath ?? './data/agent.db', opts.config.awm.workspace);
+  const memory = new MwaMemory(agentId, opts.dbPath ?? dbFile(), opts.config.awm.workspace);
   // Approvals this process stages belong to its memory identity, in the store beside its DB (BL-18).
   setApprovalOwner(agentId);
-  if (!process.env.MWA_APPROVALS_DB) setApprovalStorePath(resolve(dirname(opts.dbPath ?? './data/agent.db'), 'approvals.db'));
+  if (!process.env.MWA_APPROVALS_DB) setApprovalStorePath(resolve(dirname(opts.dbPath ?? dbFile()), 'approvals.db'));
   let processed = 0;
   let close: (() => Promise<void>) | undefined;
   try {
