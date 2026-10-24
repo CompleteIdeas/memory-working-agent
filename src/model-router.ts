@@ -70,6 +70,9 @@ export class RoutedProvider implements Provider {
   private active(): Provider { return this.tier === 'fetch' ? this.fetchP : this.reasonP; }
 
   getTier(): Tier { return this.tier; }
+  /** A stronger model is still above this one: not yet escalated, and the strong tier is a different model (with
+   *  MWA_MODEL set, both tiers are the same model, and "escalating" would only change the reasoning effort). */
+  strongerAvailable(): boolean { return this.tier === 'fetch' && this.reasonP.model !== this.fetchP.model; }
   /** Escalate one step (fetch → reason). Returns true if it actually changed tier. */
   escalate(): boolean {
     if (this.tier === 'fetch') { this.tier = 'reason'; this.escalations++; return true; }

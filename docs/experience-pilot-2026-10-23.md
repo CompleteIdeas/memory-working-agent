@@ -150,6 +150,35 @@ Still failing in every memory arm: L3 (a code word inside one document; the stud
 BL-53 scores and which plan failed), and A1 (the arms say the run is blocked but not that the command is staged
 as an approval card and the result delivered).
 
+## Consistency: ask three times, merge (2026-10-24)
+
+Each repeat of a question started a fresh server on a fresh copy of the store, so the twelve primed memories were
+the same every time; what varied was the draw. On the four questions F2 answered right two times in three (S1, A1,
+A2, V1) the fact was there and the model used it, paraphrased it or hedged by chance. Since the judge found no
+invented fact in any arm, fails are omissions, and a union of drafts can only add true figures. So the three
+existing answers to each question were handed to Luna with the rule "keep every figure any draft gives, add
+nothing", and the merged answer was judged with the same rubric:
+
+| Arm | Average single answer | Merged | Best possible pick of 3 |
+|---|---|---|---|
+| F2 Luna + reconsolidated memory | 11.7 / 18 | 13 / 18 | 14 |
+| C2 Luna + studied memory | 10.7 / 18 | 11 / 18 | 12 |
+| E2 Sol + files + `search_files` | 15.3 / 18 | 17 / 18 | 17 |
+
+The merge gained A1, A2 and V1 on F2 and A1 and V3 on E2, and lost one question on each memory arm where the drafts
+contradicted each other on the verdict and the merge hedged instead of siding with the draft that cited figures (the
+rule now says so). A cruder selector, keeping the draft with the most numerals and no hedge words, reached 13 on F2
+too but was noise on the other arms. The merge call cost a tenth of a cent on Luna; three Luna drafts and a merge
+come to about four cents a question, a fifteenth of one Sol answer. The questions every memory arm fails every time
+(L3, S3, V2, V3) are untouched: no amount of sampling supplies a memory that was never stored.
+
+Shipped as `MWA_ANSWER_SAMPLES` (off by default): at the done step of a run that acted on nothing, the answer is
+drafted that many times from the same context and merged; when the drafts disagree or all hedge, the background boss
+takes the run over (nothing at runtime knows an answer is wrong, so the hand-off fires on what is visible), or with
+no stronger model above, memory is recalled once more on the question's own identifiers. Drafted inside one run, it
+samples the final generation, not the recall path; the measurement above merged three full runs, so the shipped form
+still has to be measured.
+
 ## What we take from it
 
 - **Studied memory lets a cent-an-answer model answer like a team member on what the team *decided* and
@@ -180,7 +209,7 @@ as an approval card and the result delivered).
   candidate fix. The `(from file.md)` pointer is only useful when files are also granted.
 - S2 is out of reach by priming on every store configuration and needs the file; C2 (the current spend cap) ranks
   #38 to #40 in recall.
-- AWM's redundancy-pruning fix, the confidence floor on supersede and the `embedding_model` stamp are in AWM's
-  working tree and await a release MWA can pin.
+- AWM's redundancy-pruning fix, the confidence floor on supersede and the `embedding_model` stamp shipped as AWM
+  v0.20.1, which MWA now pins (the pilot's stores were built on the earlier build).
 - The lens questions need the rule *and* the record: with the record in hand (E2) the verdict rule produced the
   first passes; with memory the record still has to be primed.

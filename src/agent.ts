@@ -538,6 +538,41 @@ export function rankForPrime<T extends { concept: string; score: number }>(ms: T
  */
 const ABSTRACT = /^(insight|position):/i;
 export const PRIME_ABSTRACT_CAP = Math.max(0, Number(process.env.MWA_PRIME_ABSTRACT_CAP ?? 3) || 0);
+
+/**
+ * Sampled answers (experience pilot, 2026-10-24). A question answered from memory came out right two times in three
+ * on four of eighteen questions: the fact was primed every time, and the model used it, paraphrased it or hedged by
+ * the draw. Asked MWA_ANSWER_SAMPLES times and merged into one answer that keeps every figure any draft gave, the
+ * reconsolidated-memory arm went from 11.7 of 18 to 13 (the best pick of three being 14), Sol with the files from
+ * 15.3 to 17 (of 17). Merging is safe because the judge found no invented facts in any arm: fails were omissions and
+ * hedges, and a union of drafts only adds true figures. The merge cost a tenth of a cent on Luna. 1 = off.
+ */
+export function answerSamples(env: NodeJS.ProcessEnv = process.env): number {
+  return Math.min(5, Math.max(1, Math.floor(Number(env.MWA_ANSWER_SAMPLES ?? 1)) || 1));
+}
+export const MERGE_SYSTEM = 'You merge several drafts of one answer into the single most complete answer. The drafts were written from the same record; none invents facts, but each may leave figures out or hedge.';
+export function mergePrompt(question: string, drafts: string[]): string {
+  return [
+    'Rules:',
+    '- Keep every specific figure, name, date, threshold or identifier that any draft gives. Do not drop a number because another draft omitted it.',
+    '- Do not add anything that no draft says.',
+    '- Where drafts disagree on a figure, give the one that more drafts give; if tied, give both and say they differ.',
+    '- Where drafts disagree on a verdict (accept, reject, modify) or on what to do, give the verdict of the draft that cites specific figures from the record. Never average verdicts into "modify" or "it depends".',
+    '- Drop sentences that only say what could not be verified, unless no draft answers at all.',
+    '- Answer directly, in the voice of the assistant answering the person. No preamble about drafts.',
+    '- After the answer, on its own last line, write exactly one of: DRAFTS: agree | DRAFTS: disagree | DRAFTS: hedge. "disagree" when the drafts give different figures or verdicts; "hedge" when every draft says it could not find or verify the answer; "agree" otherwise.',
+    '',
+    `QUESTION: ${question}`,
+    ...drafts.map((d, i) => `\nDRAFT ${i + 1}:\n${d}`),
+  ].join('\n');
+}
+export type DraftsVerdict = 'agree' | 'disagree' | 'hedge';
+/** The merged answer and the merge's reading of the drafts; a missing or malformed marker reads as agree. */
+export function readMerge(text: string): { answer: string; drafts: DraftsVerdict } {
+  const m = /\n?\s*\**\s*DRAFTS:\s*\**\s*(agree|disagree|hedge)\b[^\n]*\s*$/i.exec(text);
+  if (!m) return { answer: text.trim(), drafts: 'agree' };
+  return { answer: text.slice(0, m.index).trim(), drafts: m[1].toLowerCase() as DraftsVerdict };
+}
 export const HIST_WINDOW = Math.min(200, Math.max(4, Number(process.env.MWA_HIST_WINDOW) || 12));
 const MAX_READ_BYTES = 8_000;
 
@@ -808,6 +843,7 @@ export async function runAgent(opts: {
   };
   let verifyRejections = 0, verified = false; // verify-before-done: one numeric re-check, no spinning
   let substanceRejections = 0; // substance gate: one re-prompt on a fabricated/punted done
+  let sampled = false, sampledAnswer = '', sampleRecalls = 0; // sampled answers: once per run; the merged answer kept as the fallback
   const MAX_FETCH_FAILS = 2;
 
   memory.setSessionId(opts.session ?? `agent-${start}`);
@@ -1337,7 +1373,7 @@ export async function runAgent(opts: {
       // Only for a native tool call: a JSON-mode reply IS its text ({"action":"done",…}), and was a summary once (review).
       const doneArg = action.summary ? String(action.summary) : '';
       const replyText = viaToolCall ? String(out.text ?? '').trim() : '';
-      const summ = replyText.length > doneArg.trim().length && doneArg.trim().length < 40 ? replyText : doneArg;
+      let summ = replyText.length > doneArg.trim().length && doneArg.trim().length < 40 ? replyText : doneArg;
       // NOTHING SCHEDULED FOR A LATER REQUEST (BL-19): 3 of 18 scheduling chats on 2026-10-18 listed the
       // schedule, saw other jobs (or none), said "I couldn't confirm it is scheduled" and stopped — never
       // calling `schedule`. Lessons saying so were already in memory and didn't reach this moment, and
@@ -1491,6 +1527,52 @@ export async function runAgent(opts: {
         consecNoProgress = 0;
         nudge = 'A stronger model has taken over this job: the run was about to finish with "could not". Check what is missing — a source the job needs that was not read, a step not taken — and finish the job. If it truly cannot be done, call done and say exactly why.';
         continue;
+      }
+      // SAMPLED ANSWERS (experience pilot, 2026-10-24; answerSamples above). A question answered from what the run
+      // gathered, with nothing acted on, is drafted MWA_ANSWER_SAMPLES times from the same context and merged into one
+      // answer that keeps every figure any draft gave. Once per run; never for a step of a plan (its answer reports
+      // other steps' work), a run that acted (its answer is the report of that), or a reply too short to be an answer.
+      // Robert (2026-10-24): "ask the question multiple times and take the most complete answer … if it fails multiple
+      // times, escalate to Sol". Nothing at runtime knows an answer is wrong, so the hand-off fires on what is visible:
+      // the drafts disagree on a figure or a verdict, or every draft hedges. A stronger tier then takes the run over,
+      // as BL-73's boss does; with none above, one more recall on the question's own identifiers, and the merge stands.
+      if (!sampled && answerSamples() >= 2 && !opts.planStep && summ.trim().length >= 40 && !actedAtAll() && runActions.length === 0 && jobsCreated.length === 0 && now() - start < maxWallMs * 0.8) {
+        sampled = true;
+        const drafts = [summ];
+        for (let k = 1; k < answerSamples(); k++) {
+          try {
+            const d = await brain.chat({ system: runSystem, messages: [{ role: 'user', content: `${prompt}\n\nWrite your final answer now as plain text, no tool call.` }], maxTokens: 800, cache: true });
+            usage.brainIn += d.usage.input; usage.brainOut += d.usage.output;
+            const t = String(d.text ?? '').trim();
+            if (t.length >= 40 && !/^\s*\{/.test(t)) drafts.push(t);
+          } catch { /* a missing draft is one fewer to merge */ }
+        }
+        if (drafts.length >= 2) {
+          try {
+            const m = await brain.chat({ system: MERGE_SYSTEM + persona + personBlock, messages: [{ role: 'user', content: mergePrompt(requestOf(claimRequest), drafts) }], maxTokens: 1500 });
+            usage.brainIn += m.usage.input; usage.brainOut += m.usage.output;
+            const merged = readMerge(String(m.text ?? ''));
+            const allHedge = drafts.every((d) => I_COULD_NOT.test(d.replace(/[*_`#>]/g, '')) || /\bno record\b/i.test(d));
+            const verdict: DraftsVerdict = merged.drafts === 'disagree' ? 'disagree' : allHedge ? 'hedge' : merged.drafts;
+            if (merged.answer.length >= 40) { summ = merged.answer; sampledAnswer = merged.answer; }
+            gatesFired.push(`samples:${verdict}`); emit('samples', { n: drafts.length, drafts: verdict });
+            history.push(`(${drafts.length} drafts of the answer merged — the drafts ${verdict})`);
+            if (verdict !== 'agree' && steps < maxSteps - 3) {
+              const why = verdict === 'disagree' ? 'drafts of the answer disagreed' : 'every draft of the answer hedged';
+              if (brain instanceof RoutedProvider && brain.strongerAvailable() && brain.escalate()) {
+                gatesFired.push(`boss:${why}`); history.push(`(↑ a stronger model took over: ${why})`); emit('escalate', { which: 'brain', reason: `boss:${why}` });
+                consecNoProgress = 0;
+                nudge = `A stronger model has taken over: ${why}. The merged draft so far is below. Recall again with the exact identifiers in the question (names, ids, ticket or decision numbers), read what is needed, then call done with the answer and its figures.\n\n${markToolOutput('draft', summ.slice(0, 3000), fence)}`;
+                continue;
+              }
+              if (memory.enabled && sampleRecalls < 1) {
+                sampleRecalls++; consecNoProgress = 0;
+                nudge = `${verdict === 'disagree' ? 'Drafts of this answer disagreed with each other' : 'Every draft of this answer hedged'}. Recall once more using the exact identifiers in the question (names, ids, ticket or decision numbers) rather than the whole question, then call done with the answer and its figures. If memory has nothing more, call done with the answer as it stands.`;
+                continue;
+              }
+            }
+          } catch { /* the first draft stands */ }
+        }
       }
       reason = 'done';
       if (RUN_OUTCOMES.includes(action.outcome as RunOutcome)) { declaredOutcome = action.outcome as RunOutcome; doneOutcome = declaredOutcome; }
@@ -2026,6 +2108,8 @@ export async function runAgent(opts: {
   // If the model didn't give a real answer (budget/stuck, or a generic redundancy-break
   // "done"), make ONE final call to turn what we found into a plain, direct reply — or an
   // honest "couldn't find it + next step". The difference between a dead end and help.
+  // The merged draft stands when a hand-off after sampling ended without a later answer.
+  if (!modelAnswered && sampledAnswer && reason !== 'paused') { finalSummary = sampledAnswer; modelAnswered = true; history.push('(the merged draft stands — the run ended without a later answer)'); }
   if (!modelAnswered && reason !== 'paused') {
     // F4: gauge how well-grounded the wrap-up actually is (from the trust+score of recalled facts)
     // and steer the phrasing so a weak/untrusted basis is hedged + offered for verification, never
