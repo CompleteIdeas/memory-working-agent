@@ -15,6 +15,9 @@ describe('offersBackground', () => {
     'Research the latest AI news from this week and write me a newsletter draft with five practical takeaways',
     'Can you compare the three venue quotes and put together a short report I can send the board?',
     'Look up what the club charges for winter storage and draft a proposal for the committee',
+    // the person's own words for the feature (review 2026-10-25, F11)
+    'Work on this in the background: compare the current headlines on NPR and BBC and write me a summary file',
+    'Go through the four supplier quotes in the folder and get back to me when you have a recommendation',
   ])('offers: %s', (m) => expect(offersBackground(m)).toBe(true));
 
   it.each([
@@ -29,6 +32,7 @@ describe('offersBackground', () => {
     'Look up the weather for Saturday and write it in weather.txt for me',
     'Search my inbox for the invoice from Acme and tell me the total on the report',
     'Can you tell me what this says?\n\n> Hi team, please review the numbers and compile a report for the board by Friday.\n> Thanks, Lee',
+    'What is the building in the background of this photo, and roughly when was it taken?', // describes a photo
   ])('does not offer: %s', (m) => expect(offersBackground(m)).toBe(false));
 
   it('counts pasted text as the person\'s data, not their words', () => {

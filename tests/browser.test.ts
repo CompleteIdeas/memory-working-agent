@@ -8,7 +8,14 @@ import { createRequire } from 'node:module';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CONSEQUENTIAL, GO_AHEAD, browserTools, closeBrowsers } from '../src/tools/browser.js';
+import { CONSEQUENTIAL, GO_AHEAD, AGENT_BROWSER_HEADER, browserTools, closeBrowsers } from '../src/tools/browser.js';
+
+// The guard refuses nothing in Developer mode (the local test server needs that), so a path stands in for a private
+// address: any URL whose path starts with /private is refused, as 127.0.0.1 would be in Assistant mode.
+vi.mock('../src/tools/net-guard.js', async (importOriginal) => {
+  const m = await importOriginal<typeof import('../src/tools/net-guard.js')>();
+  return { ...m, urlRefusal: async (u: string) => (/\/private(\/|$)/.test(String(u)) ? 'that address is on this machine or a private network (test)' : m.urlRefusal(u)) };
+});
 
 describe('what counts as a consequential click, and as going ahead', () => {
   it('controls that send, pay, buy, delete or submit', () => {
@@ -25,6 +32,7 @@ const hasPlaywright = (() => { try { createRequire(import.meta.url).resolve('pla
 
 describe.skipIf(!hasPlaywright)('in a real browser', () => {
   let server: Server; let base = ''; let cfgDir = ''; let posted: string[] = [];
+  const hits: Record<string, number> = {}; let lastHeaders: Record<string, unknown> = {};
   const tool = (n: string) => browserTools().find((t) => t.def.name === n)!;
   const ctx = (extra: Record<string, unknown> = {}) => ({ sandboxDir: cfgDir, interactive: true, personId: 'jordan', ...extra });
   const setPreset = (preset: string) => writeFileSync(join(cfgDir, 'mwa.config.json'), JSON.stringify({ tools: { access: { preset, grantedRoots: [] } } }));
@@ -36,11 +44,17 @@ describe.skipIf(!hasPlaywright)('in a real browser', () => {
     vi.stubEnv('MWA_VAULT_PATH', join(cfgDir, 'vault.json'));
     server = createServer((req, res) => {
       let body = ''; req.on('data', (d) => (body += d)); req.on('end', () => {
+        const path = String(req.url ?? '/').split('?')[0];
+        hits[path] = (hits[path] ?? 0) + 1; lastHeaders = req.headers;
         if (req.method === 'POST') posted.push(body);
+        if (path === '/go') { res.writeHead(302, { location: `${base}/private/health` }); res.end(); return; } // a public page's redirect
+        if (path.startsWith('/private')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true,"secret":"MWA control API"}'); return; }
         res.writeHead(200, { 'content-type': 'text/html' });
         res.end(`<html><head><title>Entries</title></head><body><h1>Fox Run entries close Nov 13</h1>
           <form method="post" action="/done"><input name="user" placeholder="Username"><input name="pw" type="password" placeholder="Password">
-          <button type="submit">Submit entry</button></form><a href="/next">Next page</a></body></html>`);
+          <button type="submit">Submit entry</button></form><a href="/next">Next page</a>
+          <select name="level"><option>Novice</option><option>Training</option><option>Preliminary</option></select>
+          <div style="height:3000px"></div><p>Bottom of the page: stabling closes Nov 10.</p></body></html>`);
       });
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
@@ -76,5 +90,44 @@ describe.skipIf(!hasPlaywright)('in a real browser', () => {
     vaultSave('local-test', '127.0.0.1', { password: 'Gr8-horse-sport!' });
     const r = await tool('browser_type').handler({ ref: 2, text: '{{vault:local-test.password}}' }, ctx());
     expect(r).toBe('Typed the saved value into [2] on 127.0.0.1.');
+  }, 60_000);
+
+  // Review 2026-10-25, F01: a public page's redirect reached MWA's own API on 127.0.0.1, because Chromium follows a
+  // redirect without asking the route again. The hop is now paused and checked inside Chromium.
+  it('a redirect to a refused address is stopped on the hop, and the private page is never fetched', async () => {
+    setPreset('developer');
+    hits['/private/health'] = 0;
+    const r = await tool('browser_open').handler({ url: `${base}/go` }, ctx({ session: 'redirect-test' }));
+    expect(r).toMatch(/refused: .*address this assistant may not reach|refused: the page led to/);
+    expect(r).not.toMatch(/MWA control API/);
+    expect(hits['/private/health']).toBe(0);
+  }, 60_000);
+
+  it('every request the agent browser makes says so, which MWA\'s own server refuses', async () => {
+    setPreset('developer');
+    await tool('browser_open').handler({ url: `${base}/` }, ctx({ session: 'header-test' }));
+    expect(lastHeaders[AGENT_BROWSER_HEADER]).toBe('1');
+  }, 60_000);
+
+  // F02 / F04: one page per conversation, kept between turns; another conversation never sees it.
+  it('a conversation keeps its page and what was typed; another conversation has no page', async () => {
+    setPreset('developer');
+    await tool('browser_open').handler({ url: `${base}/` }, ctx({ session: 'conv-a' }));
+    await tool('browser_type').handler({ ref: 1, text: 'jordan' }, ctx({ session: 'conv-a' }));
+    const again = await tool('browser_page').handler({}, ctx({ session: 'conv-a', runId: 'a-later-turn' }));
+    expect(again).toMatch(/\[1\] textbox "jordan"/); // not reloaded: the typed name is still there
+    await expect(tool('browser_page').handler({}, ctx({ session: 'conv-b' }))).rejects.toThrow(/no page is open in this conversation/);
+  }, 60_000);
+
+  // F05 / F14: dropdowns and long pages.
+  it('chooses a dropdown option, and scrolls to read further down', async () => {
+    setPreset('developer');
+    const page = await tool('browser_open').handler({ url: `${base}/` }, ctx({ session: 'conv-c' }));
+    expect(page).toMatch(/\[5\] dropdown "Novice" options: "Novice", "Training", "Preliminary"/);
+    expect(page).toMatch(/more below — browser_scroll/);
+    expect(await tool('browser_select').handler({ ref: 5, option: 'Training' }, ctx({ session: 'conv-c' }))).toBe('Chose "Training" in [5].');
+    const down = await tool('browser_scroll').handler({ direction: 'down' }, ctx({ session: 'conv-c' }));
+    expect(down).toMatch(/scrolled \d+px down the page/);
+    expect(down).toMatch(/Bottom of the page/);
   }, 60_000);
 });

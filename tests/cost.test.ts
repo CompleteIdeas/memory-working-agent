@@ -44,7 +44,10 @@ describe('trimPage', () => {
     expect(t.text).toContain('volunteer schedule rules');
   });
   it('knows which tools return pages', () => {
-    for (const n of ['fetch__fetch_url', 'read_document', 'http_request', 'browser_open']) expect(PAGE_TOOLS.test(n)).toBe(true);
+    for (const n of ['fetch__fetch_url', 'read_document', 'http_request']) expect(PAGE_TOOLS.test(n)).toBe(true);
     expect(PAGE_TOOLS.test('read_file')).toBe(false);
+    // the browser's snapshot has its own cap and is mostly a control list; the prose trim dropped the article it was
+    // asked about (review 2026-10-25, F10)
+    expect(PAGE_TOOLS.test('browser_open')).toBe(false);
   });
 });

@@ -55,6 +55,7 @@ import { recordReceipt, readReceipts, setReceiptProducer } from './receipts.js';
 import { setTranscriptProducer, stopHeartbeat } from './transcript.js';
 import { scanSources } from './onboard.js';
 import { buildRegistry } from './tools/build.js';
+import { AGENT_BROWSER_HEADER } from './tools/browser.js';
 import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, runApproved, recentApprovalOutcomes, recentAutoApproved } from './tools/approval.js';
 import { logger, readLogs, type LogLevel } from './logger.js';
 import { runAgent } from './agent.js';
@@ -601,6 +602,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');
       const p = url.pathname;
+
+      // The agent browser may never talk to MWA itself (review 2026-10-25, F01: a public page's redirect reached
+      // /api/chat on 127.0.0.1 through the browser and started a run). Its every request carries this header.
+      if (req.headers[AGENT_BROWSER_HEADER]) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'the agent browser may not call MWA' })); return; }
 
       // Access gate (no-op unless MWA_ACCESS_PASSWORD is set).
       if (ACCESS_PW) {

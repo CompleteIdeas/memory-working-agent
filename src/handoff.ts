@@ -35,9 +35,17 @@ export function hasPasted(message: string): boolean {
 
 /** Whether a chat message is worth offering to the background: in the person's own words it asks for research
  *  AND a written-up deliverable, and it isn't a quick reply or a request to set something up for later. */
+/** The person asking for the background in so many words (review 2026-10-25, F11: "work on this in the background:
+ *  compare headlines … and write me a summary file" ran in the chat for 116 s because no deliverable noun matched). */
+export const BACKGROUND_ASK = /\b(work on (?:it|this)\b[^.?!]{0,80}\b(?:get back|report back|tell me when|let me know)|(?:get|report) back to me\b|while i(?:'m| am) (?:away|out|gone|asleep))\b/i;
+/** "in the background" counts when the message asks for work, not when it describes a photo. */
+const IN_BACKGROUND = /\bin the background\b/i;
+const ASKS_WORK = /\b(work|do|run|research|compare|find|look|write|put|check|gather|review|draft|compile|summari[sz]e|prepare|pull)\b/i;
+
 export function offersBackground(message: string): boolean {
   const own = ownText(message);
   if (own.length < 40 || asksForLater(message)) return false;
+  if ((BACKGROUND_ASK.test(own) || (IN_BACKGROUND.test(own) && ASKS_WORK.test(own))) && !QUICK_REPLY.test(own)) return true;
   return RESEARCH.test(own) && DELIVERABLE.test(own) && !QUICK_REPLY.test(own);
 }
 

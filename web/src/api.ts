@@ -351,6 +351,17 @@ const TOOL_LABELS: Record<string, string> = {
   draft_outlook: 'Drafting a reply for you',
   propose_outlook_event: 'Proposing a calendar event',
   search__web_search: 'Searching the web',
+  search_files: 'Searching your files',
+  read_document: 'Reading a document',
+  fetch__fetch_url: 'Fetching a page',
+  // the agent browser (review 2026-10-25, F16: raw tool ids showed as "browser open")
+  browser_open: 'Opening a page in the browser',
+  browser_page: 'Reading the open page again',
+  browser_click: 'Clicking on the page',
+  browser_type: 'Typing on the page',
+  browser_select: 'Choosing an option on the page',
+  browser_scroll: 'Scrolling the page',
+  browser_screenshot: 'Taking a screenshot',
 };
 
 function shortPath(p?: string): string {
@@ -366,7 +377,9 @@ export function plainStep(type: string, data: any): { label: string; detail: str
     case 'recall': return { label: 'Remembering what I know', tone: 'recall', detail: data?.query ?? '' };
     case 'read': return { label: 'Reading', tone: 'act', detail: shortPath(data?.path) };
     case 'remember': return { label: 'Learned something', tone: 'learn', detail: data?.concept ?? '' };
-    case 'tool': return { label: TOOL_LABELS[data?.name] ?? 'Using a tool', tone: 'act', detail: '' };
+    // Every tool call also arrives as a 'step' with the tool, what it touched and the time so far; this older event
+    // doubled the list with a bare "Using a tool" line after each real step (review 2026-10-25, F16).
+    case 'tool': return null;
     case 'dispatch': return { label: 'Working on it', tone: 'act', detail: (data?.files as string[])?.join(', ') ?? '' };
     case 'sleep': return { label: 'Tidying up my memory', tone: 'learn', detail: '' };
     case 'escalate': return { label: 'Thinking harder about this', tone: 'think', detail: '' };

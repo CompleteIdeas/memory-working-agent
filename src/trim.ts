@@ -6,8 +6,10 @@
  * best-scoring ones, in their original order, up to the cap. MWA_TRIM_PAGES=0 turns it off; MWA_TRIM_CHARS sets the cap.
  */
 
-/** Tools whose results are pages or documents someone else wrote. */
-export const PAGE_TOOLS = /^(fetch__fetch_url|read_document|http_request|browser_open|browser_read|browser_text|search__web_search)$/;
+/** Tools whose results are pages or documents someone else wrote. Not the browser's: its snapshot already has its own
+ *  cap and is mostly a numbered control list, which this prose trim kept while dropping the article the question was
+ *  about (review 2026-10-25, F10: npr.org 20,717 → 2,937 characters with none of the lead story's paragraphs). */
+export const PAGE_TOOLS = /^(fetch__fetch_url|read_document|http_request|search__web_search)$/;
 
 const STOP = new Set(('a an and are as at be but by can did do does for from had has have how i if in into is it its me my no not of on or our so that the their them then there these they this to us was we were what when where which who why will with you your about after all also any been before both each few more most other over same some such than too very just only own out up down off again further once here while during above below between through until against').split(' '));
 

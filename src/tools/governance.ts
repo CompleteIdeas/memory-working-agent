@@ -62,7 +62,7 @@ const TOOL_CATEGORY: Record<string, ActionCategory> = {
   connect_account: 'write-local', connection_status: 'read',
   vault_list: 'read', vault_request: 'write-local', vault_forget: 'write-local',
   // BL-64: the agent browser reaches outside; what a page says is outside content (not listed as own or local below).
-  browser_open: 'external', browser_click: 'external', browser_type: 'external', browser_screenshot: 'write-local',
+  browser_open: 'external', browser_page: 'external', browser_scroll: 'external', browser_click: 'external', browser_type: 'external', browser_select: 'external', browser_screenshot: 'write-local',
   // NOTE: MCP-bridged tools are named `<server>__<tool>` at runtime and cannot appear here.
   // Defaulting those to 'external' is deliberate — they run third-party code. The one exception is
   // below: a tool whose server declares it read-only.
@@ -208,7 +208,8 @@ export interface TripwireResult { tripped: boolean; reason?: string }
 /** Hard test 2026-10-23: opening a page in the agent browser is a read, as a fetch is — round 1 paused two research
  *  jobs after three browser_open calls. It stays 'external' for the action log; clicks and typing still count, and
  *  the page budget (MWA_PAGE_BUDGET) is what bounds reading. */
-export function countsAsReach(tool: string): boolean { return effectOf(tool) === 'external' && tool !== 'browser_open'; }
+const BROWSER_READS = new Set(['browser_open', 'browser_page', 'browser_scroll']); // reading the page, in three ways
+export function countsAsReach(tool: string): boolean { return effectOf(tool) === 'external' && !BROWSER_READS.has(tool); }
 
 /**
  * Watch the run's TRAJECTORY (not just the next action) and pause-and-ask when it crosses a
@@ -218,7 +219,7 @@ export function countsAsReach(tool: string): boolean { return effectOf(tool) ===
 export function checkTripwires(actions: ActionLike[], cfg: TripwireConfig = {}): TripwireResult {
   const maxExternal = cfg.maxExternal ?? 3;
   const maxLocal = cfg.maxLocalWrites ?? 12;
-  const ext = actions.filter((a) => reachOf(a) === 'external' && a.tool !== 'browser_open').length;
+  const ext = actions.filter((a) => reachOf(a) === 'external' && !BROWSER_READS.has(a.tool ?? '')).length;
   if (ext > maxExternal) return { tripped: true, reason: `I've reached outside your machine ${ext} times (limit ${maxExternal}) — pausing to check with you before doing more.` };
   const local = actions.filter((a) => reachOf(a) === 'local').length;
   if (local > maxLocal) return { tripped: true, reason: `I've made ${local} changes on your machine (limit ${maxLocal}) — pausing to check with you before doing more.` };
