@@ -46,14 +46,21 @@ export interface ToolContext {
   /** What this job may do although nobody is watching, given by the person when they set the job up (browser review
    *  2026-10-25): saved logins it may type on their own sites, and controls it may click that sign in, submit or pay. */
   jobAllow?: JobAllow;
+  /** the model running this run's loop, so a tool knows whether it can see an image (`browser_look`). */
+  brainModel?: string;
 }
 
 /** A job's allowance for unattended browser work: vault entry names, and "host + control text" pairs. */
 export interface JobAllow { vault?: string[]; click?: { host: string; label: string }[] }
 
+/** A tool's output with an image the model is to look at on its next step (`browser_look`). */
+export interface ToolOutput { text: string; image?: { mime: 'image/jpeg' | 'image/png'; data: string } }
+/** A handler's reply as text, for callers that run a handler directly. */
+export const toolText = (out: string | ToolOutput): string => (typeof out === 'string' ? out : out.text);
+
 export interface RegisteredTool {
   def: ToolDef;
-  handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<string>;
+  handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<string | ToolOutput>;
 }
 
 /**
@@ -96,11 +103,12 @@ export class ToolRegistry {
    *  threw). A tool's own text can say anything — an MCP server or a fetched page can start with
    *  "(tool x failed: …)" — so this flag, not the text, is what says a call really failed. (BL-01:
    *  matching on text let an external tool fake a refusal and skip the action log and tripwires.) */
-  async callDetailed(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<{ text: string; failed: boolean }> {
+  async callDetailed(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<{ text: string; failed: boolean; image?: ToolOutput['image'] }> {
     const t = this.tools.get(name);
     if (!t) return { text: `(unknown tool: ${name})`, failed: true };
     try {
       const out = await t.handler(args ?? {}, ctx);
+      if (out && typeof out === 'object' && typeof (out as ToolOutput).text === 'string') return { text: (out as ToolOutput).text, failed: false, ...((out as ToolOutput).image ? { image: (out as ToolOutput).image } : {}) };
       return { text: typeof out === 'string' ? out : JSON.stringify(out), failed: false };
     } catch (e) {
       if (e instanceof ToolRefusal) return { text: e.text, failed: true }; // MWA's own refusal, its words intact

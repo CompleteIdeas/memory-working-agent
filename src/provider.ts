@@ -18,9 +18,40 @@ import { loadEnv } from './env.js';
 import { loadConfig } from './config.js';
 import { runLogPath } from './paths.js';
 
+/** A part of a message: text, or an image the model is to look at (the agent browser's `browser_look`, 2026-10-26). */
+export type ContentPart = { type: 'text'; text: string } | { type: 'image'; mime: 'image/jpeg' | 'image/png'; data: string };
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
-  content: string;
+  content: string | ContentPart[];
+}
+
+/** Whether a model takes images. A list, not a probe: the provider's model index is not consulted per call. */
+export function supportsImages(model: string): boolean {
+  if (/luna|mini-text|-text\b|deepseek|llama-?3\.[0-1]\b/i.test(model)) return false; // the cheap text-only tiers
+  return /gpt-6|gpt-5|gpt-4o|gpt-4\.1|o[1-9]\b|claude|gemini|pixtral|llava|qwen[^/]*-?vl|vision|muse-glimmer|gemma-?[3-9]/i.test(model);
+}
+/** The text of a message's content, with a note where an image was dropped. */
+export function textOnly(c: string | ContentPart[]): string {
+  if (typeof c === 'string') return c;
+  const text = c.filter((p): p is Extract<ContentPart, { type: 'text' }> => p.type === 'text').map((p) => p.text).join('\n');
+  return c.some((p) => p.type === 'image') ? `${text}\n(a screenshot was attached, but this model cannot see images — read the page as text instead)` : text;
+}
+/** OpenAI-style content: a string, or text and image_url parts (data URLs). */
+export function openAiContent(c: string | ContentPart[]): string | { type: string; text?: string; image_url?: { url: string } }[] {
+  if (typeof c === 'string') return c;
+  return c.map((p) => (p.type === 'text' ? { type: 'text', text: p.text } : { type: 'image_url', image_url: { url: `data:${p.mime};base64,${p.data}` } }));
+}
+/** Anthropic content: a string, or text and base64 image blocks. */
+export function anthropicContent(c: string | ContentPart[]): string | Record<string, unknown>[] {
+  if (typeof c === 'string') return c;
+  return c.map((p) => (p.type === 'text' ? { type: 'text', text: p.text } : { type: 'image', source: { type: 'base64', media_type: p.mime, data: p.data } }));
+}
+/** Ollama's native shape: text content plus an `images` list of base64 strings. */
+export function ollamaContent(c: string | ContentPart[]): { content: string; images?: string[] } {
+  if (typeof c === 'string') return { content: c };
+  const images = c.filter((p): p is Extract<ContentPart, { type: 'image' }> => p.type === 'image').map((p) => p.data);
+  return { content: c.filter((p): p is Extract<ContentPart, { type: 'text' }> => p.type === 'text').map((p) => p.text).join('\n'), ...(images.length ? { images } : {}) };
 }
 
 /** A callable tool the model may invoke. `parameters` is a JSON Schema object. */
@@ -169,7 +200,7 @@ class AnthropicProvider implements Provider {
       ...(tools?.length
         ? { tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters as Anthropic.Tool.InputSchema })) }
         : {}),
-      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      messages: messages.map((m) => ({ role: m.role, content: anthropicContent(m.content) as never })),
     });
     const text = r.content
       .filter((c): c is Anthropic.TextBlock => c.type === 'text')
@@ -202,7 +233,7 @@ class AzureGptProvider implements Provider {
     this.id = `azure-gpt:${model}`;
   }
   async chat({ system, messages, maxTokens = 1500, tools, reasoningEffort }: ChatInput): Promise<ChatResult> {
-    const msgs = (system ? [{ role: 'system', content: system }, ...messages] : messages).map((m) => ({ role: m.role, content: m.content }));
+    const msgs = (system ? [{ role: 'system', content: system }, ...messages] : messages).map((m) => ({ role: m.role, content: supportsImages(this.model) ? openAiContent(m.content) : textOnly(m.content) }));
     // gpt-5.x is a reasoning model: pass reasoning_effort, and give non-minimal efforts
     // token headroom so hidden reasoning doesn't starve the visible answer.
     const reasons = /gpt-5/i.test(this.model) && !!reasoningEffort;
@@ -269,7 +300,7 @@ class OpenAICompatProvider implements Provider {
   /** BL-57: this model was seen spending the whole output budget on hidden reasoning — give it headroom from now on */
   private seenThinking = false;
   async chat({ system, messages, maxTokens = 1500, tools, reasoningEffort }: ChatInput): Promise<ChatResult> {
-    const msgs = (system ? [{ role: 'system', content: system }, ...messages] : messages).map((m) => ({ role: m.role, content: m.content }));
+    const msgs = (system ? [{ role: 'system', content: system }, ...messages] : messages).map((m) => ({ role: m.role, content: supportsImages(this.model) ? openAiContent(m.content) : textOnly(m.content) }));
     // Only send reasoning_effort to OpenAI reasoners (gpt-5.x, o-series) — others 400 on it.
     // gpt-6.x too (2026 bake-off): without its effort set it reasons at the default, which is slow and costly per step.
     const openaiReasoner = /(^|[:/-])(o[1-9]|gpt-[5-9])/i.test(this.model);
@@ -475,9 +506,10 @@ export class OllamaProvider implements Provider {
   }
 
   async chat({ system, messages, maxTokens = 1500, tools, reasoningEffort }: ChatInput): Promise<ChatResult> {
-    const msgs = (system ? [{ role: 'system', content: system }, ...messages] : messages).map((m) => ({ role: m.role, content: m.content }));
+    const msgs = (system ? [{ role: 'system', content: system }, ...messages] : messages).map((m) => ({ role: m.role, ...ollamaContent(m.content) }));
     const toolDefs = tools?.length ? tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })) : undefined;
-    const chars = JSON.stringify(msgs).length + (toolDefs ? JSON.stringify(toolDefs).length : 0);
+    // Images are not prompt text: the context estimate counts the words, not the base64.
+    const chars = JSON.stringify(msgs.map((m) => ({ role: m.role, content: m.content }))).length + (toolDefs ? JSON.stringify(toolDefs).length : 0);
     const info = await ollamaModelInfo(this.host, this.model);
     const thinker = info ? info.thinking : /qwen3|deepseek-r|magistral|thinking|gpt-oss/i.test(this.model);
     // Room to think before answering, as for hosted thinkers; none when the caller asks for minimal effort.

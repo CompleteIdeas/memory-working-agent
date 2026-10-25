@@ -10,6 +10,9 @@
 import type { MwaMemory, ScheduledTask } from './awm.js';
 import { normalizePersonId } from './person.js';
 import { workTools, visibleTo } from './tools/work.js';
+
+/** A tool's reply as text (a tool may also return an image for the model; these never do). */
+const asText = (out: string | { text: string }): string => (typeof out === 'string' ? out : out.text);
 import { friendlySchedule, recurWords, isWatch } from './schedule-request.js';
 
 export interface ScheduleRow {
@@ -65,7 +68,7 @@ export async function scheduleControl(memory: MwaMemory, person: string, action:
   if (action === 'cancel') {
     const t = await mine();
     if (!t) return { ok: false, message: 'No such job.' };
-    const out = await tools.schedule_cancel.handler({ id: t.id }, ctx);
+    const out = asText(await tools.schedule_cancel.handler({ id: t.id }, ctx));
     return out.startsWith('canceled') ? { ok: true, id: t.id, message: `Cancelled. It was ${t.recur ? recurWords(t.recur) : friendlySchedule(t.due)}. Undo within ten minutes.` } : { ok: false, message: out };
   }
   if (action === 'uncancel') {
@@ -87,6 +90,6 @@ export async function scheduleControl(memory: MwaMemory, person: string, action:
   if (!t) return { ok: false, message: 'No such job.' };
   const args: Record<string, unknown> = { id: t.id };
   for (const k of ['instruction', 'at', 'daily_at', 'days', 'every_minutes'] as const) if (body[k] !== undefined && body[k] !== null && String(body[k]).trim() !== '') args[k] = k === 'every_minutes' ? Number(body[k]) : String(body[k]);
-  const out = await tools.schedule_update.handler(args, ctx);
+  const out = asText(await tools.schedule_update.handler(args, ctx));
   return out.startsWith('updated') ? { ok: true, id: t.id, message: out.replace(/ Tell the person which job changed and how\.$/, '') } : { ok: false, message: out };
 }

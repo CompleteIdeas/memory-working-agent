@@ -37,6 +37,7 @@
  *     expresses it honestly with one fewer half-working path.
  */
 import type { RegisteredTool, ToolContext } from './registry.js';
+import { toolText } from './registry.js';
 import { allowText } from './browser.js';
 import type { MwaMemory, ScheduledTask, Goal, GoalStatus, GoalPriority } from '../awm.js';
 import { normalizePersonId } from '../person.js';
@@ -662,7 +663,7 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
         `  From now on the job SKIPS its run whenever this command prints the same as last time:\n  ${clip(t.check, 240)}\n` +
         (ready ? `  Dry run: it agreed with ${ev.n} runs (${ev.skips} unchanged, ${ev.runs} changed).`
           : `  NO dry-run record yet (${ev.n} of ${READY_N}): if this command doesn't really track the job, the job will stop running unseen.`);
-      const staged = await detectorArmGated.handler({ task: t.id, hash: checkHash(t.check), record: detectorRecord(t), preview }, ctx);
+      const staged = toolText(await detectorArmGated.handler({ task: t.id, hash: checkHash(t.check), record: detectorRecord(t), preview }, ctx));
       // The card shows the person the command; the model's copy leaves the stored text out, so this
       // tool's output stays MWA's own words (BL-08 review).
       return `${staged.replace(/--- preview of what will run ---[\s\S]*?--- end preview ---/, '--- the card shows the person the job and its command ---')}${note}`;

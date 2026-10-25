@@ -410,6 +410,7 @@ export const TOOL_LABELS: Record<string, string> = {
   browser_type: 'Typing on the page',
   browser_select: 'Choosing an option on the page',
   browser_scroll: 'Scrolling the page',
+  browser_look: 'Looking at the page',
   browser_screenshot: 'Taking a screenshot',
   // the rest of the tools and actions a run can take (interface slice 2026-10-25: a stage line read "list connectors")
   read: 'Reading a file', recall: 'Remembering what I know', remember: 'Noting something to remember', supersede: 'Updating something I knew',

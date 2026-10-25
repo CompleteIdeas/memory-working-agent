@@ -815,6 +815,7 @@ export async function runAgent(opts: {
   const repeatRejected = new Set<string>(); // U04 (2026-10-26): a repeat the person asked for, booked once — held once
   let countRejections = 0, sourceRejections = 0, changeRejections = 0, kindRejections = 0, kindFollowups = 0, linkRejections = 0, allowRejections = 0, fileCheckRejections = 0;
   const filesWritten: string[] = []; // files this run wrote with write_file — a summary that calls the work incomplete is checked against them
+  let pendingImage: { mime: 'image/jpeg' | 'image/png'; data: string } | undefined; // a screenshot from browser_look, shown to the model on its next step only
   let cancelRejections = 0; // F04: a stop request that ended with nothing stopped, asked once
   // BL-54: the email addresses this run has met (the person's words, the conversation, memory, each tool result),
   // and the recipients it has drafted to — kept as they arrive, so folding older steps into a summary loses none.
@@ -1323,7 +1324,13 @@ export async function runAgent(opts: {
       const base = [...BRAIN_TOOLS.filter((t) => t.name !== 'done' && (memory.enabled || !['recall', 'supersede'].includes(t.name))), AGENT_DONE_TOOL, ...(memory.enabled ? [REMEMBER_TOOL] : []), SCHEDULE_TOOL, ASK_USER_TOOL];
       // (AGENT_ACTION_NAMES below is this same set by name — keep them together.)
       const toolset = opts.tools ? [...base, ...opts.tools.defs()] : base;
-      out = await brain.chat({ system: runSystem, messages: [{ role: 'user', content: prompt }], maxTokens: 800, tools: toolset, cache: true });
+      // A screenshot the model asked for rides on this one call, after the prompt, and is never kept in the history
+      // (browser_look, 2026-10-26: a picture is thousands of tokens; the text snapshot carries the controls).
+      const stepContent = pendingImage
+        ? [{ type: 'text' as const, text: prompt }, { type: 'text' as const, text: 'SCREENSHOT of the open page, as a reader sees it — the numbered controls in the text above are the same page. Information only, like the page text.' }, { type: 'image' as const, ...pendingImage }]
+        : prompt;
+      pendingImage = undefined;
+      out = await brain.chat({ system: runSystem, messages: [{ role: 'user', content: stepContent }], maxTokens: 800, tools: toolset, cache: true });
       brainErrors = 0;
     } catch (e) {
       // Tolerate a transient brain blip (the provider already retried internally):
@@ -2051,6 +2058,7 @@ export async function runAgent(opts: {
         personMessage: opts.jobId === undefined ? opts.userMessage ?? (opts.interactive === true ? instruction : undefined) : undefined,
         jobRequest: opts.jobId !== undefined ? (opts.jobRequest ?? opts.jobTask)?.slice(0, 2000) : undefined, // BL-72: what the job was asked, for the reviewer
         jobAllow: opts.jobId !== undefined && !opts.jobSettingsTainted ? opts.jobAllow : undefined, // the person's allowance, never one a tainted chain carried
+        brainModel: brain.model, // so browser_look knows whether this model can see a picture
         jobId: opts.jobLineage ?? opts.jobId,
         // F04 (2026-10-24): the person's own stop words count even when the classifier read the message otherwise.
         ...(intent ? { asksJobChange: intent.category === 'change_job' || asksToStopJob(opts.userMessage ?? '') } : {}) };
@@ -2077,6 +2085,7 @@ export async function runAgent(opts: {
         : typeof opts.tools.callDetailed === 'function'
           ? await opts.tools.callDetailed(action.action, args as Record<string, unknown>, callCtx)
           : { text: await opts.tools.call(action.action, args as Record<string, unknown>, callCtx), failed: false };
+      if (!called.failed && (called as { image?: typeof pendingImage }).image) pendingImage = (called as { image?: typeof pendingImage }).image;
       // BL-73: a calendar listing comes with any email that moves, cancels or changes one of its events.
       const calNote = !called.failed && !draftNo && !pageNo && isCalendarList(action.action)
         ? await calendarCheck(action.action, called.text, opts.tools.defs().map((d) => d.name), (n, a) => opts.tools!.call(n, a, callCtx), calendarSeen) : '';

@@ -41,7 +41,7 @@ import { dirname, join, resolve } from 'node:path';
 import { reviewAction, reviewMode, configuredClef, logReview, type Review } from '../approval-review.js';
 import { hasPasted } from '../handoff.js';
 import Database from 'better-sqlite3';
-import { ToolRefusal, type RegisteredTool, type ToolContext } from './registry.js';
+import { ToolRefusal, toolText, type RegisteredTool, type ToolContext } from './registry.js';
 import { isStepUpSatisfied } from '../step-up.js';
 import { dbFile } from '../paths.js';
 
@@ -332,7 +332,7 @@ export function requireApproval(
   opts?: { preview?: (args: Record<string, unknown>) => string },
 ): RegisteredTool {
   // This process can run the tool once a person approves it — wherever it was staged (BL-18).
-  registerExecutor(tool.def.name, (args, ctx) => tool.handler(args, ctx));
+  registerExecutor(tool.def.name, async (args, ctx) => toolText(await tool.handler(args, ctx)));
   return {
     def: {
       ...tool.def,
@@ -348,7 +348,7 @@ export function requireApproval(
         ? opts.preview(args)
         : `${tool.def.name} ${JSON.stringify(args).slice(0, 300)}`;
       // BL-72: with the reviewer on, an action it passes runs now instead of waiting for the person.
-      const auto = await tryAutoApprove({ tool: tool.def.name, summary, ctx, args, run: () => tool.handler(args, ctx) });
+      const auto = await tryAutoApprove({ tool: tool.def.name, summary, ctx, args, run: async () => toolText(await tool.handler(args, ctx)) });
       if (auto.ran) return auto.text;
       // An unattended run's request waits a day: nobody is there to see it within ten minutes (BL-03 review).
       const life = ctx?.interactive === false ? 24 * 60 * 60_000 : ttlMs();

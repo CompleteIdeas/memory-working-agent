@@ -183,6 +183,19 @@ describe.skipIf(!hasPlaywright)('in a real browser', () => {
     expect(hits['/accepted']).toBe(1);
   }, 60_000);
 
+  // browser_look: a scaled picture for a model that sees; refused for one that does not, and while a password box is filled.
+  it('looks at the page for a model that sees, and refuses when it cannot or a password is on screen', async () => {
+    setPreset('developer');
+    await tool('browser_open').handler({ url: `${base}/` }, ctx({ session: 'conv-look', runId: 'look-1' }));
+    await expect(tool('browser_look').handler({}, ctx({ session: 'conv-look', runId: 'look-1', brainModel: 'openai/gpt-6-luna' }))).rejects.toThrow(/cannot see images/);
+    const out = await tool('browser_look').handler({}, ctx({ session: 'conv-look', runId: 'look-1', brainModel: 'openai/gpt-6.1-sol' })) as { text: string; image?: { mime: string; data: string } };
+    expect(out.text).toMatch(/looking at the page: Entries/);
+    expect(out.image?.mime).toBe('image/jpeg');
+    expect((out.image?.data ?? '').length).toBeGreaterThan(2_000);
+    await tool('browser_type').handler({ ref: 2, text: 'hunter2' }, ctx({ session: 'conv-look', runId: 'look-1' }));
+    await expect(tool('browser_look').handler({}, ctx({ session: 'conv-look', runId: 'look-1', brainModel: 'openai/gpt-6.1-sol' }))).rejects.toThrow(/password box on this page holds a value/);
+  }, 60_000);
+
   // F05 / F14: dropdowns and long pages.
   it('chooses a dropdown option, and scrolls to read further down', async () => {
     setPreset('developer');
