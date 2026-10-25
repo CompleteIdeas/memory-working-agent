@@ -1,10 +1,86 @@
 # Changelog
 
-## Unreleased (after 0.6.0) — detectors you arm, delivery receipts, crash recovery
+## 0.7.0 (2026-10-25) — a person on the other end of every job, memory that answers, a browser, and the measurements that chose them
 
-Built by the same loop and gates as 0.6.0; the merge summary is `docs/merge-summary-2026-10-15c.md`.
-On the final images: planted instructions in tool output followed 0 of 8 times; scheduled delivery
-6 of 6 (BL-10's image); suite 554 of 554.
+Ten days of the build loop (BL-08 to BL-74 and the experience pilot), 198 commits. Everything below went
+through the suite on a clean checkout at the pinned AWM, an isolated reviewer, and for loop and scheduler
+changes the Docker harnesses; the queue and every decision are in `docs/build-queue.md`, the merge
+summaries in `docs/merge-summary-2026-10-15c.md` and `docs/merge-summary-2026-10-22.md`. On the branch
+head: suite 1,214 of 1,214; planted instructions in tool output followed 0 of 8; scheduled delivery 6 of 6.
+
+**Measured, and what the measurements changed**
+
+- **The promise assessment (BL-40, BL-53).** Two personas, fourteen simulated days, MWA against a plain
+  model with cron. The first pass tied (21 of 46 each); the registered fair rerun put MWA at 31 of 50
+  against 22. What it found became BL-43 to BL-57: requests become the right jobs, a watch remembers its
+  last reading, corrections reach a job, newer facts beat older sources, briefs read their sources every
+  run, open items, quiet statuses, spending bounds on recurring jobs. `docs/assessment-2026-10-19.md`.
+- **Clef calibrations (BL-34, BL-35, BL-72).** Cloudflare's 27B model judges lessons and planted
+  instructions well enough to use; it does not judge run success or false claims (69 of 221 honest runs
+  flagged), so it is not used for those. The lesson gate ships with Gemini 3.8 Flash as the opt-in judge.
+- **The model bake-off (BL-61).** GPT-6.1 Sol through OpenRouter, US hosts only, is the default chat
+  model; GPT-6 Luna the cheap tier for background work. OpenRouter routing keeps data where it is told,
+  and every call records its real cost (BL-58).
+- **The experience pilot (2026-10-23 to 25).** Can a cheap model answer like a team member from memory?
+  Luna on a studied memory answered 39 of 54 questions about MWA's own record at $0.0075 each, against 16
+  reading the files and 46 for Sol reading the files at 88 times the cost. The planner was the largest
+  confound: judged on length, every long question was planned, so a question is now answered directly
+  (`wantsPlan`). Sampled answers (`MWA_ANSWER_SAMPLES`) measured neutral and stay off. Two figure-indexing
+  study passes stored every missing figure and lost on net; recorded as open.
+  `docs/experience-pilot-2026-10-23.md`.
+- **The usability review (2026-10-24).** Nine of eleven use cases walked on the web app: 30 of 100,
+  against 71 for the redesigned prototype. The backend half of the critical findings ships here (below);
+  the interface half is next.
+
+**Background work and the person on the other end**
+
+- **"Want me to work on this and get back to you?" (BL-71b).** A research-and-write request is offered
+  to the background; a Work view, Continue, and conversations you can reopen (BL-71d); where each goal
+  stands (BL-71a); the owner's files readable from any chat or job (BL-71c); thinking time between
+  conversations, propose-only, and a welcome back (BL-71e).
+- **Background work on a cheap model, with checks that make it hold up (BL-73).** A stalled or hedging
+  job is handed to a stronger model; a job that runs out of room queues a resume; goal jobs get 60 steps;
+  `MWA_BACKGROUND_MODEL` runs the background on its own model.
+- **Memory that answers (BL-74).** The first recall asks with the person's words; production recalls are
+  real recalls that touch, log and credit the memories they used (BL-65, BL-67); a grounded-but-proactive
+  prompt block (BL-66); AWM pinned at v0.20.1 (BL-55, 59, 60, 65 and the pilot's pin).
+- **Reminders and watches that hold (BL-43, 44, 62d, 62f, 69).** "Thursday at 10 and Friday at 4" sets
+  two reminders; a change-only watch reports a change once with both values and gives its reading; a
+  reminder for a day the person never said goes back once; a request for later work is pushed to
+  schedule exactly once (BL-19).
+- **The usability backend slice (2026-10-24).** The agent is told which folders it may read and its
+  search covers them; schedule controls (cancel with a ten-minute undo, pause, resume, update) from the
+  app and from chat; a duplicate reminder is refused; approval cards match what happened and a write into
+  a granted folder waits for approval; live runs can be stopped, steered and re-attached after a reload;
+  every runtime file lives under one data folder (`MWA_DATA_DIR`). `docs/usability-backend-slice-2026-10-24.md`.
+
+**Reaching out**
+
+- **The agent browser and the vault (BL-63, BL-64).** Chromium through Playwright, with every control
+  numbered for the model; saved logins and keys the agent uses without seeing them. Opening a page does
+  not count as an outward action.
+- **Connect an account by asking (BL-62).** Gmail and Outlook set-up from chat, listing exactly the
+  permissions asked for (never Mail.Send); an AI account out of credit says so and where to add it.
+- **A Files area (BL-70).** Every file MWA wrote or was given: open, download as Word, PDF or a web page,
+  share, add.
+- **Web search** with a time window for recent results; a bot check is reported as blocked.
+
+**Approvals and safety**
+
+- **Automatic approvals with a reviewer (BL-72)** are built, calibrated and hardened through two isolated
+  reviews, and kept **off** until shadow data from real runs says otherwise. The read-only command list is
+  wider.
+- **A claim with no action behind it (BL-36)** is pushed back on in the loop and recorded in shadow.
+- **The lesson gate (BL-35, BL-38).** A saved lesson or skill passes a judge; nothing a run writes can land
+  under the lesson or skill prefixes.
+- **Writes that run later (BL-28), the coding worker's folder check (BL-29)**, and the PATH rules (BL-26,
+  BL-27) close the remaining ways a file could act outside MWA.
+- **MCP tools a server declares read-only are reads (BL-41)**, so an unattended run reading mail is not
+  spending its outward-action budget.
+- **Context (BL-32, BL-39).** Older steps fold into a running summary by default (measured 5 of 5 on the
+  BL-30 instrument against 0 of 5 for a bare window); every prompt carries the date.
+
+**From the first post-0.6.0 stack (2026-10-15), as released**
 
 - **A job's change detector starts as a dry run, and only a person arms it (BL-08).**
   - A new `check` runs on every fire but never skips one. Each prediction is scored against the
