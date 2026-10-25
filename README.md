@@ -363,10 +363,11 @@ Dockerfile  docker-entrypoint.sh  README.md
 
 ## Status
 
-**0.7.1** (Apache-2.0, sub-1.0 on purpose; every release in [CHANGELOG.md](CHANGELOG.md)). Since 0.5.0:
+**0.8.0** (Apache-2.0, sub-1.0 on purpose; every release in [CHANGELOG.md](CHANGELOG.md)). Since 0.5.0:
 approvals only a person can give, fenced tool output and taint lineage, job contracts and outcomes (0.6.0);
-background work with goals and a Work view, memory that answers, the agent browser and vault, a Files area,
-GPT-6.1 Sol by default, and the assessments and pilots that chose them (0.7.0).
+background work with goals, memory that answers, the agent browser and vault, a Files area, GPT-6.1 Sol by
+default, and the assessments and pilots that chose them (0.7.0); the browser after its review (0.7.1); the
+task-centred web app from the usability review, frames, and a model that can look at the page (0.8.0).
 Core loop + A/B/C benchmark + Docker + serve UI verified; the brain embodies the USEA-tuned hybrid
 loop (recall-first, grep-on-miss, supersede-on-divergence). Shipping: the live agent (`mwa run` /
 `mwa serve`), mailbox (`mwa watch`), Telegram + Gmail/Outlook/Calendar connectors (read + draft only),

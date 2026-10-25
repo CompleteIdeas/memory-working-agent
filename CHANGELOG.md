@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.8.0 (2026-10-26) — the task-centred workspace, and a browser that reads frames and can look
+
+- **The web app is built around tasks (usability review of 2026-10-24, decisions D1–D6).** The review scored
+  the old app 30 of 100 and its prototype 71; this build, replayed on the real runtime with the review's own
+  scripts and rubric, scores 85, with eight of nine use cases passing and zero accessibility violations on every
+  view at desktop and phone width.
+  - Each request is a task with one status everywhere (waiting for you, working, done, stopped, failed,
+    scheduled), its cards, its steps and its result; a Tasks rail on desktop and a list on the phone; search and
+    status filters; a digest when you come back.
+  - Cards live inside their task, in plain words with the expiry visible, one card per action however it was
+    staged, Approve and Don't by keyboard, no Telegram wording unless Telegram is connected. The shared approvals
+    dock is gone.
+  - A running task shows its stage with the file, folder or site and the time so far, a Stop button and "Add a
+    note to this task"; a reload re-attaches to a running task; a second message during a run offers to add it to
+    the task, send it separately, or stop and send.
+  - Schedule controls in the task and in Tasks: pause, resume, change time, cancel with a ten-minute undo,
+    duplicates flagged with a one-click cleanup.
+  - Revise nests a version under its task. Settings is one place (access, model, connections, quiet hours, saved
+    logins, warm-up, activity log). The Memory page is grouped and a third as long; the Log is in the owner's
+    words; Markdown tables render in the file viewer; colour tokens that pass.
+  - Server: `GET /api/vault`, `POST /api/vault/forget`, `GET`/`POST /api/quiet`; `createdAt` on approval rows,
+    `session` on schedule rows.
+  - Not yet: a task side panel on wide screens, file versions for revisions, editing a preference from its card,
+    step-level progress for background jobs.
+- **A repeat the person asked for is not booked once.** "Every 5 minutes, check the budget file" was set as
+  one-off jobs; the schedule step now holds a one-off once when the words give an interval, and books the repeat
+  when the model takes the hint. Stage lines name the file, not only the folder.
+- **The browser reads inside frames.** A consent notice, an embedded form or a sign-in box inside an iframe is
+  numbered with the rest of the page under a "Frame:" heading; a notice that covers the page is flagged so the
+  agent dismisses it; a click inside a frame waits for the frame to move.
+- **The model can look at the page.** `browser_look` shows it a scaled screenshot on its next step, for a consent
+  notice, a page that looks empty, a control it cannot find, or a question about layout: at most
+  `MWA_BROWSER_LOOKS` (3) a run, only for a model that takes images, never while a password box holds a value.
+  Image parts reach every provider in its own shape; a model that cannot see gets the text with a note.
+- **A summary that calls the work incomplete reads the file first.** A background briefing's reply said "no
+  verified BBC headlines" while the file it wrote had them; the run now reads what it wrote before reporting.
+
 ## 0.7.1 (2026-10-25) — the agent browser after its review
 
 A usability review of the browser (nine scenarios on a local instance, scored 50 of 100) found one hole worth a
