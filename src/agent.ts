@@ -48,6 +48,7 @@ import type { ToolRegistry } from './tools/registry.js';
 import { runWorker } from './worker.js';
 import { stageAction, pendingStagedBy, listPendingActions, cancelPending } from './tools/approval.js';
 import { sourcesLine } from './tools/access.js';
+import { BROWSING_GUIDE } from './tools/browser.js';
 import { fanoutRefusal, newJobDepth } from './fanout.js';
 import { normalizePersonId } from './person.js';
 import { parseJsonLoose, runCommand } from './util.js';
@@ -1063,6 +1064,8 @@ export async function runAgent(opts: {
     // F07 (usability review 2026-10-24): the run is told which of the person's folders it can read. Empty, so the
     // prefix is unchanged, when nothing is granted or the run has no file tools.
     opts.tools?.has('list_files') ? sourcesLine(dir) : '',
+    // How to browse, only when the browser is there (review 2026-10-25: gave up after one look, wiped forms on confirm).
+    opts.tools?.has('browser_open') ? BROWSING_GUIDE : '',
     // A job scheduled by a run that read outside content carries settings that may relay that content:
     // fence them as information instead of promoting them to the strongest authority in the prompt.
     // Settings from a job created by a run that had read outside content may relay that content. They
