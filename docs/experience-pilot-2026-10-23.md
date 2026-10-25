@@ -196,6 +196,39 @@ in `agent.ts`, with a test), and the measurement with drafts on every read-only 
 first attempt, had a narrower gate still (no tool call at all) and lost seven answers to a harness restart; its 27 of
 47 is not comparable.
 
+## The planner, sampling in one run, and a figures pass (2026-10-25)
+
+With the gate fixed the drafts still ran on 25 of 54 runs (arm F6, 32 of 54). The remaining runs were the long
+questions, and a three-question diagnostic showed why: every one of them was *planned*. `isComplexTask` treats any
+instruction over 220 characters as complex, the runner's framing adds about 90, so each synthesis, apply and lens
+question was split into two to six steps in fresh contexts with per-step budgets, two of the three diagnostic runs
+ended on budget inside the plan, and the 600-token synthesis saw step results cut to 800 characters. The "I ran out
+of room partway through" replies were the planner's. So the same arms were run with `MWA_PLAN=off`, and the memory
+store was rebuilt with a figures pass (every value in every section, grouped by the thing it describes and named as
+a fact would be, with the file and section it came from):
+
+| Arm (Luna, planning off) | lookup | synthesis | current | rationale | apply | lens | total | consistent | $ / answer |
+|---|---|---|---|---|---|---|---|---|---|
+| F2R memory, planning **on** (for reference) | 5/9 | 3/9 | 9/9 | 8/9 | 5/9 | 1/9 | 31/54 | 78% | 0.0155 |
+| F2P memory | 6/9 | 4/9 | 9/9 | 9/9 | 7/9 | 4/9 | **39/54** | 72% | 0.0075 |
+| F6P memory + `MWA_ANSWER_SAMPLES=3` | 6/9 | 3/9 | 8/9 | 9/9 | 7/9 | 5/9 | 38/54 | 83% | 0.0101 |
+| F7P memory rebuilt with the figures pass | 3/9 | 3/9 | 9/9 | 5/9 | 6/9 | 4/9 | 30/54 | 89% | 0.0085 |
+
+Three results. **Planning off is worth eight answers at half the cost**: lens went from 1 to 4 and apply from 5 to
+7, no run exceeded eight minutes, and the median run took a minute and eleven steps against twenty. The planner
+was never meant for questions; `wantsPlan` now plans work that names steps or asks for a product, and answers a
+question directly however long it is. **Sampling inside a run is neutral** once it fires on 47 runs of 54: one
+answer fewer, consistency up from 72% to 83%, cost up by a third. Drafts from one run share one recall, so the
+union adds little; the offline merge of three *full runs* gained because each run recalled afresh. It stays off by
+default. **A separate figures pass loses.** The rebuilt store held every figure the rubrics ask for (the code word,
+69 of 221, the 24-hour expiry — none of which the old store had) and put the Clef false-alarm figure at #4 for its
+question, yet L3, S3 and V3 stayed at 0 of 9 and three questions the old store answered three times out of three
+(L2, R3, A1) fell to 0: 1,188 figure memories compete with 645 decision memories for ten prime slots, and the
+BL-18 "no atomic transitions" memory that ranked #1 before ranked outside the top ten after. A figure is only
+useful inside the memory that gives its meaning; as its own memory it crowds that one out. The study scripts and
+the four stores are kept in the pilot's scratch folder for the next attempt, which should enrich the fact memories
+with their values rather than add memories beside them.
+
 ## What we take from it
 
 - **Studied memory lets a cent-an-answer model answer like a team member on what the team *decided* and
@@ -208,6 +241,9 @@ first attempt, had a narrower gate still (no tool call at all) and lost seven an
 - **The round-1 file-arm numbers were a tooling artefact.** Give MWA a search tool and Sol answers 46 of 54.
   Luna with files remains weak (16) because of how the planner handles a judgment question over a folder, not
   because of the tool.
+- **The planner was the memory arm's largest confound.** Judged on length, every long question was planned;
+  answered directly the same model and store scored 39 of 54 at half the cost (2026-10-25). Planning is for work
+  with steps or a product, and the trigger now says so.
 - **What was fixed in MWA earned its keep on exactly the questions the replay said it would** (lookup, current)
   and nowhere else. The remaining memory misses are study coverage (which facts a single cheap pass records) and
   priming reach on two questions, not ranking.
@@ -218,12 +254,15 @@ first attempt, had a narrower gate still (no tool call at all) and lost seven an
 ## Open items
 
 - Luna's plan-and-execute path on judgment questions over files: ten sub-runs that each re-list the folder.
-  Either the planner should pass the files already found to the next step, or a question over a granted folder
-  should not be decomposed at all.
+  *Resolved for questions (2026-10-25): a question is no longer planned (`wantsPlan`).* A planned task over a
+  folder still re-lists it per step; passing the files already found to the next step remains open.
 - Study granularity and coverage: a code word or a single sentence inside a document is still not stored, and
-  which measured numbers a pass records varies between passes (4 to 12 facts per document is a sample). A
-  second, numbers-only pass per document, or a check that every number in a results table was stored, is the
-  candidate fix. The `(from file.md)` pointer is only useful when files are also granted.
+  which measured numbers a pass records varies between passes (4 to 12 facts per document is a sample). *Tried
+  (2026-10-25): a second, numbers-only pass per section, first as section lists, then as groups named by subject.
+  Both stored every needed figure; neither reached the prime without pushing out the decision memories (30 of 54
+  against 39).* The next attempt should put each value inside the fact memory it belongs to, at study time or in
+  reconsolidation, rather than beside it. The `(from file.md § section)` pointer is only useful when files are
+  also granted.
 - S2 is out of reach by priming on every store configuration and needs the file; C2 (the current spend cap) ranks
   #38 to #40 in recall.
 - AWM's redundancy-pruning fix, the confidence floor on supersede and the `embedding_model` stamp shipped as AWM

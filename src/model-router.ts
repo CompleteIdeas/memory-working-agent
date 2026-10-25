@@ -42,6 +42,24 @@ export function isComplexTask(task: string): boolean {
   return multiStep && RESEARCH.test(t) && PRODUCE.test(t);
 }
 
+/**
+ * Whether a request is WORK TO PLAN (plan-and-execute: steps in fresh contexts, a synthesis at the end) rather than
+ * something to answer in one run. Until the experience pilot (2026-10-25) the planner used isComplexTask, whose
+ * ">220 characters" rule planned every long QUESTION: the pilot's synthesis, apply and lens questions were split into
+ * 2–6 steps with per-step budgets, two of three diagnostic runs ended on budget inside the plan, and the 600-token
+ * synthesis saw step results cut to 800 characters. Planning off, the same model and memory went from 31 to 39 of 54
+ * at half the cost (arms F2R → F2P). A long message plans when it names steps ("then", "after that", a numbered list)
+ * or asks for something to be produced and is not itself a question; a long question is answered directly. The tier
+ * choice (startTier) keeps isComplexTask: a long question still deserves the strong tier.
+ */
+const QUESTION_END = /\?\s*["”')\]]*\s*$/;
+export function wantsPlan(task: string): boolean {
+  const t = task.toLowerCase().trim();
+  const multiStep = /\bthen\b|\band then\b|\bafter that\b|\b\d\.\s/.test(t);
+  if (t.length > 220) return multiStep || (PRODUCE.test(t) && !QUESTION_END.test(t));
+  return multiStep && RESEARCH.test(t) && PRODUCE.test(t);
+}
+
 /** Starting tier for the conductor: strong when the task reads complex/long, else cheap.
  *  Cheap-first stays the default for ordinary work; escalation still earns upgrades below. */
 export function startTier(task: string): Tier {

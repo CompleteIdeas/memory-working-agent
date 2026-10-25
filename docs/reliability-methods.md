@@ -24,8 +24,9 @@ each weakness → the best-known method → how MWA leans on what it already has
 decomposes a complex task into 2–6 concrete sub-tasks; each runs as its OWN isolated sub-run of
 `runAgent` (`subRun: true`) that shares state only through AWM recall, then a SYNTHESIS pass
 produces the answer. A failed step retries once in isolation (its Reflexion friction auto-primes
-the retry). Gated on `isComplexTask` (simple tasks use the proven direct loop); `MWA_PLAN=off`
-disables. Verified on the multi-file website build that the **naive self-checklist version
+the retry). Gated on `wantsPlan` (work that names steps or asks for a product; a question, however long, uses the
+proven direct loop — the experience pilot found length-only gating planned every long question and cost the memory
+arm 8 answers of 54, 2026-10-25); `MWA_PLAN=off` disables. Verified on the multi-file website build that the **naive self-checklist version
 regressed** (3 files → 0): the dispatch version produces all 3. The earlier naive attempt —
 a checklist inside the live loop — was reverted because the model treated *planning* as progress
 and rushed to done; here a step is done only when its real sub-run returns.

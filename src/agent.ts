@@ -43,7 +43,7 @@ import { recordGoalProgress } from './goal-record.js';
 import { isRoutineWorthy, scanPolicy } from './tools/routines.js';
 import { BRAIN_TOOLS } from './brain.js';
 import type { ToolDef } from './provider.js';
-import { RoutedProvider, classifyIntent, startTier, isComplexTask } from './model-router.js';
+import { RoutedProvider, classifyIntent, startTier, wantsPlan } from './model-router.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { runWorker } from './worker.js';
 import { stageAction, pendingStagedBy, listPendingActions, cancelPending } from './tools/approval.js';
@@ -672,7 +672,7 @@ export async function runAgent(opts: {
    *  roots. The scheduler passes the folder the task was created in, so an instruction that baked an
    *  absolute path in at schedule time still resolves when it fires in a fresh per-fire folder. */
   extraRoots?: string[];
-  /** plan-and-execute: undefined = auto (plan iff isComplexTask), true = force planned,
+  /** plan-and-execute: undefined = auto (plan iff wantsPlan — work with steps or a product, not a long question), true = force planned,
    *  false = force the direct loop. Set false on sub-task runs to prevent re-planning. */
   plan?: boolean;
   /** true when this run is one isolated sub-task spawned by the planner — suppresses
@@ -775,7 +775,9 @@ export async function runAgent(opts: {
   // Complexity and tier are judged on the person's own message: carried conversation made every chat
   // instruction long, so every turn was planned and started on the strong tier (BL-53 pilot).
   const judged = opts.userMessage ?? instruction;
-  if (!opts.subRun && harnessOn && process.env.MWA_PLAN !== 'off' && (opts.plan ?? (isComplexTask(judged) && (opts.jobId !== undefined || !(await laterRequest()))))) {
+  // Experience pilot (2026-10-25): judged by isComplexTask, every question over ~130 characters was planned on length
+  // alone and the memory arm scored 31 of 54; answered directly, 39 at half the cost. wantsPlan plans work, not questions.
+  if (!opts.subRun && harnessOn && process.env.MWA_PLAN !== 'off' && (opts.plan ?? (wantsPlan(judged) && (opts.jobId !== undefined || !(await laterRequest()))))) {
     return runPlanned(opts);
   }
 
