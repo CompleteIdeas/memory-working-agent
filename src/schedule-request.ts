@@ -162,6 +162,20 @@ export function groundedInMessage(text: string, message: string): boolean {
 }
 const GROUND_STOP = new Set(['the', 'and', 'for', 'you', 'your', 'about', 'with', 'this', 'that', 'remind', 'reminder', 'remember', 'please', 'today', 'tomorrow', 'tonight', 'time', 'call', 'get', 'make', 'sure']);
 
+/** A repeat interval the person asked for, in minutes, or null: "every 5 minutes" 5, "every hour" 60, "every half
+ *  hour" 30, "hourly" 60, "every 2 hours" 120. Interface slice replay 2026-10-26 (U04): "every 5 minutes, check the
+ *  budget file" was booked as a one-off job every time, six in one try, while the reply said "every 5 minutes". */
+export function asksEveryMinutes(message: string): number | null {
+  const m = message.toLowerCase();
+  const n = /\bevery\s+(\d{1,3}|an?|one|two|three|four|five|six|ten|fifteen|twenty|thirty|forty-five|ninety)\s*(minutes?|mins?|hours?|hrs?)\b/.exec(m);
+  const words: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, ten: 10, fifteen: 15, twenty: 20, thirty: 30, 'forty-five': 45, ninety: 90 };
+  if (n) { const k = /^\d/.test(n[1]) ? Number(n[1]) : words[n[1]]; return k > 0 ? (n[2].startsWith('h') ? k * 60 : k) : null; }
+  if (/\bevery\s+half\s+(?:an\s+)?hour\b|\bhalf-hourly\b/.test(m)) return 30;
+  if (/\bevery\s+hour\b|\bhourly\b/.test(m)) return 60;
+  if (/\bevery\s+minute\b/.test(m)) return 1;
+  return null;
+}
+
 /** The person asks to hear only about changes: "Only alert me if the price changes. No message if it doesn't." */
 export function asksChangesOnly(message: string): boolean {
   // BL-54 review: "let me know if it changes", "tell me if the price changes", "alert me when it drops" are the same

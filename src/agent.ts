@@ -34,7 +34,7 @@ import { TAINTED_JOB_MARK, parseLocalAt, ownWords, groundedInMessage } from './s
 import { MAX_PENDING_TAINTED_CHAT } from './fanout.js';
 // Moved to schedule-request.ts (the work tools use them too); exported here as before.
 export { parseLocalAt, ownWords };
-import { expectedJobCount, whenMismatch, clock12, friendlySchedule, friendlyWhen, unreadSources, asksToChangeJob, asksToStopJob, parseDaysArg, nextDailyDue, asksChangesOnly, latestReadings, namesWebPage, hasLink, isWatch } from './schedule-request.js';
+import { expectedJobCount, whenMismatch, clock12, friendlySchedule, friendlyWhen, unreadSources, asksToChangeJob, asksToStopJob, parseDaysArg, nextDailyDue, asksChangesOnly, asksEveryMinutes, latestReadings, namesWebPage, hasLink, isWatch } from './schedule-request.js';
 import { EMAIL_DRAFT_TOOL, addressesIn, draftKey, draftRefusal, repeatDraftOf } from './draft-guard.js';
 import { lessonJudge, judgeLesson, lessonDisposition, LESSON_PROMPT_RULE, MAX_LESSON_CHARS } from './lesson-gate.js';
 import { COMPACTION_MODE, summaryCompaction, type Compaction } from './compaction.js';
@@ -812,6 +812,7 @@ export async function runAgent(opts: {
   let draftAskRejections = 0, valueAsks = 0;
   const whenRejected = new Set<string>();
   const nearRejected = new Set<string>(); // F04: a job with the same words at another time, held once
+  const repeatRejected = new Set<string>(); // U04 (2026-10-26): a repeat the person asked for, booked once — held once
   let countRejections = 0, sourceRejections = 0, changeRejections = 0, kindRejections = 0, kindFollowups = 0, linkRejections = 0, allowRejections = 0;
   let cancelRejections = 0; // F04: a stop request that ended with nothing stopped, asked once
   // BL-54: the email addresses this run has met (the person's words, the conversation, memory, each tool result),
@@ -1839,6 +1840,16 @@ export async function runAgent(opts: {
       // "Wednesday at 3:00 PM" for 1:00 PM and "Friday at 11:00 AM" for Thursday 11:15 AM).
       const personWords = opts.userMessage ?? instruction;
       const jobSig = String(action.instruction ?? '').slice(0, 200);
+      // A repeat the person asked for, booked once (interface slice replay 2026-10-26, U04: "every 5 minutes, check the
+      // budget file" was set as one-off jobs every time, six of them in one try, while the reply said "every 5
+      // minutes"). Held once, with the interval the person gave; resending unchanged books it as given.
+      const everyMin = opts.jobId === undefined ? asksEveryMinutes(personWords) : null;
+      if (everyMin && !recur && !repeatRejected.has(jobSig)) {
+        repeatRejected.add(jobSig); consecNoProgress++; gatesFired.push('repeat-asked'); lastSig = '';
+        history.push(`(schedule held once: the person asked for this every ${everyMin} minutes, but it is set to run once)`);
+        nudge = `The person asked for this every ${everyMin} minutes, but this job is set to run once. Call schedule again with every_minutes: ${everyMin} and the same instruction, so it repeats; if it really is a one-off, call schedule again unchanged.`;
+        continue;
+      }
       if ((typeof action.at === 'string' || typeof action.daily_at === 'string') && !whenRejected.has(jobSig) && whenRejected.size < 3) {
         const due = new Date(dueMs);
         const said = whenMismatch(personWords, due, typeof action.at === 'string', jobSig);
@@ -2022,7 +2033,10 @@ export async function runAgent(opts: {
       toolCalls++;
       const { action: _n, ...args } = action as Record<string, unknown> & { action: string };
       // F06: a stage the person can read — the tool's name and the thing it touches — with the time so far.
-      emit('step', { n: steps + 1, of: maxSteps, tool: action.action, detail: String(args.path ?? args.dir ?? args.query ?? args.url ?? args.id ?? args.file ?? args.to ?? args.command ?? '').slice(0, 120), elapsedMs: now() - start });
+      // The END of a long path is the file name (interface slice 2026-10-26: cut at 120 from the start, the stage line
+      // named the folder but never the file).
+      const stepDetail = String(args.path ?? args.dir ?? args.query ?? args.url ?? args.id ?? args.file ?? args.to ?? args.command ?? '');
+      emit('step', { n: steps + 1, of: maxSteps, tool: action.action, detail: stepDetail.length > 160 ? `…${stepDetail.slice(-159)}` : stepDetail, elapsedMs: now() - start });
       const callCtx = { sandboxDir: dir, interactive: opts.interactive, personId: opts.personId, identityInDoubt: opts.identityInDoubt, extraRoots: opts.extraRoots, tainted: sawUntrustedRead, readLocal: sawLocalRead, runId, session: opts.session,
         personMessage: opts.jobId === undefined ? opts.userMessage ?? (opts.interactive === true ? instruction : undefined) : undefined,
         jobRequest: opts.jobId !== undefined ? (opts.jobRequest ?? opts.jobTask)?.slice(0, 2000) : undefined, // BL-72: what the job was asked, for the reviewer
@@ -2546,7 +2560,8 @@ export async function runAgent(opts: {
       });
       policiesLearned++; known.add(r.toLowerCase());
       history.push(`proposed a standing preference for the person to approve ("${r.slice(0, 50)}")`);
-      finalSummary += `${finalSummary ? '\n\n' : ''}I can keep this as a standing preference for every future task: "${r}". Approve it where you asked: the approvals panel in the app, or the button in Telegram.`;
+      // Not "the button in Telegram" by default: most owners have no Telegram (interface slice 2026-10-26, F20).
+      finalSummary += `${finalSummary ? '\n\n' : ''}I can keep this as a standing preference for every future task: "${r}". Approve it where you asked: in the app, or the button in your chat.`;
     };
     // DETERMINISTIC fast-path — the user LITERALLY declared a standing rule ("remember a
     // standing preference: <rule>"). Capture the stated rule verbatim, no LLM judgment call.
