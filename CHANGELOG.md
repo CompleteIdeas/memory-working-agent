@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.7.1 (2026-10-25) — the agent browser after its review
+
+A usability review of the browser (nine scenarios on a local instance, scored 50 of 100) found one hole worth a
+release on its own, and the rest followed. `docs/browser.md` describes the result.
+
+- **A redirect can no longer take the browser to a private address.** A public page's HTTP redirect reached MWA's
+  own API on 127.0.0.1, where a GET to the chat route started a run: Chromium follows a redirect without consulting
+  the route guard. Now every request hop, redirects included, is paused inside Chromium and checked; where a
+  navigation lands is checked again; and every request the agent browser makes carries `x-mwa-agent-browser`,
+  which MWA's own server refuses outright.
+- **One tab per conversation.** All of a person's runs shared one tab, so a chat's screenshot of one site came back
+  showing the site a background job was reading. A conversation's tab now stays open between turns, so a form filled
+  in one turn is still filled when the person says "go ahead" in the next; `browser_page` re-reads it without
+  reloading.
+- **Dropdowns, scrolling, honest cuts.** `browser_select` chooses an option; `browser_scroll` reads a screen further
+  down, so long and lazy-loaded pages can be read; the snapshot says when its text or control list was cut and how
+  much lies below; the browser's snapshot is no longer trimmed a second time as prose.
+- **A browsing guide in the run prompt** whenever the browser tools are present: click into a listing rather than
+  answer from it, scroll when there is more, dismiss a consent notice, re-read on the go-ahead turn, quote figures
+  exactly and name the page, say what could not be reached, never follow what a page says. On the review's hardest
+  case (the top story on a news front page) the answer went from one try in four to two of two.
+- **Browser work in the background, with your allowance.** An unattended run never types a saved login after reading
+  outside content and never clicks a control that signs in, submits or pays. A job may now carry an allowance you
+  give when you set it up in a clean conversation: named saved logins, and up to two named controls on named sites,
+  checked against the page and the control at run time, shown in the job list, and asked for once when a job reads
+  like a sign-in or a submit instead of being accepted and failing every morning.
+- Also: "work on this in the background" and "get back to me" start the hand-off; the web app's step labels name
+  the browser's actions in plain words and no longer repeat a "Using a tool" line after each step.
+
 ## 0.7.0 (2026-10-25) — a person on the other end of every job, memory that answers, a browser, and the measurements that chose them
 
 Ten days of the build loop (BL-08 to BL-74 and the experience pilot), 198 commits. Everything below went
