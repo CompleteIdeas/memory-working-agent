@@ -33,12 +33,13 @@ import { resolveVaultRefs, hasVaultRef, siteHost, vaultName } from '../vault/vau
 import { browserDir } from '../paths.js';
 
 type Locator = { click(o?: object): Promise<void>; fill(v: string, o?: object): Promise<void>; selectOption(v: string | { label: string }, o?: object): Promise<string[]> };
+type Frame = { url(): string; evaluate<T>(fn: string | ((...a: never[]) => T), arg?: unknown): Promise<T>; locator(s: string): { first(): Locator }; isDetached(): boolean };
 type Page = {
   goto(u: string, o?: object): Promise<unknown>; url(): string; title(): Promise<string>;
   evaluate<T>(fn: string | ((...a: never[]) => T), arg?: unknown): Promise<T>;
   locator(s: string): { first(): Locator }; screenshot(o?: object): Promise<Buffer>;
   waitForLoadState(s?: string, o?: object): Promise<void>; waitForTimeout(ms: number): Promise<void>;
-  frames(): { url(): string }[]; mouse: { wheel(dx: number, dy: number): Promise<void> }; isClosed(): boolean; close(): Promise<void>;
+  frames(): Frame[]; mainFrame(): Frame; mouse: { wheel(dx: number, dy: number): Promise<void> }; isClosed(): boolean; close(): Promise<void>;
 };
 type CdpSession = { send(method: string, params?: object): Promise<unknown>; on(event: string, handler: (ev: never) => void): void };
 type Context = {
@@ -193,16 +194,19 @@ async function pageFor(ctx: ToolContext, open: boolean): Promise<Page> {
   return page;
 }
 
-/** The page as text with its controls numbered; the numbers are written onto the elements for later clicks. */
-const SNAPSHOT = `(() => {
+/** The page (or one frame of it) as text with its controls numbered from `start`; the numbers are written onto the
+ *  elements for later clicks. Also whether a fixed notice covers the viewport (a consent wall, a dialog). */
+const SNAPSHOT = `((start) => {
   const vis = (el) => { const r = el.getBoundingClientRect(); const st = getComputedStyle(el); return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; };
   document.querySelectorAll('[data-mwa-ref]').forEach((e) => e.removeAttribute('data-mwa-ref'));
   const all = [...document.querySelectorAll('a[href], button, input:not([type=hidden]), select, textarea, [role=button], [role=link], [contenteditable=true]')].filter(vis);
-  const controls = all.slice(0, ${MAX_CONTROLS});
+  const controls = all.slice(0, Math.max(0, ${MAX_CONTROLS} - start + 1));
+  const vw = window.innerWidth || 1, vh = window.innerHeight || 1;
+  const overlay = [...document.querySelectorAll('body *')].some((el) => { const st = getComputedStyle(el); if (st.position !== 'fixed' && st.position !== 'sticky') return false; if (!vis(el)) return false; const r = el.getBoundingClientRect(); return (r.width * r.height) / (vw * vh) >= 0.4; });
   const lines = controls.map((el, i) => {
-    const n = i + 1; el.setAttribute('data-mwa-ref', String(n));
+    const n = start + i; el.setAttribute('data-mwa-ref', String(n));
     const tag = el.tagName.toLowerCase(); const type = (el.getAttribute('type') || '').toLowerCase();
-    const kind = tag === 'a' || el.getAttribute('role') === 'link' ? 'link' : tag === 'select' ? 'dropdown' : tag === 'textarea' || el.isContentEditable ? 'textbox'
+    const kind = el.getAttribute('role') === 'button' ? 'button' : tag === 'a' || el.getAttribute('role') === 'link' ? 'link' : tag === 'select' ? 'dropdown' : tag === 'textarea' || el.isContentEditable ? 'textbox'
       : tag === 'input' ? (['submit', 'button', 'reset'].includes(type) ? 'button' : type === 'password' ? 'password box' : type === 'checkbox' ? 'checkbox' : 'textbox') : 'button';
     const label = (tag === 'select' ? (el.getAttribute('aria-label') || ((el.options[el.selectedIndex] || {}).label) || el.getAttribute('name') || '')
       : (el.getAttribute('aria-label') || el.innerText || el.value && type !== 'password' && el.value || el.getAttribute('placeholder') || el.getAttribute('name') || el.getAttribute('title') || '')).replace(/\\s+/g, ' ').trim().slice(0, 80);
@@ -212,8 +216,18 @@ const SNAPSHOT = `(() => {
   });
   const text = (document.body ? document.body.innerText : '').replace(/\\n{3,}/g, '\\n\\n').trim();
   const sy = window.scrollY, sh = document.documentElement.scrollHeight, ih = window.innerHeight;
-  return { text, controls: lines, more: all.length - controls.length, below: Math.max(0, sh - sy - ih), above: sy };
-})()`;
+  return { text, controls: lines, more: all.length - controls.length, below: Math.max(0, sh - sy - ih), above: sy, overlay };
+})`;
+type Snap = { text: string; controls: string[]; more: number; below: number; above: number; overlay: boolean };
+
+/** Which frame each control number lives in, for the page as last described (review 2026-10-25, F13: a consent wall
+ *  inside an iframe filled the screenshot and was absent from the snapshot, so the agent could neither dismiss it nor
+ *  tell it was blocked). */
+const frameRefs = new WeakMap<Page, { start: number; end: number; frame: Frame }[]>();
+function frameOf(page: Page, ref: number): Frame {
+  const hit = (frameRefs.get(page) ?? []).find((r) => ref >= r.start && ref <= r.end && !r.frame.isDetached());
+  return hit?.frame ?? page.mainFrame();
+}
 
 /** Where a navigation landed, checked again: a redirect Chromium followed on its own must not reach a private address. */
 async function landedBadly(page: Page): Promise<string | null> {
@@ -225,15 +239,32 @@ async function landedBadly(page: Page): Promise<string | null> {
 async function describe(page: Page): Promise<string> {
   const bad = await landedBadly(page);
   if (bad) throw new ToolRefusal(bad);
-  const snap = await page.evaluate<{ text: string; controls: string[]; more: number; below: number; above: number }>(SNAPSHOT);
+  const main = page.mainFrame();
+  const snap = await main.evaluate<Snap>(`(${SNAPSHOT})(1)`);
   const cut = snap.text.length > MAX_TEXT;
   const text = cut ? `${snap.text.slice(0, MAX_TEXT)}\n…(page text cut at ${MAX_TEXT} characters — browser_scroll down to read on, or browser_click into the part you need)` : snap.text;
+  const ranges: { start: number; end: number; frame: Frame }[] = [{ start: 1, end: snap.controls.length, frame: main }];
+  // Frames inside the page: a consent notice, an embedded form, a login box. Their controls continue the numbering,
+  // their text is kept short, and a frame that will not answer (gone, or blocked) is skipped.
+  const frameLines: string[] = []; let next = snap.controls.length + 1; let overlay = snap.overlay;
+  for (const f of page.frames().filter((x) => x !== main && !x.isDetached()).slice(0, 8)) {
+    if (next > MAX_CONTROLS) break;
+    let fs: Snap;
+    try { fs = await Promise.race([f.evaluate<Snap>(`(${SNAPSHOT})(${next})`), new Promise<Snap>((_, rej) => setTimeout(() => rej(new Error('frame timeout')), 3_000))]); } catch { continue; }
+    if (!fs.controls.length && fs.text.length < 40) continue;
+    overlay = overlay || fs.overlay;
+    ranges.push({ start: next, end: next + fs.controls.length - 1, frame: f });
+    next += fs.controls.length;
+    frameLines.push('', `Frame: ${siteHost(f.url()) ?? f.url().slice(0, 80)}`, fs.text.slice(0, 600).replace(/\n{2,}/g, '\n'), ...fs.controls);
+  }
+  frameRefs.set(page, ranges);
   const notes = [
+    overlay ? '(a notice or dialog covers the page — a consent or cookie notice, a sign-in box: find its Accept, Continue or Close control in the list and click it, then read again)' : '',
     snap.above > 0 ? `(scrolled ${Math.round(snap.above)}px down the page)` : '',
     snap.below > 40 ? `(${Math.round(snap.below)}px more below — browser_scroll to see it)` : '',
     snap.more > 0 ? `(${snap.more} more controls not listed — browser_scroll or click into a section)` : '',
   ].filter(Boolean);
-  return [`Page: ${await page.title()} — ${page.url()}`, '', text, '', 'Controls (use the number with browser_click / browser_type / browser_select):', ...snap.controls, ...notes].join('\n');
+  return [`Page: ${await page.title()} — ${page.url()}`, '', text, '', 'Controls (use the number with browser_click / browser_type / browser_select):', ...snap.controls, ...frameLines, ...notes].join('\n');
 }
 
 /** A navigation error in words the person can act on. */
@@ -280,7 +311,8 @@ export function browserTools(): RegisteredTool[] {
       handler: async (args, ctx) => {
         const page = await pageFor(ctx, false);
         const ref = Number(args.ref);
-        const label = await page.evaluate<string>(`(() => { const el = document.querySelector('[data-mwa-ref="${ref}"]'); if (!el) return '\\u0000'; return ((el.getAttribute('aria-label') || el.innerText || el.value || el.getAttribute('title') || '') + ' ' + (el.getAttribute('type') || '') + ' ' + (el.form && el.matches('button:not([type=button]), input[type=submit]') ? 'submit' : '')).replace(/\\s+/g, ' ').trim(); })()`);
+        const frame = frameOf(page, ref);
+        const label = await frame.evaluate<string>(`(() => { const el = document.querySelector('[data-mwa-ref="${ref}"]'); if (!el) return '\\u0000'; return ((el.getAttribute('aria-label') || el.innerText || el.value || el.getAttribute('title') || '') + ' ' + (el.getAttribute('type') || '') + ' ' + (el.form && el.matches('button:not([type=button]), input[type=submit]') ? 'submit' : '')).replace(/\\s+/g, ' ').trim(); })()`);
         if (label === '\u0000') throw new ToolRefusal(`(there is no control [${ref}] on this page now — read the page again with browser_page)`);
         if (CONSEQUENTIAL.test(label)) {
           if (ctx.interactive === false) {
@@ -294,9 +326,12 @@ export function browserTools(): RegisteredTool[] {
             throw new ToolRefusal(`(held: "${label.slice(0, 60)}" would send, pay, delete or submit something. Tell the person exactly what clicking it will do and ask them to say go ahead; click it in that turn, using browser_page first to find the control again — do not re-open the page, that clears the form.)`);
           }
         }
-        try { await page.locator(`[data-mwa-ref="${ref}"]`).first().click({ timeout: 10_000 }); }
+        const before = frame.url();
+        try { await frame.locator(`[data-mwa-ref="${ref}"]`).first().click({ timeout: 10_000 }); }
         catch (e) { return navError(`click [${ref}]`, e); }
         try { await page.waitForLoadState('domcontentloaded', { timeout: NAV_TIMEOUT }); } catch { /* a click that doesn't navigate */ }
+        // A click inside a frame navigates the frame, which the page's load state does not report: give it a moment.
+        if (frame !== page.mainFrame()) for (let i = 0; i < 20 && !frame.isDetached() && frame.url() === before; i++) await page.waitForTimeout(100);
         return describe(page);
       },
     },
@@ -317,7 +352,7 @@ export function browserTools(): RegisteredTool[] {
           if (ctx.interactive === false && ctx.tainted && !vaultAllowed(ctx.jobAllow, raw)) throw new ToolRefusal('(refused: a saved login is not typed by an unattended run that has read outside content — unless the person allowed that login for this job when they set it up)');
           try { value = resolveVaultRefs(raw, page.url()); } catch (e) { throw new ToolRefusal(`(refused: ${(e as Error).message})`); }
         }
-        try { await page.locator(`[data-mwa-ref="${ref}"]`).first().fill(value, { timeout: 10_000 }); }
+        try { await frameOf(page, ref).locator(`[data-mwa-ref="${ref}"]`).first().fill(value, { timeout: 10_000 }); }
         catch (e) { return `(couldn't type into [${ref}]: ${(e as Error).message.split('\n')[0].slice(0, 160)})`; }
         const host = siteHost(page.url());
         return hasVaultRef(raw) ? `Typed the saved value into [${ref}] on ${host}.` : `Typed into [${ref}] on ${host}.`;
@@ -332,7 +367,7 @@ export function browserTools(): RegisteredTool[] {
       handler: async (args, ctx) => {
         const page = await pageFor(ctx, false);
         const ref = Number(args.ref); const option = String(args.option ?? '').trim();
-        const loc = page.locator(`select[data-mwa-ref="${ref}"]`).first();
+        const loc = frameOf(page, ref).locator(`select[data-mwa-ref="${ref}"]`).first();
         try { await loc.selectOption({ label: option }, { timeout: 5_000 }); }
         catch { try { await loc.selectOption(option, { timeout: 5_000 }); } catch (e) { return `(couldn't choose "${option}" in [${ref}]: ${(e as Error).message.split('\n')[0].slice(0, 160)})`; } }
         return `Chose "${option}" in [${ref}].`;

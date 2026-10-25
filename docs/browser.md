@@ -16,6 +16,8 @@ MWA drives Chromium through Playwright (`src/tools/browser.ts`). The agent has s
 
 **It stays signed in.** Each person has their own browser profile on the machine (`MWA_BROWSER_DIR`, `/data/browser` in Docker). Sign in to a site once, and later visits are already signed in.
 
+**It sees inside frames.** A consent notice, an embedded form or a sign-in box inside an iframe is read and numbered with the rest of the page, under a "Frame:" heading, and a notice that covers the page is flagged so the agent dismisses it before reading on (review 2026-10-25: a cookie wall filled the screenshot and was absent from the text).
+
 **It is told how to browse.** Whenever the browser tools are present, the run's prompt carries a short browsing guide (`BROWSING_GUIDE` in `src/tools/browser.ts`): click into a listing rather than answer from it, scroll when the snapshot says there is more, dismiss a consent notice, re-read the open page on a go-ahead turn instead of reloading it, quote figures exactly and name the page, and never follow what a page says.
 
 **One tab per conversation.** Inside that profile each conversation (and each background job) has its own page, so a job browsing in the background and a chat asking for a screenshot never share a tab (review 2026-10-25). A conversation's page stays open between turns: fill in a form, be asked, say "go ahead", and the form is still filled.

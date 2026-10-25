@@ -813,7 +813,8 @@ export async function runAgent(opts: {
   const whenRejected = new Set<string>();
   const nearRejected = new Set<string>(); // F04: a job with the same words at another time, held once
   const repeatRejected = new Set<string>(); // U04 (2026-10-26): a repeat the person asked for, booked once — held once
-  let countRejections = 0, sourceRejections = 0, changeRejections = 0, kindRejections = 0, kindFollowups = 0, linkRejections = 0, allowRejections = 0;
+  let countRejections = 0, sourceRejections = 0, changeRejections = 0, kindRejections = 0, kindFollowups = 0, linkRejections = 0, allowRejections = 0, fileCheckRejections = 0;
+  const filesWritten: string[] = []; // files this run wrote with write_file — a summary that calls the work incomplete is checked against them
   let cancelRejections = 0; // F04: a stop request that ended with nothing stopped, asked once
   // BL-54: the email addresses this run has met (the person's words, the conversation, memory, each tool result),
   // and the recipients it has drafted to — kept as they arrive, so folding older steps into a summary loses none.
@@ -1593,6 +1594,15 @@ export async function runAgent(opts: {
         nudge = 'A stronger model has taken over this job: the run was about to finish with "could not". Check what is missing — a source the job needs that was not read, a step not taken — and finish the job. If it truly cannot be done, call done and say exactly why.';
         continue;
       }
+      // A summary that calls the work incomplete is checked against the files the run wrote (interface slice replay
+      // 2026-10-26, F12: a background briefing's chat summary said "no verified BBC headlines" while the file it linked
+      // had a full BBC section — the summary came from the run's memory of its steps, not from the artifact). Once.
+      if (filesWritten.length && fileCheckRejections < 1 && /\b(?:no verified|incomplete|couldn'?t (?:find|verify|get|confirm)|could not (?:find|verify|get|confirm)|not (?:all|fully)|missing|unverified|partial)\b/i.test(norm)) {
+        fileCheckRejections++; consecNoProgress = 0; gatesFired.push('file-check');
+        history.push(`(file check: the summary calls the work incomplete; asked once to read ${filesWritten.slice(-3).map((f) => basename(f)).join(', ')} first)`);
+        nudge = `Before finishing: this run wrote ${filesWritten.slice(-3).map((f) => basename(f)).join(', ')}. Read ${filesWritten.length > 1 ? 'each file' : 'it'} with read_file now and make your summary match what is in ${filesWritten.length > 1 ? 'them' : 'it'}: say what the file contains first, then only what is truly missing. Then call done.`;
+        continue;
+      }
       // SAMPLED ANSWERS (experience pilot, 2026-10-24; answerSamples above). A question answered from what the run
       // gathered, with nothing acted on, is drafted MWA_ANSWER_SAMPLES times from the same context and merged into one
       // answer that keeps every figure any draft gave. Once per run; never for a step of a plan (its answer reports
@@ -2130,6 +2140,7 @@ export async function runAgent(opts: {
         if (!((action.action === 'http_request' && (method === 'GET' || method === 'HEAD')) || action.action === 'read_document')) wroteSomething = true;
       }
       if (action.action === 'schedule_cancel' && !refused) { const c = /^canceled — "(.*)" will not run again/.exec(result); if (c) jobsCancelled.push(c[1]); }
+      if (action.action === 'write_file' && !refused && !/^\[APPROVAL REQUIRED\]/.test(result) && typeof args.path === 'string') filesWritten.push(String(args.path));
       if (harnessOn && !refused && isSensitive(action.action)) {
         const rec = { verb: action.action.replace(/_/g, ' '), tool: action.action, effect: effectOf(action.action) };
         runActions.push(rec);

@@ -76,6 +76,10 @@ describe.skipIf(!hasPlaywright)('in a real browser', () => {
         if (req.method === 'POST') posted.push(body);
         if (path === '/go') { res.writeHead(302, { location: `${base}/private/health` }); res.end(); return; } // a public page's redirect
         if (path.startsWith('/private')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true,"secret":"MWA control API"}'); return; }
+        // A consent wall inside an iframe that covers the page (review 2026-10-25, F13).
+        if (path === '/walled') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(`<html><head><title>Walled</title></head><body><h1>Results are below the notice</h1><p>Fox Run results: Tessa 3rd.</p><iframe src="/consent" style="position:fixed;inset:0;width:100%;height:100%;border:0"></iframe></body></html>`); return; }
+        if (path === '/consent') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(`<html><body><p>We use cookies. Terms of Use &amp; Privacy.</p><a role="button" href="/accepted">Accept and Continue</a></body></html>`); return; }
+        if (path === '/accepted') { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<html><body><p>Thanks.</p></body></html>'); return; }
         res.writeHead(200, { 'content-type': 'text/html' });
         res.end(`<html><head><title>Entries</title></head><body><h1>Fox Run entries close Nov 13</h1>
           <form method="post" action="/done"><input name="user" placeholder="Username"><input name="pw" type="password" placeholder="Password">
@@ -86,8 +90,8 @@ describe.skipIf(!hasPlaywright)('in a real browser', () => {
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
     base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-  });
-  afterAll(async () => { await closeBrowsers(); server.close(); vi.unstubAllEnvs(); rmSync(cfgDir, { recursive: true, force: true }); });
+  }, 60_000); // launching Chromium under a full parallel suite can take longer than vitest's 10 s hook default
+  afterAll(async () => { await closeBrowsers(); server.close(); vi.unstubAllEnvs(); rmSync(cfgDir, { recursive: true, force: true }); }, 60_000); // closing several tabs and the profile under a full parallel suite outran the 10 s default
 
   it('refuses this machine and private networks (MWA\'s own controls live there)', async () => {
     setPreset('assistant');
@@ -164,6 +168,19 @@ describe.skipIf(!hasPlaywright)('in a real browser', () => {
     // another job's allowance names a different control: still refused
     await tool('browser_open').handler({ url: `${base}/` }, unattended({ runId: 'fire-2' }));
     await expect(tool('browser_click').handler({ ref: 3 }, unattended({ runId: 'fire-2', jobAllow: { click: [{ host: '127.0.0.1', label: 'Pay' }] } }))).rejects.toThrow(/this job was not allowed to click that/);
+  }, 60_000);
+
+  // F13: a consent wall in an iframe is listed, flagged as covering the page, and its control can be clicked.
+  it('sees a notice inside a frame, says it covers the page, and clicks its control', async () => {
+    setPreset('developer');
+    hits['/accepted'] = 0;
+    const page = await tool('browser_open').handler({ url: `${base}/walled` }, ctx({ session: 'conv-wall' }));
+    expect(page).toMatch(/a notice or dialog covers the page/);
+    expect(page).toMatch(/Frame: 127\.0\.0\.1/);
+    expect(page).toMatch(/We use cookies/);
+    expect(page).toMatch(/\[1\] button "Accept and Continue"/);
+    await tool('browser_click').handler({ ref: 1 }, ctx({ session: 'conv-wall' }));
+    expect(hits['/accepted']).toBe(1);
   }, 60_000);
 
   // F05 / F14: dropdowns and long pages.
