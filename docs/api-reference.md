@@ -33,7 +33,7 @@ Concurrency is capped (`MWA_MAX_CONCURRENT`, default 4) — over the cap returns
 ### Schedule
 | Route | Method | Body / effect |
 |---|---|---|
-| `/api/schedule?person=` | GET | `{scheduled:[{id, kind: reminder\|watch\|task, request, instruction, due, recur, when, paused, tainted, goal?, lastRun?, fails?}]}` — this person's jobs |
+| `/api/schedule?person=` | GET | `{scheduled:[{id, kind: reminder\|watch\|task, request, instruction, due, recur, when, paused, tainted, allow, goal?, lastRun?, fails?}]}` — this person's jobs; `allow` is `{vault?: [names], click?: [{host, label}]}` or null: what the job may do unattended in the browser (docs/browser.md) |
 | `/api/schedule/cancel` | POST | `{id}` — stops it; undo within ten minutes |
 | `/api/schedule/uncancel` | POST | `{id}` — the undo |
 | `/api/schedule/pause` · `/resume` | POST | `{id}` — a paused job keeps its settings and does not run; resume sets its next natural slot |

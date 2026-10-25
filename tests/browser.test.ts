@@ -146,6 +146,26 @@ describe.skipIf(!hasPlaywright)('in a real browser', () => {
     await expect(tool('browser_page').handler({}, ctx({ session: 'conv-b' }))).rejects.toThrow(/no page is open in this conversation/);
   }, 60_000);
 
+  // Browser in the back end: with the person's allowance an unattended run may type the named login and click the named control.
+  it('an unattended run may sign in only with the allowance the person gave the job', async () => {
+    setPreset('developer');
+    const { vaultSave } = await import('../src/vault/vault.js');
+    vaultSave('local-test', '127.0.0.1', { password: 'Gr8-horse-sport!' });
+    const unattended = (extra: Record<string, unknown> = {}) => ctx({ interactive: false, tainted: true, session: 'job-a', runId: 'fire-1', ...extra });
+    await tool('browser_open').handler({ url: `${base}/` }, unattended());
+    await expect(tool('browser_type').handler({ ref: 2, text: '{{vault:local-test.password}}' }, unattended())).rejects.toThrow(/unless the person allowed that login/);
+    await expect(tool('browser_click').handler({ ref: 3 }, unattended())).rejects.toThrow(/nobody is watching/);
+    const allow = { vault: ['local-test'], click: [{ host: '127.0.0.1', label: 'Submit entry' }] };
+    expect(await tool('browser_type').handler({ ref: 2, text: '{{vault:local-test.password}}' }, unattended({ jobAllow: allow }))).toBe('Typed the saved value into [2] on 127.0.0.1.');
+    const before = posted.length;
+    await tool('browser_click').handler({ ref: 3 }, unattended({ jobAllow: allow }));
+    expect(posted.length).toBe(before + 1);
+    expect(posted[posted.length - 1]).toMatch(/pw=Gr8-horse-sport%21|pw=Gr8-horse-sport!/);
+    // another job's allowance names a different control: still refused
+    await tool('browser_open').handler({ url: `${base}/` }, unattended({ runId: 'fire-2' }));
+    await expect(tool('browser_click').handler({ ref: 3 }, unattended({ runId: 'fire-2', jobAllow: { click: [{ host: '127.0.0.1', label: 'Pay' }] } }))).rejects.toThrow(/this job was not allowed to click that/);
+  }, 60_000);
+
   // F05 / F14: dropdowns and long pages.
   it('chooses a dropdown option, and scrolls to read further down', async () => {
     setPreset('developer');

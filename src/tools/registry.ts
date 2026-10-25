@@ -43,7 +43,13 @@ export interface ToolContext {
   /** BL-52: the request classifier's reading — the person asks to change or stop an existing job. Absent when
    *  there is no reading (the cancel tool then goes by the person's words). */
   asksJobChange?: boolean;
+  /** What this job may do although nobody is watching, given by the person when they set the job up (browser review
+   *  2026-10-25): saved logins it may type on their own sites, and controls it may click that sign in, submit or pay. */
+  jobAllow?: JobAllow;
 }
+
+/** A job's allowance for unattended browser work: vault entry names, and "host + control text" pairs. */
+export interface JobAllow { vault?: string[]; click?: { host: string; label: string }[] }
 
 export interface RegisteredTool {
   def: ToolDef;

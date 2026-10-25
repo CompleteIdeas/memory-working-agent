@@ -24,6 +24,8 @@ export interface ScheduleRow {
   when: string;
   paused: boolean;
   tainted: boolean;
+  /** what the job may do unattended in the browser (saved logins, named clicks), or null */
+  allow: import('./tools/registry.js').JobAllow | null;
   goal?: string;
   lastRun?: { at: number; summary: string; value?: string };
   fails?: number;
@@ -36,7 +38,7 @@ export async function scheduleRows(memory: MwaMemory, person: string): Promise<S
   return all.filter((t) => visibleTo(t, me) && !t.resumeAttempt).sort((a, b) => a.due - b.due).map((t) => ({
     id: t.id, kind: t.kind === 'reminder' ? 'reminder' : isWatch(t) ? 'watch' : 'task',
     request: t.request ?? t.task ?? t.instruction, instruction: t.instruction,
-    due: t.due, recur: t.recur ?? null, when: t.recur ? recurWords(t.recur) : friendlySchedule(t.due, t.recur), paused: t.paused === true, tainted: t.tainted === true,
+    due: t.due, recur: t.recur ?? null, when: t.recur ? recurWords(t.recur) : friendlySchedule(t.due, t.recur), paused: t.paused === true, tainted: t.tainted === true, allow: t.allow ?? null,
     ...(t.goal ? { goal: t.goal } : {}),
     ...(t.lastRun ? { lastRun: { at: t.lastRun.at, summary: t.lastRun.summary, ...(t.lastRun.value ? { value: t.lastRun.value } : {}) } } : {}),
     ...(t.fails ? { fails: t.fails } : {}),

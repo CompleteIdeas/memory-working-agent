@@ -199,6 +199,8 @@ export interface ScheduleOpts {
   limits?: string;
   /** when to message the person: always (default) | changed | never. Failures always deliver. */
   deliver?: 'always' | 'changed' | 'never';
+  /** what the job may do unattended in the browser (saved logins, named clicks), given by the person (2026-10-25). */
+  allow?: import('./tools/registry.js').JobAllow;
   /** lineage (BL-05): 0 = a person scheduled it; a job made by a fire is its parent's depth + 1. */
   depth?: number;
   /** the job whose fire created this one (short id). */
@@ -264,6 +266,8 @@ export interface ScheduledTask {
   until?: string;
   limits?: string;
   deliver?: 'always' | 'changed' | 'never';
+  /** the person's allowance for unattended browser work (saved logins, named clicks). */
+  allow?: import('./tools/registry.js').JobAllow;
   /** a fire reported `complete`; the next fire must confirm before the job stops. */
   pendingComplete?: boolean;
   resumeAttempt?: number; // 1-based resume count (auto-resume of an unfinished long run); absent = not a resume
@@ -739,6 +743,7 @@ export class MwaMemory implements Memory {
     if (opts.task) tags.push(`task64=${Buffer.from(opts.task.slice(0, 4000), 'utf8').toString('base64')}`);
     if (opts.limits) tags.push(`limits64=${Buffer.from(opts.limits, 'utf8').toString('base64')}`);
     if (opts.deliver && opts.deliver !== 'always') tags.push(`deliver=${opts.deliver}`);
+    if (opts.allow && (opts.allow.vault?.length || opts.allow.click?.length)) tags.push(`allow64=${Buffer.from(JSON.stringify(opts.allow), 'utf8').toString('base64')}`);
     if (opts.resumeAttempt) tags.push(`resume=${opts.resumeAttempt}`);
     // Lineage and ownership (BL-05): what the fan-out budget counts, and what a goal owns.
     if (opts.depth) tags.push(`depth=${Math.max(0, Math.floor(opts.depth))}`);
@@ -765,7 +770,7 @@ export class MwaMemory implements Memory {
         // completion condition is a CHANGED job, not a duplicate (BL-02 review).
         const tag = (p: string) => st.find((t) => t.startsWith(p)) ?? '';
         const b64 = (v?: string) => (v ? Buffer.from(v, 'utf8').toString('base64') : '');
-        const sameContract = tag('until64=').slice(8) === b64(opts.until) && tag('limits64=').slice(9) === b64(opts.limits)
+        const sameContract = tag('until64=').slice(8) === b64(opts.until) && tag('limits64=').slice(9) === b64(opts.limits) && tag('allow64=').slice(8) === (opts.allow ? b64(JSON.stringify(opts.allow)) : '')
           && (tag('deliver=').slice(8) || 'always') === (opts.deliver ?? 'always') && tag('check64=').slice(8) === b64(opts.check)
           && st.includes('kind=reminder') === (opts.kind === 'reminder');
         if (same && sameContract && same.content === instruction && st.includes(`recur=${opts.recur}`)
@@ -804,6 +809,7 @@ export class MwaMemory implements Memory {
           ...(tags.includes('kind=reminder') ? { kind: 'reminder' as const } : {}),
           ...(tags.includes('paused=1') ? { paused: true } : {}),
           ...(get('request64=') ? { request: Buffer.from(get('request64='), 'base64').toString('utf8') } : {}),
+          ...(get('allow64=') ? { allow: ((): import('./tools/registry.js').JobAllow | undefined => { try { return JSON.parse(Buffer.from(get('allow64='), 'base64').toString('utf8')); } catch { return undefined; } })() } : {}),
           ...(get('lastrun64=') ? { lastRun: parseLastRun(get('lastrun64=')) } : {}) });
       }
       return out.sort((a, b) => a.due - b.due);

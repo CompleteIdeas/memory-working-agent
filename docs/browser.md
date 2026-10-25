@@ -33,6 +33,17 @@ npm i playwright-core
 npx playwright-core install --with-deps --only-shell chromium
 ```
 
+## In the background (2026-10-25)
+
+A scheduled job or a "work on it" job can browse with nobody watching: open pages, follow links, scroll, read, take screenshots, and report back. Two things it never does on its own: type a saved login into a page it reached after reading outside content, and click a control that signs in, submits, sends or pays.
+
+A job that needs either carries an **allowance** you give when you set it up, in a conversation that has not read outside content. The assistant asks once when a job reads like a sign-in or a submit, and the allowance names exactly what the job may do:
+
+- which saved logins it may type (`allow_vault`), still only on each login's own site;
+- which controls it may click (`allow_click`), as "site: control text", at most two, each checked against the page it is on and the control's own label at run time, and at most two such clicks a run.
+
+The job's words in "what's scheduled?" show the allowance ("may, unattended: use the saved login "the-internet" on its own site; click "Login" on the-internet.herokuapp.com"), the run is told the same, and nothing outside it is allowed. A job set up from a conversation that had read outside content carries no allowance, and a job without one that hits a sign-in stops there and says so.
+
 ## The vault (BL-63)
 
 Ask MWA to remember a login or a key, for example "save my USEA portal login" or "here's the API key for X". A card opens in the app, and you type the values there, not into the chat.

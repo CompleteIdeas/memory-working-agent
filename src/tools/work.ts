@@ -37,6 +37,7 @@
  *     expresses it honestly with one fewer half-working path.
  */
 import type { RegisteredTool, ToolContext } from './registry.js';
+import { allowText } from './browser.js';
 import type { MwaMemory, ScheduledTask, Goal, GoalStatus, GoalPriority } from '../awm.js';
 import { normalizePersonId } from '../person.js';
 import { scanPolicy } from './routines.js';
@@ -146,7 +147,7 @@ export function workTools(memory: MwaMemory | null | undefined): RegisteredTool[
       const rows = mine.slice(0, MAX_LIST).map((t) => {
         const gate = t.check ? ` [${detectorLine(t)}]` : '';
         // The job contract (BL-02): a person checking what is scheduled sees what bounds each job.
-        const contract = [t.tainted ? TAINTED_JOB_MARK : '', t.until ? `stops when: ${clip(t.until, 80)}` : '', t.limits ? `limits: ${clip(t.limits, 80)}` : '', t.deliver && t.deliver !== 'always' ? `tells you: ${t.deliver === 'changed' ? 'only when something changes' : 'only if it fails'}` : '', t.pendingComplete ? 'looks finished — confirming' : '', t.goal ? `for goal ${t.goal.slice(0, HANDLE_LEN)}` : '', t.depth ? `created by another job (level ${t.depth})` : ''].filter(Boolean).join(' · ');
+        const contract = [t.tainted ? TAINTED_JOB_MARK : '', t.until ? `stops when: ${clip(t.until, 80)}` : '', t.limits ? `limits: ${clip(t.limits, 80)}` : '', t.allow ? `may, unattended: ${clip(allowText(t.allow), 100)}` : '', t.deliver && t.deliver !== 'always' ? `tells you: ${t.deliver === 'changed' ? 'only when something changes' : 'only if it fails'}` : '', t.pendingComplete ? 'looks finished — confirming' : '', t.goal ? `for goal ${t.goal.slice(0, HANDLE_LEN)}` : '', t.depth ? `created by another job (level ${t.depth})` : ''].filter(Boolean).join(' · ');
         const delivery = deliveryLine(t.resumeOf ?? t.id, receipts);
         return `${t.id.slice(0, HANDLE_LEN)} — ${t.paused ? 'PAUSED by the person — ' : ''}${whenLabel(t.due, now)} — ${recurLabel(t.recur)}${t.kind === 'reminder' ? ' — reminder' : ''}\n    "${clip(t.instruction, MAX_INSTRUCTION_CHARS)}"${contract ? `\n    ${contract}` : ''}${gate}${delivery ? `\n    ${delivery}` : ''}`;
       });

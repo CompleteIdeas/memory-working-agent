@@ -26,10 +26,10 @@
  */
 import { mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { RegisteredTool, ToolContext } from './registry.js';
+import type { RegisteredTool, ToolContext, JobAllow } from './registry.js';
 import { ToolRefusal } from './registry.js';
 import { urlRefusal } from './net-guard.js';
-import { resolveVaultRefs, hasVaultRef, siteHost } from '../vault/vault.js';
+import { resolveVaultRefs, hasVaultRef, siteHost, vaultName } from '../vault/vault.js';
 import { browserDir } from '../paths.js';
 
 type Locator = { click(o?: object): Promise<void>; fill(v: string, o?: object): Promise<void>; selectOption(v: string | { label: string }, o?: object): Promise<string[]> };
@@ -49,6 +49,57 @@ type Context = {
 
 /** Every request the agent browser makes carries this; MWA's own server refuses a request that does (serve.ts). */
 export const AGENT_BROWSER_HEADER = 'x-mwa-agent-browser';
+
+/*
+ * BROWSER IN THE BACK END (review 2026-10-25, F06). An unattended run never types a saved login into a page it reached
+ * after reading outside content, and never clicks a control that signs in, submits, sends or pays — so a job that
+ * must sign in could not, yet was accepted at scheduling time and failed every morning. A job may now carry an
+ * ALLOWANCE the person gave when they set it up, in a clean conversation: named saved logins (typed only on their own
+ * sites, as always) and up to two named controls on named sites. The run is told what it may do, the tools check the
+ * allowance against the page it is on and the control it is about to click, and the list of jobs shows it. The local
+ * form of Muse's Sentinel approving one destination and one purpose.
+ */
+/** An instruction that reads like it needs a sign-in or a consequential click. */
+export const NEEDS_ALLOW = /\b(sign(?:s|ed)? ?in|log(?:s|ged)? ?in|login|submit|check ?out|purchase|buy|pay for|place (?:an |the )?order)\b/i;
+
+/** The schedule call's allow_vault / allow_click, checked against the saved logins that exist. */
+export function parseAllow(vaultArg: unknown, clickArg: unknown, knownVault: string[]): { allow?: JobAllow; error?: string } {
+  const vault = typeof vaultArg === 'string' ? vaultArg.split(',').map((s) => vaultName(s.trim())).filter(Boolean) : [];
+  const unknown = vault.filter((n) => !knownVault.includes(n));
+  if (unknown.length) return { error: `No saved login is named ${unknown.map((n) => `"${n}"`).join(', ')} (vault_list shows the names).` };
+  const click = typeof clickArg === 'string' ? clickArg.split(';').map((s) => s.trim()).filter(Boolean).map((s) => {
+    const m = /^(.+?):(?!\/\/)\s*(.+)$/.exec(s); // the first colon that is not the scheme's
+    if (!m) return null;
+    const site = m[1].trim();
+    return { host: siteHost(/^https?:\/\//i.test(site) ? site : `https://${site}`) ?? '', label: m[2].trim().slice(0, 60) };
+  }) : [];
+  if (click.some((c) => !c || !c.host || !c.label)) return { error: 'allow_click must be "site: control text", e.g. "the-internet.herokuapp.com: Login".' };
+  if (click.length > 2) return { error: 'allow_click takes at most two controls.' };
+  if (!vault.length && !click.length) return { error: 'allow_vault names a saved login and allow_click a "site: control text"; give at least one.' };
+  return { allow: { ...(vault.length ? { vault } : {}), ...(click.length ? { click: click as { host: string; label: string }[] } : {}) } };
+}
+
+/** The allowance in words, for the run's prompt, the job list and the person. */
+export function allowText(a: JobAllow): string {
+  return [
+    ...(a.vault ?? []).map((n) => `use the saved login "${n}" on its own site`),
+    ...(a.click ?? []).map((c) => `click "${c.label}" on ${c.host}`),
+  ].join('; ');
+}
+
+/** Every saved login this text refers to is one the job may use. */
+export function vaultAllowed(a: JobAllow | undefined, text: string): boolean {
+  const names = [...text.matchAll(/\{\{vault:([^.}]+)\./g)].map((m) => vaultName(m[1]));
+  return names.length > 0 && names.every((n) => a?.vault?.includes(n));
+}
+
+/** The page is on an allowed site and the control reads like the one the person named. */
+export function clickAllowed(a: JobAllow | undefined, pageUrl: string, label: string): boolean {
+  const host = siteHost(pageUrl) ?? '';
+  return Boolean(host) && (a?.click ?? []).some((c) => (host === c.host || host.endsWith(`.${c.host}`)) && label.toLowerCase().includes(c.label.toLowerCase()));
+}
+const MAX_ALLOWED_CLICKS = 2;
+const allowedClicks = new Map<string, number>(); // per run
 
 type Session = { ctx: Context; pages: Map<string, Page> };
 const sessions = new Map<string, Session>();
@@ -232,8 +283,16 @@ export function browserTools(): RegisteredTool[] {
         const label = await page.evaluate<string>(`(() => { const el = document.querySelector('[data-mwa-ref="${ref}"]'); if (!el) return '\\u0000'; return ((el.getAttribute('aria-label') || el.innerText || el.value || el.getAttribute('title') || '') + ' ' + (el.getAttribute('type') || '') + ' ' + (el.form && el.matches('button:not([type=button]), input[type=submit]') ? 'submit' : '')).replace(/\\s+/g, ' ').trim(); })()`);
         if (label === '\u0000') throw new ToolRefusal(`(there is no control [${ref}] on this page now — read the page again with browser_page)`);
         if (CONSEQUENTIAL.test(label)) {
-          if (ctx.interactive === false) throw new ToolRefusal(`(refused: "${label.slice(0, 60)}" would send, pay, delete or submit something, and nobody is watching this run. Say in your summary what is ready to be clicked.)`);
-          if (!GO_AHEAD.test(ctx.personMessage ?? '')) throw new ToolRefusal(`(held: "${label.slice(0, 60)}" would send, pay, delete or submit something. Tell the person exactly what clicking it will do and ask them to say go ahead; click it in that turn, using browser_page first to find the control again — do not re-open the page, that clears the form.)`);
+          if (ctx.interactive === false) {
+            // Only what the person allowed when they set the job up, on that site, and not many times.
+            if (!clickAllowed(ctx.jobAllow, page.url(), label)) throw new ToolRefusal(`(refused: "${label.slice(0, 60)}" would send, pay, delete or submit something, and nobody is watching this run${ctx.jobAllow ? ', and this job was not allowed to click that' : ''}. Say in your summary what is ready to be clicked; the person can allow it when they set the job up.)`);
+            const key = ctx.runId ?? 'run';
+            const used = allowedClicks.get(key) ?? 0;
+            if (used >= MAX_ALLOWED_CLICKS) throw new ToolRefusal(`(refused: this run has already made its ${MAX_ALLOWED_CLICKS} allowed clicks of that kind)`);
+            allowedClicks.set(key, used + 1);
+          } else if (!GO_AHEAD.test(ctx.personMessage ?? '')) {
+            throw new ToolRefusal(`(held: "${label.slice(0, 60)}" would send, pay, delete or submit something. Tell the person exactly what clicking it will do and ask them to say go ahead; click it in that turn, using browser_page first to find the control again — do not re-open the page, that clears the form.)`);
+          }
         }
         try { await page.locator(`[data-mwa-ref="${ref}"]`).first().click({ timeout: 10_000 }); }
         catch (e) { return navError(`click [${ref}]`, e); }
@@ -253,8 +312,9 @@ export function browserTools(): RegisteredTool[] {
         const raw = String(args.text ?? '');
         let value = raw;
         if (hasVaultRef(raw)) {
-          // A saved secret goes into a page only on its own site, and only in a run the person started.
-          if (ctx.interactive === false && ctx.tainted) throw new ToolRefusal('(refused: a saved login is not typed by an unattended run that has read outside content)');
+          // A saved secret goes into a page only on its own site (resolveVaultRefs), and in an unattended run that has
+          // read outside content only when the person allowed that login for this job.
+          if (ctx.interactive === false && ctx.tainted && !vaultAllowed(ctx.jobAllow, raw)) throw new ToolRefusal('(refused: a saved login is not typed by an unattended run that has read outside content — unless the person allowed that login for this job when they set it up)');
           try { value = resolveVaultRefs(raw, page.url()); } catch (e) { throw new ToolRefusal(`(refused: ${(e as Error).message})`); }
         }
         try { await page.locator(`[data-mwa-ref="${ref}"]`).first().fill(value, { timeout: 10_000 }); }
