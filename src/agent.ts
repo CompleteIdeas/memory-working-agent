@@ -1177,6 +1177,11 @@ export async function runAgent(opts: {
   // judged (BL-36): any attempt might be where the claimed work happened.
   // A draft the BL-54 guard refused before it reached the connector (`guardOnly`) is no attempt.
   const actedAtAll = () => [...toolsUsed].some((t) => !['recall', 'read', 'done', 'ask_user'].includes(t) && !['read', 'control'].includes(classifyTool(t)) && !guardOnly.has(t));
+  // The sampling gate (SAMPLED ANSWERS below) asks a narrower question: did the run change anything its answer would
+  // be the report of? Recording what it learned (`remember`, `supersede`, an open item) is not that, and the GATHER
+  // cadence forces a remember after three reads — so with actedAtAll as the gate the drafts ran on no run that read
+  // more than twice (pilot arm F5, 2026-10-24: 24 of 54 runs sampled, none of the synthesis or lens questions).
+  const actedOnWorld = () => [...toolsUsed].some((t) => !['recall', 'read', 'done', 'ask_user'].includes(t) && !['read', 'control', 'memory'].includes(classifyTool(t)) && !guardOnly.has(t));
   const normSig = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40);
   let gatherStreak = 0; // reads/lists/recalls since the last remember/act — forces the record cadence
   let productive = 0; // remembers/dispatches/acts — once high enough, prompt to consider done
@@ -1585,9 +1590,11 @@ export async function runAgent(opts: {
       // the drafts disagree on a figure or a verdict, or every draft hedges. A stronger tier then takes the run over,
       // as BL-73's boss does; with none above, one more recall on the question's own identifiers, and the merge stands.
       // Reads (recall, files, listings) are how the answer was gathered, so they do not stop the sampling; anything
-      // written, sent or scheduled does. (Pilot arm F4, 2026-10-24: with `runActions.length === 0` the drafts ran on
-      // a third of the questions — only those answered from primed memory with no tool at all.)
-      if (!sampled && answerSamples() >= 2 && !opts.planStep && summ.trim().length >= 40 && !actedAtAll() && runActions.every((a) => a.effect === 'read') && jobsCreated.length === 0 && now() - start < maxWallMs * 0.8) {
+      // written, sent or scheduled does, and so does nothing the run only recorded for itself. (Pilot arm F4, 2026-10-24:
+      // with `runActions.length === 0` the drafts ran on a third of the questions — only those answered from primed
+      // memory with no tool at all. Arm F5, same day: with `actedAtAll` they ran on 24 of 54 — every run short enough
+      // not to have been made to `remember`; see actedOnWorld.)
+      if (!sampled && answerSamples() >= 2 && !opts.planStep && summ.trim().length >= 40 && !actedOnWorld() && runActions.every((a) => a.effect === 'read') && jobsCreated.length === 0 && now() - start < maxWallMs * 0.8) {
         sampled = true;
         const drafts = [summ];
         for (let k = 1; k < answerSamples(); k++) {

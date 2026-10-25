@@ -142,4 +142,18 @@ describe('sampled answers in a run', () => {
     expect(r2.summary).toBe(DONE);
     expect(r2.history.join('\n')).not.toMatch(/drafts of the answer merged/);
   }, 30_000);
+
+  it('a run that only RECORDED what it learned (a memory-category tool) is still sampled', async () => {
+    // Pilot arm F5 (2026-10-24): the gather cadence makes a run `remember` after three reads, and with "acted at all"
+    // as the gate that remember switched the drafts off on every run longer than a few steps — 24 of 54 sampled, none
+    // of the synthesis or lens questions. Recording is not acting on the world; the answer is not the report of it.
+    vi.stubEnv('MWA_ANSWER_SAMPLES', '2');
+    const tools = (names: string[]) => ({ defs: () => names.map((name) => ({ name, description: name, parameters: { type: 'object', properties: {} } })), has: (x: string) => names.includes(x), callDetailed: async () => ({ text: 'ok', failed: false }), call: async () => 'ok' }) as never;
+    const b = fake('luna', { done: DONE, draft: DRAFT, merge: `${MERGED}\nDRAFTS: agree` });
+    let first = true;
+    const recordFirst = { ...b.p, chat: async (input: any) => { if (first && String(input.system ?? '').includes('TRUST BOUNDARY')) { first = false; return { text: JSON.stringify({ action: 'open_item_add', text: 'ask Robert for the per-goal cap' }), usage: { input: 1, output: 1 } }; } return b.p.chat(input); } };
+    const r = await run(recordFirst, { tools: tools(['open_item_add']) });
+    expect(r.summary).toBe(MERGED);
+    expect(r.history.join('\n')).toMatch(/2 drafts of the answer merged/);
+  }, 30_000);
 });

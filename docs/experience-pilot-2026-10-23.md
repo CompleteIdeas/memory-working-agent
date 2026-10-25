@@ -176,8 +176,25 @@ Shipped as `MWA_ANSWER_SAMPLES` (off by default): at the done step of a run that
 drafted that many times from the same context and merged; when the drafts disagree or all hedge, the background boss
 takes the run over (nothing at runtime knows an answer is wrong, so the hand-off fires on what is visible), or with
 no stronger model above, memory is recalled once more on the question's own identifiers. Drafted inside one run, it
-samples the final generation, not the recall path; the measurement above merged three full runs, so the shipped form
-still has to be measured.
+samples the final generation, not the recall path; the measurement above merged three full runs.
+
+The shipped form was then run (arms F5 and F2R, 2026-10-24, the same code, Luna, the reconsolidated store, three
+repeats of the eighteen questions):
+
+| Arm | lookup | synthesis | current | rationale | apply | lens | total | $ / answer |
+|---|---|---|---|---|---|---|---|---|
+| F2R Luna + memory, no sampling | 5/9 | 3/9 | 9/9 | 8/9 | 5/9 | 1/9 | 31/54 | 0.0155 |
+| F5 Luna + memory, `MWA_ANSWER_SAMPLES=3` | 5/9 | 3/9 | 9/9 | 9/9 | 6/9 | 3/9 | 35/54 | 0.0144 |
+
+Read with care: the drafts ran on 24 of the 54 runs. The gate counted the run's own `remember` as an action, and the
+gather cadence makes a run remember after three reads, so no synthesis, lens, A1, A3 or L3 run ever sampled. On the
+24 runs that did draft, F5 made 23, F2R 21 and the earlier F2 23; on the other 30 the arms differ by chance (12, 10
+and 12), and that is where the whole lens gap sits. A2, one of the four two-in-three questions, went 3 of 3 under
+sampling against 2 of 3 in both plain runs; S1, A1 and V1, the other three, never drafted. The sampled runs cost less
+per answer only because they were the short runs. The gate now ignores what a run records for itself (`actedOnWorld`
+in `agent.ts`, with a test), and the measurement with drafts on every read-only run is still to be made. F4, the
+first attempt, had a narrower gate still (no tool call at all) and lost seven answers to a harness restart; its 27 of
+47 is not comparable.
 
 ## What we take from it
 
