@@ -5,22 +5,22 @@ import {
   getActions, forgetMemory, correctMemory, type MemoryItem, type ActionItem,
 } from '../api';
 
-// The Glass Box: makes the substrate tangible AND controllable — every learned fact shows
-// where it came from + how much it's trusted, and you can correct it, forget it, or export
-// everything. Plus the self-learning loop (open questions), reusable routines (skills), and
-// what MWA has actually done (the action history).
+// The Glass Box: every learned fact shows where it came from and can be corrected or forgotten.
+// F12 (usability review 2026-10-24): the page was 8,600 px long, listed skills, lessons and actions with the facts,
+// and showed "unknown · still learning: name, role" right after MWA had said who the person is. Now: about you and
+// your standing preferences first; what was learned while working, grouped by source and collapsed; the specialist
+// detail behind one disclosure; two notes about the same thing marked newest and older.
 
-// Provenance/trust badge — the heart of "consider the source".
 function badge(m: MemoryItem): { text: string; cls: string } {
   if (m.trust === 'untrusted') {
-    const text = m.origin ? `⚠ from ${m.origin}` : m.provenance === 'ingested' ? '⚠ from email/web' : '⚠ unverified source';
-    return { text, cls: 'text-signal border-signal/40' };
+    const text = m.origin ? `from ${m.origin}` : m.provenance === 'ingested' ? 'from email/web' : 'from a file or page';
+    return { text, cls: 'text-signal border-signal' };
   }
-  if (m.provenance === 'user') return { text: 'you told me', cls: 'text-ink border-line' };
-  return { text: 'my inference', cls: 'text-dim border-line' };
+  if (m.provenance === 'user') return { text: 'you told me', cls: 'text-graphite border-edge' };
+  return { text: 'my inference', cls: 'text-dim border-edge' };
 }
 
-function Fact({ m, onChanged }: { m: MemoryItem; onChanged: () => void }) {
+function Fact({ m, onChanged, age }: { m: MemoryItem; onChanged: () => void; age?: 'newest' | 'older' }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(m.content);
   const [busy, setBusy] = useState(false);
@@ -32,51 +32,61 @@ function Fact({ m, onChanged }: { m: MemoryItem; onChanged: () => void }) {
     setBusy(true); setErr('');
     const r = await correctMemory(m.id, m.concept, draft.trim());
     setBusy(false);
-    if (r.ok) { setEditing(false); onChanged(); } else { setErr("Couldn't save that correction — please try again."); }
+    if (r.ok) { setEditing(false); onChanged(); } else { setErr("Couldn't save that correction. Please try again."); }
   }
   async function forget() {
     if (!window.confirm(`Forget this permanently?\n\n${m.concept}`)) return;
     setBusy(true); setErr('');
     const r = await forgetMemory(m.id);
     setBusy(false);
-    if (r.ok) onChanged(); else setErr("Couldn't forget that — please try again.");
+    if (r.ok) onChanged(); else setErr("Couldn't forget that. Please try again.");
   }
 
-  // Reveal the correct/forget controls on hover, keyboard focus, AND on touch devices (which have
-  // no hover) — otherwise these core actions are invisible/untappable for non-mouse users.
-  const controls = 'flex gap-3 mt-1.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity';
-  const ctlBtn = 'mono text-[11px] uppercase tracking-wide text-dim hover:text-signal rounded-[3px] px-2 py-1.5 -mx-1';
-
   return (
-    <div className="py-3 group">
-      <div className="flex items-start justify-between gap-3">
-        <div className="font-medium text-[15px]">{m.concept}</div>
-        <span className={`shrink-0 mono text-[9.5px] uppercase tracking-wide rounded-[3px] border px-1.5 py-0.5 ${b.cls}`}>{b.text}</span>
+    <div className="py-3" data-fact={m.id}>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="font-medium text-[15px] min-w-0 break-words">{m.concept}{age && <span className={`ml-2 chip ${age === 'older' ? 'fail' : ''}`}>{age === 'older' ? 'older, may be out of date' : 'newest'}</span>}</div>
+        <span className={`shrink-0 mono text-[11px] uppercase tracking-wide rounded-[3px] border px-1.5 py-0.5 ${b.cls}`}>{b.text}</span>
       </div>
       {editing ? (
         <div className="mt-1.5">
-          <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={3}
-            className="w-full rounded-[4px] border border-line bg-surface px-3 py-2 text-[14px] resize-y" />
+          <textarea aria-label={`Correct: ${m.concept}`} value={draft} onChange={(e) => setDraft(e.target.value)} rows={3}
+            className="w-full rounded-[4px] border border-edge bg-surface px-3 py-2 text-[14px] resize-y" />
           <div className="flex gap-2 mt-1.5">
-            <button disabled={busy} onClick={save} className="mono text-[11px] uppercase tracking-wide rounded-[3px] border border-line px-3 py-1.5 hover:border-signal hover:text-signal transition-colors">save correction</button>
-            <button disabled={busy} onClick={() => { setEditing(false); setDraft(m.content); setErr(''); }} className="mono text-[11px] uppercase tracking-wide text-dim px-3 py-1.5 hover:text-ink">cancel</button>
+            <button disabled={busy} onClick={save} className="btn small primary">Save correction</button>
+            <button disabled={busy} onClick={() => { setEditing(false); setDraft(m.content); setErr(''); }} className="btn small">Cancel</button>
           </div>
         </div>
       ) : (
         <>
-          <div className="text-dim text-[14px] leading-snug">{m.content}</div>
-          <div className={controls}>
-            <button onClick={() => { setDraft(m.content); setErr(''); setEditing(true); }} className={ctlBtn}>correct</button>
-            <button disabled={busy} onClick={forget} className={ctlBtn}>forget</button>
+          <div className="text-dim text-[14px] leading-snug break-words">{m.content}</div>
+          <div className="flex gap-2 mt-1.5">
+            <button onClick={() => { setDraft(m.content); setErr(''); setEditing(true); }} className="btn small" aria-label={`Correct: ${m.concept}`}>Correct</button>
+            <button disabled={busy} onClick={forget} className="btn small" aria-label={`Forget: ${m.concept}`}>Forget</button>
           </div>
         </>
       )}
-      {err && <p className="mono text-[11px] text-signal mt-1">{err}</p>}
+      {err && <p className="text-[13px] text-signal mt-1">{err}</p>}
     </div>
   );
 }
 
-export function Memory() {
+const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+
+function Group({ title, items, onChanged, ages, first = 6 }: { title: string; items: MemoryItem[]; onChanged: () => void; ages: Map<string, 'newest' | 'older'>; first?: number }) {
+  const [all, setAll] = useState(false);
+  if (!items.length) return null;
+  const shown = all ? items : items.slice(0, first);
+  return (
+    <section className="mt-4" aria-label={title}>
+      <h3 className="label">{title} · {items.length}</h3>
+      <div className="divide-y divide-line">{shown.map((m) => <Fact key={m.id} m={m} onChanged={onChanged} age={ages.get(m.id)} />)}</div>
+      {items.length > shown.length && <button className="btn small mt-1" onClick={() => setAll(true)}>Show all {items.length}</button>}
+    </section>
+  );
+}
+
+export function Memory({ onAskRemove }: { onAskRemove?: (rule: string) => void }) {
   const [items, setItems] = useState<MemoryItem[] | null>(null);
   const [actions, setActions] = useState<ActionItem[]>([]);
   const [skills, setSkills] = useState<{ name: string; content: string }[]>([]);
@@ -102,158 +112,120 @@ export function Memory() {
     setMsg(r.message ?? 'Started.');
   }
 
-  if (!items) return <div className="py-16 mono text-dim text-sm">loading…</div>;
+  if (!items) return <div className="py-16 text-dim text-sm">Loading…</div>;
+  // notes the server keeps about the person are named "person <id>: …"; they belong under About you, without the id
+  const PERSON = /^person [^:]+:\s*/i;
+  const shown = items.map((m) => (PERSON.test(m.concept) ? { ...m, concept: m.concept.replace(PERSON, '') || 'About you', about: true } : m)) as (MemoryItem & { about?: boolean })[];
+  // the same thing noted twice: the list is newest first, so the first one seen is the newer
+  const ages = new Map<string, 'newest' | 'older'>();
+  const seen = new Map<string, string>();
+  for (const m of shown) { const k = norm(m.concept); const had = seen.get(k); if (had) { ages.set(had, 'newest'); ages.set(m.id, 'older'); } else seen.set(k, m.id); }
+  const told = shown.filter((m) => (m.provenance === 'user' || m.about) && m.trust !== 'untrusted');
+  const outside = shown.filter((m) => m.trust === 'untrusted');
+  const inferred = shown.filter((m) => !told.includes(m) && !outside.includes(m));
+  const me = people.filter((p) => p.dossier || p.notes);
   return (
-    <div className="py-8 max-w-2xl space-y-8">
-      {policies.length > 0 && (
-        <div>
-          <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-3">preferences I'll always follow · {policies.length}</div>
-          <div className="space-y-1.5">
-            {policies.map((p, i) => (
-              <div key={i} className="rounded-[4px] border border-line bg-surface px-4 py-2.5 text-[14px]">{p}</div>
-            ))}
-          </div>
+    <div className="py-6 max-w-2xl">
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="flex-1 min-w-[200px]">
+          <h1 className="text-2xl font-semibold tracking-tight">Memory</h1>
+          <p className="text-dim text-[14px]">What I use in every conversation. Correct or forget anything here. It lives only on this machine.</p>
         </div>
-      )}
+        <a href="/api/memory/export" download="mwa-memory.md" className="btn small">Export</a>
+      </div>
+
+      <section className="mt-6" aria-labelledby="m-you">
+        <h2 id="m-you" className="label">About you</h2>
+        {me.length ? me.map((pp) => (
+          <div key={pp.personId} className="rounded-[4px] border border-line bg-surface px-4 py-3 mt-2">
+            <div className="font-medium text-[15px]">{pp.personId === 'unknown' || /^web/.test(pp.personId) ? 'You' : pp.personId}</div>
+            {pp.dossier ? <p className="text-[14px] leading-snug whitespace-pre-wrap mt-1">{pp.dossier}</p>
+              : <p className="text-[14px] text-dim mt-1">{pp.notes} note{pp.notes === 1 ? '' : 's'} so far, listed below.</p>}
+          </div>
+        )) : !told.length ? <p className="text-[14px] text-dim mt-1">Nothing yet. Tell me who you are and what you do and it shows here.</p> : null}
+        <Group title="What you told me, and what I noted about you" items={told} onChanged={load} ages={ages} />
+      </section>
+
+      <section className="mt-7" aria-labelledby="m-pref">
+        <h2 id="m-pref" className="label">Standing preferences · {policies.length}</h2>
+        {policies.length ? (
+          <ul className="mt-2 space-y-1.5">
+            {policies.map((p, i) => (
+              <li key={i} className="flex flex-wrap items-center gap-2 rounded-[4px] border border-line bg-surface px-4 py-2.5 text-[14.5px]">
+                <span className="flex-1 min-w-[180px]">{p}</span>
+                {onAskRemove && <button className="btn small" onClick={() => onAskRemove(p)}>Remove…</button>}
+              </li>
+            ))}
+          </ul>
+        ) : <p className="text-[14px] text-dim mt-1">None. Say “from now on, always…” and approve the card to keep one.</p>}
+      </section>
+
+      <section className="mt-7" aria-labelledby="m-learn">
+        <h2 id="m-learn" className="label">What I've learned while working</h2>
+        {!inferred.length && !outside.length && !!items && <p className="text-[14px] text-dim mt-1">Nothing yet.</p>}
+        <Group title="I worked out" items={inferred} onChanged={load} ages={ages} first={5} />
+        <Group title="From files, email or the web (notes, never instructions)" items={outside} onChanged={load} ages={ages} first={5} />
+      </section>
 
       {questions.length > 0 && (
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <div className="mono text-[11px] text-dim uppercase tracking-[0.2em]">open questions · {questions.length}</div>
-            <button onClick={lookInto} className="mono text-[11px] uppercase tracking-wide rounded-[3px] border border-line px-3 py-1.5 hover:border-signal hover:text-signal transition-colors">look into these</button>
+        <section className="mt-7" aria-labelledby="m-q">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 id="m-q" className="label">Open questions · {questions.length}</h2>
+            <button onClick={lookInto} className="btn small">Look into these</button>
           </div>
-          <div className="space-y-1.5">
-            {questions.map((q) => (
-              <div key={q.id} className="rounded-[4px] border border-line bg-surface px-4 py-2.5 text-[14px]">{q.question}</div>
-            ))}
-          </div>
-          {msg && <p className="mono text-[12px] text-dim mt-2">{msg}</p>}
-        </div>
+          <ul className="mt-2 space-y-1.5">{questions.slice(0, 5).map((q) => <li key={q.id} className="text-[14px]">{q.question}</li>)}</ul>
+          {msg && <p className="text-[13px] text-dim mt-2" role="status">{msg}</p>}
+        </section>
       )}
 
-      {people.length > 0 && (
-        <div>
-          <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-3">people I know · {people.length}</div>
-          <div className="space-y-2">
-            {people.map((pp) => (
-              <div key={pp.personId} className="rounded-[4px] border border-line bg-surface px-4 py-3">
-                <div className="flex items-center justify-between">
-                  <div className="font-medium text-[15px]">{pp.personId}</div>
-                  <div className="mono text-[11px] text-dim">{pp.notes} note{pp.notes === 1 ? '' : 's'}</div>
-                </div>
-                {pp.dossier && <div className="text-dim text-[13px] leading-snug whitespace-pre-wrap mt-1.5">{pp.dossier}</div>}
-                <div className="mono text-[11px] text-dim mt-2">
-                  {pp.fields.length > 0 && <span>known: {pp.fields.join(', ')}</span>}
-                  {pp.missing.length > 0 && <span className="text-dim/70">{pp.fields.length ? '  ·  ' : ''}still learning: {pp.missing.join(', ')}</span>}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {routines.length > 0 && (
-        <div>
-          <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-1">routines I proposed · {routines.length}</div>
-          <p className="text-dim text-[13px] mb-3">
-            A proposed routine does nothing until you promote it. Promoted, its steps become a skill I use on similar tasks.
-            Only you can promote one; I can't.
-          </p>
-          {routineMsg && <div className="text-[13px] mb-2" role="status">{routineMsg}</div>}
-          <div className="space-y-2">
+      <details className="mt-8">
+        <summary className="label cursor-pointer py-2">Skills, lessons, routines and what I've done · {skills.length + lessons.length + routines.length + actions.length}</summary>
+        {routines.length > 0 && (
+          <div className="mt-3">
+            <h3 className="label mb-1">Routines I proposed · {routines.length}</h3>
+            <p className="text-dim text-[13px] mb-2">A proposed routine does nothing until you promote it. Only you can promote one.</p>
+            {routineMsg && <div className="text-[13px] mb-2" role="status">{routineMsg}</div>}
             {routines.map((r) => (
-              <div key={r.id} className="rounded-[4px] border border-line bg-surface px-4 py-3">
+              <div key={r.id} className="rounded-[4px] border border-line bg-surface px-4 py-3 mb-2">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <div className="font-medium text-[15px]">{r.name} <span className="mono text-[11px] text-dim">{r.version} · {r.status || 'proposed'}{r.agent && r.agent !== 'mwa-serve' ? ' · from Telegram' : ''}</span></div>
-                  <div className="flex gap-2">
-                    {r.status !== 'active' && (
-                      <button className="mono text-[12px] underline disabled:opacity-50" disabled={routineBusy === r.id} onClick={async () => {
-                        const warn = r.tainted ? '\n\nThis was proposed by a run that had read outside content (an email, a web page or a document). Read every step before you promote it.' : '';
-                        if (!window.confirm(`Promote "${r.name}" ${r.version}? Its steps will guide future similar tasks.${warn}`)) return;
-                        setRoutineBusy(r.id);
-                        const res = await setRoutine(r.id, 'promote', r.agent);
-                        setRoutineBusy('');
-                        setRoutineMsg(res.ok ? `Promoted "${r.name}" ${r.version}.` : `Not promoted: ${res.error ?? 'unknown error'}`);
-                        getRoutines().then(setRoutinesList); getSkills().then(setSkills);
-                      }}>promote</button>
-                    )}
-                    {r.status === 'active' && (
-                      <button className="mono text-[12px] underline disabled:opacity-50" disabled={routineBusy === r.id} onClick={async () => {
-                        setRoutineBusy(r.id);
-                        const res = await setRoutine(r.id, 'retire', r.agent);
-                        setRoutineBusy('');
-                        setRoutineMsg(res.ok ? `Retired "${r.name}" ${r.version}.` : `Not retired: ${res.error ?? 'unknown error'}`);
-                        getRoutines().then(setRoutinesList); getSkills().then(setSkills);
-                      }}>retire</button>
-                    )}
-                  </div>
+                  <div className="font-medium text-[15px]">{r.name} <span className="text-[12px] text-dim">{r.version} · {r.status || 'proposed'}</span></div>
+                  {r.status !== 'active' ? (
+                    <button className="btn small" disabled={routineBusy === r.id} onClick={async () => {
+                      if (!window.confirm(`Promote "${r.name}" ${r.version}? Its steps will guide future similar tasks.${r.tainted ? ' It was proposed after reading outside content; read every step first.' : ''}`)) return;
+                      setRoutineBusy(r.id); const res = await setRoutine(r.id, 'promote', r.agent); setRoutineBusy('');
+                      setRoutineMsg(res.ok ? `Promoted "${r.name}".` : `Not promoted: ${res.error ?? 'unknown error'}`); load();
+                    }}>Promote</button>
+                  ) : (
+                    <button className="btn small" disabled={routineBusy === r.id} onClick={async () => {
+                      setRoutineBusy(r.id); const res = await setRoutine(r.id, 'retire', r.agent); setRoutineBusy('');
+                      setRoutineMsg(res.ok ? `Retired "${r.name}".` : `Not retired: ${res.error ?? 'unknown error'}`); load();
+                    }}>Retire</button>
+                  )}
                 </div>
-                {r.tainted && <div className="text-[12px] mt-1" role="note">⚠ Proposed by a run that had read outside content — read every step before promoting.</div>}
-                <div className="text-dim text-[13px] leading-snug whitespace-pre-wrap mt-1 max-h-64 overflow-y-auto">{r.content}</div>
+                <div className="text-dim text-[13px] leading-snug whitespace-pre-wrap mt-1 max-h-48 overflow-y-auto">{r.content}</div>
               </div>
             ))}
-          </div>
-        </div>
-      )}
-
-      {skills.length > 0 && (
-        <div>
-          <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-3">skills I can repeat · {skills.length}</div>
-          <div className="space-y-2">
-            {skills.map((s, i) => (
-              <div key={i} className="rounded-[4px] border border-line bg-surface px-4 py-3">
-                <div className="font-medium text-[15px]">{s.name}</div>
-                <div className="text-dim text-[13px] leading-snug whitespace-pre-wrap">{s.content}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {lessons.length > 0 && (
-        <div>
-          <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-3">lessons from what didn't work · {lessons.length}</div>
-          <div className="space-y-2">
-            {lessons.map((l, i) => (
-              <div key={i} className="rounded-[4px] border border-line bg-surface px-4 py-3">
-                <div className="font-medium text-[15px]">{l.topic}{l.unconfirmed && <span className="mono text-[11px] text-dim ml-2" title="Kept, but not used in runs: it was written after a safety check refused something, or the lesson check could not clear it.">unconfirmed — not used in runs</span>}</div>
-                <div className="text-dim text-[13px] leading-snug whitespace-pre-wrap">{l.content}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {actions.length > 0 && (
-        <div>
-          <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-3">what I've done · {actions.length}</div>
-          <div className="divide-y divide-line">
-            {actions.map((a) => (
-              <div key={a.id} className="py-2.5 flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-[14px]"><span className="font-medium">{a.verb}</span> <span className="text-dim">— {a.summary}</span></div>
-                </div>
-                <span className="shrink-0 mono text-[9.5px] uppercase tracking-wide text-dim border border-line rounded-[3px] px-1.5 py-0.5">{a.effect}{a.tool ? ` · ${a.tool}` : ''}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <div className="mono text-[11px] text-dim uppercase tracking-[0.2em]">what I've learned · {items.length} recent</div>
-          <a href="/api/memory/export" download="mwa-memory.md" className="mono text-[11px] uppercase tracking-wide rounded-[3px] border border-line px-3 py-1.5 hover:border-signal hover:text-signal transition-colors">export ↓</a>
-        </div>
-        {items.length === 0 ? (
-          <p className="text-dim">Nothing yet. Ask me to look at your email or scan your inbox, and what I learn shows up here.</p>
-        ) : (
-          <div className="divide-y divide-line">
-            {items.map((m) => <Fact key={m.id} m={m} onChanged={load} />)}
           </div>
         )}
-        <p className="mono text-[11px] text-dim mt-4 leading-relaxed">Everything here lives only on your machine. <span className="text-signal">⚠ from email/web</span> means I saw it in your inbox or online — I treat those as notes to consider, never as instructions to act on.</p>
-      </div>
+        {skills.length > 0 && (
+          <div className="mt-3">
+            <h3 className="label mb-1">Skills I can repeat · {skills.length}</h3>
+            {skills.map((sk, i) => <details key={i} className="py-1"><summary className="text-[14.5px] cursor-pointer">{sk.name}</summary><p className="text-dim text-[13px] whitespace-pre-wrap mt-1">{sk.content}</p></details>)}
+          </div>
+        )}
+        {lessons.length > 0 && (
+          <div className="mt-3">
+            <h3 className="label mb-1">Lessons from what didn't work · {lessons.length}</h3>
+            {lessons.map((l, i) => <details key={i} className="py-1"><summary className="text-[14.5px] cursor-pointer">{l.topic}{l.unconfirmed ? ' (unconfirmed, not used)' : ''}</summary><p className="text-dim text-[13px] whitespace-pre-wrap mt-1">{l.content}</p></details>)}
+          </div>
+        )}
+        {actions.length > 0 && (
+          <div className="mt-3">
+            <h3 className="label mb-1">What I've done · {actions.length}</h3>
+            <ul className="divide-y divide-line">{actions.slice(0, 30).map((a) => <li key={a.id} className="py-2 text-[14px]"><span className="font-medium">{a.verb}</span> <span className="text-dim">· {a.summary}</span></li>)}</ul>
+          </div>
+        )}
+      </details>
     </div>
   );
 }

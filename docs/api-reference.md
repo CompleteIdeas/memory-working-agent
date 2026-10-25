@@ -33,11 +33,19 @@ Concurrency is capped (`MWA_MAX_CONCURRENT`, default 4) — over the cap returns
 ### Schedule
 | Route | Method | Body / effect |
 |---|---|---|
-| `/api/schedule?person=` | GET | `{scheduled:[{id, kind: reminder\|watch\|task, request, instruction, due, recur, when, paused, tainted, allow, goal?, lastRun?, fails?}]}` — this person's jobs; `allow` is `{vault?: [names], click?: [{host, label}]}` or null: what the job may do unattended in the browser (docs/browser.md) |
+| `/api/schedule?person=` | GET | `{scheduled:[{id, kind: reminder\|watch\|task, request, instruction, due, recur, when, paused, tainted, allow, goal?, session?, lastRun?, fails?}]}` — this person's jobs; `session` is the web conversation it reports to (absent for Telegram), so the app shows the job inside the task that set it up; `allow` is `{vault?: [names], click?: [{host, label}]}` or null: what the job may do unattended in the browser (docs/browser.md) |
 | `/api/schedule/cancel` | POST | `{id}` — stops it; undo within ten minutes |
 | `/api/schedule/uncancel` | POST | `{id}` — the undo |
 | `/api/schedule/pause` · `/resume` | POST | `{id}` — a paused job keeps its settings and does not run; resume sets its next natural slot |
 | `/api/schedule/update` | POST | `{id, instruction?, at?, daily_at?, days?, every_minutes?}` — the same fields as the model's `schedule_update` |
+
+### Settings (interface slice 2026-10-25)
+| Route | Method | Body / effect |
+|---|---|---|
+| `/api/vault` | GET | `{entries:[{name, site?, fields:[names], savedAt?}]}` — saved logins and keys, never a value |
+| `/api/vault/forget` | POST | `{name}` — deletes one entry. **Same-origin only.** Saving stays in the vault card the agent opens (BL-63). |
+| `/api/quiet` | GET | `{window: "HH:MM-HH:MM" \| null, timeZone, fixed, invalid}` — quiet hours (BL-07) |
+| `/api/quiet` | POST | `{value: "HH:MM-HH:MM" \| "off"}` — sets or clears them in `mwa.config.json`; refused when `MWA_QUIET_HOURS` fixes the window. **Same-origin only.** |
 
 ## Status & observability
 
@@ -66,7 +74,7 @@ a human can review here instead).
 
 | Route | Method | Body / effect |
 |---|---|---|
-| `/api/approvals` | GET | `{pending:[{id,tool,summary,expiresInSec,expiresAt,tainted,readLocal,kind,session,runId?}], recent:[{id,tool,status,summary,kind,session?,result?,at}], auto:[…]}` — `recent` keeps every ending (done, approved, failed, declined as `cancelled`, expired) for a day |
+| `/api/approvals` | GET | `{pending:[{id,tool,summary,expiresInSec,expiresAt,createdAt,tainted,readLocal,kind,session,runId?}], recent:[{id,tool,status,summary,kind,session?,result?,at,createdAt}], auto:[…]}` — `recent` keeps every ending (done, approved, failed, declined as `cancelled`, expired) for a day |
 | `/api/approvals/confirm` | POST | `{id?}` — execute a pending action (omit id = the single most recent) |
 | `/api/approvals/cancel` | POST | `{id}` — discard a pending action |
 

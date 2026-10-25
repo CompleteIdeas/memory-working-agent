@@ -174,7 +174,7 @@ export function OnboardWizard(props: { onDone: () => void; onSkip?: () => void; 
 
             <div className="flex items-center gap-3 mt-8">
               <button onClick={() => setPhase('sources')} disabled={!goal.trim()}
-                className="rounded-[3px] bg-signal text-white px-6 py-3 font-medium disabled:opacity-40 transition-opacity">Next →</button>
+                className="rounded-[3px] bg-signal text-onsignal px-6 py-3 font-medium disabled:opacity-40 transition-opacity">Next →</button>
               <button onClick={props.onSkip ?? props.onDone} className="text-dim text-sm hover:text-signal transition-colors">Skip for now</button>
             </div>
           </motion.div>
@@ -214,7 +214,7 @@ export function OnboardWizard(props: { onDone: () => void; onSkip?: () => void; 
 
             <div className="flex items-center gap-3 mt-8">
               <button onClick={runScan} disabled={!paths.length}
-                className="rounded-[3px] bg-signal text-white px-6 py-3 font-medium disabled:opacity-40 transition-opacity">Read my docs →</button>
+                className="rounded-[3px] bg-signal text-onsignal px-6 py-3 font-medium disabled:opacity-40 transition-opacity">Read my docs →</button>
               <button onClick={skipToReview} className="text-dim text-sm hover:text-signal transition-colors">Skip — just use my answers</button>
             </div>
           </motion.div>
@@ -259,7 +259,7 @@ export function OnboardWizard(props: { onDone: () => void; onSkip?: () => void; 
                         <textarea value={it.content} rows={Math.min(4, Math.max(1, Math.ceil(it.content.length / 64)))}
                           onChange={(e) => setItems((xs) => xs.map((x) => (x.key === it.key ? { ...x, content: e.target.value } : x)))}
                           className="w-full mt-1 bg-transparent text-[13px] text-dim leading-relaxed outline-none resize-none focus:text-graphite transition-colors" />
-                        {it.source && <div className="mono text-[10px] text-dim/70 mt-1.5 uppercase tracking-[0.15em]">from {it.source}</div>}
+                        {it.source && <div className="mono text-[10px] text-dim mt-1.5 uppercase tracking-[0.15em]">from {it.source}</div>}
                       </div>
                       <button onClick={() => setItems((xs) => xs.map((x) => (x.key === it.key ? { ...x, keep: !x.keep } : x)))}
                         className={`shrink-0 rounded-[3px] border px-2.5 py-1 text-[11px] mono uppercase tracking-[0.1em] transition-colors ${it.keep ? 'border-signal text-signal' : 'border-line text-dim hover:border-signal/60'}`}
@@ -272,7 +272,7 @@ export function OnboardWizard(props: { onDone: () => void; onSkip?: () => void; 
 
             <div className="flex items-center gap-3 mt-8">
               <button onClick={save} disabled={keptCount === 0}
-                className="rounded-[3px] bg-signal text-white px-6 py-3 font-medium disabled:opacity-40 transition-opacity">
+                className="rounded-[3px] bg-signal text-onsignal px-6 py-3 font-medium disabled:opacity-40 transition-opacity">
                 Save {keptCount} {keptCount === 1 ? 'memory' : 'memories'}
               </button>
               <button onClick={() => setPhase('sources')} className="text-dim text-sm hover:text-signal transition-colors">← Add more material</button>
@@ -296,7 +296,7 @@ export function OnboardWizard(props: { onDone: () => void; onSkip?: () => void; 
             </motion.div>
             <h1 className="text-4xl font-semibold tracking-tight leading-[1.05] mb-2">Your memory is warm.</h1>
             <p className="text-dim mb-8">I saved <span className="text-graphite font-medium">{savedCount}</span> {savedCount === 1 ? 'thing' : 'things'} about your project. Ask me anything — I'll recall what's relevant instead of starting from scratch.</p>
-            <button onClick={props.onDone} className="rounded-[3px] bg-signal text-white px-6 py-3 font-medium">Start using MWA →</button>
+            <button onClick={props.onDone} className="rounded-[3px] bg-signal text-onsignal px-6 py-3 font-medium">Start using MWA →</button>
           </motion.div>
         )}
       </AnimatePresence>

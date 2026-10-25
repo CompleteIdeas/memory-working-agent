@@ -1,333 +1,232 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { chatStream, getSuggestions, getNotifications, uploadFile, sessionFolder, fileUrl, startWork, getConversation, getConversations, getWelcome, openConversation, type SpineStep, type ChatResult, type ConversationTurn, type ConversationSummary, type Welcome } from '../api';
-import { Markdown, openFile } from './Markdown';
-import { Approvals } from './Approvals';
+import { getSuggestions, uploadFile, getWelcome, getSources, getLive, type Sources } from '../api';
+import { useStore } from '../store';
 import { SetupCards } from './SetupCards';
-import { ActivitySpine } from './ActivitySpine';
+import { TaskBlock } from './TaskBlock';
+import { CardView } from './TaskParts';
+import { titleOf, whenShort, shortName, type Task } from '../tasks';
 
-/** What an UNATTENDED (scheduled) run did. It has no live step spine — nobody streamed it — so the
- *  card shows these facts from the notification record instead. Absent on records written before
- *  2026-10-14, which carried only the summary. */
-interface SchedFacts { steps: number; toolCalls: number; costUsd: number; files: string[]; reason: string; outcome?: string; completion?: string; }
-/** folder: where the turn's files live, relative to the workspace (BL-70), so its links open them. */
-interface Turn { id: number; user: string; steps: SpineStep[]; live: boolean; result?: ChatResult; error?: string; topicReset?: boolean; sched?: SchedFacts; folder?: string; note?: boolean;
-  /** BL-71b: what became of an offer to work in the background */
-  offerState?: 'sending' | 'started' | 'declined' | 'failed'; offerReply?: string; }
-
-const newSessionId = () => 'web-' + Math.random().toString(36).slice(2, 9);
-function sessionId(): string {
-  let s = localStorage.getItem('mwa-session');
-  if (!s) { s = newSessionId(); localStorage.setItem('mwa-session', s); }
-  return s;
+/** "Since you were last here" (F10): Needs you / Finished / Problem / Coming up, each with one action. */
+function Digest({ since, onClose }: { since: number; onClose: () => void }) {
+  const { allTasks, schedule, openSession } = useStore();
+  const needs = allTasks.filter((t) => t.status === 'needs-you');
+  const recent = (t: Task) => (t.endedAt ?? t.startedAt);
+  const finished = allTasks.filter((t) => t.status === 'done' && ((t.endedAt ?? 0) > since || t.results.some((r) => r.ts > since))).sort((a, b) => recent(b) - recent(a));
+  const problems = allTasks.filter((t) => (t.status === 'failed' || t.status === 'stopped') && (t.endedAt ?? 0) > since);
+  const coming = schedule.filter((j) => !j.paused && j.due < Date.now() + 24 * 3_600_000).slice(0, 4);
+  if (!needs.length && !finished.length && !problems.length && !coming.length) return null;
+  const away = Math.round((Date.now() - since) / 3_600_000);
+  const go = (t: Task) => { openSession(t.session, t.key); };
+  return (
+    <section className="mb-6 rounded-[3px] border border-edge bg-surface px-4 py-3" aria-labelledby="digest-h">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id="digest-h" className="text-[16px] font-semibold">Since you were last here{away >= 1 ? ` · ${away} h` : ''}</h2>
+        <button className="btn small" onClick={onClose}>Mark all seen</button>
+      </div>
+      <ul className="mt-2 space-y-1.5 text-[14.5px]">
+        {needs.slice(0, 3).map((t) => <li key={t.key}><strong>Needs you:</strong> {t.title} <button className="linkbtn" onClick={() => go(t)}>Review</button></li>)}
+        {finished.slice(0, 3).map((t) => <li key={t.key}><strong>Finished:</strong> {t.title} <button className="linkbtn" onClick={() => go(t)}>Open</button></li>)}
+        {problems.slice(0, 3).map((t) => <li key={t.key}><strong>Problem:</strong> {t.title} ({t.status === 'stopped' ? 'stopped' : 'could not finish'}) <button className="linkbtn" onClick={() => go(t)}>See why</button></li>)}
+        {(needs.length > 3 || finished.length > 3 || problems.length > 3) && <li className="text-dim">and {Math.max(0, needs.length - 3) + Math.max(0, finished.length - 3) + Math.max(0, problems.length - 3)} more <button className="linkbtn" onClick={() => window.dispatchEvent(new CustomEvent('mwa-show', { detail: 'tasks' }))}>in Tasks</button></li>}
+        {coming.slice(0, 3).map((j) => <li key={j.id}><strong>Coming up:</strong> {j.request.slice(0, 90)} · {new Date(j.due).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</li>)}
+      </ul>
+    </section>
+  );
 }
 
-/** BL-71d: a kept turn, shown again when the conversation is reopened (here or on another device). */
-function restoredTurn(t: ConversationTurn): Turn {
-  // A `running` turn is a run still going on the server (F09, 2026-10-24): the page can re-attach to it at
-  // /api/chat/attach; until that lands in the interface slice, it is shown as still in progress.
-  const running = t.kind === 'running';
-  return {
-    id: t.ts, user: t.kind === 'result' ? `⏰ ${t.message}` : t.message, steps: [], live: false, folder: sessionFolder(t.session), note: t.kind !== 'chat',
-    result: { reason: running ? 'running' : t.reason ?? 'done', summary: running ? 'I\'m still working on this. The answer appears here when it is done — refresh in a moment.' : t.reply, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0 },
-  };
+/** The redirect chooser (F08): a message sent while a task in this conversation runs goes where the person says. */
+function BusyChooser() {
+  const { busy, setBusy, steer, stop, send, newConversation, tasksFor } = useStore();
+  const first = useRef<HTMLButtonElement>(null);
+  const [msg, setMsg] = useState('');
+  useEffect(() => { if (busy) first.current?.focus(); }, [busy]);
+  if (!busy) return null;
+  const running = tasksFor(busy.session).find((t) => t.status === 'working');
+  const title = running?.title ?? (busy.info?.message ? titleOf(busy.info.message) : 'The current task');
+  return (
+    <div className="max-w-3xl mx-auto mb-3 rounded-[3px] border border-signal bg-surface px-3.5 py-3" role="group" aria-label="Where should this message go?">
+      <p className="text-[14.5px]"><strong>“{busy.message.slice(0, 120)}”</strong></p>
+      <p className="text-[14px] text-dim mt-0.5">“{title}” is still working. What should this message do?</p>
+      <div className="flex flex-wrap gap-2 mt-2.5">
+        <button ref={first} className="btn primary" onClick={async () => { const r = await steer(busy.session, busy.message); if (r.ok) setBusy(null); else setMsg(r.message); }}>Add to the running task</button>
+        <button className="btn" onClick={() => { const m = busy.message; setBusy(null); newConversation(); setTimeout(() => send(m), 50); }}>Send separately</button>
+        <button className="btn" onClick={async () => {
+          const m = busy.message, s = busy.session; setMsg('Stopping the running task, then sending this…');
+          await stop(s);
+          // wait for the run to end, then send
+          const t0 = Date.now();
+          const wait = async () => { while (Date.now() - t0 < 120_000) { if (!(await getLive(s))) return; await new Promise((r) => setTimeout(r, 800)); } };
+          await wait(); setBusy(null); setMsg(''); setTimeout(() => send(m, { session: s }), 400);
+        }}>Stop it and send this</button>
+        <button className="btn" onClick={() => setBusy(null)}>Cancel</button>
+      </div>
+      {msg && <p className="text-[13px] text-dim mt-1.5" role="status">{msg}</p>}
+    </div>
+  );
 }
 
-export function Chat({ onActivity }: { onActivity?: () => void }) {
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
+/** "I can read" (F07): the granted folders and the files added to this chat, above the input. */
+function ReadLine({ session, tick }: { session: string; tick: number }) {
+  const [src, setSrc] = useState<Sources | null>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => { void getSources(session).then(setSrc); }, [session, tick]);
+  if (!src) return null;
+  const folders = src.folders.filter((f) => f.readable);
+  return (
+    <div className="max-w-3xl mx-auto mb-2 text-[13px] text-dim">
+      <div className="flex items-center gap-x-2 gap-y-1 min-w-0 overflow-hidden whitespace-nowrap">
+        <span>I can read:</span>
+        {folders.length ? folders.map((f) => <span key={f.path} className="mono text-[12px] border border-line rounded-[3px] px-1.5 py-0.5 text-graphite">{shortName(f.path)} · {f.files}{f.capped ? '+' : ''} files</span>)
+          : <span>{src.preset === 'locked-down' ? 'only this chat\'s files (locked down)' : 'no folders granted yet'}</span>}
+        <span className={`mono text-[12px] border border-line rounded-[3px] px-1.5 py-0.5 text-graphite ${src.added.length ? '' : 'hidden sm:inline'}`}>{src.added.length ? `${src.added.length} file${src.added.length > 1 ? 's' : ''} you added here` : 'files you add here'}</span>
+        <button className="linkbtn text-[13px]" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'less' : 'details'}</button>
+      </div>
+      {open && (
+        <p className="mt-1">
+          {folders.map((f) => <span key={f.path}>{shortName(f.path)} is a folder you granted: I read it freely; any change to it needs your approval. </span>)}
+          {src.added.length > 0 && <>Added here: {src.added.map(shortName).join(', ')}. </>}
+          Change folders in <button className="linkbtn" onClick={() => window.dispatchEvent(new CustomEvent('mwa-show', { detail: 'settings' }))}>Settings</button>.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Conversations({ onPick }: { onPick: () => void }) {
+  const { convs, turns, openSession, session } = useStore();
+  const [q, setQ] = useState('');
+  const rows = convs.map((c) => {
+    const first = (turns[c.session] ?? []).find((t) => t.kind !== 'result');
+    return { ...c, title: first ? titleOf(first.message) : c.title };
+  }).filter((c) => !q || `${c.title} ${c.lastMessage}`.toLowerCase().includes(q.toLowerCase()));
+  return (
+    <div className="mb-6 border-y border-line py-2">
+      <label className="sr-only" htmlFor="conv-q">Find a conversation</label>
+      <input id="conv-q" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a conversation…" className="w-full rounded-[3px] border border-edge bg-surface px-3 py-2 text-[14px] mb-1" />
+      <ul className="divide-y divide-line max-h-[50vh] overflow-y-auto">
+        {!rows.length && <li className="py-2.5 text-[14px] text-dim">{convs.length ? 'Nothing matches.' : 'No earlier conversations yet.'}</li>}
+        {rows.map((c) => (
+          <li key={c.session}>
+            <button onClick={() => { openSession(c.session); onPick(); }} aria-current={c.session === session} className="w-full text-left py-2.5 px-1 group">
+              <span className={`block truncate text-[15px] group-hover:text-signal ${c.session === session ? 'font-semibold' : ''}`}>{c.title}</span>
+              <span className="block text-[12px] text-dim truncate">{whenShort(c.last)} · {c.turns} message{c.turns === 1 ? '' : 's'}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export function Chat() {
+  const store = useStore();
+  const { session, tasksFor, send, newConversation, focus, looseCards, status } = store;
+  const tasks = tasksFor(session);
   const [input, setInput] = useState('');
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
-  const toggleExpand = (id: number) => setExpanded((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const session = useRef(sessionId());
-  // Re-read pending approvals whenever a turn or a scheduled result lands (BL-03).
-  const [approvalTick, setApprovalTick] = useState(0);
-  const feedEnd = useRef<HTMLDivElement>(null);
-
-  useEffect(() => { getSuggestions().then(setSuggestions); }, []);
-
-  // BL-71d: conversations kept on the server — reopen this one on load, list the rest, start a new one.
-  const [convs, setConvs] = useState<ConversationSummary[]>([]);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
   const [showConvs, setShowConvs] = useState(false);
-  const [elsewhere, setElsewhere] = useState<{ session: string; title: string }[]>([]);
-  const loadedThrough = useRef(0);
-  // BL-71e: back after a while — what moved meanwhile. Shown once per return, dismissable.
-  const [welcome, setWelcome] = useState<Welcome | null>(null);
+  const [uploadTick, setUploadTick] = useState(0);
+  const [uploading, setUploading] = useState(false);
+  const [welcomeSince, setWelcomeSince] = useState<number | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const feedEnd = useRef<HTMLDivElement>(null);
+  useEffect(() => { void getSuggestions().then((s) => setSuggestions(s.filter((x) => !/inbox|email|gmail|outlook/i.test(x)).slice(0, 3))); }, []);
+
+  // back after a while (hidden or closed for 2 h+): the digest, once per return
   useEffect(() => {
-    // Away = the page was hidden or closed, not just idle in a background tab (BL-71e review).
     const read = () => { try { return Number(localStorage.getItem('mwa-last-seen') ?? 0); } catch { return 0; } };
     const mark = () => { try { localStorage.setItem('mwa-last-seen', String(Date.now())); } catch { /* */ } };
-    const check = () => {
-      const last = read();
-      if (last && Date.now() - last > 2 * 3_600_000) void getWelcome(last).then((w) => { if (w && (w.results.length || w.goals.length || w.thoughts.length || w.approvals)) setWelcome(w); });
-      mark();
-    };
+    const check = () => { const last = read(); if (last && Date.now() - last > 2 * 3_600_000) { void getWelcome(last); setWelcomeSince(last); } mark(); };
     check();
     const onVis = () => { if (document.visibilityState === 'visible') check(); else mark(); };
     document.addEventListener('visibilitychange', onVis); window.addEventListener('pagehide', mark);
     return () => { document.removeEventListener('visibilitychange', onVis); window.removeEventListener('pagehide', mark); };
   }, []);
-  const opened = useRef<Promise<void>>(Promise.resolve());
-  async function openSession(s: string) {
-    session.current = s;
-    localStorage.setItem('mwa-session', s);
-    setShowConvs(false);
-    setElsewhere((e) => e.filter((x) => x.session !== s));
-    const kept = await getConversation(s);
-    loadedThrough.current = Math.max(loadedThrough.current, ...kept.map((t) => t.ts), 0);
-    setTurns(kept.map(restoredTurn));
-  }
-  function newConversation() { session.current = newSessionId(); localStorage.setItem('mwa-session', session.current); setTurns([]); setShowConvs(false); }
+
+  // a task picked in the rail or the digest: scroll to it
+  const [lit, setLit] = useState<string | null>(null);
   useEffect(() => {
-    opened.current = openSession(session.current);
-    const open = (e: Event) => void openSession(String((e as CustomEvent).detail));
-    window.addEventListener('mwa-open-conversation', open); return () => window.removeEventListener('mwa-open-conversation', open);
-  }, []);
-  useEffect(() => { if (showConvs) void getConversations().then(setConvs); }, [showConvs]);
+    if (!focus) return;
+    const t = setTimeout(() => { const el = document.getElementById(`task-${focus.key}`); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); setLit(focus.key); setTimeout(() => setLit(null), 2500); } }, 250);
+    return () => clearTimeout(t);
+  }, [focus]);
+  const n = tasks.length + tasks.reduce((a, t) => a + t.revisions.length, 0);
+  const lastLive = tasks.some((t) => t.status === 'working');
+  useEffect(() => { if (!focus || Date.now() - focus.n > 3000) feedEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [n, session, lastLive]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Proactive delivery: surface fired scheduled-task results in the chat (on open + every 20s). A result for
-  // another conversation (BL-71) is announced here and kept in that one, not mixed into this one.
-  useEffect(() => {
-    let seen = Number(localStorage.getItem('mwa-notify-seen') ?? 0);
-    const check = async () => {
-      await opened.current; // the reopened conversation first, so its results aren't shown twice
-      const all = await getNotifications(seen);
-      if (!all.length) return;
-      seen = Math.max(seen, ...all.map((n) => n.ts));
-      localStorage.setItem('mwa-notify-seen', String(seen));
-      const others = all.filter((n) => n.session && n.session !== session.current && !n.session.startsWith('tg-'));
-      if (others.length) setElsewhere((e) => [...e.filter((x) => !others.some((n) => n.session === x.session)), ...others.map((n) => ({ session: n.session!, title: n.title ?? n.instruction.slice(0, 80) }))]);
-      // already shown when this conversation was reopened from the server
-      const notes = all.filter((n) => !(n.session && n.session !== session.current) && !(n.session && n.ts <= loadedThrough.current));
-      if (!notes.length) { setApprovalTick((x) => x + 1); return; }
-      setTurns((prev) => [...prev, ...notes.map((n) => ({
-        id: n.ts, user: `⏰ ${n.title ? n.title : `Scheduled · ${n.instruction}`}`, steps: [] as SpineStep[], live: false, folder: n.folder,
-        result: {
-          reason: n.reason ?? 'done', summary: n.summary, steps: n.steps ?? 0,
-          dispatches: 0, toolCalls: n.toolCalls ?? 0, costUsd: n.costUsd ?? 0,
-        } as ChatResult,
-        // The card used to read `what I did · ${steps.length} steps` off a spine that a scheduled
-        // run never has, so every autonomous run said "0 steps" — even one that did 7 steps and
-        // wrote a file. Carry the record's facts so the card can show them.
-        sched: n.steps === undefined ? undefined : {
-          steps: n.steps, toolCalls: n.toolCalls ?? 0, costUsd: n.costUsd ?? 0,
-          files: n.files ?? [], reason: n.reason ?? 'done', outcome: n.outcome, completion: n.completion,
-        },
-      }))]);
-      setApprovalTick((x) => x + 1);
-    };
-    check();
-    const iv = setInterval(check, 20000);
-    return () => clearInterval(iv);
-  }, []);
-  useEffect(() => { feedEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [turns]);
-
-  function send(text: string, opts: { stay?: boolean } = {}) {
-    const t = text.trim();
-    if (!t) return;
-    setInput('');
-    const id = Date.now();
-    setTurns((prev) => [...prev, { id, user: t, steps: [], live: true, folder: sessionFolder(session.current) }]);
-    let stepId = 0;
-    const patch = (fn: (turn: Turn) => Turn) => setTurns((prev) => prev.map((tn) => (tn.id === id ? fn(tn) : tn)));
-    chatStream(t, session.current, {
-      onStep: (s) => patch((tn) => ({ ...tn, steps: [...tn.steps, { ...s, id: stepId++ }] })),
-      onResult: (r) => { patch((tn) => ({ ...tn, live: false, result: r })); setApprovalTick((x) => x + 1); onActivity?.(); },
-      onError: (m) => patch((tn) => ({ ...tn, live: false, error: m })),
-      // Show a "new topic" marker only when we actually set aside an earlier conversation
-      // (not on the first message of a session) — so the user understands the reset.
-      onTopic: (tp) => { if (tp.relation === 'fresh' && tp.hadContext) patch((tn) => ({ ...tn, topicReset: true })); },
-    }, opts);
+  function submit() {
+    const t = input.trim(); if (!t) return;
+    if (send(t) === 'sent') setInput(''); else setInput('');
   }
-
-  // BL-71b: answer an offer to work in the background.
-  async function answerOffer(tn: Turn, work: boolean) {
-    const message = tn.result?.offer?.message ?? tn.user;
-    const set = (fn: (x: Turn) => Turn) => setTurns((prev) => prev.map((x) => (x.id === tn.id ? fn(x) : x)));
-    if (!work) { set((x) => ({ ...x, offerState: 'declined' })); send(message, { stay: true }); return; }
-    set((x) => ({ ...x, offerState: 'sending' }));
-    const r = await startWork(message, session.current);
-    set((x) => ({ ...x, offerState: r.ok ? 'started' : 'failed', offerReply: r.message }));
-    onActivity?.();
-  }
-
-  // BL-70: add a file to this chat. It is saved in the chat's folder (uploads/), and the next
-  // request is told it is there.
-  const picker = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
   async function attach(files: FileList | null) {
     if (!files?.length) return;
     setUploading(true);
     for (const f of Array.from(files)) {
-      const r = await uploadFile(f, session.current);
-      const id = Date.now() + Math.random();
-      setTurns((prev) => [...prev, r.ok && r.path
-        ? { id, user: `📎 Added ${f.name}`, steps: [], live: false, note: true, result: { reason: 'done', summary: `Saved as [${r.path.split('/').pop()}](${r.path}). Ask me to use it.`, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0 } as ChatResult, folder: sessionFolder(session.current) }
-        : { id, user: `📎 ${f.name}`, steps: [], live: false, note: true, error: r.message ?? 'Could not add that file.' }]);
+      const r = await uploadFile(f, session);
+      store.toast(r.ok ? `Added ${f.name} to this conversation. Ask me to use it.` : (r.message ?? `Could not add ${f.name}.`));
     }
-    setUploading(false);
+    setUploading(false); setUploadTick((x) => x + 1);
     if (picker.current) picker.current.value = '';
   }
-
-  const empty = turns.length === 0;
+  const title = tasks[0]?.title ?? 'New conversation';
+  const empty = tasks.length === 0;
+  const telegram = !!status?.telegram;
 
   return (
-    <div className="flex flex-col min-h-[calc(100vh-61px)]">
-      <div className="flex-1 py-8">
-        {/* BL-71d: go back to an earlier conversation (from any device), or start a new one. */}
-        <div className="flex items-center gap-3 mb-6 mono text-[11px] uppercase tracking-[0.12em]">
-          <button onClick={() => setShowConvs(!showConvs)} className="text-dim hover:text-signal">{showConvs ? 'hide conversations' : 'conversations ▾'}</button>
-          <button onClick={newConversation} className="text-dim hover:text-signal">+ new</button>
+    <div className="flex flex-col min-h-[calc(100dvh-57px)] lg:min-h-[calc(100dvh-57px)]">
+      <div className="flex-1 pt-5 pb-6">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-4">
+          <h1 className="text-[14px] text-dim min-w-0 truncate flex-1"><span className="sr-only">Conversation: </span>{empty ? 'New conversation' : title}</h1>
+          <button className="btn small" aria-expanded={showConvs} onClick={() => setShowConvs(!showConvs)}>Conversations</button>
+          <button className="btn small" onClick={() => { newConversation(); setTimeout(() => inputRef.current?.focus(), 50); }}>+ New</button>
         </div>
-        {showConvs && (
-          <ul className="mb-6 divide-y divide-line border-y border-line">
-            {!convs.length && <li className="py-2.5 text-[14px] text-dim">No earlier conversations kept yet.</li>}
-            {convs.map((c) => (
-              <li key={c.session}>
-                <button onClick={() => void openSession(c.session)} className={`w-full text-left py-2.5 group ${c.session === session.current ? 'text-signal' : ''}`}>
-                  <div className="truncate text-[15px] group-hover:text-signal">{c.title}</div>
-                  <div className="mono text-[11px] text-dim truncate">{new Date(c.last).toLocaleString()} · {c.turns} turn{c.turns === 1 ? '' : 's'}{c.turns > 1 ? ` · last: ${c.lastMessage}` : ''}</div>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        {welcome && (
-          <div className="mb-6 rounded-[3px] border border-signal px-3.5 py-3 text-[14px]">
-            <div className="flex items-baseline justify-between gap-3 mb-1.5">
-              <span className="mono text-[11px] uppercase tracking-[0.14em] text-signal">welcome back · since {new Date(welcome.since).toLocaleString()}</span>
-              <button onClick={() => setWelcome(null)} className="mono text-[11px] text-dim hover:text-signal">close</button>
-            </div>
-            <ul className="space-y-1.5">
-              {welcome.goals.map((g) => (
-                <li key={g.id}><strong>{g.title}</strong>: {g.state}{g.conv && <> · <button onClick={() => { openConversation(g.conv!); setWelcome(null); }} className="underline hover:text-signal">open</button></>}</li>
-              ))}
-              {welcome.results.length > 0 && <li>{welcome.results.length} result{welcome.results.length > 1 ? 's' : ''} came in: {welcome.results.map((r) => r.title).slice(0, 3).join('; ')}</li>}
-              {welcome.thoughts.filter((t) => t.kind === 'ask').map((t, i) => <li key={i}>Question on <strong>{t.title}</strong>: {t.text}</li>)}
-              {welcome.approvals > 0 && <li>{welcome.approvals} action{welcome.approvals > 1 ? 's' : ''} waiting for your approval, below.</li>}
-            </ul>
-          </div>
-        )}
-        {elsewhere.map((e) => (
-          <div key={e.session} className="mb-4 flex flex-wrap items-center gap-2 rounded-[3px] border border-signal px-3 py-2 text-[14px]">
-            <span className="flex-1 min-w-[180px]">⏰ Done in another conversation: {e.title}</span>
-            <button onClick={() => void openSession(e.session)} className="mono text-[11px] uppercase tracking-wide underline hover:text-signal">open it</button>
-          </div>
-        ))}
+        {showConvs && <Conversations onPick={() => setShowConvs(false)} />}
+        {welcomeSince && <Digest since={welcomeSince} onClose={() => setWelcomeSince(null)} />}
         {empty ? (
-          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }}>
-            <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-3">ready</div>
-            <h2 className="text-3xl sm:text-[34px] font-semibold tracking-tight leading-[1.08] mb-2">What can I help you with?</h2>
-            <p className="text-dim mb-7 max-w-lg">Ask in plain words. You'll watch me remember, look things up, and do the work.</p>
-            <div className="flex flex-wrap gap-2">
-              {suggestions.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => send(s)}
-                  className="rounded-[3px] border border-line bg-surface px-3.5 py-2 text-[14px] hover:border-signal hover:text-signal transition-colors"
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
+          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }} className="pt-6">
+            <h2 className="text-3xl sm:text-[34px] font-semibold tracking-tight leading-[1.08] mb-2">What should I work on?</h2>
+            <p className="text-dim mb-6 max-w-lg">Ask in plain words. A quick question gets its answer here; a longer job can run in the background and shows up under Tasks.</p>
+            {suggestions.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {suggestions.map((s) => <button key={s} className="btn" onClick={() => send(s)}>{s}</button>)}
+              </div>
+            )}
           </motion.div>
         ) : (
           <div className="divide-y divide-line">
-            {turns.map((tn) => (
-              <div key={tn.id} className="py-5 first:pt-0">
-                {/* New-topic marker: MWA set aside the earlier conversation and started fresh.
-                    Tells a non-technical user why it isn't carrying the previous thread. */}
-                {tn.topicReset && (
-                  <div className="flex items-center gap-2.5 mono text-[10.5px] text-dim mb-4 uppercase tracking-[0.16em]" title="This looked like a new request, so I started fresh. If it's about the earlier chat, just say so and I'll pick it back up.">
-                    <span className="h-px flex-1 bg-line" />
-                    <span className="whitespace-nowrap">↻ new topic · earlier chat set aside</span>
-                    <span className="h-px flex-1 bg-line" />
-                  </div>
-                )}
-                <div className="flex gap-2 items-baseline mb-3">
-                  <span className="mono text-[11px] text-signal mt-0.5">YOU</span>
-                  <span className="text-[15.5px] leading-snug">{tn.user}</span>
-                </div>
-                {/* While working: a compact one-line indicator, not the full step list. */}
-                {tn.live && (
-                  <div className="flex items-center gap-2 mono text-[13px] text-dim">
-                    <motion.span className="inline-block w-[7px] h-[14px] bg-signal translate-y-[2px]" animate={{ opacity: [1, 0.2, 1] }} transition={{ repeat: Infinity, duration: 1 }} />
-                    <span>{tn.steps.length ? tn.steps[tn.steps.length - 1].label : 'Working'}…</span>
-                    <button onClick={() => toggleExpand(tn.id)} className="underline hover:text-signal ml-1">{expanded.has(tn.id) ? 'hide' : 'details'}</button>
-                  </div>
-                )}
-                {tn.result && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}
-                    className="mt-1 border-l-2 border-signal pl-3"
-                  >
-                    <div className="mono text-[11px] text-dim mb-1">MWA</div>
-                    <Markdown text={tn.result.summary} folder={tn.folder} />
-                    {tn.result.offer && (
-                      // BL-71b: the person decides where the work happens.
-                      !tn.offerState || tn.offerState === 'sending' ? (
-                        <div className="flex flex-wrap gap-2 mt-3">
-                          <button disabled={tn.offerState === 'sending'} onClick={() => void answerOffer(tn, true)} className="rounded-[3px] bg-signal text-white px-3.5 py-2 text-[14px] font-medium hover:opacity-90 disabled:opacity-50">{tn.offerState === 'sending' ? 'Starting…' : 'Work on it, get back to me'}</button>
-                          <button disabled={tn.offerState === 'sending'} onClick={() => void answerOffer(tn, false)} className="rounded-[3px] border border-line bg-surface px-3.5 py-2 text-[14px] hover:border-signal hover:text-signal disabled:opacity-50">Do it now, I'll wait</button>
-                        </div>
-                      ) : (
-                        <div className={`mono text-[12px] mt-2 ${tn.offerState === 'failed' ? 'text-signal' : 'text-dim'}`}>
-                          {tn.offerState === 'declined' ? 'Doing it now, below.' : tn.offerReply}
-                        </div>
-                      )
-                    )}
-                    {tn.sched ? (
-                      // Unattended run: no spine to expand, so state the facts outright.
-                      <div className="mono text-[11px] text-dim mt-2 break-words">
-                        ran unattended · {tn.sched.steps} step{tn.sched.steps === 1 ? '' : 's'} · {tn.sched.toolCalls} tool call{tn.sched.toolCalls === 1 ? '' : 's'} · ${tn.sched.costUsd.toFixed(3)}
-                        {tn.sched.reason !== 'done' && <span className="text-signal"> · stopped: {tn.sched.reason}</span>}
-                        {tn.sched.outcome === 'could-not' && <span className="text-signal"> · couldn't finish</span>}
-                        {tn.sched.outcome === 'no-change' && <span> · nothing new</span>}
-                        {tn.sched.completion === 'candidate' && <span> · looks finished — confirming</span>}
-                        {tn.sched.completion === 'stopped' && <span> · finished, job stopped</span>}
-                        {tn.sched.outcome === 'blocked' && tn.sched.reason === 'done' && <span className="text-signal"> · needs you</span>}
-                        {tn.sched.outcome === 'complete' && !tn.sched.completion && <span> · finished</span>}
-                        {tn.sched.files.length
-                          ? <span> · wrote {tn.sched.files.map((f, j) => <span key={f}>{j > 0 && ', '}{tn.folder ? <a href={fileUrl(`${tn.folder}/${f}`)} target="_blank" rel="noreferrer" onClick={(e) => { e.preventDefault(); openFile(`${tn.folder}/${f}`); }} className="underline hover:text-signal">{f}</a> : f}</span>)}</span>
-                          : <span> · no files</span>}
-                      </div>
-                    ) : tn.note || tn.result.offer ? null : (
-                      <button onClick={() => toggleExpand(tn.id)} className="mono text-[11px] text-dim mt-2 underline hover:text-signal">
-                        {expanded.has(tn.id) ? 'hide steps' : `what I did · ${tn.steps.length} steps`}
-                      </button>
-                    )}
-                  </motion.div>
-                )}
-                {/* Collapsible full timeline (hidden by default in this interactive view). */}
-                {expanded.has(tn.id) && (
-                  <div className="mt-2 pl-1 border-l border-line">
-                    <ActivitySpine steps={tn.steps} live={false} />
-                  </div>
-                )}
-                {tn.error && <div className="mt-3 mono text-[13px] text-signal">! {tn.error}</div>}
-              </div>
-            ))}
+            {tasks.map((t) => <TaskBlock key={t.key} task={t} highlight={lit === t.key} />)}
           </div>
+        )}
+        {looseCards.length > 0 && (
+          <section className="mt-6" aria-label="Decisions from elsewhere">
+            <h2 className="label">waiting for you, from a scheduled run or another channel</h2>
+            {looseCards.map((p) => <CardView key={p.id} telegram={telegram} card={{ id: p.id, tool: p.tool, summary: p.summary, kind: p.kind, state: 'pending', expiresAt: p.expiresAt ?? Date.now() + p.expiresInSec * 1000, session: p.session, tainted: p.tainted, readLocal: p.readLocal, dupes: [] }} />)}
+          </section>
         )}
         <div ref={feedEnd} />
       </div>
 
-      <div className="sticky bottom-0 bg-bone/95 backdrop-blur py-4 -mx-4 px-4 sm:-mx-6 sm:px-6 border-t border-line">
-        <SetupCards refresh={approvalTick} />
-        <Approvals refresh={approvalTick} />
-        <div className="flex gap-2 max-w-3xl mx-auto">
-          <input
-            value={input}
+      <div className="sticky bottom-[64px] lg:bottom-0 bg-bone/95 backdrop-blur pt-3 pb-3 -mx-4 px-4 sm:-mx-6 sm:px-6 border-t border-line z-10">
+        <SetupCards refresh={uploadTick} />
+        <BusyChooser />
+        <ReadLine session={session} tick={uploadTick} />
+        <form className="flex gap-2 max-w-3xl mx-auto" onSubmit={(e) => { e.preventDefault(); submit(); }}>
+          <label htmlFor="msg" className="sr-only">Message MWA</label>
+          <textarea
+            id="msg" ref={inputRef} rows={1} value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); send(input); } }}
-            placeholder="Type a request…"
-            className="flex-1 rounded-[3px] border border-line bg-surface px-4 py-3 text-[15px] outline-none focus:border-signal transition-colors"
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
+            placeholder="Ask, or give MWA a job…"
+            className="flex-1 min-w-0 resize-none rounded-[3px] border border-edge bg-surface px-4 py-3 text-[15px] outline-none focus:border-signal leading-snug max-h-40"
           />
-          <input ref={picker} type="file" multiple className="hidden" onChange={(e) => void attach(e.target.files)} />
-          <button onClick={() => picker.current?.click()} disabled={uploading} aria-label="Add a file" title="Add a file to this chat" className="rounded-[3px] border border-line bg-surface px-3 text-[17px] text-dim hover:border-signal hover:text-signal transition-colors disabled:opacity-50">{uploading ? '…' : '📎'}</button>
-          <button onClick={() => send(input)} aria-label="Send" className="rounded-[3px] bg-signal text-white px-5 text-lg font-medium hover:opacity-90 transition-opacity">→</button>
-        </div>
+          <input ref={picker} type="file" multiple className="hidden" onChange={(e) => void attach(e.target.files)} aria-hidden="true" tabIndex={-1} />
+          <button type="button" onClick={() => picker.current?.click()} disabled={uploading} aria-label="Add a file to this conversation" title="Add a file" className="btn shrink-0 !min-h-[48px] !px-3 text-[17px]">{uploading ? '…' : '📎'}</button>
+          <button type="submit" aria-label="Send" className="btn primary shrink-0 !min-h-[48px] !px-5 text-lg">→</button>
+        </form>
       </div>
     </div>
   );
 }
+

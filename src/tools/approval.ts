@@ -374,15 +374,15 @@ function inScope(a: PendingAction, scope: { session?: string; personId?: string 
 
 /** What happened recently to actions approved elsewhere — waiting for their own app, or failed — so
  *  the person isn't left with "[APPROVED]" and nothing after it (BL-18 review). Last 24 hours. */
-export function recentApprovalOutcomes(): { id: string; tool: string; status: ApprovalStatus; owner: string; summary: string; kind: ApprovalKind; session?: string; result?: string; at: number }[] {
+export function recentApprovalOutcomes(): { id: string; tool: string; status: ApprovalStatus; owner: string; summary: string; kind: ApprovalKind; session?: string; result?: string; at: number; createdAt: number }[] {
   prune();
   // Every ending, with the card's words, for a day (F02, 2026-10-24): an expired or declined card used to vanish
   // with no trace, and the chat still said "approve it in the app".
   const rows = store().prepare(`SELECT * FROM approvals WHERE status IN ('approved','failed','done','cancelled','expired') AND auto IS NULL AND updated_at > ? ORDER BY updated_at DESC LIMIT 40`).all(Date.now() - CLEAR_MS) as Row[];
-  return rows.map((r) => { const a = toAction(r); return { id: r.id, tool: r.tool, status: r.status as ApprovalStatus, owner: ownerLabel(r.owner), summary: r.summary, kind: a.kind ?? 'tool', ...(a.session ? { session: a.session } : {}), ...(r.result ? { result: r.result.slice(0, 300) } : {}), at: r.updated_at }; });
+  return rows.map((r) => { const a = toAction(r); return { id: r.id, tool: r.tool, status: r.status as ApprovalStatus, owner: ownerLabel(r.owner), summary: r.summary, kind: a.kind ?? 'tool', ...(a.session ? { session: a.session } : {}), ...(r.result ? { result: r.result.slice(0, 300) } : {}), at: r.updated_at, createdAt: r.created_at }; });
 }
 
-export interface PendingView { id: string; tool: string; summary: string; expiresInSec: number; expiresAt: number; tainted: boolean; readLocal: boolean; kind: ApprovalKind; session?: string; runId?: string; }
+export interface PendingView { id: string; tool: string; summary: string; expiresInSec: number; expiresAt: number; tainted: boolean; readLocal: boolean; kind: ApprovalKind; session?: string; runId?: string; /** when it was staged, so the app can place the card in the task that raised it */ createdAt: number; }
 
 /** List pending actions, newest first. With `scope`, only those from that session or person — the
  *  model's own list/cancel tools are scoped (BL-03 review); the person's app lists everything. */
@@ -392,7 +392,7 @@ export function listPendingActions(scope?: { session?: string; personId?: string
   const rows = store().prepare(`SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at DESC`).all() as Row[];
   return rows.map(toAction)
     .filter((a) => !scope || inScope(a, scope))
-    .map((a) => ({ id: a.id, tool: a.tool, summary: a.summary, expiresInSec: Math.max(0, Math.round((a.expiresAt - now) / 1000)), expiresAt: a.expiresAt, tainted: a.tainted === true, readLocal: a.readLocal === true, kind: a.kind ?? 'tool', session: a.session, ...(a.runId ? { runId: a.runId } : {}) }));
+    .map((a) => ({ id: a.id, tool: a.tool, summary: a.summary, expiresInSec: Math.max(0, Math.round((a.expiresAt - now) / 1000)), expiresAt: a.expiresAt, tainted: a.tainted === true, readLocal: a.readLocal === true, kind: a.kind ?? 'tool', session: a.session, ...(a.runId ? { runId: a.runId } : {}), createdAt: a.createdAt }));
 }
 
 /** Confirm + execute a pending action by id (omit id → the single most recent). Called only by

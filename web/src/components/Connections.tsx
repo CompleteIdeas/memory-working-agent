@@ -103,7 +103,7 @@ function usePoll() {
 
 const cardCls = 'rounded-[4px] border border-line bg-surface';
 const inputCls = 'w-full rounded-[3px] border border-line bg-bone px-3 py-2 text-sm outline-none focus:border-signal';
-const btnCls = 'rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium disabled:opacity-50';
+const btnCls = 'rounded-[3px] bg-signal text-onsignal px-4 py-2 text-sm font-medium disabled:opacity-50';
 
 /** Connected-state badge + a disconnect link (forgets the credentials on this machine). */
 function Connected({ note, onDisconnect }: { note?: string; onDisconnect: () => Promise<void> }) {
@@ -149,7 +149,7 @@ function AdvancedOAuth({ provider, connected, onDone, hosted }: { provider: Prov
       {ui.steps}
       <div className="space-y-2 pt-1">
         {ui.fields.map((f) => (
-          <input key={f.id} value={vals[f.id] ?? ''} placeholder={f.placeholder}
+          <input aria-label={f.label} key={f.id} value={vals[f.id] ?? ''} placeholder={f.placeholder}
             onChange={(e) => setVals((v) => ({ ...v, [f.id]: e.target.value }))} className={inputCls} />
         ))}
       </div>
@@ -197,8 +197,8 @@ function GmailConnect({ connected, method, onDone, where }: { connected: boolean
             <li>Create an <a className="text-signal underline" href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">App Password</a> — name it “MWA” and copy the 16-letter password.</li>
             <li>Paste your Gmail address and that password below.</li>
           </ol>
-          <input value={user} placeholder="you@gmail.com" onChange={(e) => setUser(e.target.value)} className={inputCls} />
-          <input value={pass} type="password" placeholder="16-letter app password" onChange={(e) => setPass(e.target.value)} className={inputCls} />
+          <input aria-label="Gmail address" value={user} placeholder="you@gmail.com" onChange={(e) => setUser(e.target.value)} className={inputCls} />
+          <input aria-label="Gmail app password" value={pass} type="password" placeholder="16-letter app password" onChange={(e) => setPass(e.target.value)} className={inputCls} />
           <button disabled={busy || !user.trim() || !pass.trim()} onClick={connect} className={btnCls}>{busy ? 'Working…' : 'Connect'}</button>
           {msg && <p className="mono text-[12px] text-dim">{msg}</p>}
           <p className="mono text-[11px] text-dim">{where.hosted ? `Saved only in MWA's own settings on your ${where.host} deploy.` : 'Stays on this computer.'} Works for personal Gmail (not accounts on Advanced Protection). Calendar needs the Google sign-in option below.</p>
@@ -289,7 +289,7 @@ function TelegramConnect({ connected, onDone }: { connected: boolean; onDone: ()
         <div><div className="font-medium">Telegram</div><div className="text-dim text-sm">Chat with it from your phone</div></div>
         {connected
           ? <Connected onDisconnect={async () => { await disconnectService('telegram'); onDone(); }} />
-          : <button onClick={() => setOpen((o) => !o)} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium">{open ? 'Cancel' : 'Set up'}</button>}
+          : <button onClick={() => setOpen((o) => !o)} className="rounded-[3px] bg-signal text-onsignal px-4 py-2 text-sm font-medium">{open ? 'Cancel' : 'Set up'}</button>}
       </div>
       {open && !connected && (
         <div className="border-t border-line px-4 py-4 space-y-3">
@@ -297,9 +297,9 @@ function TelegramConnect({ connected, onDone }: { connected: boolean; onDone: ()
             <li>In Telegram, message <a className="text-signal underline" href="https://t.me/BotFather" target="_blank" rel="noreferrer">@BotFather</a> and send <span className="mono text-[12px]">/newbot</span>.</li>
             <li>Copy the <b>bot token</b> it gives you and paste it below.</li>
           </ol>
-          <input value={token} placeholder="123456789:ABCdef…" onChange={(e) => setToken(e.target.value)}
+          <input aria-label="Telegram bot token" value={token} placeholder="123456789:ABCdef…" onChange={(e) => setToken(e.target.value)}
             className="w-full rounded-[3px] border border-line bg-bone px-3 py-2 text-sm outline-none focus:border-signal" />
-          <button disabled={busy || !token.trim()} onClick={save} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium disabled:opacity-50">
+          <button disabled={busy || !token.trim()} onClick={save} className="rounded-[3px] bg-signal text-onsignal px-4 py-2 text-sm font-medium disabled:opacity-50">
             {busy ? 'Working…' : 'Save & connect'}
           </button>
           {msg && <p className="mono text-[12px] text-dim">{msg}</p>}
@@ -332,7 +332,7 @@ function TailscaleConnect({ onDone, saved, hosted }: { onDone: () => void; saved
         <div><div className="font-medium">Tailscale</div><div className="text-dim text-sm">Reach a cloud deploy privately — no public port</div></div>
         <div className="flex items-center gap-3 shrink-0">
           {saved && <span className="mono text-[12px] text-signal">key saved ✓</span>}
-          <button onClick={() => { setMsg(''); setOpen((o) => !o); }} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium">{open ? 'Cancel' : (saved ? 'Change' : 'Set up')}</button>
+          <button onClick={() => { setMsg(''); setOpen((o) => !o); }} className="rounded-[3px] bg-signal text-onsignal px-4 py-2 text-sm font-medium">{open ? 'Cancel' : (saved ? 'Change' : 'Set up')}</button>
         </div>
       </div>
       {open && (
@@ -342,11 +342,11 @@ function TailscaleConnect({ onDone, saved, hosted }: { onDone: () => void; saved
             <li>In the <a className="text-signal underline" href="https://login.tailscale.com/admin/settings/keys" target="_blank" rel="noreferrer">Tailscale admin → Settings → Keys</a>, <b>Generate auth key</b> (not the management API key).</li>
             <li>Paste the <span className="mono text-[12px]">tskey-auth-…</span> key below. It takes effect on the next restart.</li>
           </ol>
-          <input value={key} placeholder="tskey-auth-…" onChange={(e) => setKey(e.target.value)}
+          <input aria-label="Tailscale auth key" value={key} placeholder="tskey-auth-…" onChange={(e) => setKey(e.target.value)}
             className="w-full rounded-[3px] border border-line bg-bone px-3 py-2 text-sm outline-none focus:border-signal" />
-          <input value={hostname} placeholder="hostname (optional, e.g. mwa)" onChange={(e) => setHostname(e.target.value)}
+          <input aria-label="Tailscale hostname" value={hostname} placeholder="hostname (optional, e.g. mwa)" onChange={(e) => setHostname(e.target.value)}
             className="w-full rounded-[3px] border border-line bg-bone px-3 py-2 text-sm outline-none focus:border-signal" />
-          <button disabled={busy || !key.trim()} onClick={save} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium disabled:opacity-50">
+          <button disabled={busy || !key.trim()} onClick={save} className="rounded-[3px] bg-signal text-onsignal px-4 py-2 text-sm font-medium disabled:opacity-50">
             {busy ? 'Working…' : 'Save key'}
           </button>
           {msg && <p className="mono text-[12px] text-dim">{msg}</p>}
@@ -377,7 +377,7 @@ function MemoryStorageCard({ storage, onDone, where }: { storage: StorageBackend
     <div className="rounded-[4px] border border-line bg-surface">
       <div className="flex items-center justify-between gap-3 px-4 py-3">
         <div><div className="font-medium">Memory storage</div><div className="text-dim text-sm">{isPg ? 'Database server (Postgres)' : where.hosted ? `A file on your ${where.host} deploy · private to it` : 'This computer · private'}</div></div>
-        <button onClick={() => { setMsg(''); setOpen((o) => !o); }} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium">{open ? 'Cancel' : 'Change'}</button>
+        <button onClick={() => { setMsg(''); setOpen((o) => !o); }} className="rounded-[3px] bg-signal text-onsignal px-4 py-2 text-sm font-medium">{open ? 'Cancel' : 'Change'}</button>
       </div>
       {open && (
         <div className="border-t border-line px-4 py-4 space-y-3">
@@ -390,14 +390,14 @@ function MemoryStorageCard({ storage, onDone, where }: { storage: StorageBackend
           <div className={`rounded-[4px] border px-4 py-3 ${isPg ? 'border-signal' : 'border-line'}`}>
             <div className="font-medium">Database server <span className="mono text-[11px] text-dim">Postgres + pgvector</span></div>
             <div className="text-dim text-sm mb-2">For cloud / always-on / multiple devices. Paste a connection URL — or <a className="text-signal underline" href="https://railway.com/new/template/postgres" target="_blank" rel="noreferrer">spin one up on Railway</a> and copy its DATABASE_URL.</div>
-            <input value={url} placeholder="postgres://user:pass@host:5432/db" onChange={(e) => setUrl(e.target.value)}
+            <input aria-label="Postgres address" value={url} placeholder="postgres://user:pass@host:5432/db" onChange={(e) => setUrl(e.target.value)}
               className="w-full rounded-[3px] border border-line bg-bone px-3 py-2 text-[12px] mono outline-none focus:border-signal" />
             <label className="flex items-center gap-2 mt-2 text-sm text-dim cursor-pointer">
               <input type="checkbox" checked={bringMemory} onChange={(e) => setBringMemory(e.target.checked)} className="accent-[var(--signal,#000)]" />
               Bring my existing memory over (copied before switching — nothing lost if it fails)
             </label>
             <button disabled={busy || !url.trim()} onClick={() => save('postgres')}
-              className="mt-2 rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium disabled:opacity-50">{busy ? (bringMemory ? 'Connecting + copying…' : 'Connecting…') : 'Connect & use'}</button>
+              className="mt-2 rounded-[3px] bg-signal text-onsignal px-4 py-2 text-sm font-medium disabled:opacity-50">{busy ? (bringMemory ? 'Connecting + copying…' : 'Connecting…') : 'Connect & use'}</button>
           </div>
           <p className="text-dim text-[12px]">Changes apply on the next restart. With "bring my memory" on, your current memory is copied into the database first (embeddings included), so you keep everything.</p>
           {msg && <p className="mono text-[12px] text-dim">{msg}</p>}
@@ -442,7 +442,7 @@ function BrainSettings({ brain, onChange, fromEnv }: { brain: Brain; onChange: (
 
   return (
     <div>
-      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">ai brain</div>
+      <h2 className="label mb-2">ai brain</h2>
       <div className={cardCls}>
         <div className="flex items-center justify-between gap-3 px-4 py-3">
           <div className="min-w-0"><div className="font-medium">Model</div><div className="text-dim mono text-[12px] break-all">{brain.provider ? `${brain.provider}:${brain.model}` : 'not set'}</div></div>
@@ -454,12 +454,12 @@ function BrainSettings({ brain, onChange, fromEnv }: { brain: Brain; onChange: (
         ))}
         {open && (
           <div className="border-t border-line px-4 py-4 space-y-3">
-            <select value={provider} onChange={(e) => { setProvider(e.target.value); setModels([]); }} className={inputCls}>
+            <select aria-label="AI provider" value={provider} onChange={(e) => { setProvider(e.target.value); setModels([]); }} className={inputCls}>
               {PROVIDER_OPTIONS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
             </select>
-            {!keyless && <input value={key} type="password" placeholder="API key (leave blank to keep current)" onChange={(e) => setKey(e.target.value)} className={inputCls} />}
+            {!keyless && <input aria-label="API key" value={key} type="password" placeholder="API key (leave blank to keep current)" onChange={(e) => setKey(e.target.value)} className={inputCls} />}
             <div className="flex gap-2">
-              <select value={model} onChange={(e) => setModel(e.target.value)} className={`${inputCls} flex-1`}>
+              <select aria-label="Model" value={model} onChange={(e) => setModel(e.target.value)} className={`${inputCls} flex-1`}>
                 {models.length ? models.map((m) => <option key={m.id} value={m.id}>{m.name || m.id}</option>) : <option value={model}>{model || '(load models)'}</option>}
               </select>
               <button onClick={loadModels} disabled={loading} className="shrink-0 rounded-[3px] border border-line px-3 py-2 text-sm font-medium disabled:opacity-50">{loading ? '…' : 'Load models'}</button>
@@ -506,7 +506,7 @@ function ImageModelSettings({ image, onChange }: { image: Brain; onChange: () =>
 
   return (
     <div>
-      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">image generation</div>
+      <h2 className="label mb-2">image generation</h2>
       <div className={cardCls}>
         <div className="flex items-center justify-between gap-3 px-4 py-3">
           <div><div className="font-medium">Image model</div><div className="text-dim mono text-[12px]">{on ? `${image.provider}:${image.model}` : 'off — pick a model to let it draw'}</div></div>
@@ -518,12 +518,12 @@ function ImageModelSettings({ image, onChange }: { image: Brain; onChange: () =>
         {open && (
           <div className="border-t border-line px-4 py-4 space-y-3">
             <p className="text-dim text-sm">Pick an image model from a provider you use. With it on, you can say “draw me…” / “generate an image of…”.</p>
-            <select value={provider} onChange={(e) => { setProvider(e.target.value); setModels([]); setLoaded(false); }} className={inputCls}>
+            <select aria-label="Image provider" value={provider} onChange={(e) => { setProvider(e.target.value); setModels([]); setLoaded(false); }} className={inputCls}>
               {PROVIDER_OPTIONS.filter((p) => p.id !== 'anthropic').map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
             </select>
-            {!keyless && <input value={key} type="password" placeholder="API key (leave blank to keep current)" onChange={(e) => setKey(e.target.value)} className={inputCls} />}
+            {!keyless && <input aria-label="Image API key" value={key} type="password" placeholder="API key (leave blank to keep current)" onChange={(e) => setKey(e.target.value)} className={inputCls} />}
             <div className="flex gap-2">
-              <select value={model} onChange={(e) => setModel(e.target.value)} className={`${inputCls} flex-1`} disabled={!models.length}>
+              <select aria-label="Image model" value={model} onChange={(e) => setModel(e.target.value)} className={`${inputCls} flex-1`} disabled={!models.length}>
                 {models.length ? models.map((m) => <option key={m.id} value={m.id}>{m.name || m.id}</option>) : <option value={model}>{model || '(load image models)'}</option>}
               </select>
               <button onClick={loadModels} disabled={loading} className="shrink-0 rounded-[3px] border border-line px-3 py-2 text-sm font-medium disabled:opacity-50">{loading ? '…' : 'Load models'}</button>
@@ -559,7 +559,7 @@ function EmailLearn({ ready, onDone, where, method }: { ready: boolean; onDone: 
   }
   return (
     <div>
-      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">get to know me</div>
+      <h2 className="label mb-2">get to know me</h2>
       <div className={cardCls}>
         <div className="px-4 py-3">
           <div className="font-medium">Learn about me from my email</div>
@@ -568,7 +568,7 @@ function EmailLearn({ ready, onDone, where, method }: { ready: boolean; onDone: 
         <div className="border-t border-line px-4 py-3 space-y-3">
           <div className="flex items-center gap-2 text-sm">
             <span className="text-dim">Look back</span>
-            <select value={days} onChange={(e) => setDays(Number(e.target.value))} disabled={busy}
+            <select aria-label="How many days of email" value={days} onChange={(e) => setDays(Number(e.target.value))} disabled={busy}
               className="rounded-[3px] border border-line bg-bone px-2 py-1.5 text-sm outline-none focus:border-signal">
               <option value={30}>30 days</option><option value={90}>3 months</option><option value={365}>1 year</option>
             </select>
@@ -588,7 +588,7 @@ function StyleSettings({ style, onChange }: { style: InteractionStyle; onChange:
   async function pick(s: InteractionStyle) { if (s === style) return; setBusy(true); await saveStyle(s); setBusy(false); onChange(); }
   return (
     <div>
-      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">how I work with you</div>
+      <h2 className="label mb-2">how I work with you</h2>
       <div className="space-y-2">
         {STYLE_OPTIONS.map((o) => (
           <button key={o.id} onClick={() => pick(o.id)} disabled={busy}
@@ -612,12 +612,13 @@ export function Connections() {
   const where: Where = { hosted: !!c.hosted, host: c.host || 'your server' };
 
   return (
-    <div className="py-8 max-w-xl space-y-6">
+    <div className="max-w-xl space-y-6">
+      <AccessPanel access={c.access} onChange={load} where={where} />
       <StyleSettings style={c.style} onChange={load} />
       <BrainSettings brain={c.brain} onChange={load} fromEnv={c.modelFromEnv} />
       <ImageModelSettings image={c.imageModel} onChange={load} />
       <div>
-        <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">email & calendar</div>
+        <h2 className="label mb-2">email & calendar</h2>
         <div className="space-y-2">
           <GmailConnect connected={c.gmail} method={c.gmailMethod} onDone={load} where={where} />
           <OutlookConnect connected={c.outlook} easy={c.outlookEasy} onDone={load} hosted={where.hosted} />
@@ -630,14 +631,13 @@ export function Connections() {
       <EmailLearn ready={c.ingestReady} onDone={load} where={where} method={c.gmailMethod} />
 
       <div>
-        <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">connector library</div>
+        <h2 className="label mb-2">connector library</h2>
         <p className="text-dim text-sm mb-2">Vetted connectors — turn on what you need. Each shows what it can touch.</p>
         <div className="space-y-2">
           {c.connectors.map((k) => <ConnectorCard key={k.id} k={k} onChange={load} />)}
         </div>
       </div>
 
-      <AccessPanel access={c.access} onChange={load} where={where} />
       <ExternalInstaller ext={c.externalInstall} onChange={load} />
     </div>
   );
@@ -660,7 +660,7 @@ function AccessPanel({ access, onChange, where }: { access: Access; onChange: ()
 
   return (
     <div>
-      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">{where.hosted ? `what it can touch on the ${where.host} server` : 'what it can touch on this computer'}</div>
+      <h2 className="label mb-2">{where.hosted ? `what it can touch on the ${where.host} server` : 'what it can touch on this computer'}</h2>
       <div className="space-y-2">
         {ACCESS_PRESETS.map((a) => (
           <button key={a.id} onClick={() => setPreset(a.id)} disabled={busy}
@@ -676,11 +676,11 @@ function AccessPanel({ access, onChange, where }: { access: Access; onChange: ()
           {roots.length ? roots.map((f) => (
             <div key={f} className="flex items-center justify-between gap-2 text-sm py-1">
               <span className="mono text-[12px] break-all">{f}</span>
-              <button onClick={() => removeFolder(f)} disabled={busy} className="mono text-[11px] text-signal underline shrink-0">remove</button>
+              <button onClick={() => removeFolder(f)} disabled={busy} className="btn small shrink-0" aria-label={`Remove ${f}`}>Remove</button>
             </div>
           )) : <p className="text-dim text-sm">None yet — the assistant can only use its own workspace.</p>}
           <div className="flex gap-2 mt-2">
-            <input value={folder} onChange={(e) => setFolder(e.target.value)} placeholder={where.hosted ? '/data/files' : /Win/i.test(navigator.userAgent) ? 'C:\\Users\\you\\Documents' : '~/Documents'}
+            <input aria-label="Folder to grant" value={folder} onChange={(e) => setFolder(e.target.value)} placeholder={where.hosted ? '/data/files' : /Win/i.test(navigator.userAgent) ? 'C:\\Users\\you\\Documents' : '~/Documents'}
               className="flex-1 rounded-[3px] border border-line bg-bone px-3 py-2 text-sm mono outline-none focus:border-signal" />
             <button onClick={addFolder} disabled={busy || !folder.trim()} className="rounded-[3px] border border-line px-3 py-2 text-sm font-medium disabled:opacity-50">Grant</button>
           </div>
@@ -717,14 +717,14 @@ function ExternalInstaller({ ext, onChange }: { ext: ExternalInstall; onChange: 
 
   return (
     <div>
-      <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-2">add from npm</div>
+      <h2 className="label mb-2">add from npm</h2>
       {!ext.enabled ? (
         <p className="text-dim text-sm rounded-[4px] border border-line bg-surface px-4 py-3">{ext.reason}</p>
       ) : (
         <div className="rounded-[4px] border border-line bg-surface px-4 py-3 space-y-3">
           <p className="text-dim text-sm">Install a connector that isn’t in the library. It’s reviewed by your model ({ext.model}) first — then you approve. Running it executes third-party code on this machine.</p>
           <div className="flex gap-2">
-            <input value={source} onChange={(e) => setSource(e.target.value)} placeholder="npm package, e.g. @scope/server-name"
+            <input aria-label="npm package" value={source} onChange={(e) => setSource(e.target.value)} placeholder="npm package, e.g. @scope/server-name"
               className="flex-1 rounded-[3px] border border-line bg-bone px-3 py-2 text-sm outline-none focus:border-signal" />
             <button onClick={review} disabled={busy || !source.trim()} className="rounded-[3px] border border-line px-3 py-2 text-sm font-medium disabled:opacity-50">{busy && !report ? 'Reviewing…' : 'Review'}</button>
           </div>
@@ -739,7 +739,7 @@ function ExternalInstaller({ ext, onChange }: { ext: ExternalInstall; onChange: 
               <p className="text-sm">{report.summary}</p>
               {!!report.redFlags.length && <p className="text-[13px] text-dim">Red flags: {report.redFlags.join('; ')}</p>}
               {!!report.capabilities.length && <p className="text-[13px] text-dim">Could do: {report.capabilities.join('; ')}</p>}
-              <button onClick={approve} disabled={busy} className={`mt-1 rounded-[3px] px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${report.verdict === 'dangerous' ? 'bg-red-700' : 'bg-signal'}`}>
+              <button onClick={approve} disabled={busy} className={`mt-1 rounded-[3px] px-4 py-2 text-sm font-medium text-onsignal disabled:opacity-50 ${report.verdict === 'dangerous' ? 'bg-red-700' : 'bg-signal'}`}>
                 {report.verdict === 'dangerous' ? 'Install anyway (risky)' : `Approve & install ${report.source}`}
               </button>
             </div>
@@ -780,7 +780,7 @@ function ConnectorCard({ k, onChange }: { k: ConnectorItem; onChange: () => void
           <div className="text-dim text-[12px] mt-0.5">Can touch: {k.access}</div>
         </div>
         <button onClick={toggle} disabled={busy}
-          className={`shrink-0 rounded-[3px] px-3 py-1.5 text-sm font-medium ${k.on ? 'border border-line text-dim' : 'bg-signal text-white'} disabled:opacity-50`}>
+          className={`shrink-0 rounded-[3px] px-3 py-1.5 text-sm font-medium ${k.on ? 'border border-line text-dim' : 'bg-signal text-onsignal'} disabled:opacity-50`}>
           {k.on ? 'On — turn off' : (reqUnset.length ? 'Set up' : 'Turn on')}
         </button>
       </div>
@@ -790,12 +790,12 @@ function ConnectorCard({ k, onChange }: { k: ConnectorItem; onChange: () => void
             <div key={s.env}>
               <label className="text-sm">{s.label}{s.optional ? ' (optional)' : ''}</label>
               {s.help && <div className="text-dim text-[12px] mb-1">{s.help}</div>}
-              <input value={vals[s.env] ?? ''} placeholder={s.set ? '•••• (already set — leave blank to keep)' : ''}
+              <input aria-label={s.label} value={vals[s.env] ?? ''} placeholder={s.set ? '•••• (already set — leave blank to keep)' : ''}
                 onChange={(e) => setVals((v) => ({ ...v, [s.env]: e.target.value }))}
                 className="w-full rounded-[3px] border border-line bg-bone px-3 py-2 text-sm outline-none focus:border-signal" />
             </div>
           ))}
-          <button onClick={saveSecretsAndEnable} disabled={busy} className="rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium disabled:opacity-50">
+          <button onClick={saveSecretsAndEnable} disabled={busy} className="rounded-[3px] bg-signal text-onsignal px-4 py-2 text-sm font-medium disabled:opacity-50">
             {busy ? 'Working…' : 'Save & turn on'}
           </button>
           {k.source && <a href={k.source} target="_blank" rel="noreferrer" className="block mono text-[11px] text-dim underline">view source</a>}

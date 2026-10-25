@@ -62,7 +62,7 @@ export function SetupCards({ refresh }: { refresh: number }) {
           <p className="text-[12px] text-dim mt-2">Goes straight to this app's own settings, not into the chat: the assistant never sees it.</p>
           {note[c.id] && !note[c.id].ok && <p className="text-[13px] text-signal mt-1.5 break-words">{note[c.id].message}</p>}
           <div className="flex flex-wrap items-center gap-2 mt-2.5">
-            <button type="submit" disabled={busy === c.id} className="rounded-[3px] bg-signal text-white px-4 py-1.5 text-sm font-medium hover:opacity-90 disabled:opacity-50">
+            <button type="submit" disabled={busy === c.id} className="rounded-[3px] bg-signal text-onsignal px-4 py-1.5 text-sm font-medium hover:opacity-90 disabled:opacity-50">
               {busy === c.id ? 'Checking…' : 'Connect'}
             </button>
             <button type="button" disabled={busy === c.id} onClick={() => send(c, true)} className="rounded-[3px] border border-line px-4 py-1.5 text-sm hover:border-signal disabled:opacity-50">

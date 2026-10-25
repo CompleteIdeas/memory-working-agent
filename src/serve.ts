@@ -96,6 +96,7 @@ import { appendTurn, readConversation, listConversations } from './conversations
 import { thinkMode, thinkDue, thinkOnce, thinkEveryMs, thinkDailyUsd, readThoughts, latestThoughts } from './thinking.js';
 import { exportDoc, exportFormats } from './doc-export.js';
 import { dbFile, runLogPath, notifyPath, installLogPath } from './paths.js';
+import { vaultRows, forgetVaultEntry, quietState, setQuiet } from './settings-api.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 // dist-ui sits next to dist/ (built) or at repo root in dev.
@@ -697,6 +698,24 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       // F07 (usability review 2026-10-24): what MWA can read for this chat — the person's granted folders (with a
       // capped file count, and whether each still exists) and the files added to the chat — for an "I can read"
       // line above the input, where the review found the granted folder listed only at the foot of Connect.
+      // Settings in one place (interface slice 2026-10-25, D5): saved logins (names only) with Forget, and quiet hours.
+      if (p === '/api/vault' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ entries: vaultRows() }));
+        return;
+      }
+      if ((p === '/api/vault/forget' || p === '/api/quiet') && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(p === '/api/quiet' ? setQuiet(String(b.value ?? '')) : forgetVaultEntry(String(b.name ?? ''))));
+        return;
+      }
+      if (p === '/api/quiet' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(quietState()));
+        return;
+      }
       if (p === '/api/sources') {
         const session = String(url.searchParams.get('session') ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 60);
         const ws = resolve(loadConfig().workspace ?? './mwa-workspace');

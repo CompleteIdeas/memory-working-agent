@@ -23,6 +23,22 @@ export function Markdown({ text, folder }: { text: string; folder?: string }) {
       blocks.push(<pre key={k++} className="mono text-[12.5px] bg-surface border border-line rounded-[3px] p-3 my-2 overflow-x-auto whitespace-pre">{body.join('\n')}</pre>);
       continue;
     }
+    // F14 (usability review 2026-10-24): a markdown table showed as raw "| Category | Budget |" lines.
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i + 1])) {
+      const cells = (l: string) => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+      const head = cells(line);
+      const rows: string[][] = [];
+      for (i += 2; i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i]); i++) rows.push(cells(lines[i]));
+      blocks.push(
+        <div key={k++} className="overflow-x-auto my-2" tabIndex={0} role="region" aria-label="table">
+          <table className="md-table">
+            <thead><tr>{head.map((c, j) => <th key={j} scope="col">{inline(c, folder)}</th>)}</tr></thead>
+            <tbody>{rows.map((r, ri) => <tr key={ri}>{head.map((_, j) => <td key={j}>{inline(r[j] ?? '', folder)}</td>)}</tr>)}</tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
     const h = /^(#{1,4})\s+(.*)$/.exec(line);
     if (h) {
       const size = h[1].length <= 2 ? 'text-[18px]' : 'text-[16px]';
@@ -44,7 +60,7 @@ export function Markdown({ text, folder }: { text: string; folder?: string }) {
     }
     if (!line.trim()) { i++; continue; }
     const para: string[] = [];
-    while (i < lines.length && lines[i].trim() && !/^(```|#{1,4}\s|\s*([-*•]|\d+[.)])\s+)/.test(lines[i])) para.push(lines[i++]);
+    while (i < lines.length && lines[i].trim() && !/^(```|#{1,4}\s|\s*([-*•]|\d+[.)])\s+|\s*\|.*\|\s*$)/.test(lines[i])) para.push(lines[i++]);
     blocks.push(<p key={k++} className="my-1.5">{para.map((l, j) => <span key={j}>{j > 0 && <br />}{inline(l, folder)}</span>)}</p>);
   }
   return <div className="text-[15.5px] leading-relaxed break-words">{blocks}</div>;

@@ -27,12 +27,15 @@ export async function getStatus(): Promise<StatusResp> {
 }
 
 /** An action staged for the person's approval (BL-03): only they approve it — here or in Telegram. */
-export interface PendingApproval { id: string; tool: string; summary: string; expiresInSec: number; tainted: boolean; kind: 'tool' | 'captured-policy' }
+export interface PendingApproval { id: string; tool: string; summary: string; expiresInSec: number; tainted: boolean; kind: 'tool' | 'captured-policy';
+  /** since 2026-10-24: the clock time it lapses, whether the run only read the person's own files, where it came from */
+  expiresAt?: number; readLocal?: boolean; session?: string; runId?: string; createdAt?: number }
 export async function getApprovals(): Promise<PendingApproval[]> {
   return (await getApprovalsFull()).pending;
 }
 /** Approved here but owned by another app (waiting for it to run), or failed, in the last day (BL-18). */
-export interface ApprovalOutcome { id: string; tool: string; status: 'approved' | 'failed'; owner: string; result?: string; at: number }
+export interface ApprovalOutcome { id: string; tool: string; status: 'approved' | 'failed' | 'done' | 'cancelled' | 'expired'; owner: string; result?: string; at: number;
+  summary?: string; kind?: 'tool' | 'captured-policy'; session?: string; createdAt?: number }
 /** BL-72: what the reviewer ran without asking, in the last day, and why. */
 export interface AutoApproved { id: string; tool: string; summary: string; reason: string; status: string; result?: string; at: number }
 export async function getApprovalsFull(): Promise<{ pending: PendingApproval[]; recent: ApprovalOutcome[]; auto: AutoApproved[] }> {
@@ -287,9 +290,53 @@ export function openConversation(session: string): void { window.dispatchEvent(n
 export async function getNotifications(since: number): Promise<Notification[]> {
   try { const r = await fetch('/api/notifications?since=' + since); return (await r.json()).notifications ?? []; } catch { return []; }
 }
-export async function getSchedule(): Promise<{ instruction: string; due: number; recur: string | null }[]> {
-  try { const r = await fetch('/api/schedule'); return (await r.json()).scheduled ?? []; } catch { return []; }
+/** A scheduled job of this person (F04, 2026-10-24): its words, when, state and the controls on it. */
+export interface ScheduleRow {
+  id: string; kind: 'reminder' | 'watch' | 'task'; request: string; instruction: string; due: number; recur: string | null; when: string;
+  paused: boolean; tainted: boolean; allow: { vault?: string[]; click?: { host: string; label: string }[] } | null;
+  goal?: string; session?: string; lastRun?: { at: number; summary: string; value?: string }; fails?: number;
 }
+export async function getSchedule(): Promise<ScheduleRow[]> {
+  try { const r = await fetch('/api/schedule', { cache: 'no-store' }); return (await r.json()).scheduled ?? []; } catch { return []; }
+}
+export async function scheduleAction(action: 'cancel' | 'uncancel' | 'pause' | 'resume' | 'update', body: Record<string, unknown>): Promise<{ ok: boolean; message: string; id?: string }> {
+  try {
+    const r = bounceIfLocked(await fetch(`/api/schedule/${action}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }));
+    const j = await r.json(); return { ok: j.ok === true, message: String(j.message ?? j.error ?? ''), id: j.id };
+  } catch (e) { return { ok: false, message: (e as Error).message }; }
+}
+
+// -- Live runs (F06, F08, F09): see, stop, add to, and re-attach to a run going in a conversation --
+export interface LiveRun { runId: string; message: string; startedAt: number; elapsedMs: number; stopping: boolean; stage?: Record<string, unknown> }
+export async function getLive(session: string): Promise<LiveRun | null> {
+  try { const j = await (bounceIfLocked(await fetch(`/api/chat/live?session=${encodeURIComponent(session)}`, { cache: 'no-store' }))).json(); return j.live ?? null; } catch { return null; }
+}
+async function postJson(path: string, body: Record<string, unknown>): Promise<{ ok: boolean; message: string }> {
+  try {
+    const r = bounceIfLocked(await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }));
+    const j = await r.json(); return { ok: j.ok === true, message: String(j.message ?? j.error ?? '') };
+  } catch (e) { return { ok: false, message: (e as Error).message }; }
+}
+export const stopRun = (session: string) => postJson('/api/chat/stop', { session });
+export const steerRun = (session: string, message: string) => postJson('/api/chat/steer', { session, message });
+
+/** What MWA can read for this chat (F07): the granted folders and the files added here. */
+export interface Sources { preset: string; folders: { path: string; files: number; capped?: boolean; readable: boolean }[]; added: string[] }
+export async function getSources(session: string): Promise<Sources | null> {
+  try { return await (bounceIfLocked(await fetch(`/api/sources?session=${encodeURIComponent(session)}`, { cache: 'no-store' }))).json(); } catch { return null; }
+}
+
+// -- Settings (D5): saved logins and quiet hours --
+export interface VaultRow { name: string; site?: string; fields: string[]; savedAt?: number }
+export async function getVault(): Promise<VaultRow[]> {
+  try { return (await (bounceIfLocked(await fetch('/api/vault', { cache: 'no-store' }))).json()).entries ?? []; } catch { return []; }
+}
+export const forgetVault = (name: string) => postJson('/api/vault/forget', { name });
+export interface QuietState { window: string | null; timeZone: string; fixed: boolean; invalid: boolean }
+export async function getQuiet(): Promise<QuietState | null> {
+  try { return await (bounceIfLocked(await fetch('/api/quiet', { cache: 'no-store' }))).json(); } catch { return null; }
+}
+export const setQuiet = (value: string) => postJson('/api/quiet', { value });
 export async function getQuestions(): Promise<{ id: string; question: string }[]> {
   try { const r = await fetch('/api/questions'); return (await r.json()).questions ?? []; } catch { return []; }
 }
@@ -322,6 +369,8 @@ export async function saveKey(body: Record<string, string>): Promise<{ ok: boole
 export type StepTone = 'recall' | 'act' | 'learn' | 'think' | 'done';
 export interface SpineStep { id: number; label: string; detail: string; tone: StepTone; }
 export interface ChatResult { reason: string; summary: string; steps: number; dispatches: number; toolCalls: number; costUsd: number;
+  /** since 2026-10-24: the live run, the kept turn's id, how long it took, and the cards it staged */
+  runId?: string; turnId?: number; elapsedMs?: number; staged?: string[];
   /** BL-71b: MWA offers to do this in the background instead of now. */
   offer?: { kind: 'start'; message: string };
 }
@@ -336,7 +385,7 @@ export async function startWork(message: string, session: string): Promise<{ ok:
 }
 
 // Friendly names for tools — never show the raw tool id to a person.
-const TOOL_LABELS: Record<string, string> = {
+export const TOOL_LABELS: Record<string, string> = {
   list_files: 'Looking through files',
   read_file: 'Reading a file',
   write_file: 'Saving a file',
@@ -362,9 +411,24 @@ const TOOL_LABELS: Record<string, string> = {
   browser_select: 'Choosing an option on the page',
   browser_scroll: 'Scrolling the page',
   browser_screenshot: 'Taking a screenshot',
+  // the rest of the tools and actions a run can take (interface slice 2026-10-25: a stage line read "list connectors")
+  read: 'Reading a file', recall: 'Remembering what I know', remember: 'Noting something to remember', supersede: 'Updating something I knew',
+  ask_user: 'Asking you something', dispatch: 'Handing part of it to a helper', done: 'Finishing up',
+  schedule: 'Setting up a schedule', schedule_list: 'Checking your schedule', schedule_cancel: 'Cancelling a scheduled job',
+  schedule_update: 'Changing a scheduled job', schedule_detector: 'Setting up a change check',
+  goal_add: 'Starting a piece of work', goal_list: 'Checking work in progress', goal_note: 'Noting where the work stands', goal_update: 'Updating work in progress',
+  policy_save: 'Proposing a standing preference', policy_forget: 'Proposing to remove a preference',
+  list_connectors: 'Checking what I can connect to', install_connector: 'Turning on a connector', uninstall_connector: 'Turning off a connector',
+  propose_connector: 'Proposing a connector', connection_status: 'Checking your connections', connect_account: 'Asking you to connect an account',
+  vault_request: 'Asking you to save a login', vault_list: 'Checking saved logins', vault_forget: 'Forgetting a saved login',
+  knowledge_write: 'Saving notes', knowledge_list: 'Looking through saved notes', open_items: 'Checking open items', open_item_add: 'Noting an open item', open_item_close: 'Closing an open item',
+  onboard_scan: 'Scanning documents', onboard_questions: 'Preparing questions', run_checks: 'Checking the work', routine_propose: 'Proposing a routine',
+  memory_profile: 'Looking up what I know about you', memory_learn_person: 'Noting something about you', memory_feedback: 'Noting what helped', memory_store_map: 'Looking through memory',
+  list_pending: 'Checking what waits for you', approval_results: 'Checking decisions', confirm_action: 'Checking a decision', cancel_action: 'Withdrawing a request',
+  quiet_hours: 'Checking quiet hours', list_active_tools: 'Checking my tools', add_mcp_server: 'Adding a tool', remove_mcp_server: 'Removing a tool', mwa: 'Checking settings',
 };
 
-function shortPath(p?: string): string {
+export function shortPath(p?: string): string {
   if (!p) return '';
   const parts = p.replace(/\\/g, '/').split('/');
   return parts.slice(-2).join('/');
@@ -398,8 +462,40 @@ export function plainStep(type: string, data: any): { label: string; detail: str
   }
 }
 
+/** A stage of a live run, from its `step` events (F06): the tool in plain words, what it touches, the time so far. */
+export interface Stage { n: number; of?: number; tool: string; label: string; detail: string; elapsedMs: number }
+// `of` on a step is the run's step budget, not a plan, so it is not shown as "of N".
+export function stageOf(data: any): Stage {
+  const tool = String(data?.tool ?? '');
+  return { n: Number(data?.n ?? 0), tool, label: TOOL_LABELS[tool] ?? (tool ? tool.replace(/__/g, ' ').replace(/_/g, ' ') : 'Working'), detail: plainDetail(String(data?.detail ?? '')), elapsedMs: Number(data?.elapsedMs ?? 0) };
+}
+/** Granted folders, so a path in a stage (cut at 120 characters by the server) is named by its folder. */
+let knownFolders: string[] = [];
+export function setKnownFolders(f: string[]): void { knownFolders = f.map((x) => x.replace(/\\/g, '/')); }
+export function plainDetail(d: string): string {
+  const p = d.replace(/\\/g, '/').trim();
+  if (!p) return '';
+  if (!/[/]/.test(p)) return p.length > 70 ? p.slice(0, 68) + '…' : p;
+  for (const f of knownFolders) {
+    const name = f.split('/').filter(Boolean).pop() ?? f;
+    if (f.toLowerCase().startsWith(p.toLowerCase())) return `${name} (your folder)`;
+    if (p.toLowerCase().startsWith(f.toLowerCase())) { const rest = p.slice(f.length).replace(/^\/+/, ''); return rest ? rest : `${name} (your folder)`; }
+  }
+  const parts = p.split('/').filter(Boolean);
+  return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : p;
+}
+export interface BusyInfo { runId: string; message: string; startedAt: number; elapsedMs: number; stopping: boolean; stage?: Record<string, unknown> }
 export interface ChatHandlers {
   onStep: (s: { label: string; detail: string; tone: StepTone }) => void;
+  /** the run started on the server (its id, for Stop and re-attach) */
+  onRun?: (r: { runId: string; startedAt: number }) => void;
+  /** a real stage (F06) */
+  onStage?: (s: Stage) => void;
+  onStopping?: () => void;
+  /** another run is already going in this conversation (F08): nothing was started */
+  onBusy?: (b: BusyInfo) => void;
+  /** attach found nothing running */
+  onGone?: () => void;
   onResult: (r: ChatResult) => void;
   onError: (message: string) => void;
   // How this message relates to the conversation: 'continue' (built on the recent chat),
@@ -410,15 +506,25 @@ export interface ChatHandlers {
 
 /** Open the SSE chat stream for one message; returns the EventSource so it can be closed. */
 export function chatStream(message: string, session: string, h: ChatHandlers, opts: { stay?: boolean } = {}): EventSource {
-  const es = new EventSource(`/api/chat?session=${encodeURIComponent(session)}&message=${encodeURIComponent(message)}${opts.stay ? '&stay=1' : ''}`);
+  return listen(new EventSource(`/api/chat?session=${encodeURIComponent(session)}&message=${encodeURIComponent(message)}${opts.stay ? '&stay=1' : ''}`), h);
+}
+/** Re-attach to the run going in a conversation (F09): its events so far, then live, to the result. */
+export function attachStream(session: string, h: ChatHandlers): EventSource {
+  return listen(new EventSource(`/api/chat/attach?session=${encodeURIComponent(session)}`), h);
+}
+function listen(es: EventSource, h: ChatHandlers): EventSource {
   const TYPES = ['start', 'recall', 'read', 'remember', 'tool', 'dispatch', 'sleep', 'escalate', 'plan', 'plan_step', 'verify', 'question', 'ask', 'done', 'step', 'stopping', 'stopped', 'steered'];
   for (const t of TYPES) {
     es.addEventListener(t, (e) => {
       let data: any = {}; try { data = JSON.parse((e as MessageEvent).data); } catch { /* */ }
       const step = plainStep(t, data);
       if (step) h.onStep(step);
+      if (t === 'step') h.onStage?.(stageOf(data));
+      if (t === 'stopping') h.onStopping?.();
     });
   }
+  es.addEventListener('run', (e) => { try { h.onRun?.(JSON.parse((e as MessageEvent).data)); } catch { /* */ } });
+  es.addEventListener('gone', () => { es.close(); h.onGone?.(); });
   // Topic relation — a turn-level signal (not an activity step): drives the "new topic" marker.
   es.addEventListener('topic', (e) => {
     try { h.onTopic?.(JSON.parse((e as MessageEvent).data)); } catch { /* */ }
@@ -431,6 +537,7 @@ export function chatStream(message: string, session: string, h: ChatHandlers, op
   es.addEventListener('busy', (e) => {
     es.close();
     let d: any = {}; try { d = JSON.parse((e as MessageEvent).data); } catch { /* */ }
+    if (h.onBusy) { h.onBusy(d as BusyInfo); return; }
     const since = d?.elapsedMs ? `${Math.round(Number(d.elapsedMs) / 1000)}s ago` : 'a moment ago';
     h.onResult({ reason: 'busy', summary: `I'm still working on your previous message here (started ${since}). Wait for it to finish, then send this again${d?.stage?.tool ? ` — I'm on ${String(d.stage.tool).replace(/_/g, ' ')}` : ''}.`, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0 });
   });

@@ -30,17 +30,17 @@ export function Files() {
   }
   const shown = (files ?? []).filter((f) => !q || f.path.toLowerCase().includes(q.toLowerCase()));
   return (
-    <div className="py-8">
+    <div className="py-6">
       <div className="flex flex-wrap items-end gap-3 mb-5">
         <div className="flex-1 min-w-[200px]">
-          <h2 className="text-2xl font-semibold tracking-tight">Files</h2>
+          <h1 className="text-2xl font-semibold tracking-tight">Files</h1>
           <p className="text-dim text-[14px]">What MWA has written for you, and what you've added. Open one to read it, download it, or share it.</p>
         </div>
-        <input ref={picker} type="file" multiple className="hidden" onChange={(e) => void add(e.target.files)} />
-        <button onClick={() => picker.current?.click()} className="mono text-[11px] uppercase tracking-wide rounded-[3px] border border-line px-3 py-1.5 hover:border-signal hover:text-signal transition-colors">add a file +</button>
+        <input ref={picker} type="file" multiple className="hidden" aria-hidden="true" tabIndex={-1} onChange={(e) => void add(e.target.files)} />
+        <button onClick={() => picker.current?.click()} className="btn small">Add a file</button>
       </div>
       {msg && <p className="mono text-[12px] text-dim mb-3">{msg}</p>}
-      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a file…" className="w-full rounded-[3px] border border-line bg-surface px-3 py-2 text-[14px] outline-none focus:border-signal mb-4" />
+      <input aria-label="Find a file" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a file…" className="w-full rounded-[3px] border border-edge bg-surface px-3 py-2 text-[14px] outline-none focus:border-signal mb-4" />
       {files === null ? <p className="mono text-[13px] text-dim">loading…</p>
         : !shown.length ? <p className="text-dim">{files.length ? 'Nothing matches.' : 'No files yet. When MWA writes a report or notes, they appear here.'}</p>
         : (
@@ -51,8 +51,8 @@ export function Files() {
                   <div className="truncate text-[15px] group-hover:text-signal">{f.path.split('/').pop()}</div>
                   <div className="mono text-[11px] text-dim truncate">{where(f.path)} · {new Date(f.mtime).toLocaleString()} · {fmtSize(f.size)}</div>
                 </button>
-                <a href={fileUrl(f.path, true)} title="Download" className="mono text-[13px] text-dim hover:text-signal px-1">↓</a>
-                <button title="Delete" onClick={async () => { if (confirm(`Delete ${f.path.split('/').pop()}? This can't be undone.`)) { await deleteFile(f.path); void load(); } }} className="mono text-[13px] text-dim hover:text-signal px-1">✕</button>
+                <a href={fileUrl(f.path, true)} title="Download" aria-label={`Download ${f.path.split('/').pop()}`} className="btn small !px-2.5">↓</a>
+                <button title="Delete" onClick={async () => { if (confirm(`Delete ${f.path.split('/').pop()}? This can't be undone.`)) { await deleteFile(f.path); void load(); } }} aria-label={`Delete ${f.path.split('/').pop()}`} className="btn small !px-2.5">✕</button>
               </li>
             ))}
           </ul>

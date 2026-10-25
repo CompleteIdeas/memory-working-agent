@@ -1,61 +1,45 @@
 import { useEffect, useState } from 'react';
-import { getRuns, getSchedule, type RunLog } from '../api';
+import { getRuns, type RunLog } from '../api';
+import { parseRevision, shortenPaths, whenShort } from '../tasks';
 
-function when(due: number, recur: string | null): string {
-  if (recur?.startsWith('every:')) return `every ${recur.slice(6)} min`;
-  if (recur?.startsWith('daily:')) {
-    // "daily:08:00@12345" runs on some days only (BL-51), JS getDay digits.
-    const [hm, days] = recur.slice(6).split('@');
-    return `${days === '12345' ? 'weekdays' : days === '06' ? 'weekends' : days ? `days ${days.split('').map((d) => 'SMTWTFS'[Number(d)]).join('')}` : 'daily'} at ${hm}`;
-  }
-  try { return new Date(due).toLocaleString(); } catch { return 'soon'; }
+/** What the person asked, out of the instruction a run was given (F11): the run log keeps the whole prompt, with the
+ *  carried conversation, file notes and work notes the server adds. */
+export function ownerWords(instruction: string): string {
+  let t = instruction;
+  const nr = /New request:\s*([\s\S]*)$/.exec(t); if (nr) t = nr[1];
+  t = t.split(/\s*\((?:Files you write|Work you are doing|NOTE:|The answer to revise)/)[0];
+  t = t.replace(/\n\nNOTE: It's unclear[\s\S]*$/, '');
+  if (/^Call goal_note for goal/i.test(t)) return 'Background: noted where a piece of work stands';
+  if (/^Recent conversation so far:/i.test(t)) return 'A follow-up in a conversation';
+  const rev = parseRevision(t); if (rev) return `Revise “${rev.title}”: ${rev.change}`;
+  return shortenPaths(t.replace(/\s+/g, ' ').trim()).slice(0, 220);
 }
+const REASON: Record<string, string> = { done: 'done', stopped: 'stopped by you', offer: 'offered to run in the background' };
 
-// Review-and-iterate surface: what's SCHEDULED to run, and a record of every run so you
-// can watch responses get better and learning accumulate (steps down, learned up).
+/** The activity log (specialist detail, in Settings): each run in the person's words, its outcome and cost. */
 export function Log() {
   const [runs, setRuns] = useState<RunLog[] | null>(null);
-  const [scheduled, setScheduled] = useState<{ instruction: string; due: number; recur: string | null }[]>([]);
-  useEffect(() => { getRuns().then(setRuns); getSchedule().then(setScheduled); }, []);
-
-  if (!runs) return <div className="py-16 mono text-dim text-sm">loading…</div>;
-
+  const [all, setAll] = useState(false);
+  useEffect(() => { void getRuns().then(setRuns); }, []);
+  if (!runs) return <p className="text-[14px] text-dim">Loading…</p>;
+  if (!runs.length) return <p className="text-[14px] text-dim">No runs yet.</p>;
+  const shown = all ? runs : runs.slice(0, 15);
   return (
-    <div className="py-8 space-y-8">
-      {scheduled.length > 0 && (
-        <div>
-          <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-3">scheduled · {scheduled.length}</div>
-          <div className="space-y-2">
-            {scheduled.map((s, i) => (
-              <div key={i} className="flex justify-between gap-3 items-baseline rounded-[4px] border border-line bg-surface px-4 py-2.5">
-                <span className="text-[15px]">{s.instruction}</span>
-                <span className="mono text-[11px] text-signal whitespace-nowrap">{when(s.due, s.recur)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-      <div>
-        <div className="mono text-[11px] text-dim uppercase tracking-[0.2em] mb-3">recent runs · {runs.length}</div>
-        {runs.length === 0 ? (
-          <div className="text-dim">No runs logged yet. Ask me something and it'll show up here.</div>
-        ) : (
-          <div className="divide-y divide-line">
-            {runs.map((r, i) => (
-              <div key={i} className="py-3">
-                <div className="flex justify-between gap-3 items-baseline">
-                  <div className="text-[15px] truncate">{r.instruction}</div>
-                  <div className="mono text-[11px] text-dim whitespace-nowrap">{r.reason} · {r.steps} steps</div>
-                </div>
-                <div className="mono text-[11px] text-dim mt-1">
-                  learned {r.learned} · skills {r.skills} · questions {r.questions} · ${Number(r.costUsd ?? 0).toFixed(4)}
-                </div>
-                {r.summary && <div className="text-dim text-[13px] mt-1">{r.summary}</div>}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+    <div>
+      <ul className="divide-y divide-line border-y border-line">
+        {shown.map((r, i) => (
+          <li key={i} className="py-2.5">
+            <div className="flex flex-wrap items-baseline gap-x-3">
+              <span className="text-[14.5px] flex-1 min-w-[200px] break-words">{ownerWords(r.instruction)}</span>
+              <span className="text-[12px] text-dim whitespace-nowrap">{r.ts ? whenShort(r.ts) : ''}</span>
+            </div>
+            <div className="text-[12.5px] text-dim mt-0.5">
+              {REASON[r.reason] ?? `could not finish (${r.reason})`} · {r.steps} step{r.steps === 1 ? '' : 's'} · {r.toolCalls ?? 0} tool call{r.toolCalls === 1 ? '' : 's'} · ${Number(r.costUsd ?? 0).toFixed(4)}{r.learned ? ` · learned ${r.learned}` : ''}
+            </div>
+          </li>
+        ))}
+      </ul>
+      {runs.length > shown.length && <button className="btn small mt-2" onClick={() => setAll(true)}>Show all {runs.length}</button>}
     </div>
   );
 }

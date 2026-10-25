@@ -163,7 +163,7 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
           <datalist id="model-opts">{models.map((m) => <option key={m.id} value={m.id}>{m.name && m.name !== m.id ? `${m.id} — ${m.name}` : m.id}</option>)}</datalist>
           {models.length > 0 && <p className="mono text-[11px] text-dim">{models.length} models available — pick from the list or type one.</p>}
           {sel.id === 'azure' && <p className="mono text-[11px] text-dim">Azure uses your deployment name as the model.</p>}
-          <button disabled={busy || (sel.needsKey && !key.trim())} onClick={connect} className="w-full rounded-[3px] bg-signal text-white px-5 py-3 font-medium disabled:opacity-50">
+          <button disabled={busy || (sel.needsKey && !key.trim())} onClick={connect} className="w-full rounded-[3px] bg-signal text-onsignal px-5 py-3 font-medium disabled:opacity-50">
             {busy ? '…' : 'Connect'}
           </button>
           {msg && <p className={`mono text-[13px] ${ok ? 'text-signal' : 'text-dim'}`}>{msg}</p>}
@@ -210,7 +210,7 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
                   <input value={dbUrl} placeholder="postgres://user:pass@host:5432/db" onChange={(e) => setDbUrl(e.target.value)}
                     className="w-full rounded-[3px] border border-line bg-bone px-3 py-2 text-[12px] mono outline-none focus:border-signal" />
                   <button disabled={dbBusy || !dbUrl.trim()} onClick={connectDb}
-                    className="mt-2 rounded-[3px] bg-signal text-white px-4 py-2 text-sm font-medium disabled:opacity-50">{dbBusy ? 'Connecting…' : 'Connect & use'}</button>
+                    className="mt-2 rounded-[3px] bg-signal text-onsignal px-4 py-2 text-sm font-medium disabled:opacity-50">{dbBusy ? 'Connecting…' : 'Connect & use'}</button>
                   {dbMsg && <p className={`mono text-[12px] mt-2 ${dbOk ? 'text-signal' : 'text-dim'}`}>{dbMsg}</p>}
                 </div>
                 <p className="text-dim text-[12px]">Applies when the app restarts. You can also change this anytime in Connections → Memory storage.</p>
@@ -218,7 +218,7 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
             )}
           </div>
 
-          <button disabled={busy} onClick={gotoFeatures} className="rounded-[3px] bg-signal text-white px-6 py-3 font-medium disabled:opacity-50">{busy ? '…' : 'Next →'}</button>
+          <button disabled={busy} onClick={gotoFeatures} className="rounded-[3px] bg-signal text-onsignal px-6 py-3 font-medium disabled:opacity-50">{busy ? '…' : 'Next →'}</button>
         </motion.div>
       )}
 
@@ -249,7 +249,7 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
                       {needsSetup
                         ? <span className="mono text-[11px] text-dim whitespace-nowrap">set up in Connections</span>
                         : <button disabled={toggling === c.id} onClick={() => toggleConn(c)}
-                            className={`rounded-[3px] px-3 py-2 text-sm font-medium whitespace-nowrap disabled:opacity-50 ${c.on ? 'bg-signal text-white' : 'border border-line text-dim hover:border-signal'}`}>
+                            className={`rounded-[3px] px-3 py-2 text-sm font-medium whitespace-nowrap disabled:opacity-50 ${c.on ? 'bg-signal text-onsignal' : 'border border-line text-dim hover:border-signal'}`}>
                             {toggling === c.id ? '…' : c.on ? 'On' : 'Off'}
                           </button>}
                     </div>
@@ -259,7 +259,7 @@ export function Onboarding({ onReady }: { onReady: () => void }) {
               </div>
             </>
           )}
-          <button disabled={busy} onClick={start} className="rounded-[3px] bg-signal text-white px-6 py-3 font-medium disabled:opacity-50">{busy ? 'Preparing…' : 'Start'}</button>
+          <button disabled={busy} onClick={start} className="rounded-[3px] bg-signal text-onsignal px-6 py-3 font-medium disabled:opacity-50">{busy ? 'Preparing…' : 'Start'}</button>
           {busy && msg && <p className="mono text-[13px] text-dim mt-3">{msg}</p>}
         </motion.div>
       )}

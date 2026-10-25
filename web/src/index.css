@@ -3,14 +3,23 @@
 
 /* "Instrument" — a precise device for thinking. Bone + graphite, ONE signal color
    (signal-orange), a technical grotesque (Archivo) with mono numerals (Plex Mono),
-   hairline rules. No grain, no cozy serif — crisp and made. */
+   hairline rules. No grain, no cozy serif — crisp and made.
+   D6 (usability review 2026-10-24): text tones darkened to pass WCAG 2.2 AA. `signal` is now the text-safe
+   orange (#b83a0c, 5.5:1 on bone, 5.8:1 white-on-fill); the bright #ec4a18 stays as `accent` for bars,
+   carets and borders only (non-text, 3:1). */
 @theme {
   --color-bone: #e8e6e1;       /* warm grey ground (cooler than cream) */
   --color-surface: #f1efeb;    /* panels sit slightly lighter */
   --color-graphite: #1e2127;   /* ink / device-dark */
-  --color-dim: #76746d;        /* secondary text */
+  --color-ink: #1e2127;
+  --color-dim: #57554f;        /* secondary text: 5.9:1 on bone, 6.4:1 on surface */
   --color-line: #cfccc3;       /* hairline rules */
-  --color-signal: #ec4a18;     /* the one accent */
+  --color-edge: #8a877e;       /* borders that mark a control (3:1 non-text) */
+  --color-signal: #b3380b;     /* the one accent, text-safe */
+  --color-accent: #ec4a18;     /* the bright signal for bars and carets only */
+  --color-onsignal: #ffffff;   /* text on a filled signal button */
+  --color-ok: #2c6435;
+  --color-warn: #fbe9e1;
   --font-sans: "Archivo", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
 }
@@ -20,9 +29,15 @@
   --color-bone: #16181c;
   --color-surface: #1f2228;
   --color-graphite: #e8e6e1;
-  --color-dim: #8c8a82;
-  --color-line: #2b2f36;
-  --color-signal: #ff6a33;
+  --color-ink: #e8e6e1;
+  --color-dim: #a9a79f;
+  --color-line: #343841;
+  --color-edge: #7d7b74;
+  --color-signal: #ff8a5c;
+  --color-accent: #ff6a33;
+  --color-onsignal: #16181c;
+  --color-ok: #8fd19c;
+  --color-warn: #3a2219;
 }
 
 @layer base {
@@ -36,11 +51,48 @@
     text-rendering: optimizeLegibility;
     font-feature-settings: "tnum" 1; /* tabular numerals — instrument-precise */
   }
+  :focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+  button { cursor: pointer; }
 }
 
 /* tight, technical scrollbars */
 * { scrollbar-width: thin; scrollbar-color: var(--color-line) transparent; }
+@media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; transition: none !important; } }
 
 /* small reusable bits */
 .mono { font-family: var(--font-mono); }
 .hairline { border-color: var(--color-line); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.label { font-family: var(--font-mono); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-dim); }
+
+/* buttons: 36px tall on desktop, 44px on touch (target size, WCAG 2.5.8) */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 6px 12px; border-radius: 3px; border: 1px solid var(--color-edge); background: var(--color-surface); color: var(--color-graphite); font-size: 14px; line-height: 1.25; max-width: 100%; text-align: center; overflow-wrap: anywhere; }
+.btn:hover { border-color: var(--color-signal); color: var(--color-signal); }
+.btn:disabled { opacity: .55; cursor: default; }
+.btn.primary { background: var(--color-signal); border-color: var(--color-signal); color: var(--color-onsignal); font-weight: 600; }
+.btn.primary:hover { color: var(--color-onsignal); filter: brightness(1.08); }
+.btn.small { min-height: 32px; padding: 4px 10px; font-size: 13px; }
+.linkbtn { background: none; border: 0; padding: 4px 2px; min-height: 28px; color: var(--color-signal); text-decoration: underline; text-underline-offset: 2px; font-size: inherit; }
+.linkbtn:hover { color: var(--color-graphite); }
+@media (pointer: coarse) { .btn { min-height: 44px; } .btn.small { min-height: 40px; } .linkbtn { min-height: 40px; } }
+
+/* status chips — one look for a status everywhere it is shown */
+.chip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--color-edge); color: var(--color-graphite); white-space: nowrap; line-height: 1.5; }
+.chip.you { border-color: var(--color-signal); color: var(--color-signal); }
+.chip.run { border-color: var(--color-graphite); }
+.chip.run::before { content: ""; width: 6px; height: 6px; background: var(--color-accent); border-radius: 50%; animation: mwa-pulse 1.2s infinite; }
+.chip.done { color: var(--color-ok); border-color: var(--color-ok); }
+.chip.fail { color: var(--color-signal); border-color: var(--color-signal); background: var(--color-warn); }
+@keyframes mwa-pulse { 50% { opacity: .25; } }
+
+.kv { display: grid; grid-template-columns: minmax(96px, max-content) 1fr; gap: 3px 14px; margin: 6px 0 0; font-size: 14px; }
+.kv dt { color: var(--color-dim); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+
+/* markdown tables (F14) */
+.md-table { border-collapse: collapse; font-size: 14px; margin: 8px 0; }
+.md-table th, .md-table td { border: 1px solid var(--color-line); padding: 4px 8px; text-align: left; vertical-align: top; }
+.md-table th { background: var(--color-surface); font-weight: 600; }
+
+/* disclosure rows are controls too: a 32px target (WCAG 2.5.8) */
+summary { min-height: 32px; padding-block: 6px; cursor: pointer; }
