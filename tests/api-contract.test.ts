@@ -98,6 +98,11 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'GET /devices', path: '/devices', status: 200 },
   { op: 'DELETE /devices/{id}', path: '/devices/dev_nope', init: { method: 'DELETE', headers: { 'idempotency-key': 'contract-del-001' } }, status: 404 },
   { op: 'POST /devices/me/sign-out', path: '/devices/me/sign-out', init: { method: 'POST', headers: { 'idempotency-key': 'contract-out-001' } }, status: 400 },
+  { op: 'GET /stream', path: '/stream', status: 200 },
+  { op: 'GET /stream', path: '/stream?cursor=abc', status: 400 },
+  { op: 'GET /sync', path: '/sync', status: 200 },
+  { op: 'GET /sync', path: '/sync?since=1', status: 200 },
+  { op: 'GET /sync', path: '/sync?collections=mail', status: 400 },
   { op: 'GET /jobs', path: '/jobs', status: 200 },
   { op: 'GET /jobs', path: '/jobs?state=partly_done', status: 200 },
   { op: 'GET /jobs', path: '/jobs?state=nonsense', status: 400 },
@@ -129,6 +134,11 @@ describe('responses match the contract', () => {
       const r = await fetch(base + (typeof c.path === 'function' ? c.path() : c.path), typeof c.init === 'function' ? c.init() : c.init);
       expect(r.status).toBe(c.status);
       const op = ops.find((o) => o.key === c.op)!.op;
+      if (/text\/event-stream/.test(r.headers.get('content-type') ?? '')) { // a stream: the spec must say so; don't read it
+        expect(op.responses[String(r.status)]?.content?.['text/event-stream']).toBeTruthy();
+        await r.body?.cancel();
+        return;
+      }
       const schema = r.status === 405 ? spec.components.schemas.Error : responseSchema(op, r.status);
       expect(schema, 'a schema for this status').toBeTruthy();
       expect(validate(schema!, await r.json())).toBeNull();

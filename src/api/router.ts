@@ -28,7 +28,11 @@ export interface RouteCtx {
   /** who is calling (null on a public route with nobody signed in) */
   who: Caller | null;
 }
-export interface Reply { status?: number; body?: unknown; headers?: Record<string, string> }
+export interface Reply {
+  status?: number; body?: unknown; headers?: Record<string, string>;
+  /** A GET that streams (server-sent events): the router writes the SSE headers and hands the response over. */
+  stream?: (res: ServerResponse, req: IncomingMessage) => void;
+}
 export type Handler = (ctx: RouteCtx) => Promise<Reply> | Reply;
 export interface Route { method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'; path: string; scope: Scope; handler: Handler }
 
@@ -196,6 +200,12 @@ export function createV1(routes: Route[], deps: RouterDeps): (req: IncomingMessa
       } catch (e) {
         if (!(e instanceof ApiError) || e.status >= 500) throw e;
         out = { status: e.status, body: errBody(e) }; status = e.status; // a refusal the handler concluded: remembered
+      }
+      if (out.stream && !write) {
+        res.writeHead(status, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no', connection: 'keep-alive', ...out.headers });
+        if (head) { res.end(); return true; }
+        out.stream(res, req);
+        return true;
       }
       const text = JSON.stringify(out.body === undefined ? null : out.body); // throws before anything is sent
       if (reserved) {
