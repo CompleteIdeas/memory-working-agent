@@ -148,6 +148,46 @@ const cdpOf = new WeakMap<Page, CdpSession>(); // the page's devtools session: t
 const MAX_LOOKS = Math.max(0, Number(process.env.MWA_BROWSER_LOOKS ?? 3) || 0);
 const looks = new Map<string, number>(); // per run
 
+/** Pending list 2026-10-26, 4a: the picture carries the control numbers. Each numbered control (the snapshot's
+ *  `data-mwa-ref`) gets a red box and its number drawn at its top-left corner in the page itself, inside a container
+ *  that is removed as soon as the picture is taken; drawn per frame, so a control inside a frame is numbered where it
+ *  sits. Returns how many were drawn. */
+const MARK = `(() => {
+  const old = document.getElementById('__mwa_marks'); if (old) old.remove();
+  const box = document.createElement('div'); box.id = '__mwa_marks';
+  box.setAttribute('style', 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;font:bold 14px/16px system-ui,Arial,sans-serif;');
+  let n = 0;
+  for (const el of document.querySelectorAll('[data-mwa-ref]')) {
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0 || r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) continue;
+    const o = document.createElement('div');
+    o.setAttribute('style', 'position:absolute;box-sizing:border-box;border:2px solid #d62828;border-radius:3px;left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px;');
+    // the number sits just left of the control when there is room (its label stays readable), else on its own
+    // top-left corner — never on the control above
+    const t = document.createElement('div');
+    t.textContent = el.getAttribute('data-mwa-ref');
+    const w = 10 + 8 * String(t.textContent).length;
+    const outside = r.left >= w + 2;
+    t.setAttribute('style', 'position:absolute;background:#d62828;color:#fff;padding:1px 5px;border-radius:4px;box-shadow:0 0 0 1.5px #fff;left:' + (outside ? r.left - w - 2 : r.left) + 'px;top:' + r.top + 'px;');
+    box.appendChild(o); box.appendChild(t); n++;
+  }
+  document.documentElement.appendChild(box);
+  return n;
+})()`;
+const UNMARK = `(() => { const b = document.getElementById('__mwa_marks'); if (b) b.remove(); })()`;
+/** test seam: how many numbers the last browser_look drew */
+export const lastLook = { marks: 0 };
+async function markControls(page: Page): Promise<number> {
+  let n = 0;
+  for (const f of page.frames()) {
+    try { n += await Promise.race([f.evaluate<number>(MARK), new Promise<number>((r) => setTimeout(() => r(0), 1_500))]); } catch { /* a frame that will not answer is not drawn */ }
+  }
+  return n;
+}
+async function unmarkControls(page: Page): Promise<void> {
+  for (const f of page.frames()) { try { await Promise.race([f.evaluate(UNMARK), new Promise((r) => setTimeout(r, 1_500))]); } catch { /* */ } }
+}
+
 async function guardPage(ctx: Context, page: Page): Promise<void> {
   const cdp = await ctx.newCDPSession(page);
   cdpOf.set(page, cdp);
@@ -417,9 +457,14 @@ export function browserTools(): RegisteredTool[] {
         }
         const cdp = cdpOf.get(page);
         if (!cdp) throw new ToolRefusal('(the page has no devtools session — open it again)');
-        const shot = await cdp.send('Page.captureScreenshot', { format: 'jpeg', quality: 70, clip: { x: 0, y: 0, width: 1280, height: 900, scale: 0.8 } }) as { data: string };
+        // The control numbers are drawn on the page for the picture and removed right after (4a), so the picture and
+        // the numbered list match by eye.
+        lastLook.marks = await markControls(page);
+        let shot: { data: string };
+        try { shot = await cdp.send('Page.captureScreenshot', { format: 'jpeg', quality: 70, clip: { x: 0, y: 0, width: 1280, height: 900, scale: 0.8 } }) as { data: string }; }
+        finally { await unmarkControls(page); }
         looks.set(key, used + 1);
-        return { text: `(looking at the page: ${await page.title()} — ${page.url()}; the picture is attached to your next step, and its controls are the numbered ones above)`, image: { mime: 'image/jpeg', data: shot.data } };
+        return { text: `(looking at the page: ${await page.title()} — ${page.url()}; the picture is attached to your next step. The red numbers drawn on it are the control numbers from the list above: click or type by them)`, image: { mime: 'image/jpeg', data: shot.data } };
       },
     },
     {

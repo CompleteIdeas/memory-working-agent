@@ -190,8 +190,13 @@ describe.skipIf(!hasPlaywright)('in a real browser', () => {
     await expect(tool('browser_look').handler({}, ctx({ session: 'conv-look', runId: 'look-1', brainModel: 'openai/gpt-6-luna' }))).rejects.toThrow(/cannot see images/);
     const out = await tool('browser_look').handler({}, ctx({ session: 'conv-look', runId: 'look-1', brainModel: 'openai/gpt-6.1-sol' })) as { text: string; image?: { mime: string; data: string } };
     expect(out.text).toMatch(/looking at the page: Entries/);
+    expect(out.text).toMatch(/red numbers drawn on it are the control numbers/);
     expect(out.image?.mime).toBe('image/jpeg');
     expect((out.image?.data ?? '').length).toBeGreaterThan(2_000);
+    // 4a: the numbers were drawn on the page for the picture (the five controls in view) and removed right after
+    const { lastLook } = await import('../src/tools/browser.js');
+    expect(lastLook.marks).toBe(5);
+    expect(await tool('browser_page').handler({}, ctx({ session: 'conv-look', runId: 'look-1' }))).not.toMatch(/__mwa_marks/);
     await tool('browser_type').handler({ ref: 2, text: 'hunter2' }, ctx({ session: 'conv-look', runId: 'look-1' }));
     await expect(tool('browser_look').handler({}, ctx({ session: 'conv-look', runId: 'look-1', brainModel: 'openai/gpt-6.1-sol' }))).rejects.toThrow(/password box on this page holds a value/);
   }, 60_000);
