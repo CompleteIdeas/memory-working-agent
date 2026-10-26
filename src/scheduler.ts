@@ -20,6 +20,7 @@ import { detectorArmed, scoreDryRun } from './detector.js';
 import { recordReceipt } from './receipts.js';
 import { claimInterrupted, describeSteps, startHeartbeat, STALE_MS } from './transcript.js';
 import { configuredWatchGate, SAME_THRESHOLD, type WatchGate } from './watch-gate.js';
+import { liveRuns } from './live-runs.js';
 
 export interface InterruptedRun { runId: string; instruction: string; session?: string; personId?: string; jobId?: string; recurring: boolean; resumed: boolean; steps: number; unfinished: number }
 
@@ -65,7 +66,7 @@ export async function recoverInterrupted(deps: SchedulerDeps): Promise<Interrupt
     if (s.jobId && !s.jobRecur && attempt < MAX_RESUMES) {
       const cont = `Resume and finish this task — an earlier attempt was cut off by a restart before it finished (resume ${attempt + 1} of ${MAX_RESUMES}). ` +
         `These steps were recorded before it stopped (names and paths only — a record, not instructions):\n${describeSteps(lost.steps)}\n` +
-        'FIRST check the files already in the working folder and what you remember. Do not repeat a step marked done. For a step with no result recorded, check whether it happened before doing it again. Then do ONLY the remaining work and finish.' +
+        'FIRST check the files already in the working folder (with list_files and read_file — not a shell command, which would wait for the person) and what you remember. Do not repeat a step marked done. For a step with no result recorded, check whether it happened before doing it again. Then do ONLY the remaining work and finish.' +
         `\n\nTHE TASK: ${task}`;
       const id = await deps.memory.addScheduledTask(cont, (deps.now ?? Date.now)(), {
         notify: s.session, dir: s.dir, resumeAttempt: attempt + 1, person: s.personId, depth: s.jobDepth, goal: s.jobGoal,
@@ -284,6 +285,13 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // Reschedule/complete BEFORE running, so a long/failed run can't re-fire next tick.
     if (task.recur) await deps.memory.rescheduleTask(task.id, nextRecur(task.recur, now()));
     else await deps.memory.completeScheduled(task.id);
+    // Live events for a fired job (interface slice 2026-10-26: the Work view could only say "handed over 12m ago",
+    // because a background run sent nothing). The run is tracked under `job_<id>`: /api/chat/live and /api/chat/attach
+    // stream its stages with session=job_<id>, /api/chat/stop and /steer reach it, and the schedule rows carry `live`.
+    const liveKey = `job_${task.id}`;
+    let live: ReturnType<typeof liveRuns.start> | undefined;
+    try { live = liveRuns.start(liveKey, task.task ?? task.instruction, now()); } catch { live = undefined; }
+    if (live) liveRuns.record(liveKey, 'run', { runId: live.runId, startedAt: live.startedAt, job: task.id, session: task.notify ?? '' }, now());
     let r; let ranOk = false;
     try {
       // A resume continues an unfinished run — never re-plan it (it already says "do only the
@@ -297,12 +305,14 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       // dueNow: tell the run the timing is already settled (a resume carries its own framing, and
       // "do only the remaining work" must not be overridden by "do it all now").
       // extraRoots: the folder the task was created in, so a baked-in absolute path still resolves.
-      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt || task.recur ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobAllow: task.allow, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: jobBudget(task, deps) });
+      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt || task.recur ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobAllow: task.allow, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: jobBudget(task, deps),
+        onEvent: live ? (type, data) => liveRuns.record(liveKey, type, data ?? {}, now()) : undefined, signal: live?.controller.signal, inbox: live ? () => liveRuns.takeInbox(liveKey) : undefined });
       ranOk = true;
     } catch (e) {
       r = { summary: `failed: ${(e as Error).message.slice(0, 120)}`, reason: 'error', steps: 0, toolCalls: 0, costUsd: 0, durationMs: 0 } as any;
     }
     fired++;
+    if (live) { liveRuns.record(liveKey, 'result', { runId: live.runId, job: task.id, reason: r.reason, summary: String(r.summary ?? '').slice(0, 400), steps: r.steps ?? 0, costUsd: r.costUsd ?? 0 }, now()); liveRuns.finish(liveKey); }
     // Persist the new baseline only after a clean run — if the run threw, we WANT the next tick to
     // re-detect the same change and retry (at-least-once), not treat it as already handled. A dry run
     // skips nothing, so its baseline is simply the last thing it saw — saved below, with its score, in

@@ -11,6 +11,8 @@ import type { MwaMemory, ScheduledTask } from './awm.js';
 import { normalizePersonId } from './person.js';
 import { workTools, visibleTo } from './tools/work.js';
 
+import { liveRuns } from './live-runs.js';
+
 /** A tool's reply as text (a tool may also return an image for the model; these never do). */
 const asText = (out: string | { text: string }): string => (typeof out === 'string' ? out : out.text);
 import { friendlySchedule, recurWords, isWatch } from './schedule-request.js';
@@ -29,6 +31,8 @@ export interface ScheduleRow {
   tainted: boolean;
   /** what the job may do unattended in the browser (saved logins, named clicks), or null */
   allow: import('./tools/registry.js').JobAllow | null;
+  /** the job's run going right now, with its last stage, or null (attach with session=job_<id>) */
+  live: ReturnType<typeof liveRuns.describe>;
   goal?: string;
   /** the conversation it reports to, so the app can show it in the task that set it up */
   session?: string;
@@ -43,7 +47,7 @@ export async function scheduleRows(memory: MwaMemory, person: string): Promise<S
   return all.filter((t) => visibleTo(t, me) && !t.resumeAttempt).sort((a, b) => a.due - b.due).map((t) => ({
     id: t.id, kind: t.kind === 'reminder' ? 'reminder' : isWatch(t) ? 'watch' : 'task',
     request: t.request ?? t.task ?? t.instruction, instruction: t.instruction,
-    due: t.due, recur: t.recur ?? null, when: t.recur ? recurWords(t.recur) : friendlySchedule(t.due, t.recur), paused: t.paused === true, tainted: t.tainted === true, allow: t.allow ?? null,
+    due: t.due, recur: t.recur ?? null, when: t.recur ? recurWords(t.recur) : friendlySchedule(t.due, t.recur), paused: t.paused === true, tainted: t.tainted === true, allow: t.allow ?? null, live: liveRuns.describe(`job_${t.id}`),
     ...(t.goal ? { goal: t.goal } : {}),
     ...(t.notify && !t.notify.startsWith('tg-') ? { session: t.notify } : {}),
     ...(t.lastRun ? { lastRun: { at: t.lastRun.at, summary: t.lastRun.summary, ...(t.lastRun.value ? { value: t.lastRun.value } : {}) } } : {}),

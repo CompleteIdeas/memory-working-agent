@@ -295,6 +295,8 @@ export interface ScheduleRow {
   id: string; kind: 'reminder' | 'watch' | 'task'; request: string; instruction: string; due: number; recur: string | null; when: string;
   paused: boolean; tainted: boolean; allow: { vault?: string[]; click?: { host: string; label: string }[] } | null;
   goal?: string; session?: string; lastRun?: { at: number; summary: string; value?: string }; fails?: number;
+  /** the job's run going right now, with its last stage; attach to its stream with session `job_<id>` */
+  live?: { runId: string; message: string; startedAt: number; elapsedMs: number; stopping: boolean; stage?: { n?: number; of?: number; tool?: string; detail?: string; elapsedMs?: number } } | null;
 }
 export async function getSchedule(): Promise<ScheduleRow[]> {
   try { const r = await fetch('/api/schedule', { cache: 'no-store' }); return (await r.json()).scheduled ?? []; } catch { return []; }

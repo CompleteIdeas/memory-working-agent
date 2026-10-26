@@ -20,7 +20,7 @@ Concurrency is capped (`MWA_MAX_CONCURRENT`, default 4) — over the cap returns
 ### Live runs (usability review 2026-10-24)
 | Route | Method | Body / effect |
 |---|---|---|
-| `/api/chat/live?session=` | GET | `{live: {runId, message, startedAt, elapsedMs, stopping, stage?} \| null, running}` |
+| `/api/chat/live?session=` | GET | `{live: {runId, message, startedAt, elapsedMs, stopping, stage?} \| null, running}`. A fired job runs under the session `job_<id>` (its row in `/api/schedule` carries the same under `live`), so every route in this table reaches a background run too. |
 | `/api/chat/attach?session=` | GET → SSE | replays the live run's events so far and follows it to `result`; `gone` when nothing is running (a reload re-attaches instead of losing the answer) |
 | `/api/chat/stop` | POST | `{session}` — the run ends at its next step with reason `stopped` and a summary of what it kept |
 | `/api/chat/steer` | POST | `{session, message}` — queued into the run; the model gets it at its next step as the person's own words |

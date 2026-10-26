@@ -47,6 +47,28 @@ describe('the file check at done', () => {
     } finally { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
   }, 30_000);
 
+  it('an unattended run that checks files with a shell command is sent to the file tools, not to a card', async () => {
+    const { runAgent, FILE_CHECK_CMD } = await import('../src/agent.js');
+    for (const c of ['python -c "import os; print(os.path.exists(\'briefing.md\'))"', 'Test-Path .\\briefing.md', 'Get-ChildItem .', 'ls -la', 'dir', 'cat briefing.md']) expect([c, FILE_CHECK_CMD.test(c)]).toEqual([c, true]);
+    for (const c of ['npm test', 'git commit -m x', 'curl https://example.com', 'node build.js']) expect([c, FILE_CHECK_CMD.test(c)]).toEqual([c, false]);
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-shellcheck-'));
+    vi.stubEnv('MWA_FAST_CHAT', '0');
+    const called: string[] = [];
+    const tools = { defs: () => ['run_command', 'list_files', 'read_file'].map((name) => ({ name, description: name, parameters: { type: 'object', properties: {} } })), has: (x: string) => ['run_command', 'list_files', 'read_file'].includes(x),
+      callDetailed: async (name: string) => { called.push(name); return { text: name === 'list_files' ? 'briefing.md' : '# Briefing', failed: false }; }, call: async () => 'ok' } as never;
+    const b = scripted([
+      { action: 'run_command', command: 'python -c "import os; print(os.path.exists(\'briefing.md\'))"' },
+      { action: 'list_files' },
+      { action: 'done', summary: 'briefing.md is in the folder and complete.', outcome: 'changed' },
+    ]);
+    try {
+      const r = await runAgent({ instruction: 'Resume and finish the briefing', dir, memory: memoryOff as never, brain: b.p as never, worker: b.p as never, tools, interactive: false, plan: false, budget: { maxSteps: 8, maxWallMs: 30_000 } } as never);
+      expect(r.reason).toBe('done');
+      expect(called).toEqual(['list_files']); // the shell command never reached the registry, so no card was staged
+      expect(b.steps.some((s) => /use list_files and read_file/.test(s))).toBe(true);
+    } finally { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
+  }, 30_000);
+
   it('a summary with no hedge is not sent back', async () => {
     const { runAgent } = await import('../src/agent.js');
     const dir = mkdtempSync(join(tmpdir(), 'mwa-filecheck2-'));

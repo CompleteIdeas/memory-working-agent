@@ -581,6 +581,8 @@ export function readMerge(text: string): { answer: string; drafts: DraftsVerdict
   return { answer: text.slice(0, m.index).trim(), drafts: m[1].toLowerCase() as DraftsVerdict };
 }
 export const HIST_WINDOW = Math.min(200, Math.max(4, Number(process.env.MWA_HIST_WINDOW) || 12));
+/** A shell command that only lists or checks files — work the file tools do without an approval card. */
+export const FILE_CHECK_CMD = /\b(test-path|get-childitem|get-item|get-content|os\.path\.(?:exists|isfile|isdir|getsize)|os\.listdir|os\.stat|pathlib|\bls\b|\bdir\b|\bcat\b|\bstat\b|\btype\b|\bfind\b[^|]*-name|wc -[lcw])\b/i;
 const MAX_READ_BYTES = 8_000;
 
 function readFileInDir(dir: string, rel: string): string {
@@ -2079,9 +2081,16 @@ export async function runAgent(opts: {
         ? `(page budget reached: this job has read ${pagesRead} pages, the most a background job may. Write the result from what you have, and say in it what you could not check.)` : null;
       if (pageCall && !pageNo && !draftNo) pagesRead++;
       if (pageNo) gatesFired.push('page-budget');
+      // Interface replay 2026-10-26 (U02): a resumed background job checked its folder with python and PowerShell,
+      // and in Assistant mode each such command became a card for the person — two "check-script" decisions beside
+      // a finished file. Listing and checking files has tools that need no approval; an unattended shell command
+      // that only does that is sent back to them instead of staged.
+      const shellNo = !draftNo && !pageNo && action.action === 'run_command' && opts.interactive === false && FILE_CHECK_CMD.test(String(args.command ?? ''))
+        ? '(not run: to list or check files in the working folder use list_files and read_file — they need no approval, while a shell command would wait for the person)' : null;
+      if (shellNo) gatesFired.push('shell-check');
       // BL-10: intent BEFORE the step, result after — a crash in between leaves an intent with no result.
-      const txSeq = draftNo || pageNo ? undefined : tx?.intent(action.action, args as Record<string, unknown>, sawUntrustedRead || sawLocalRead);
-      const called = draftNo ? { text: draftNo, failed: true } : pageNo ? { text: pageNo, failed: true }
+      const txSeq = draftNo || pageNo || shellNo ? undefined : tx?.intent(action.action, args as Record<string, unknown>, sawUntrustedRead || sawLocalRead);
+      const called = draftNo ? { text: draftNo, failed: true } : pageNo ? { text: pageNo, failed: true } : shellNo ? { text: shellNo, failed: true }
         : typeof opts.tools.callDetailed === 'function'
           ? await opts.tools.callDetailed(action.action, args as Record<string, unknown>, callCtx)
           : { text: await opts.tools.call(action.action, args as Record<string, unknown>, callCtx), failed: false };
@@ -2629,7 +2638,7 @@ export async function runAgent(opts: {
   // Not a recurring job's fire (BL-46): its next fire does the same work, and in BL-40 a broken price watch's
   // resumes cost as much as its fires — like an interrupted recurring job (BL-10), it is left to the next fire.
   if (memory.enabled && !opts.subRun && !askedUser && !opts.jobRecur && (reason === 'budget' || reason === 'stuck') && (toolCalls > 0 || dispatches > 0) && attempt < MAX_RESUMES) {
-    const cont = `Resume and finish this task — an earlier attempt ran out of time before completing it (resume ${attempt + 1} of ${MAX_RESUMES}). FIRST recall what you already did and check the files already in the working folder; then do ONLY the remaining work and finish. Do not start over.\n\nTHE TASK: ${instruction}`;
+    const cont = `Resume and finish this task — an earlier attempt ran out of time before completing it (resume ${attempt + 1} of ${MAX_RESUMES}). FIRST recall what you already did and check the files already in the working folder (with list_files and read_file, not a shell command); then do ONLY the remaining work and finish. Do not start over.\n\nTHE TASK: ${instruction}`;
     const dueMs = now() + RESUME_DELAY_MS;
     // person: a resume inherits the owner of the run it continues. Without it the resumed run is
     // the shared `unknown` profile, and anything IT schedules becomes visible to every
@@ -2916,7 +2925,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   const planAttempt = opts.resumeAttempt ?? 0;
   if (!allDone && opts.memory.enabled && !opts.subRun && !opts.jobRecur && aggToolCalls > 0 && planAttempt < 2) {
     const plan = steps.map((s, i) => `${i + 1}. ${s.task}${i < stepOutcomes.length ? ' (ran)' : ' (not started)'}`).join('\n');
-    const cont = `Resume and finish this task — an earlier attempt ran out of room before completing it (resume ${planAttempt + 1} of 2). It was planned as:\n${plan}\nFIRST recall what you already did and check the files already in the working folder; then do ONLY the remaining steps and finish. Do not start over.\n\nTHE TASK: ${instruction}`;
+    const cont = `Resume and finish this task — an earlier attempt ran out of room before completing it (resume ${planAttempt + 1} of 2). It was planned as:\n${plan}\nFIRST recall what you already did and check the files already in the working folder (with list_files and read_file, not a shell command); then do ONLY the remaining steps and finish. Do not start over.\n\nTHE TASK: ${instruction}`;
     const id = await opts.memory.addScheduledTask(cont, now() + 60_000, { notify: opts.session, dir: opts.dir, resumeAttempt: planAttempt + 1, person: opts.personId, depth: opts.jobDepth, goal: opts.jobGoal,
       resumeOf: opts.jobLineage ?? opts.jobId, byRun: opts.rootRunId, urgent: opts.jobUrgent, limits: opts.jobLimits, until: opts.jobUntil, deliver: opts.jobDeliver, allow: opts.jobAllow, tainted: chainTainted, task: opts.jobTask ?? instruction, request: opts.jobRequest });
     if (id) {

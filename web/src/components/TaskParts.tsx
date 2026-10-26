@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { STATUS_LABEL, plainCard, stateLine, clock, minsLeft, secs, shortenPaths, type Card, type Task, type TaskStatus } from '../tasks';
 import type { ScheduleRow } from '../api';
+import { TOOL_LABELS, stopRun } from '../api';
 
 const CHIP: Record<TaskStatus, string> = { 'needs-you': 'you', working: 'run', scheduled: '', done: 'done', stopped: '', failed: 'fail' };
 export function StatusChip({ status }: { status: TaskStatus }) {
@@ -159,6 +160,7 @@ export function JobCard({ row, cancelledAt }: { row: ScheduleRow; cancelledAt?: 
       {twinMsg && <p className="text-[13px] text-dim mt-1" role="status">{twinMsg}</p>}
       <dl className="kv">
         <dt>{off ? 'Was' : 'Runs'}</dt><dd>{row.when}</dd>
+        {row.live && <><dt>Running now</dt><dd aria-live="polite">{row.live.stage?.tool ? `${TOOL_LABELS[row.live.stage.tool] ?? String(row.live.stage.tool).replace(/_/g, ' ')}${row.live.stage.detail ? ` · ${shortenPaths(String(row.live.stage.detail))}` : ''}` : 'Starting'} · {Math.round(row.live.elapsedMs / 1000)}s{row.live.stopping ? ' · stopping' : ''}{!row.live.stopping && <> <button type="button" className="btn small" onClick={() => { void stopRun(`job_${row.id}`); }}>Stop</button></>}</dd></>}
         {!off && !row.paused && <><dt>Next</dt><dd>{new Date(row.due).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}</dd></>}
         {row.lastRun && <><dt>Last result</dt><dd>{shortenPaths(row.lastRun.summary).slice(0, 220)}{row.lastRun.value ? ` (${row.lastRun.value})` : ''} · {new Date(row.lastRun.at).toLocaleString([], { hour: 'numeric', minute: '2-digit', day: 'numeric', month: 'short' })}</dd></>}
         {row.fails ? <><dt>Problems</dt><dd className="text-signal">{row.fails} run{row.fails > 1 ? 's' : ''} could not finish</dd></> : null}
