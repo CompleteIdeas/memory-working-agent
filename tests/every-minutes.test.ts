@@ -46,6 +46,35 @@ const run = (dir: string, mem: MwaMemory, actions: Record<string, unknown>[]) =>
   interactive: true, plan: false, budget: { maxSteps: 8, maxWallMs: 30_000 },
 });
 
+describe('one request, one job', () => {
+  const runWith = (dir: string, mem: MwaMemory, message: string, actions: Record<string, unknown>[]) => runAgent({
+    instruction: message, userMessage: message, dir, memory: mem, brain: scripted(actions), worker: scripted(actions),
+    interactive: true, plan: false, budget: { maxSteps: 8, maxWallMs: 30_000 },
+  });
+  it('a second, differently worded job for a request that named one is held once; the model then calls done', async () => {
+    await withRun(async (dir, mem) => {
+      const r = await runWith(dir, mem, 'Every weekday at 9, check the budget file and tell me the total.', [
+        { action: 'schedule', instruction: 'Check budget-2026.csv and report the total', daily_at: '09:00', days: 'weekdays' },
+        { action: 'schedule', instruction: 'Report the budget total from the CSV each weekday morning', daily_at: '09:00', days: 'weekdays' },
+        { action: 'done', summary: 'set' },
+      ]);
+      expect(r.history.join('\n')).toMatch(/schedule held once: a second job for a request that asked for one/);
+      expect(await mem.pendingScheduled()).toHaveLength(1);
+    });
+  }, 60_000);
+  it('two jobs the person asked for in words are both set', async () => {
+    await withRun(async (dir, mem) => {
+      const r = await runWith(dir, mem, 'Remind me Thursday at 10 to call the farrier and Friday at 4 to pay the entries.', [
+        { action: 'schedule', instruction: 'Call the farrier', in_minutes: 1000, kind: 'reminder' },
+        { action: 'schedule', instruction: 'Pay the entries', in_minutes: 2000, kind: 'reminder' },
+        { action: 'done', summary: 'set' },
+      ]);
+      expect(r.history.join('\n')).not.toMatch(/a second job for a request that asked for one/);
+      expect(await mem.pendingScheduled()).toHaveLength(2);
+    });
+  }, 60_000);
+});
+
 describe('a repeat booked once', () => {
   it('is held once with the interval the person gave, and booked as a repeat when the model takes the hint', async () => {
     await withRun(async (dir, mem) => {

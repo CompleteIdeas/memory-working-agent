@@ -581,6 +581,8 @@ export function readMerge(text: string): { answer: string; drafts: DraftsVerdict
   return { answer: text.slice(0, m.index).trim(), drafts: m[1].toLowerCase() as DraftsVerdict };
 }
 export const HIST_WINDOW = Math.min(200, Math.max(4, Number(process.env.MWA_HIST_WINDOW) || 12));
+/** A clock time or a day named in the person's words; two of them mean two jobs even with no count given. */
+const TIME_MENTION = /\b(\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\d{1,2}:\d{2}\b|monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|tonight|noon|midnight)/gi;
 /** A shell command that only lists or checks files — work the file tools do without an approval card. */
 export const FILE_CHECK_CMD = /\b(test-path|get-childitem|get-item|get-content|os\.path\.(?:exists|isfile|isdir|getsize)|os\.listdir|os\.stat|pathlib|\bls\b|\bdir\b|\bcat\b|\bstat\b|\btype\b|\bfind\b[^|]*-name|wc -[lcw])\b/i;
 const MAX_READ_BYTES = 8_000;
@@ -815,6 +817,7 @@ export async function runAgent(opts: {
   const whenRejected = new Set<string>();
   const nearRejected = new Set<string>(); // F04: a job with the same words at another time, held once
   const repeatRejected = new Set<string>(); // U04 (2026-10-26): a repeat the person asked for, booked once — held once
+  const extraRejected = new Set<string>(); // a second job for a request that named no count — held once
   let countRejections = 0, sourceRejections = 0, changeRejections = 0, kindRejections = 0, kindFollowups = 0, linkRejections = 0, allowRejections = 0, fileCheckRejections = 0;
   const filesWritten: string[] = []; // files this run wrote with write_file — a summary that calls the work incomplete is checked against them
   let pendingImage: { mime: 'image/jpeg' | 'image/png'; data: string } | undefined; // a screenshot from browser_look, shown to the model on its next step only
@@ -1879,6 +1882,17 @@ export async function runAgent(opts: {
           nudge = `The person's message says ${said}, but this job is set for ${set}. Check the day and time against their words (7 PM is 19:00) and call schedule with the right ones; if ${set} is right, call schedule again unchanged.`;
           continue;
         }
+      }
+      // One request, one job, unless the person asked for more (interface slice replay 2026-10-26: one "every 5
+      // minutes" request made six one-off jobs a minute apart, each worded differently enough to slip the twin
+      // check; one weekday request made three). With no count in the person's words, a second job in the same run
+      // is held once; resending unchanged adds it ("Thursday at 10 and Friday at 4" counts as two in words).
+      const timesNamed = (personWords.match(TIME_MENTION) ?? []).length; // "Thursday at 10 and Friday at 4" names two
+      if (opts.jobId === undefined && opts.interactive === true && jobsCreated.length >= 1 && !wantedJobs() && timesNamed < 2 && !extraRejected.has(jobSig)) {
+        extraRejected.add(jobSig); consecNoProgress++; gatesFired.push('one-job'); lastSig = '';
+        history.push(`(schedule held once: a second job for a request that asked for one — "${String(action.instruction).slice(0, 50)}")`);
+        nudge = `You have already scheduled a job for this request (${jobsCreated.map((j) => `"${j.instruction.slice(0, 40)}" ${friendlySchedule(j.dueMs, j.recur)}`).join('; ')}), and the person's message does not ask for more than one. If that job covers it, call done now. If they really asked for another, call schedule again unchanged.`;
+        continue;
       }
       // The same job twice is not two jobs — in this run, or already waiting in the store (usability review
       // 2026-10-24, F04: "Remind me tomorrow at 9am to call Harbour Works" made four reminders at 8:59, 9:00 and
