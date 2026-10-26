@@ -25,6 +25,7 @@ import { localDate, addDays } from '../src/sync/tz.js';
 import { setProjectRouteDeps } from '../src/api/routes/projects.js';
 import { createProject, setEmbedder } from '../src/v2/projects.js';
 import { appendTurn } from '../src/conversations.js';
+import { setTodayDeps } from '../src/v2/today.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -135,12 +136,14 @@ beforeAll(async () => {
   const family = createProject({ name: 'Family & school' });
   const turn = appendTurn({ ts: Date.now(), session: `p-${eventing.id}`, message: 'When do entries close?', reply: 'Friday at 5pm.', kind: 'chat' })!;
   Object.assign(ids, { eventing: eventing.id, family: family.id, turn });
+  // A10: Today reads everything above; no approvals store, no action log and no token log here
+  setTodayDeps({ pendingApprovals: () => [], recentActions: () => [], month: () => ({ usedUsd: 1.29, limitUsd: 20, state: 'ok' }), greetingName: () => 'Robert' });
   const v1 = createV1(v1Routes(), { authenticate: () => TEST_CALLER, sameOrigin: () => true });
   server = createServer(async (req, res) => { if (!(await v1(req, res))) { res.writeHead(404); res.end(); } });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
-afterAll(() => { server?.close(); setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); });
+afterAll(() => { server?.close(); setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setTodayDeps(null); });
 
 /** One request per operation (and a few error cases). Slices append theirs. */
 const ids: Record<string, string> = {};
@@ -262,6 +265,15 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /projects/{id}/offer/accept', path: () => `/projects/${ids.family}/offer/accept`, init: post, status: 409 },
   { op: 'GET /sync', path: '/sync?collections=projects,turns', status: 200 },
   { op: 'GET /sync', path: '/sync?since=1&collections=projects,turns,jobs', status: 200 },
+  // A10 Today
+  { op: 'GET /today', path: '/today', status: 200 },
+  { op: 'POST /today/seen', path: '/today/seen', init: post, status: 200 },
+  { op: 'POST /today/seen', path: '/today/seen', init: () => ({ ...post(), body: '[1]' }), status: 400 },
+  { op: 'GET /today', path: '/today', status: 200 },
+  { op: 'POST /today/checkin/done', path: '/today/checkin/done', init: post, status: 200 },
+  { op: 'POST /today/wrap/done', path: '/today/wrap/done', init: post, status: 200 },
+  { op: 'GET /sync', path: '/sync?collections=today', status: 200 },
+  { op: 'GET /sync', path: '/sync?since=1&collections=today,jobs,important', status: 200 },
 ];
 
 describe('responses match the contract', () => {
