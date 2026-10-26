@@ -73,6 +73,16 @@ const CALLS: Record<string, (c: MwaClient) => unknown> = {
   steerProjectRun: (c) => c.steerProjectRun('p1', { text: 'shorter' }),
   projectLiveUrl: (c) => c.projectLiveUrl('p1'),
   acceptProjectOffer: (c) => c.acceptProjectOffer('p1'),
+  listImportant: (c) => c.listImportant({ group: 'today' }),
+  listSkipped: (c) => c.listSkipped(),
+  markItemHandled: (c) => c.markItemHandled('i1'),
+  unhandleItem: (c) => c.unhandleItem('i1'),
+  markItemNotImportant: (c) => c.markItemNotImportant('i1', { scope: 'sender' }),
+  markMailImportant: (c) => c.markMailImportant('m1'),
+  runItemAction: (c) => c.runItemAction('i1'),
+  refreshImportant: (c) => c.refreshImportant(),
+  listTriageRules: (c) => c.listTriageRules(),
+  deleteTriageRule: (c) => c.deleteTriageRule('r1'),
 };
 const URL_ONLY = new Set(['streamUrl', 'calendarDraftIcsUrl', 'projectLiveUrl']); // GET links opened by EventSource or a download
 

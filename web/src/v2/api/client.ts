@@ -39,6 +39,13 @@ type Json<P extends keyof paths, M extends 'get' | 'post' | 'patch' | 'delete', 
   paths[P][M] extends { responses: { [K in S]: { content: { 'application/json': infer T } } } } ? T : never;
 export type SyncResult = Json<'/sync', 'get', 200>;
 export type MailList = Json<'/mail', 'get', 200>;
+export type ImportantGroup = 'today' | 'week' | 'earlier';
+export type ImportantList = Schemas['ImportantList'];
+export type SkippedList = Json<'/items/skipped', 'get', 200>;
+export type ItemChange = Schemas['ItemChange'];
+export type ItemActionResult = Schemas['ItemActionResult'];
+export type ImportantRefresh = Schemas['ImportantRefresh'];
+export type TriageRules = Json<'/triage/rules', 'get', 200>;
 export type MailAccounts = Json<'/mail/accounts', 'get', 200>;
 export type MailDraftSaved = Json<'/mail/{id}/draft', 'post', 201>;
 export type ProjectList = Json<'/projects', 'get', 200>;
@@ -242,6 +249,18 @@ export class MwaClient {
   /** The project's live run as server-sent events (opened with EventSource by a screen that follows an answer). */
   projectLiveUrl(id: string) { return this.url('/projects/{id}/live', { path: { id } }); }
   acceptProjectOffer(id: string, body: { message?: string } = {}, o: { key?: string } = {}) { return this.post<{ goal: string; message: string }>('/projects/{id}/offer/accept', { path: { id }, body, key: o.key }); }
+
+  // ---- the Important list (A9) ----
+  listImportant(q: { state?: 'open' | 'handled' | 'not-important'; group?: ImportantGroup } = {}) { return this.get<ImportantList>('/items', { query: q }); }
+  listSkipped(q: { group?: ImportantGroup } = {}) { return this.get<SkippedList>('/items/skipped', { query: q }); }
+  markItemHandled(id: string, o: { key?: string } = {}) { return this.post<ItemChange>('/items/{id}/handled', { path: { id }, key: o.key }); }
+  unhandleItem(id: string, o: { key?: string } = {}) { return this.post<ItemChange>('/items/{id}/unhandle', { path: { id }, key: o.key }); }
+  markItemNotImportant(id: string, body: { scope?: 'sender' | 'domain' | 'kind' } = {}, o: { key?: string } = {}) { return this.post<ItemChange>('/items/{id}/not-important', { path: { id }, body, key: o.key }); }
+  markMailImportant(id: string, o: { key?: string } = {}) { return this.post<ItemChange>('/mail/{id}/important', { path: { id }, key: o.key }); }
+  runItemAction(id: string, o: { key?: string } = {}) { return this.post<ItemActionResult>('/items/{id}/action', { path: { id }, key: o.key }); }
+  refreshImportant(o: { key?: string } = {}) { return this.post<ImportantRefresh>('/important/refresh', { key: o.key }); }
+  listTriageRules() { return this.get<TriageRules>('/triage/rules'); }
+  async deleteTriageRule(id: string, o: { key?: string } = {}) { return (await this.call<unknown>('DELETE', '/triage/rules/{id}', { path: { id }, key: o.key })).body; }
 }
 
 function toError(status: number, body: unknown): ApiError {
