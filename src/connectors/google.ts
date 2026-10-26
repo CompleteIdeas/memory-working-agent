@@ -14,6 +14,9 @@ import { resolve, dirname } from 'node:path';
 import { createServer } from 'node:http';
 import type { RegisteredTool } from '../tools/registry.js';
 import { connectorTokenPath } from '../paths.js';
+import { proposeDraft } from '../sync/drafts.js';
+import { v2DraftsOn } from '../sync/flags.js';
+import { resetCalendarProvider } from '../v2/calendar.js';
 
 const tokenPath = (): string => connectorTokenPath('google-token.json', 'MWA_GOOGLE_TOKEN');
 const SCOPES = [
@@ -27,8 +30,18 @@ const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/oauth`;
 function oauthClient() {
   const id = process.env.GOOGLE_CLIENT_ID, secret = process.env.GOOGLE_CLIENT_SECRET;
   if (!id || !secret) throw new Error('Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET, then run `mwa connect gmail`.');
-  return new google.auth.OAuth2(id, secret, REDIRECT_URI);
+  // MWA_GOOGLE_TOKEN_URL: a fake token endpoint (tests only — the v2 A7 reconnect test refreshes against it)
+  const tokenUrl = process.env.MWA_GOOGLE_TOKEN_URL;
+  // gaxios's own transport, not Node's fetch: it honours HTTPS_PROXY and mTLS agents and keeps the error shapes the
+  // Gmail tools expect (the review of A7 reverted a switch to Node's fetch; tests/calendar-review.test.ts checks it).
+  return new google.auth.OAuth2({
+    clientId: id, clientSecret: secret, redirectUri: REDIRECT_URI,
+    ...(tokenUrl ? { endpoints: { oauth2TokenUrl: tokenUrl } } : {}),
+  });
 }
+
+/** The OAuth client MWA signs Google calls with (exported for the transport test). */
+export const googleOAuthClient = oauthClient;
 
 function loadToken(): Record<string, unknown> | null {
   if (!existsSync(tokenPath())) return null;
@@ -42,6 +55,18 @@ export function googleConfigured(): boolean {
 /** Forget the stored Gmail OAuth token (the local sign-in). Env keys are cleared separately. */
 export function disconnectGoogle(): void {
   try { rmSync(tokenPath(), { force: true }); } catch { /* */ }
+  forgetCalendar();
+}
+
+/** v2 (A7): what MWA cached from Google Calendar belongs to a sign-in that is gone or replaced. */
+function forgetCalendar(): void {
+  try { resetCalendarProvider('google'); } catch { /* app.db unavailable: the next refresh clears a foreign account */ }
+}
+
+/** The calendar cache's account key: 'google:<address>' once the signed-in address is known, else 'google'. */
+export function googleAccountKey(): string {
+  const a = loadToken()?.mwa_account;
+  return typeof a === 'string' && a.includes('@') ? `google:${a.toLowerCase()}` : 'google';
 }
 
 /** The signed-in Google client (v2: the calendar and mail sync use it). */
@@ -52,6 +77,15 @@ export async function authedClient() {
   o.setCredentials(t);
   o.on('tokens', (nt) => { try { writeFileSync(tokenPath(), JSON.stringify({ ...t, ...nt }, null, 2), { mode: 0o600 }); } catch { /* */ } });
   return o;
+}
+
+/** Calendar calls give up after a minute (a confirm holds its draft while it waits; see CONFIRM_LEASE_MS). */
+export const GOOGLE_CALENDAR_TIMEOUT_MS = 60_000;
+
+/** The Calendar API (v3) signed in as the person. MWA_GOOGLE_API_ROOT points it at a fake server (tests only). */
+export async function calendarClient(auth?: Awaited<ReturnType<typeof authedClient>>) {
+  const rootUrl = process.env.MWA_GOOGLE_API_ROOT ? process.env.MWA_GOOGLE_API_ROOT.replace(/\/?$/, '/') : undefined;
+  return google.calendar({ version: 'v3', auth: auth ?? await authedClient(), timeout: GOOGLE_CALENDAR_TIMEOUT_MS, ...(rootUrl ? { rootUrl } : {}) });
 }
 
 /** Read-only scope set (no gmail.compose): the privacy-max option. */
@@ -86,9 +120,20 @@ function beginConsent(readOnly = false): { url: string; done: Promise<string> } 
     writeFileSync(tokenPath(), JSON.stringify(tokens, null, 2), { mode: 0o600 });
     o.setCredentials(tokens);
     const prof = await google.gmail({ version: 'v1', auth: o }).users.getProfile({ userId: 'me' });
+    recordGoogleSignIn(tokens as Record<string, unknown>, prof.data.emailAddress ?? null);
     return prof.data.emailAddress ?? 'your account';
   })();
   return { url, done };
+}
+
+/**
+ * v2 (A7): a sign-in finished. Keep the address beside the token (the calendar cache is keyed by it) and start the
+ * calendar afresh — the cached events and sync cursor belonged to whoever was signed in before.
+ */
+export function recordGoogleSignIn(tokens: Record<string, unknown>, address: string | null): void {
+  mkdirSync(dirname(tokenPath()), { recursive: true });
+  writeFileSync(tokenPath(), JSON.stringify({ ...tokens, ...(address ? { mwa_account: address } : {}) }, null, 2), { mode: 0o600 });
+  forgetCalendar();
 }
 
 /** One-time OAuth consent (loopback) for the CLI: prints the URL, waits for approval. */
@@ -268,9 +313,11 @@ export function googleTools(): RegisteredTool[] {
       },
     },
     {
-      def: { name: 'propose_event', description: 'Create a DRAFT/proposed calendar event (title prefixed [Proposed], no invites sent — the human reviews/confirms). Times in ISO 8601.', parameters: { type: 'object', properties: { summary: { type: 'string' }, start: { type: 'string' }, end: { type: 'string' }, description: { type: 'string' } }, required: ['summary', 'start', 'end'] } },
-      handler: async (args) => {
-        const cal = google.calendar({ version: 'v3', auth: await authedClient() });
+      def: { name: 'propose_event', description: 'Propose a calendar event. It is held in MWA as a DRAFT the person confirms (nothing is added to Google Calendar and no invites are sent until they do). Times in ISO 8601; a time with no offset is the person’s local time; a bare date (YYYY-MM-DD) makes an all-day event.', parameters: { type: 'object', properties: { summary: { type: 'string' }, start: { type: 'string' }, end: { type: 'string' }, location: { type: 'string' }, description: { type: 'string' } }, required: ['summary', 'start', 'end'] } },
+      handler: async (args, ctx) => {
+        // v2 (A7): an MWA-held draft. MWA_V2_DRAFTS=0 restores the old behaviour (a real "[Proposed]" event).
+        if (v2DraftsOn()) return proposeDraft('google', args, ctx);
+        const cal = await calendarClient();
         const e = await cal.events.insert({ calendarId: 'primary', sendUpdates: 'none', requestBody: { summary: `[Proposed] ${args.summary}`, description: String(args.description ?? ''), start: { dateTime: String(args.start) }, end: { dateTime: String(args.end) } } });
         return `📅 proposed event created (id ${e.data.id}) — review/confirm in Calendar.`;
       },

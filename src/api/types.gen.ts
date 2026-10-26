@@ -316,13 +316,138 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/calendar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Events and drafts in a window, merged and sorted by start, with the double-bookings in it. */
+        get: operations["getCalendar"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/calendar/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Which calendars are connected, when they last synced, and whether one needs signing in again. */
+        get: operations["getCalendarAccounts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/calendar/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync the connected calendars now (the app calls this when it opens; MWA also syncs every 30 minutes). */
+        post: operations["refreshCalendar"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/calendar/drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add a draft from the person's own input. Nothing goes on a calendar until it is confirmed. */
+        post: operations["createCalendarDraft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/calendar/drafts/{id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Put the draft on the calendar with no invites (Google sendUpdates none; Outlook with no attendees). Adds it once, however often it is sent. */
+        post: operations["confirmCalendarDraft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/calendar/drafts/{id}/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Remove the draft. Nothing was on the calendar, so nothing changes there. */
+        post: operations["removeCalendarDraft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/calendar/drafts/{id}.ics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** The draft as an iCalendar file ("Just give me a file"). */
+        get: operations["getCalendarDraftIcs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         Error: {
             error: {
-                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal */
+                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
                 code: string;
                 /** @description Plain words for a person. */
                 message: string;
@@ -475,6 +600,89 @@ export interface components {
             tries: components["schemas"]["Try"][];
             /** @description What happened, in plain words (after an action). */
             message?: string;
+        };
+        /** @description One thing on the calendar: an event from a connected calendar (kind `event`, from MWA's synced cache) or a draft
+         *     MWA holds (kind `draft`, shown dashed until the person confirms it). Timed: `start`/`end` are UTC instants.
+         *     All day: `start`/`end` are local dates (YYYY-MM-DD), end exclusive.
+         *      */
+        CalendarItem: {
+            /** @description An event: "<account>:<provider id>". A draft: "cd_…". */
+            id: string;
+            /** @enum {string} */
+            kind: "event" | "draft";
+            title: string;
+            start: string;
+            end: string;
+            allDay: boolean;
+            location: string | null;
+            /**
+             * @description Which calendar; a draft not yet tied to one is null.
+             * @enum {string|null}
+             */
+            provider: "google" | "outlook" | null;
+            /**
+             * @description Drafts only.
+             * @enum {string}
+             */
+            state?: "draft" | "confirmed" | "removed";
+            /** @description Drafts only: when the person confirmed it (ms). */
+            confirmedAt?: number | null;
+            /** @description Events only: a draft the person confirmed through MWA. */
+            addedByHelper?: boolean;
+            /**
+             * @description Drafts only: who proposed it. helper-after-reading = the helper had read outside content (an email, a web page) first; check it before confirming.
+             * @enum {string}
+             */
+            origin?: "you" | "helper" | "helper-after-reading";
+            /** @description Drafts only: a plain line about where it came from, when there is one. */
+            originNote?: string;
+        };
+        /** @description Two timed things that overlap (all-day, declined and cancelled events are not counted). */
+        CalendarConflict: {
+            id: string;
+            /** @description CalendarItem ids. */
+            between: string[];
+            titles: string[];
+            /** @description The overlap's start (UTC). */
+            start: string;
+            /** @description The overlap's end (UTC). */
+            end: string;
+        };
+        CalendarView: {
+            from: string;
+            to: string;
+            items: components["schemas"]["CalendarItem"][];
+            conflicts: components["schemas"]["CalendarConflict"][];
+        };
+        CalendarAccount: {
+            account: string;
+            /** @enum {string} */
+            provider: "google" | "outlook";
+            /** @description "Google Calendar", "Outlook". */
+            label: string;
+            connected: boolean;
+            /** @description The sign-in was revoked or expired: ask the person to connect it again. */
+            needsReconnect: boolean;
+            /** @description Last successful sync (ms). */
+            lastOk: number | null;
+            lastError: string | null;
+        };
+        CalendarAccounts: {
+            accounts: components["schemas"]["CalendarAccount"][];
+            results?: {
+                account: string;
+                ok: boolean;
+                /** @enum {string} */
+                skipped?: "not_connected";
+                error?: string;
+            }[];
+        };
+        DraftResult: {
+            draft: components["schemas"]["CalendarItem"];
+            /** @description The receipt, in plain words: "Added by your helper just now. No invites were sent." */
+            message: string;
+            /** @description Confirm only: it was already on the calendar; nothing new was added. */
+            already?: boolean;
         };
     };
     responses: {
@@ -900,6 +1108,7 @@ export interface operations {
         parameters: {
             query?: {
                 since?: string;
+                /** @description Comma-separated: jobs, calendar. */
                 collections?: string;
             };
             header?: never;
@@ -919,11 +1128,214 @@ export interface operations {
                         reset: boolean;
                         upserts: {
                             jobs?: components["schemas"]["Job"][];
+                            calendar?: components["schemas"]["CalendarItem"][];
                         };
                         deletes: {
                             jobs?: string[];
+                            calendar?: string[];
                         };
                     };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getCalendar: {
+        parameters: {
+            query?: {
+                /** @description A date (local midnight) or an ISO 8601 time. Default: yesterday. */
+                from?: string;
+                /** @description A date (that whole day included) or an ISO 8601 time. Default: 14 days ahead. At most 62 days after from. */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The calendar. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarView"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getCalendarAccounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The calendar accounts. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarAccounts"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    refreshCalendar: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The accounts after the sync, and how each went. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarAccounts"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createCalendarDraft: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    title: string;
+                    /** @description ISO 8601; no offset = local time; a bare date = all day. */
+                    start: string;
+                    /** @description Default: an hour after start (one day when all day). */
+                    end?: string;
+                    allDay?: boolean;
+                    location?: string;
+                    notes?: string;
+                    /**
+                     * @description Which calendar Confirm adds it to. Default: the connected one.
+                     * @enum {string}
+                     */
+                    provider?: "google" | "outlook";
+                    projectId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The same draft (same title and times) was already open; no second one was made. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftResult"];
+                };
+            };
+            /** @description The new draft. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftResult"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    confirmCalendarDraft: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    provider?: "google" | "outlook";
+                };
+            };
+        };
+        responses: {
+            /** @description Added (or it already was, `already` true). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftResult"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    removeCalendarDraft: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftResult"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getCalendarDraftIcs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A VCALENDAR with one VEVENT (UTC times, CRLF, folded at 75 octets); Content-Disposition names the file. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/calendar": string;
                 };
             };
             default: components["responses"]["Error"];
