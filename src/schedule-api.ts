@@ -12,6 +12,7 @@ import { normalizePersonId } from './person.js';
 import { workTools, visibleTo } from './tools/work.js';
 
 import { liveRuns } from './live-runs.js';
+import { personAction } from './v2/jobs.js';
 
 /** A tool's reply as text (a tool may also return an image for the model; these never do). */
 const asText = (out: string | { text: string }): string => (typeof out === 'string' ? out : out.text);
@@ -58,7 +59,11 @@ export async function scheduleRows(memory: MwaMemory, person: string): Promise<S
 export type ScheduleAction = 'cancel' | 'uncancel' | 'pause' | 'resume' | 'update';
 
 /** One control, by id, for one person. `body` carries the id and, for `update`, the same fields as schedule_update. */
+/** The person clicked a control: what it changes is theirs (v2 review M8: "stopped by you", not "stopped itself"). */
 export async function scheduleControl(memory: MwaMemory, person: string, action: ScheduleAction, body: Record<string, unknown>, nowMs = Date.now()): Promise<{ ok: boolean; message: string; id?: string }> {
+  return personAction(() => scheduleControlAsPerson(memory, person, action, body, nowMs));
+}
+async function scheduleControlAsPerson(memory: MwaMemory, person: string, action: ScheduleAction, body: Record<string, unknown>, nowMs: number): Promise<{ ok: boolean; message: string; id?: string }> {
   const id = String(body.id ?? '').trim();
   if (id.length < 4) return { ok: false, message: 'Which job? (id is required)' };
   const me = normalizePersonId(person);

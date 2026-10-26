@@ -11,7 +11,8 @@
  * The stream polls the table (once a second) rather than relying on in-process signals: the Telegram process
  * writes app.db too.
  *
- * Visibility: device changes (names, revocations) go to admin callers only (A2 review note).
+ * Visibility: device changes (names, revocations) go to admin callers only (A2 review note). Jobs: the owner's only,
+ * as in /jobs (A3a review M10) — another person's job is never sent, not even as an id.
  *
  * Calendar (A7): a cached event or a draft changing is sent as entity 'calendar' with the item as it is now (or a
  * deletion — a removed draft, a cancelled event, or a confirmed draft once its event is in the cache); /sync has a
@@ -20,8 +21,8 @@
 import type { ServerResponse, IncomingMessage } from 'node:http';
 import { ApiError, type Route } from '../router.js';
 import { appDb } from '../../v2/db.js';
-import { getJob, listJobs, viewJob } from '../../v2/jobs.js';
-import { apiJob } from './jobs.js';
+import { getJob, listJobs, viewJob, viewJobs } from '../../v2/jobs.js';
+import { apiJob, visibleJob } from './jobs.js';
 import { liveRuns, type LiveEvent } from '../../live-runs.js';
 import type { Caller } from '../auth.js';
 import { calendarItemById, calendarItems } from '../../v2/calendar.js';
@@ -91,6 +92,8 @@ function present(rows: EventRow[], who: Caller | null) {
     const j = jobIdOf(e);
     if (j) {
       if (lastForJob.get(j) !== i) return; // one message per job per batch: its latest state
+      const row = getJob(j);
+      if (row && !visibleJob(row)) return; // not the owner's: never sent
       const data = e.entity === 'job' && e.op === 'delete' ? null : jobOut(j, c);
       out.push({ seq: e.seq, entity: 'job', id: j, op: data ? 'upsert' : 'delete', ...(data ? { data } : {}) });
       return;
@@ -169,7 +172,7 @@ export const streamRoutes: Route[] = [
       const c = ctx();
       const upserts: Record<string, unknown[]> = {}, deletes: Record<string, string[]> = {};
       if (since === 0 || cursorTooOld(since)) {
-        if (want.has('jobs')) { upserts.jobs = listJobs({}).map((j) => apiJob(viewJob(j, c))); deletes.jobs = []; }
+        if (want.has('jobs')) { upserts.jobs = viewJobs(listJobs({}).filter(visibleJob), c).map(apiJob); deletes.jobs = []; }
         if (want.has('calendar')) { upserts.calendar = calendarSnapshot(); deletes.calendar = []; }
         return { body: { cursor, reset: true, upserts, deletes } };
       }

@@ -65,6 +65,7 @@ import { setJobRouteDeps } from './api/routes/jobs.js';
 import { setStreamDeps } from './api/routes/stream.js';
 import { startCalendarSync } from './sync/calendar.js';
 import { migrateV2Once, describeReport } from './v2/migrate.js';
+import { reapDeadTries, personAction } from './v2/jobs.js';
 import { runAgent } from './agent.js';
 import { preparePersonTurn, learnFromTurn } from './person-turn.js';
 import { INTAKE_FIELDS } from './person-intake.js';
@@ -281,6 +282,8 @@ const CARRY_TURNS = Math.max(1, Math.min(60, Number(process.env.MWA_CARRY_TURNS)
 const CARRY_ALL = process.env.MWA_CARRY_ALL === '1';
 const CARRY_JOB_RESULTS = process.env.MWA_CARRY_JOB_RESULTS === '1';
 const SERVER_START = Date.now();
+/** v2: the jobs migration at start (runServe); the scheduler and the first /api/v1 request wait for it. */
+let v2Ready: Promise<void> = Promise.resolve();
 let activeRuns = 0;          // in-flight agent runs — capped to protect the box
 let lastSchedulerTick = 0;   // scheduler liveness heartbeat (for /api/health)
 const MAX_CONCURRENT = Number(process.env.MWA_MAX_CONCURRENT ?? 4);
@@ -638,7 +641,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
     },
     continueGoal: async (goalId, personId) => {
       const m = new MwaMemory(SERVE_AGENT, dbFile(), loadConfig().awm.workspace);
-      try { return await continueGoal(m, { goalId, personId, workspace: loadConfig().workspace ?? './mwa-workspace' }); } finally { m.close(); }
+      try { return await continueGoal(m, { goalId, personId, workspace: loadConfig().workspace ?? './mwa-workspace', holdsReservation: true }); } finally { m.close(); }
     },
   });
   // v2 (A4): the live stream and /sync compute job views with the same running runs and waiting approvals.
@@ -647,6 +650,18 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   // also asks for a refresh when it opens (POST /api/v1/calendar/refresh). MWA_CALENDAR_SYNC=0 turns it off.
   startCalendarSync();
   // v1 answers for itself: the password session, this machine (no password), or a paired device (src/api/auth.ts).
+  // v2 (A3a review): existing goals, scheduled tasks and results become Jobs and Tries once, at server start, with or
+  // without a model (the scheduler starts only with one), and Tries a crashed process left running are reaped. The
+  // first /api/v1 request waits for it (at most 15 s; the slow reads happen before its short transaction).
+  v2Ready = MEMORY_OFF ? Promise.resolve() : (async () => {
+    reapDeadTries();
+    const m = new MwaMemory(SERVE_AGENT, dbFile(), loadConfig().awm.workspace);
+    try {
+      const report = await migrateV2Once(m, { notifyFile: notifyPath(), runsFile: runLogPath() });
+      if (report) logger.info('v2', `jobs migration: ${describeReport(report).replace(/\n/g, ' | ')}`);
+    } catch (e) { logger.error('v2', 'jobs migration failed (it is tried again at the next start)', { error: (e as Error).message.slice(0, 200) }); }
+    finally { m.close(); }
+  })();
   const v1 = createV1Handler({ authenticate: makeAuthenticate({ passwordSet: !!ACCESS_PW, sessionValid: authed }), sameOrigin: sameOriginOk });
   const server = createServer(async (req, res) => {
     try {
@@ -685,7 +700,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       }
 
       // v2 client API: its own route table (src/api/v1.ts); everything under /api/v1 is answered there.
-      if ((p === '/api/v1' || p.startsWith('/api/v1/')) && await v1(req, res)) return;
+      if (p === '/api/v1' || p.startsWith('/api/v1/')) {
+        await Promise.race([v2Ready, new Promise((r) => { setTimeout(r, 15_000).unref?.(); })]);
+        if (await v1(req, res)) return;
+      }
 
       if (p === '/api/status') {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -1164,7 +1182,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           if (p.endsWith('/status')) {
             const status = String(b.status ?? '');
             if (!['open', 'in_progress', 'blocked', 'done'].includes(status)) { res.end(JSON.stringify({ ok: false, message: 'Unknown status.' })); return; }
-            await memory.setGoalStatus(goal.id, status as 'open' | 'in_progress' | 'blocked' | 'done');
+            await personAction(() => memory.setGoalStatus(goal.id, status as 'open' | 'in_progress' | 'blocked' | 'done')); // the person's own tap (v2 review M8)
             res.end(JSON.stringify({ ok: true, message: status === 'done' ? 'Marked done. Its jobs stop.' : status === 'blocked' ? 'Paused. Its jobs wait.' : 'Updated.' }));
             return;
           }
@@ -1672,13 +1690,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       // memory_store_map, memory_learn_person or memory_feedback. Measured 2026-10-14: a scheduled
       // task asked to call schedule_list replied "TOOL NOT AVAILABLE". A recurring task could not
       // see or cancel itself, which is the headline reason schedule_cancel exists.
-      // v2 (A3a): existing goals, scheduled tasks and results become Jobs and Tries — once, before the first tick.
-      if (!MEMORY_OFF) {
-        try {
-          const report = await migrateV2Once(memory, { notifyFile: notifyPath(), runsFile: runLogPath() });
-          if (report) logger.info('v2', `jobs migration: ${describeReport(report).replace(/\n/g, ' | ')}`);
-        } catch (e) { logger.error('v2', 'jobs migration failed', { error: (e as Error).message.slice(0, 200) }); }
-      }
+      await v2Ready; // the jobs migration (at server start) before the first tick
       const { registry } = await buildRegistry(cfg, memory);
       console.log('  ⏰ scheduler on — say e.g. "every day at 8am, summarize my inbox"');
       await runScheduler({

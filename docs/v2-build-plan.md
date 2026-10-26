@@ -34,7 +34,7 @@ from a code-grounded plan (2026-10-26); file:line references there were checked 
 | A2 | Device auth and pairing, scopes, open-tailnet gap closed | M | A0 | done (see git log) |
 | A3a | Jobs and Tries: data, status function, agent/scheduler/serve wiring, migration (mwa migrate-v2) | L | A0 | done 219e548 (merged) |
 | A3b | Dollar cap (AgentBudget.maxUsd), estimates, job actions | M | A3a | |
-| A4 | Event log, /stream SSE with cursor, /sync | M | A0 | |
+| A4 | Event log, /stream SSE with cursor, /sync | M | A0 | done (see git log) |
 | A5 | Projects and threads, routing suggestion, provenance | M | A3a | |
 | A6 | Ask v1, big-ask plan, item-scoped ask (fenced, tainted) | M–L | A3b, A5 | |
 | A7 | Calendar sync (Google, Outlook) + MWA-held drafts, Confirm/Remove, .ics, conflicts | M–L | A0 | |
