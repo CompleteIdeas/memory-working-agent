@@ -233,7 +233,8 @@ export interface ScheduleOpts {
  */
 export interface StoreHooks {
   scheduled?: (id: string, instruction: string, dueMs: number, opts: ScheduleOpts) => void;
-  scheduleChanged?: (id: string, change: 'paused' | 'resumed' | 'canceled' | 'uncanceled') => void;
+  scheduleChanged?: (id: string, change: 'paused' | 'resumed' | 'canceled' | 'uncanceled' | 'moved', due?: number) => void;
+  goalStatus?: (goalId: string, status: GoalStatus) => void;
   goalRecord?: (goalId: string, rec: { state: string; next?: string; by: string; untrusted?: boolean }) => void;
 }
 export const storeHooks: StoreHooks = {};
@@ -819,7 +820,12 @@ export class MwaMemory implements Memory {
 
   /** All pending scheduled tasks (parsed). */
   async pendingScheduled(): Promise<ScheduledTask[]> {
-    try {
+    try { return await this.pendingScheduledStrict(); } catch (err) { console.error('[awm] pendingScheduled error:', (err as Error).message); return []; }
+  }
+  /** v2 (A3a review): the same, but a store that cannot be read THROWS — "no tasks" and "couldn't look" differ
+   *  (a data migration must not record itself done after a failed read). */
+  async pendingScheduledStrict(): Promise<ScheduledTask[]> {
+    {
       await this.init();
       const engrams: any[] = (await this.store.getEngramsByAgent(this.agentId)) ?? [];
       const out: ScheduledTask[] = [];
@@ -839,7 +845,7 @@ export class MwaMemory implements Memory {
           ...(get('lastrun64=') ? { lastRun: parseLastRun(get('lastrun64=')) } : {}) });
       }
       return out.sort((a, b) => a.due - b.due);
-    } catch (err) { console.error('[awm] pendingScheduled error:', (err as Error).message); return []; }
+    }
   }
 
   // ── Schedule controls (usability review 2026-10-24, F04: a job could not be stopped from the app) ──
@@ -875,7 +881,7 @@ export class MwaMemory implements Memory {
       : cur.recur?.startsWith('every:') ? nowMs + (Number(cur.recur.slice(6)) || 60) * 60_000
         : Math.max(cur.due, nowMs);
     await this.setScheduledTags(id, (tags) => [...tags.filter((t) => t !== 'paused=1' && !t.startsWith('due=')), `due=${Math.round(due)}`]);
-    if (storeHooks.scheduleChanged) hook(() => storeHooks.scheduleChanged!(id, 'resumed'));
+    if (storeHooks.scheduleChanged) hook(() => storeHooks.scheduleChanged!(id, 'resumed', Math.round(due)));
   }
   /** Undo a cancel made in the last `withinMs` (ten minutes): the job is pending again, as it was. */
   async uncancelScheduled(id: string, withinMs = 10 * 60_000, nowMs = Date.now()): Promise<boolean> {
@@ -904,6 +910,7 @@ export class MwaMemory implements Memory {
   /** Recurring task: set the next due (epoch ms), keep pending. */
   async rescheduleTask(id: string, nextDueMs: number): Promise<void> {
     await this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('due=')), `due=${Math.round(nextDueMs)}`]);
+    if (storeHooks.scheduleChanged) hook(() => storeHooks.scheduleChanged!(id, 'moved', Math.round(nextDueMs)));
   }
   /** BL-08: record a dry run's evidence, and (once) that the person was told it is ready to arm. */
   async setCheckEvidence(id: string, ev: DetectorEvidence, ready?: boolean): Promise<void> {
@@ -964,6 +971,7 @@ export class MwaMemory implements Memory {
       ...(change.recur !== undefined ? [`recur=${change.recur}`] : []),
       ...(change.due !== undefined ? [`due=${Math.round(change.due)}`] : []),
     ]);
+    if (change.due !== undefined && storeHooks.scheduleChanged) hook(() => storeHooks.scheduleChanged!(id, 'moved', Math.round(change.due!)));
   }
   /** BL-44: what this job's last good run reported (replaces the previous record). */
   async setJobFails(id: string, n: number): Promise<void> {
@@ -1053,6 +1061,7 @@ export class MwaMemory implements Memory {
     if (!GOAL_STATUSES.includes(status)) return;
     await this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('gstatus=')), `gstatus=${status}`]);
     await this.mirrorGoal(id, status);
+    if (storeHooks.goalStatus) hook(() => storeHooks.goalStatus!(id, status));
   }
 
   // ── Where a goal stands (BL-71a) ──────────────────────────────────────────────────────────────
@@ -1087,7 +1096,11 @@ export class MwaMemory implements Memory {
 
   /** Every goal's newest record, newest first. */
   async listGoalRecords(): Promise<GoalRecord[]> {
-    try {
+    try { return await this.listGoalRecordsStrict(); } catch { return []; }
+  }
+  /** v2 (A3a review): every goal's newest record; THROWS when the store cannot be read. */
+  async listGoalRecordsStrict(): Promise<GoalRecord[]> {
+    {
       await this.init();
       const all: any[] = (await this.store.getEngramsByAgent(this.agentId)) ?? [];
       const newest = new Map<string, GoalRecord>();
@@ -1102,7 +1115,7 @@ export class MwaMemory implements Memory {
         if (!cur || r.at > cur.at) newest.set(r.goalId, r);
       }
       return [...newest.values()].sort((a, b) => b.at - a.at);
-    } catch { return []; }
+    }
   }
 
   // ── Open items (BL-50) ───────────────────────────────────────────────────────────────────────

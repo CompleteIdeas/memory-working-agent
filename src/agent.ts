@@ -85,6 +85,7 @@ import { primeable } from './prime.js';
 import { openTranscript, type Transcript } from './transcript.js';
 import { runLogPath } from './paths.js';
 import { queueContinuation, dropQueuedTry, linkTry, finishTry, tryEndFromResult } from './v2/jobs.js';
+import { normalizeRemaining } from './v2/status.js';
 
 /** A per-step fade factor in (0, 1]; anything else (unset, 0, negative, > 1, not a number) is off. */
 export function primeDecayFrom(opt?: number, env?: string): number {
@@ -1766,7 +1767,7 @@ export async function runAgent(opts: {
       // BL-44: a watch's reading, only from a run that read something — a value from no read is a guess.
       if (opts.jobId && typeof action.value === 'string' && action.value.trim() && toolCalls > 0) watchValue = action.value.trim().slice(0, 200);
       progress = readProgress(action.progress) ?? progress;
-      if (typeof action.remaining === 'string' && action.remaining.trim()) remaining = action.remaining.replace(/\s+/g, ' ').trim().slice(0, 300);
+      if (typeof action.remaining === 'string') remaining = normalizeRemaining(action.remaining)?.slice(0, 300) ?? undefined; // "none", "n/a": nothing left (v2 review M6)
       finalSummary = summ || 'instruction satisfied';
       modelAnswered = Boolean(summ.trim());
       history.push(`done: ${finalSummary}`);

@@ -13,6 +13,8 @@ const TEST_CALLER: Caller = { kind: 'session', id: 'session', scopes: new Set(AL
 import { resetAppDb } from '../src/v2/db.js';
 import { setJobRouteDeps } from '../src/api/routes/jobs.js';
 import { createJob, addTry, claimTry, endTry } from '../src/v2/jobs.js';
+import { addDraft, setDraftProviders } from '../src/sync/drafts.js';
+import { setCalendarSyncDeps } from '../src/sync/calendar.js';
 import { mailId } from '../src/v2/mail.js';
 import { setMailProviders, syncMail } from '../src/sync/mail.js';
 import { MessageGoneError } from '../src/sync/mail-types.js';
@@ -81,6 +83,13 @@ beforeAll(async () => {
   claimTry(failed.try!.id, {}); endTry(failed.try!.id, { reason: 'done', outcome: 'could-not', summary: 'The site was down.' });
   const watch = createJob({ kind: 'recurring', title: 'Watch the price', scheduleId: 'watch-task-1' });
   addTry(watch.job.id, { trigger: 'fire' });
+  // A7: drafts to act on; Confirm goes to a stub calendar here (the fakes are in tests/calendar-*.test.ts), and no
+  // real account is ever consulted
+  setDraftProviders({ connected: () => true, insert: async () => 'stub-event-1' });
+  setCalendarSyncDeps({ connected: () => false });
+  const fair = addDraft({ title: 'Book fair', start: '2026-11-14T15:00:00-05:00', end: '2026-11-14T18:00:00-05:00', location: 'Oakwood Elementary' }).draft;
+  const spare = addDraft({ title: 'Spare', start: '2026-11-15T15:00:00-05:00', end: '2026-11-15T16:00:00-05:00' }).draft;
+  Object.assign(ids, { fair: fair.id, spare: spare.id });
   Object.assign(ids, { partly: partly.job.id, done: done.job.id, running: running.job.id, failed: failed.job.id, watch: watch.job.id });
   // A8: one fake mail account (in memory) with two messages, one of which is gone by the time it is opened
   const header = (providerId: string, subject: string, at: number) => ({
@@ -88,19 +97,19 @@ beforeAll(async () => {
     receivedAt: at, unread: true, labels: ['INBOX', 'UNREAD'], listId: null, hasUnsub: false, messageId: `<${providerId}@example.com>`,
   });
   setMailProviders(() => [{
-    account: 'gmail', provider: 'gmail', label: 'Gmail',
+    prefix: 'google', provider: 'gmail', label: 'Gmail', resolveAccount: async () => 'google:me@example.com',
     sync: async (_s, o) => ({ full: true, upserts: [header('c1', 'Saturday schooling', o.now - 60_000), header('c2', 'Old news', o.now - 120_000)], deletes: [], cursor: '1', windowFrom: o.now - 14 * 86_400_000, windowTo: o.now }),
-    fetchBody: async (id) => { if (id === 'c2') throw new MessageGoneError(); return { html: '<p>Hi Robert, <a href="https://x.example/a">see this</a></p>', text: null, to: 'robert@example.com' }; },
-    saveReplyDraft: async () => ({ draftId: 'd-1' }),
-  }]);
+    fetchBody: async (id) => { if (id === 'c2') throw new MessageGoneError(); return { html: '<p>Hi Robert, <a href="https://x.example/a">see this</a></p>', text: null, from: [{ name: 'Coach Ellen', addr: 'ellen@example.com' }], replyTo: [], to: [{ name: null, addr: 'robert@example.com' }] }; },
+    saveReplyDraft: async () => ({ draftId: 'd-1', to: [{ name: 'Coach Ellen', addr: 'ellen@example.com' }], already: false }),
+  }], { inlineSanitize: true });
   await syncMail();
-  Object.assign(ids, { mail: mailId('gmail', 'c1'), mailGone: mailId('gmail', 'c2') });
+  Object.assign(ids, { mail: mailId('google:me@example.com', 'c1'), mailGone: mailId('google:me@example.com', 'c2') });
   const v1 = createV1(v1Routes(), { authenticate: () => TEST_CALLER, sameOrigin: () => true });
   server = createServer(async (req, res) => { if (!(await v1(req, res))) { res.writeHead(404); res.end(); } });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
-afterAll(() => { server?.close(); setMailProviders(null); });
+afterAll(() => { server?.close(); setCalendarSyncDeps(null); setMailProviders(null); });
 
 /** One request per operation (and a few error cases). Slices append theirs. */
 const ids: Record<string, string> = {};
@@ -146,6 +155,22 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /jobs/{id}/pause', path: () => `/jobs/${ids.done}/pause`, init: post, status: 409 },
   { op: 'POST /jobs/{id}/resume', path: () => `/jobs/${ids.watch}/resume`, init: post, status: 200 },
   { op: 'POST /jobs/{id}/cancel', path: () => `/jobs/${ids.watch}/cancel`, init: post, status: 200 },
+  // A7 calendar
+  { op: 'GET /calendar', path: '/calendar?from=2026-11-14&to=2026-11-15', status: 200 },
+  { op: 'GET /calendar', path: '/calendar', status: 200 },
+  { op: 'GET /calendar', path: '/calendar?from=yesterday', status: 400 },
+  { op: 'GET /calendar/accounts', path: '/calendar/accounts', status: 200 },
+  { op: 'POST /calendar/refresh', path: '/calendar/refresh', init: post, status: 200 },
+  { op: 'POST /calendar/drafts', path: '/calendar/drafts', init: () => ({ ...post(), body: JSON.stringify({ title: 'Lunch with Sam', start: '2026-11-11T12:00', end: '2026-11-11T13:00' }) }), status: 201 },
+  { op: 'POST /calendar/drafts', path: '/calendar/drafts', init: () => ({ ...post(), body: JSON.stringify({ title: 'No start' }) }), status: 400 },
+  { op: 'GET /calendar/drafts/{id}.ics', path: () => `/calendar/drafts/${ids.fair}.ics`, status: 200 },
+  { op: 'GET /calendar/drafts/{id}.ics', path: '/calendar/drafts/cd_nope.ics', status: 404 },
+  { op: 'POST /calendar/drafts/{id}/confirm', path: () => `/calendar/drafts/${ids.fair}/confirm`, init: post, status: 200 },
+  { op: 'POST /calendar/drafts/{id}/confirm', path: '/calendar/drafts/cd_nope/confirm', init: post, status: 404 },
+  { op: 'POST /calendar/drafts/{id}/remove', path: () => `/calendar/drafts/${ids.spare}/remove`, init: post, status: 200 },
+  { op: 'POST /calendar/drafts/{id}/remove', path: () => `/calendar/drafts/${ids.fair}/remove`, init: post, status: 409 },
+  { op: 'GET /sync', path: '/sync?collections=jobs,calendar', status: 200 },
+  { op: 'GET /sync', path: '/sync?since=1&collections=calendar', status: 200 },
 ];
 
 describe('responses match the contract', () => {
@@ -165,6 +190,11 @@ describe('responses match the contract', () => {
       if (/text\/event-stream/.test(r.headers.get('content-type') ?? '')) { // a stream: the spec must say so; don't read it
         expect(op.responses[String(r.status)]?.content?.['text/event-stream']).toBeTruthy();
         await r.body?.cancel();
+        return;
+      }
+      if (/text\/calendar/.test(r.headers.get('content-type') ?? '')) { // a file: the spec must say so
+        expect(op.responses[String(r.status)]?.content?.['text/calendar']).toBeTruthy();
+        expect(await r.text()).toMatch(/^BEGIN:VCALENDAR\r\n/);
         return;
       }
       const schema = r.status === 405 ? spec.components.schemas.Error : responseSchema(op, r.status);

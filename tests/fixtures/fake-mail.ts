@@ -18,7 +18,9 @@ async function readBody(req: IncomingMessage): Promise<string> { let s = ''; for
 
 export interface GmailMsg {
   id: string; threadId: string; labelIds: string[]; internalDate: number; snippet: string;
-  headers: Record<string, string>; html?: string; text?: string;
+  headers: Record<string, string>; html?: string; text?: string; charset?: string;
+  /** the plain part's bytes exactly as sent (a charset no encoder here writes, such as ISO-2022-JP) */
+  textBytes?: Buffer;
 }
 type HistoryRec = { id: number; messagesAdded?: string[]; labelsAdded?: string[]; labelsRemoved?: string[]; messagesDeleted?: string[] };
 
@@ -33,6 +35,11 @@ export class FakeGmail {
   sendCalls = 0;
   requests: string[] = [];
   refuseToken = false;
+  /** the sign-in lacks gmail.compose: creating a draft is a 403 */
+  readOnly = false;
+  /** history records per page (a long history pages) */
+  historyPageSize = 1000;
+  private historyNext: string | null = null;
   async start(): Promise<this> {
     this.server = createServer((req, res) => void this.handle(req, res).catch((e) => json(res, 500, { error: { code: 500, message: String(e) } })));
     this.base = `http://127.0.0.1:${await listen(this.server)}/`;
@@ -62,10 +69,12 @@ export class FakeGmail {
     const base = { id: m.id, threadId: m.threadId, labelIds: m.labelIds, snippet: m.snippet, internalDate: String(m.internalDate), historyId: String(this.historyId) };
     if (format === 'minimal') return base;
     if (format === 'metadata') return { ...base, payload: { mimeType: 'multipart/alternative', headers } };
-    const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64url');
+    // a part in another charset (Latin-1, ISO-2022-JP…) carries its bytes in that charset, as Gmail sends them
+    const b64 = (s: string) => Buffer.from(s, m.charset === 'latin1' ? 'latin1' : 'utf8').toString('base64url');
+    const ph = (type: string) => [{ name: 'Content-Type', value: `${type}; charset=${m.charset ?? 'utf-8'}` }];
     const parts = [
-      ...(m.text !== undefined ? [{ partId: '0', mimeType: 'text/plain', filename: '', headers: [], body: { size: m.text.length, data: b64(m.text) } }] : []),
-      ...(m.html !== undefined ? [{ partId: '1', mimeType: 'text/html', filename: '', headers: [], body: { size: m.html.length, data: b64(m.html) } }] : []),
+      ...(m.text !== undefined || m.textBytes ? [{ partId: '0', mimeType: 'text/plain', filename: '', headers: ph('text/plain'), body: { size: 1, data: m.textBytes ? m.textBytes.toString('base64url') : b64(m.text!) } }] : []),
+      ...(m.html !== undefined ? [{ partId: '1', mimeType: 'text/html', filename: '', headers: ph('text/html'), body: { size: m.html.length, data: b64(m.html) } }] : []),
       { partId: '2', mimeType: 'application/pdf', filename: 'secret.pdf', headers: [], body: { size: 10, attachmentId: 'att-1' } },
     ];
     return { ...base, payload: { mimeType: 'multipart/mixed', headers, parts } };
@@ -83,6 +92,12 @@ export class FakeGmail {
     const g = '/gmail/v1/users/me';
     if (req.method === 'POST' && (p === `${g}/messages/send` || p === `${g}/drafts/send` || p.endsWith('/send'))) { this.sendCalls++; return json(res, 200, { id: 'sent' }); }
     if (req.method === 'GET' && p === `${g}/profile`) return json(res, 200, { emailAddress: 'robert@gmail.example', historyId: String(this.historyId) });
+    if (req.method === 'GET' && p === `${g}/messages` && u.searchParams.getAll('labelIds').includes('DRAFT')) {
+      // Drafts searched by rfc822msgid: (the draft's own Message-ID)
+      const want = /rfc822msgid:(\S+)/.exec(u.searchParams.get('q') ?? '')?.[1] ?? '';
+      const hit = this.drafts.find((d) => want && new RegExp(`^Message-ID: <${want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}>\\r?$`, 'm').test(d.raw));
+      return json(res, 200, hit ? { messages: [{ id: `dm-${hit.id}`, threadId: hit.threadId }], resultSizeEstimate: 1 } : { resultSizeEstimate: 0 });
+    }
     if (req.method === 'GET' && p === `${g}/messages`) {
       const after = Number(/after:(\d+)/.exec(u.searchParams.get('q') ?? '')?.[1] ?? 0) * 1000;
       const label = u.searchParams.getAll('labelIds');
@@ -102,10 +117,13 @@ export class FakeGmail {
     if (req.method === 'GET' && p === `${g}/history`) {
       const start = Number(u.searchParams.get('startHistoryId'));
       if (start < this.oldestHistory) return json(res, 404, { error: { code: 404, message: 'Requested entity was not found.' } });
-      const recs = this.history.filter((h) => h.id > start);
+      const all = this.history.filter((h) => h.id > start);
+      const from = Number(u.searchParams.get('pageToken') ?? 0);
+      const recs = all.slice(from, from + this.historyPageSize);
+      if (from + this.historyPageSize < all.length) this.historyNext = String(from + this.historyPageSize); else this.historyNext = null;
       const msg = (id: string) => ({ message: { id, threadId: `t-${id}`, labelIds: this.msgs.get(id)?.labelIds ?? [] } });
       return json(res, 200, {
-        historyId: String(this.historyId),
+        historyId: String(this.historyId), ...(this.historyNext ? { nextPageToken: this.historyNext } : {}),
         ...(recs.length ? {
           history: recs.map((h) => ({
             id: String(h.id),
@@ -118,6 +136,7 @@ export class FakeGmail {
       });
     }
     if (req.method === 'POST' && p === `${g}/drafts`) {
+      if (this.readOnly) return json(res, 403, { error: { code: 403, message: 'Request had insufficient authentication scopes.', status: 'PERMISSION_DENIED' } });
       const b = JSON.parse(await readBody(req));
       const d = { id: `d-${this.drafts.length + 1}`, raw: Buffer.from(String(b.message?.raw ?? ''), 'base64url').toString('utf8'), threadId: b.message?.threadId };
       this.drafts.push(d);
@@ -133,6 +152,7 @@ export interface GraphMsg {
   id: string; conversationId: string; from: { emailAddress: { name: string; address: string } }; subject: string; bodyPreview: string;
   receivedDateTime: string; isRead: boolean; categories: string[]; internetMessageId: string; unsubscribeEnabled: boolean;
   body: { contentType: 'html' | 'text'; content: string };
+  replyTo?: { emailAddress: { name: string; address: string } }[];
 }
 export class FakeGraph {
   server!: Server; base = '';
@@ -142,7 +162,10 @@ export class FakeGraph {
   /** a delta token below this has expired (410) */
   expiredBefore = 0;
   revoked = false;
-  drafts: { id: string; replyTo: string; comment: string }[] = [];
+  drafts: { id: string; replyTo: string; comment: string; key?: string }[] = [];
+  /** the sign-in has Mail.Read only: creating a reply draft is a 403 */
+  readOnly = false;
+  address = 'robert@outlook.example';
   sendCalls = 0;
   requests: string[] = [];
   async start(): Promise<this> {
@@ -164,6 +187,8 @@ export class FakeGraph {
   }
   markRead(id: string) { this.msgs.get(id)!.isRead = true; this.changes.push({ seq: ++this.seq, id, partial: true }); }
   remove(id: string) { this.msgs.delete(id); this.changes.push({ seq: ++this.seq, id, removed: true }); }
+  /** whom Graph addresses a reply to: the Reply-To, else the sender */
+  recipientsFor(id: string) { const m = this.msgs.get(id); return m ? (m.replyTo?.length ? m.replyTo : [m.from]) : []; }
 
   private async handle(req: IncomingMessage, res: ServerResponse) {
     const u = new URL(req.url ?? '/', 'http://x');
@@ -172,6 +197,13 @@ export class FakeGraph {
     this.requests.push(`${req.method} ${p}`);
     if (this.revoked || req.headers.authorization !== 'Bearer fake-graph-token') return json(res, 401, { error: { code: 'InvalidAuthenticationToken', message: 'Access token has expired or is not yet valid.' } });
     if (req.method === 'POST' && (/\/send$/.test(p) || p === '/me/sendMail' || /\/(reply|replyAll|forward)$/.test(p))) { this.sendCalls++; return json(res, 202, {}); }
+    if (req.method === 'GET' && p === '/me') return json(res, 200, { mail: this.address, userPrincipalName: this.address });
+    if (req.method === 'GET' && p === '/me/mailFolders/drafts/messages') {
+      // drafts found by MWA's extended property (its value is the draft id)
+      const want = /ep\/value eq '((?:[^']|'')*)'/.exec(u.searchParams.get('$filter') ?? '')?.[1]?.replace(/''/g, "'");
+      const hit = this.drafts.find((d) => want && d.key === want);
+      return json(res, 200, { value: hit ? [{ id: hit.id, toRecipients: this.recipientsFor(hit.replyTo) }] : [] });
+    }
     if (req.method === 'GET' && p === '/me/mailFolders/inbox/messages/delta') {
       const token = u.searchParams.get('$deltatoken'), skip = u.searchParams.get('$skiptoken');
       const deltaLink = `${this.base}/me/mailFolders/inbox/messages/delta?$deltatoken=${this.seq}`;
@@ -196,16 +228,18 @@ export class FakeGraph {
     if (req.method === 'GET' && one) {
       const m = this.msgs.get(decodeURIComponent(one[1]));
       if (!m) return json(res, 404, { error: { code: 'ErrorItemNotFound', message: 'The specified object was not found in the store.' } });
-      return json(res, 200, { id: m.id, body: m.body, toRecipients: [{ emailAddress: { name: 'Robert', address: 'robert@outlook.example' } }] });
+      return json(res, 200, { id: m.id, body: m.body, from: m.from, replyTo: m.replyTo ?? [], toRecipients: [{ emailAddress: { name: 'Robert', address: this.address } }] });
     }
     const reply = /^\/me\/messages\/([^/]+)\/createReply$/.exec(raw);
     if (req.method === 'POST' && reply) {
       const rid = decodeURIComponent(reply[1]);
       if (!this.msgs.get(rid)) return json(res, 404, { error: { code: 'ErrorItemNotFound', message: 'Not found.' } });
+      if (this.readOnly) return json(res, 403, { error: { code: 'ErrorAccessDenied', message: 'Access is denied. Check credentials and try again.' } });
       const b = JSON.parse(await readBody(req) || '{}');
-      const d = { id: `od-${this.drafts.length + 1}`, replyTo: rid, comment: String(b.comment ?? '') };
+      const key = b.message?.singleValueExtendedProperties?.[0]?.value;
+      const d = { id: `od-${this.drafts.length + 1}`, replyTo: rid, comment: String(b.comment ?? ''), ...(key ? { key: String(key) } : {}) };
       this.drafts.push(d);
-      return json(res, 201, { id: d.id, isDraft: true });
+      return json(res, 201, { id: d.id, isDraft: true, toRecipients: this.recipientsFor(rid) });
     }
     return json(res, 404, { error: { code: 'NotFound', message: `fake graph: no route ${req.method} ${p}` } });
   }
@@ -227,7 +261,7 @@ export class FakeImap {
   logouts = 0;
   connections = 0;
   failLogin = false;
-  add(m: { from: string; addr: string; subject: string; at: number; messageId?: string; listId?: string; unsub?: boolean; html?: string; seen?: boolean }): ImapMsg {
+  add(m: { from: string; addr: string; subject: string; at: number; messageId?: string; listId?: string; unsub?: boolean; html?: string; seen?: boolean; replyTo?: { name?: string; address: string }[] }): ImapMsg {
     const uid = this.nextUid++;
     const messageId = m.messageId ?? `<imap-${uid}@mail.example>`;
     const headers = [`Message-ID: ${messageId}`, ...(m.listId ? [`List-Id: ${m.listId}`] : []), ...(m.unsub ? ['List-Unsubscribe: <mailto:unsub@list.example>'] : [])].join('\r\n') + '\r\n\r\n';
@@ -235,7 +269,7 @@ export class FakeImap {
     const source = [`From: "${m.from}" <${m.addr}>`, 'To: robert@gmail.example', `Subject: ${m.subject}`, `Message-ID: ${messageId}`, `Date: ${new Date(m.at).toUTCString()}`, 'MIME-Version: 1.0', 'Content-Type: text/html; charset=utf-8', '', html].join('\r\n');
     const msg: ImapMsg = {
       uid, flags: new Set(m.seen ? ['\\Seen'] : []), internalDate: new Date(m.at), labels: new Set(['\\Inbox']), threadId: `thr-${uid}`,
-      envelope: { date: new Date(m.at), subject: m.subject, messageId, from: [{ name: m.from, address: m.addr }] }, headers, source,
+      envelope: { date: new Date(m.at), subject: m.subject, messageId, from: [{ name: m.from, address: m.addr }], ...(m.replyTo ? { replyTo: m.replyTo } : {}) }, headers, source,
     };
     this.msgs.push(msg);
     return msg;
@@ -247,7 +281,7 @@ export class FakeImap {
     if (this.failLogin) { const e = new Error('Command failed') as Error & { authenticationFailed: boolean }; e.authenticationFailed = true; throw e; }
     this.connections++;
     const fake = this;
-    let opened = false;
+    let opened: string | null = null;
     const pick = (m: ImapMsg, q: Record<string, unknown>) => ({
       seq: m.uid, uid: m.uid,
       ...(q.flags ? { flags: new Set(m.flags) } : {}),
@@ -259,9 +293,13 @@ export class FakeImap {
       ...(q.source ? { source: Buffer.from(m.source) } : {}),
     });
     return {
-      get mailbox() { return opened ? { path: 'INBOX', uidValidity: fake.uidValidity, uidNext: fake.nextUid, exists: fake.msgs.length, delimiter: '/', flags: new Set<string>() } : false; },
-      async getMailboxLock(path: string, o: { readOnly?: boolean } = {}) { fake.opens.push({ path, readOnly: !!o.readOnly }); opened = true; return { path, release() {} }; },
-      async search(q: { since?: Date }) {
+      get mailbox() { return opened ? { path: opened, uidValidity: opened === 'INBOX' ? fake.uidValidity : 99n, uidNext: fake.nextUid, exists: fake.msgs.length, delimiter: '/', flags: new Set<string>() } : false; },
+      async getMailboxLock(path: string, o: { readOnly?: boolean } = {}) { fake.opens.push({ path, readOnly: !!o.readOnly }); opened = path; return { path, release() {} }; },
+      async search(q: { since?: Date; header?: Record<string, string> }) {
+        if (opened !== 'INBOX') { // Drafts: searched by a header (the draft's own Message-ID)
+          const [[name, value]] = Object.entries(q.header ?? { x: '' });
+          return fake.appended.map((a, i) => ({ a, uid: 901 + i })).filter(({ a }) => a.path === opened && a.content.toLowerCase().includes(`${name}: ${value}`.toLowerCase())).map((x) => x.uid);
+        }
         const day = q.since ? Date.UTC(q.since.getUTCFullYear(), q.since.getUTCMonth(), q.since.getUTCDate()) : 0; // SINCE ignores the time of day
         return fake.msgs.filter((m) => m.internalDate.getTime() >= day).map((m) => m.uid);
       },

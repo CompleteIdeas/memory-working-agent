@@ -1,7 +1,7 @@
 // v2 build, slice A8: the reader's sanitiser. A hostile HTML email must come out as safe, plain text: no script, no
 // remote image, no tracking pixel, no javascript: link, no text a mail client would hide, no raw URLs, bounded size.
 import { describe, it, expect } from 'vitest';
-import { sanitizeMail, styleHides, hiddenClassesFrom, collapseQuotes, BODY_MAX_BYTES } from '../src/sync/mail-sanitize.js';
+import { sanitizeMail, styleHides, hiddenSelectorsFrom, collapseQuotes, BODY_MAX_BYTES } from '../src/sync/mail-sanitize.js';
 import { cleanLine, linksToHosts } from '../src/v2/mail.js';
 
 import { HOSTILE, ZWSP, RLO, SHY, BOM } from './fixtures/hostile-email.js';
@@ -100,8 +100,8 @@ describe('plain-text bodies and the helpers', () => {
     for (const s of ['display:block', 'font-size:14px', 'opacity:0.9', 'color:#333', 'max-height:200px;overflow:hidden'])
       expect(styleHides(s), s).toBe(false);
     const set = new Set<string>();
-    hiddenClassesFrom('.a{display:none} .b{color:red} @media screen{.c{display:none}} p.d, .e{visibility:hidden}', set);
-    expect([...set].sort()).toEqual(['a', 'd', 'e']);
+    hiddenSelectorsFrom('.a{display:none} .b{color:red} @media screen{.c{display:none}} p.d, .e{visibility:hidden} #f{opacity:0}', set);
+    expect([...set].sort()).toEqual(['#f', '.a', '.d', '.e']);
   });
   it('header lines: entities decoded, invisible characters removed, URLs as hosts', () => {
     expect(cleanLine(`It&#39;s here &amp; ready${ZWSP} — see https://x.example/a?b=1`)).toBe("It's here & ready — see x.example");

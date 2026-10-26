@@ -6,6 +6,7 @@
  * the field keeps rediscovering). All pure + dependency-free so it is fully unit-testable.
  */
 import { randomBytes } from 'node:crypto';
+import { v2DraftsOn } from '../sync/flags.js';
 
 export type ActionCategory = 'read' | 'write-local' | 'execute' | 'external' | 'schedule' | 'memory' | 'control';
 
@@ -21,6 +22,8 @@ const TOOL_CATEGORY: Record<string, ActionCategory> = {
   // not an action (no tripwire count, no "changed something"). Its output still taints the run.
   run_checks: 'read',
   http_request: 'external', draft_email: 'external', send_email: 'external',
+  // v2 (A7): the synced calendar cache, read locally (its titles are outside text, so it is not listed as local content)
+  list_events: 'read',
   schedule: 'schedule',
   remember: 'memory', supersede: 'memory',
   ask_user: 'control', done: 'control', confirm_action: 'control', cancel_action: 'control', list_pending: 'control',
@@ -85,6 +88,9 @@ export function markMcpReadOnly(name: string): boolean {
 /** Classify a tool by what it does to the world. Unknown tools are treated as 'external' — the most
  *  cautious bucket — so a newly self-installed tool is governed by default, not silently trusted. */
 export function classifyTool(name: string): ActionCategory {
+  // v2 (A7): with MWA-held drafts on, proposing an event writes a draft in MWA — nothing leaves the machine until
+  // the person confirms it. With MWA_V2_DRAFTS=0 it inserts into the calendar again, which is outward.
+  if ((name === 'propose_event' || name === 'propose_outlook_event') && v2DraftsOn()) return 'write-local';
   return TOOL_CATEGORY[String(name)] ?? (MCP_READ_ONLY.has(String(name)) ? 'read' : 'external');
 }
 

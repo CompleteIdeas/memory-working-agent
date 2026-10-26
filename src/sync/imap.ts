@@ -6,16 +6,21 @@
  *   - a UIDVALIDITY different from the cursor's means every UID changed meaning: a full window resync;
  *   - otherwise new UIDs get their headers fetched, known ones only their flags (read / unread, Gmail labels), and
  *     a cached UID the search no longer returns has left the inbox.
- * Provider ids are "<UIDVALIDITY>.<UID>", so an id from before a reset can never point at a different message.
+ * Provider ids are "<UIDVALIDITY>.<UID>", and the account key carries the address ('imap:<address>'), so neither a
+ * mailbox reset nor another account with the same UIDVALIDITY can make an id point at a different message.
  * IMAP has no snippet without reading the body, so IMAP headers carry none (headers only, as designed).
+ *
+ * Drafts: APPEND to the Drafts mailbox flagged \Draft, with a Message-ID derived from the Idempotency-Key; Drafts is
+ * searched for that Message-ID first, so a retry does not add a second draft. IMAP cannot send.
  */
-import { simpleParser } from 'mailparser';
-import type { FetchMessageObject, FetchQueryObject, ImapFlow, MailboxObject } from 'imapflow';
+import { simpleParser, type AddressObject } from 'mailparser';
+import type { FetchMessageObject, FetchQueryObject, ImapFlow, MailboxObject, MessageAddressObject } from 'imapflow';
 import { appendDraft, imapClient } from '../connectors/gmail-imap.js';
 import type { HeaderIn, HeaderPatch, SyncBatch, SyncStateRow } from '../v2/mail.js';
+import { isAddrSpec, type Addr } from '../v2/mail-text.js';
 import { listIdOf } from './gmail.js';
 import { buildReplyMime } from './mail-mime.js';
-import { MessageGoneError, type MailProvider, type RawBody, type SyncOptions } from './mail-types.js';
+import { MessageGoneError, replyRecipients, type DraftRequest, type DraftResult, type MailProvider, type RawBody, type SyncOptions } from './mail-types.js';
 
 /** The part of imapflow the sync uses (tests drive a fake with this shape). */
 export type ImapLike = Pick<ImapFlow, 'getMailboxLock' | 'search' | 'fetch' | 'fetchOne' | 'list' | 'append' | 'logout'> & { mailbox: MailboxObject | false };
@@ -25,10 +30,9 @@ const SOURCE_MAX = 5_000_000;
 const HEADER_FIELDS = ['message-id', 'list-id', 'list-unsubscribe', 'references', 'reply-to'];
 
 export interface ImapOptions {
-  account?: string;
   /** a connected client (tests: a fake); default: the stored app password */
   connect?: () => Promise<ImapLike>;
-  /** the signed-in address (the From of a draft) */
+  /** the signed-in address (the account key and a draft's From) */
   user?: string;
 }
 
@@ -36,7 +40,7 @@ export interface ImapOptions {
 export function parseHeaderBlock(buf: Buffer | string | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   if (!buf) return out;
-  const text = buf.toString().replace(/\r\n/g, '\n').replace(/\n[ \t]+/g, ' ');
+  const text = buf.toString().slice(0, 64_000).replace(/\r\n/g, '\n').replace(/\n[ \t]+/g, ' ');
   for (const line of text.split('\n')) {
     const i = line.indexOf(':');
     if (i > 0) { const k = line.slice(0, i).trim().toLowerCase(); if (!(k in out)) out[k] = line.slice(i + 1).trim(); }
@@ -49,22 +53,27 @@ export const parseCursor = (c: string | null | undefined): { uidValidity: string
   return m ? { uidValidity: m[1], lastUid: Number(m[2]) } : null;
 };
 
-export function imapProvider(o: ImapOptions = {}): MailProvider {
-  const account = o.account ?? 'imap';
-  const connect = o.connect ?? (async () => (await imapClient()) as unknown as ImapLike);
-  const user = () => o.user ?? process.env.MWA_GMAIL_USER ?? '';
+/** Structured envelope addresses → Addr (only plain addr-specs keep their address). */
+const envAddrs = (list: MessageAddressObject[] | undefined): Addr[] =>
+  (list ?? []).map((a) => ({ name: a.name || null, addr: a.address && isAddrSpec(a.address) ? a.address.toLowerCase() : null }));
+const parsedAddrs = (o: AddressObject | AddressObject[] | undefined): Addr[] =>
+  (Array.isArray(o) ? o : o ? [o] : []).flatMap((x) => x.value ?? []).map((a) => ({ name: a.name || null, addr: a.address && isAddrSpec(a.address) ? a.address.toLowerCase() : null }));
 
-  /** Open INBOX read-only, run `fn`, always release and log out. */
-  async function withInbox<T>(fn: (c: ImapLike, uidValidity: string) => Promise<T>, readOnly = true): Promise<T> {
-    const c = await connect();
+export function imapProvider(o: ImapOptions = {}): MailProvider {
+  const connect = o.connect ?? (async () => (await imapClient()) as unknown as ImapLike);
+  const user = () => (o.user ?? process.env.MWA_GMAIL_USER ?? '').trim().toLowerCase();
+
+  /** Open a mailbox (read-only unless told), run `fn`, always release and log out. */
+  async function withBox<T>(path: string, fn: (c: ImapLike, uidValidity: string) => Promise<T>, c0?: ImapLike): Promise<T> {
+    const c = c0 ?? await connect();
     try {
-      const lock = await c.getMailboxLock('INBOX', { readOnly });
+      const lock = await c.getMailboxLock(path, { readOnly: true });
       try {
         const mb = c.mailbox;
-        if (!mb) throw new Error('INBOX did not open');
+        if (!mb) throw new Error(`${path} did not open`);
         return await fn(c, String(mb.uidValidity));
       } finally { lock.release(); }
-    } finally { try { await c.logout(); } catch { /* gone */ } }
+    } finally { if (!c0) { try { await c.logout(); } catch { /* gone */ } } }
   }
 
   const toHeader = (m: FetchMessageObject, uidValidity: string): HeaderIn => {
@@ -92,12 +101,17 @@ export function imapProvider(o: ImapOptions = {}): MailProvider {
     const m = /^(\d+)\.(\d+)$/.exec(providerId);
     return m && m[1] === uidValidity ? Number(m[2]) : null;
   };
+  async function draftsPath(c: ImapLike): Promise<string> {
+    try { const d = (await c.list()).find((b: any) => b.specialUse === '\\Drafts'); if (d?.path) return d.path; } catch { /* default */ }
+    return '[Gmail]/Drafts';
+  }
 
   return {
-    account, provider: 'imap', label: 'Gmail (app password)',
+    prefix: 'imap', provider: 'imap', label: 'Gmail (app password)',
+    async resolveAccount() { return user() ? `imap:${user()}` : 'imap'; },
     async sync(state: SyncStateRow | null, o2: SyncOptions): Promise<SyncBatch> {
       const windowFrom = o2.now - o2.windowDays * 86_400_000;
-      return withInbox(async (c, uidValidity) => {
+      return withBox('INBOX', async (c, uidValidity) => {
         const prev = parseCursor(state?.cursor);
         const full = !prev || prev.uidValidity !== uidValidity;
         const found = ((await c.search({ since: new Date(windowFrom) }, { uid: true })) || []).sort((a, b) => a - b).slice(-MAX_WINDOW_MESSAGES);
@@ -121,32 +135,39 @@ export function imapProvider(o: ImapOptions = {}): MailProvider {
       });
     },
     async fetchBody(providerId: string): Promise<RawBody> {
-      return withInbox(async (c, uidValidity) => {
+      return withBox('INBOX', async (c, uidValidity) => {
         const uid = uidOf(providerId, uidValidity);
         if (uid === null) throw new MessageGoneError('The mailbox was reset since this message was listed.');
         const m = await c.fetchOne(String(uid), { uid: true, source: { maxLength: SOURCE_MAX } }, { uid: true });
         if (!m || !m.source) throw new MessageGoneError();
-        const p = await simpleParser(m.source);
-        return { html: typeof p.html === 'string' ? p.html : null, text: p.text ?? null, to: Array.isArray(p.to) ? p.to.map((x) => x.text).join(', ') : p.to?.text ?? null };
+        const p = await simpleParser(m.source); // decodes each part by its charset
+        return { html: typeof p.html === 'string' ? p.html : null, text: p.text ?? null, from: parsedAddrs(p.from), replyTo: parsedAddrs(p.replyTo), to: parsedAddrs(p.to) };
       });
     },
-    async saveReplyDraft(providerId: string, body: string) {
-      return withInbox(async (c, uidValidity) => {
-        const uid = uidOf(providerId, uidValidity);
-        if (uid === null) throw new MessageGoneError('The mailbox was reset since this message was listed.');
-        const m = await c.fetchOne(String(uid), { uid: true, envelope: true, headers: HEADER_FIELDS }, { uid: true });
-        if (!m) throw new MessageGoneError();
-        const env = m.envelope ?? {};
-        const hs = parseHeaderBlock(m.headers);
-        const addr = (a?: { name?: string; address?: string }) => (a?.address ? (a.name ? `"${a.name}" <${a.address}>` : a.address) : '');
-        const to = env.replyTo?.length ? env.replyTo.map(addr).join(', ') : addr(env.from?.[0]);
+    async saveReplyDraft(providerId: string, req: DraftRequest): Promise<DraftResult> {
+      const c = await connect();
+      try {
+        const orig = await withBox('INBOX', async (cc, uidValidity) => {
+          const uid = uidOf(providerId, uidValidity);
+          if (uid === null) throw new MessageGoneError('The mailbox was reset since this message was listed.');
+          const m = await cc.fetchOne(String(uid), { uid: true, envelope: true, headers: HEADER_FIELDS }, { uid: true });
+          if (!m) throw new MessageGoneError();
+          return m;
+        }, c);
+        const env = orig.envelope ?? {};
+        const hs = parseHeaderBlock(orig.headers);
+        const to = replyRecipients(envAddrs(env.from), envAddrs(env.replyTo));
+        const drafts = await draftsPath(c);
+        const existing = await withBox(drafts, async (cc) => (await cc.search({ header: { 'message-id': req.draftId } }, { uid: true })) || [], c);
+        if (existing.length) return { draftId: String(existing[0]), to, already: true };
+        const me = user();
         const raw = buildReplyMime({
-          from: user() || null, to, subject: env.subject ?? null, messageId: env.messageId ?? hs['message-id'] ?? null,
-          references: hs.references ?? env.inReplyTo ?? null, body,
+          from: me && isAddrSpec(me) ? { name: null, addr: me } : null, to, subject: env.subject ?? null,
+          messageId: env.messageId ?? hs['message-id'] ?? null, references: hs.references ?? env.inReplyTo ?? null, body: req.body, draftId: req.draftId,
         });
         const r = await appendDraft(c, raw); // APPEND to Drafts, flagged \Draft — IMAP has no way to send
-        return { draftId: r.uid !== null ? String(r.uid) : null };
-      });
+        return { draftId: r.uid !== null ? String(r.uid) : null, to, already: false };
+      } finally { try { await c.logout(); } catch { /* gone */ } }
     },
   };
 }

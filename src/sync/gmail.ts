@@ -4,23 +4,31 @@
  * Gmail's category labels (CATEGORY_PROMOTIONS, CATEGORY_UPDATES…), which arrive in labelIds.
  *
  * Incremental: users.history.list from the stored historyId (INBOX; messages added, labels changed, deleted). When
- * Gmail answers 404 the historyId is too old (Gmail keeps about a week): resync a 14-day metadata window instead.
- * The new cursor of a full sync is the profile's historyId read BEFORE listing, so nothing that changes during the
- * listing is missed (it is replayed next time; replays are harmless).
+ * Gmail answers 404 the historyId is too old (Gmail keeps about a week): resync a 14-day metadata window instead; so
+ * does a history longer than 50 pages. The new cursor of a full sync is the profile's historyId read BEFORE listing.
+ *
+ * The account key is 'google:<address>' — the calendar sync's key (A7) when the sign-in stored its address, else the
+ * profile's address.
+ *
+ * Drafts (review of A8): the draft's Message-ID is derived from the request's Idempotency-Key, and Drafts is searched
+ * for it (rfc822msgid:) before a new draft is created, so a retry after a lost answer does not make a second draft.
+ * The compose scope COULD send; nothing here calls send.
  */
 import { google } from 'googleapis';
-import { authedClient } from '../connectors/google.js';
-import { parseAddress, type HeaderIn, type SyncBatch, type SyncStateRow } from '../v2/mail.js';
+import { simpleParser } from 'mailparser';
+import { authedClient, googleAccountKey } from '../connectors/google.js';
+import type { HeaderIn, SyncBatch, SyncStateRow } from '../v2/mail.js';
+import { parseAddressList, parseAddress, type Addr } from '../v2/mail-text.js';
 import { buildReplyMime } from './mail-mime.js';
-import { MessageGoneError, mapLimit, statusOf, type MailProvider, type RawBody, type SyncOptions } from './mail-types.js';
+import { MessageGoneError, mapLimit, replyRecipients, statusOf, type DraftRequest, type DraftResult, type MailProvider, type RawBody, type SyncOptions } from './mail-types.js';
 
 const META = ['From', 'Subject', 'Date', 'Message-ID', 'List-Unsubscribe', 'List-Id'];
 const MAX_WINDOW_MESSAGES = 2000;
+const MAX_HISTORY_PAGES = 50;
 const CONCURRENCY = 8;
 const BODY_PART_MAX = 3_000_000;
 
 export interface GmailOptions {
-  account?: string;
   /** an OAuth2 client (tests: one pointed at a fake token endpoint); default: the stored sign-in */
   auth?: unknown;
   /** the API root (tests: a fake Gmail server) */
@@ -30,17 +38,31 @@ export interface GmailOptions {
 /** "List-Id: Stable View News <news.stableview.example>" → "news.stableview.example". */
 export function listIdOf(v: string | null | undefined): string | null {
   if (!v) return null;
-  const m = /<([^>]+)>/.exec(v);
+  const m = /<([^<>]{1,200})>/.exec(v);
   return (m ? m[1] : v).trim().slice(0, 200) || null;
 }
 
+/**
+ * A body part's bytes as text, by its declared charset (Latin-1, Windows-1252, ISO-2022-JP, GB18030…). Gmail hands
+ * part data over undecoded; mailparser (already used for IMAP) decodes it, so a one-part message is parsed.
+ */
+export async function decodeCharset(buf: Buffer, contentType: string | null | undefined): Promise<string> {
+  const cs = /charset\s*=\s*"?([A-Za-z0-9._:-]{1,40})"?/i.exec(contentType ?? '')?.[1]?.toLowerCase() ?? 'utf-8';
+  if (cs === 'utf-8' || cs === 'utf8' || cs === 'us-ascii') return buf.toString('utf8');
+  try {
+    const head = `Content-Type: text/plain; charset="${cs}"\r\nContent-Transfer-Encoding: base64\r\n\r\n`;
+    const p = await simpleParser(Buffer.concat([Buffer.from(head), Buffer.from(buf.toString('base64'))]));
+    return (p.text ?? '').replace(/\n$/, '');
+  } catch { return buf.toString('utf8'); }
+}
+
+type Header = { name?: string | null; value?: string | null };
+const header = (headers: Header[] | undefined | null, n: string) =>
+  headers?.find((h) => (h.name ?? '').toLowerCase() === n.toLowerCase())?.value ?? null;
+
 export function gmailProvider(o: GmailOptions = {}): MailProvider {
-  const account = o.account ?? 'gmail';
   const api = async () => google.gmail({ version: 'v1', auth: (o.auth ?? await authedClient()) as never, ...(o.rootUrl ? { rootUrl: o.rootUrl } : {}) });
   type Gmail = Awaited<ReturnType<typeof api>>;
-
-  const header = (headers: { name?: string | null; value?: string | null }[] | undefined, n: string) =>
-    headers?.find((h) => (h.name ?? '').toLowerCase() === n.toLowerCase())?.value ?? null;
 
   async function meta(g: Gmail, id: string): Promise<{ h: HeaderIn; labels: string[] } | null> {
     try {
@@ -84,9 +106,10 @@ export function gmailProvider(o: GmailOptions = {}): MailProvider {
     const windowFrom = o2.now - o2.windowDays * 86_400_000;
     const touched = new Set<string>(), deleted = new Set<string>();
     let cursor = start;
-    let pageToken: string | undefined;
+    let pageToken: string | undefined, pages = 0;
     try {
       do {
+        if (++pages > MAX_HISTORY_PAGES) return null; // so much changed that the window is cheaper
         const r = await g.users.history.list({
           userId: 'me', startHistoryId: start, labelId: 'INBOX', maxResults: 500, pageToken,
           historyTypes: ['messageAdded', 'labelAdded', 'labelRemoved', 'messageDeleted'],
@@ -114,32 +137,48 @@ export function gmailProvider(o: GmailOptions = {}): MailProvider {
     return { full: false, upserts, deletes: [...deleted], cursor, windowFrom, windowTo: o2.now };
   }
 
-  /** The first text/html and text/plain parts (attachments skipped); a large part is fetched by attachment id. */
+  /** The first text/html and text/plain parts (attachments skipped), decoded by charset; large parts by attachment id. */
   async function bodyOf(g: Gmail, id: string, payload: any): Promise<{ html: string | null; text: string | null }> {
     let html: string | null = null, text: string | null = null;
-    const decode = async (p: any): Promise<string> => {
-      if (p.body?.data) return Buffer.from(String(p.body.data), 'base64url').toString('utf8');
+    const bytes = async (p: any): Promise<Buffer> => {
+      if (p.body?.data) return Buffer.from(String(p.body.data), 'base64url');
       if (p.body?.attachmentId && Number(p.body?.size ?? 0) <= BODY_PART_MAX) {
         const a = await g.users.messages.attachments.get({ userId: 'me', messageId: id, id: p.body.attachmentId });
-        return Buffer.from(String(a.data.data ?? ''), 'base64url').toString('utf8');
+        return Buffer.from(String(a.data.data ?? ''), 'base64url');
       }
-      return '';
+      return Buffer.alloc(0);
     };
-    const walk = async (p: any): Promise<void> => {
-      if (!p) return;
+    const walk = async (p: any, depth = 0): Promise<void> => {
+      if (!p || depth > 20) return;
       const type = String(p.mimeType ?? '').toLowerCase();
       if (!p.filename) {
-        if (type === 'text/html' && html === null) html = await decode(p);
-        else if (type === 'text/plain' && text === null) text = await decode(p);
+        const ct = header(p.headers, 'Content-Type');
+        if (type === 'text/html' && html === null) html = await decodeCharset(await bytes(p), ct);
+        else if (type === 'text/plain' && text === null) text = await decodeCharset(await bytes(p), ct);
       }
-      for (const c of p.parts ?? []) await walk(c);
+      for (const c of p.parts ?? []) await walk(c, depth + 1);
     };
     await walk(payload);
     return { html, text };
   }
 
+  async function originalOf(g: Gmail, id: string) {
+    try { return (await g.users.messages.get({ userId: 'me', id, format: 'metadata', metadataHeaders: ['Message-ID', 'References', 'In-Reply-To', 'Subject', 'From', 'Reply-To'] })).data; }
+    catch (e) { if (statusOf(e) === 404) throw new MessageGoneError(); throw e; }
+  }
+
+  let address: string | null = null;
   return {
-    account, provider: 'gmail', label: 'Gmail',
+    prefix: 'google', provider: 'gmail', label: 'Gmail',
+    async resolveAccount(): Promise<string> {
+      const k = googleAccountKey();
+      if (k.includes(':')) return k;
+      if (!address) {
+        const p = await (await api()).users.getProfile({ userId: 'me' });
+        address = p.data.emailAddress ? String(p.data.emailAddress).toLowerCase() : null;
+      }
+      return address ? `google:${address}` : 'google';
+    },
     async sync(state: SyncStateRow | null, o2: SyncOptions): Promise<SyncBatch> {
       const g = await api();
       if (state?.cursor) {
@@ -154,21 +193,26 @@ export function gmailProvider(o: GmailOptions = {}): MailProvider {
       try { m = (await g.users.messages.get({ userId: 'me', id, format: 'full' })).data; }
       catch (e) { if (statusOf(e) === 404) throw new MessageGoneError(); throw e; }
       const b = await bodyOf(g, id, m.payload);
-      return { ...b, to: header(m.payload?.headers ?? [], 'To') };
-    },
-    async saveReplyDraft(id: string, body: string) {
-      const g = await api();
-      let m;
-      try { m = (await g.users.messages.get({ userId: 'me', id, format: 'metadata', metadataHeaders: ['Message-ID', 'References', 'In-Reply-To', 'Subject', 'From', 'Reply-To'] })).data; }
-      catch (e) { if (statusOf(e) === 404) throw new MessageGoneError(); throw e; }
       const hs = m.payload?.headers ?? [];
+      return { ...b, from: parseAddressList(header(hs, 'From')), replyTo: parseAddressList(header(hs, 'Reply-To')), to: parseAddressList(header(hs, 'To')) };
+    },
+    async saveReplyDraft(id: string, req: DraftRequest): Promise<DraftResult> {
+      const g = await api();
+      const m = await originalOf(g, id);
+      const hs = m.payload?.headers ?? [];
+      const to: Addr[] = replyRecipients(parseAddressList(header(hs, 'From')), parseAddressList(header(hs, 'Reply-To')));
+      // already saved by an earlier try of this same request?
+      const bare = req.draftId.replace(/^<|>$/g, '');
+      const found = await g.users.messages.list({ userId: 'me', labelIds: ['DRAFT'], q: `rfc822msgid:${bare}`, maxResults: 1 });
+      const existing = found.data.messages?.[0]?.id;
+      if (existing) return { draftId: existing, to, already: true };
       const raw = buildReplyMime({
-        to: header(hs, 'Reply-To') ?? header(hs, 'From') ?? '', subject: header(hs, 'Subject'),
-        messageId: header(hs, 'Message-ID'), references: header(hs, 'References') ?? header(hs, 'In-Reply-To'), body,
+        to, subject: header(hs, 'Subject'), messageId: header(hs, 'Message-ID'),
+        references: header(hs, 'References') ?? header(hs, 'In-Reply-To'), body: req.body, draftId: req.draftId,
       });
-      // drafts.create only: the compose scope can send, but nothing here ever calls send.
+      // drafts.create only: nothing here ever calls send.
       const d = await g.users.drafts.create({ userId: 'me', requestBody: { message: { raw: Buffer.from(raw).toString('base64url'), threadId: m.threadId ?? undefined } } });
-      return { draftId: d.data.id ?? null };
+      return { draftId: d.data.id ?? null, to, already: false };
     },
   };
 }

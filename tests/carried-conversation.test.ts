@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { groundedInMessage, unreadSources } from '../src/schedule-request.js';
 import { tickScheduler } from '../src/scheduler.js';
+import { resetAppDb } from '../src/v2/db.js';
 
 describe('a reminder in the person\'s own words', () => {
   const MSG = 'Set 2 reminders:\n- Thu at 10:00 AM: call Harbor Hotel about the centerpieces.\n- Fri at 4:00 PM: order ribbon.';
@@ -137,6 +138,7 @@ describe('a job\'s sources and outcomes', () => {
   });
 
   const fire = async (task: Record<string, unknown>, run: Record<string, unknown>) => {
+    resetAppDb(':memory:'); // each fire here is its own world: one scheduled fire now runs once for good (v2 review H2)
     const outRoot = mkdtempSync(join(tmpdir(), 'mwa-carryf-'));
     const fired: { outcome?: string }[] = [];
     try {

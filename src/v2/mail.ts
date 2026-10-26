@@ -6,11 +6,19 @@
  * it only in an in-process cache (src/sync/mail.ts). Every change to a header records an event in the same
  * transaction, which drives /api/v1/stream and /sync (collection `mail`).
  *
- * `sync_state` is shared with the calendar sync (slice A7, built in parallel): the same CREATE TABLE IF NOT EXISTS
- * with identical columns, so whichever migration runs first creates it and the other is a no-op.
+ * Accounts are keyed 'provider:<address>' ('google:me@gmail.com', 'imap:me@gmail.com', 'outlook:me@outlook.com'),
+ * the scheme the calendar sync (A7) uses; sync state lives in the shared sync_state table (src/v2/sync-state.ts).
+ *
+ * Dedupe (review of A8): the same email reaching two accounts is shown once. A Message-ID alone is not trusted —
+ * anyone can copy one — so two rows are copies only when they are in DIFFERENT accounts, share the Message-ID, the
+ * sender address and the subject, and arrived within five minutes of each other. Two rows in one account are never
+ * collapsed.
  */
 import { appDb, recordEvent, registerMigrations, type AppDb } from './db.js';
+import { cleanLine, isAddrSpec, UNREADABLE_ADDRESS } from './mail-text.js';
+import { recordSyncOk, deleteSyncState } from './sync-state.js';
 
+export { cleanLine, linksToHosts, hostOf, parseAddress, parseAddressList, INVISIBLE } from './mail-text.js';
 export type MailProviderKind = 'gmail' | 'imap' | 'outlook';
 
 registerMigrations([{
@@ -23,15 +31,13 @@ registerMigrations([{
       msg_key TEXT NOT NULL, updated_seq INTEGER,
       PRIMARY KEY (account, provider_id));
     CREATE INDEX IF NOT EXISTS mail_headers_received ON mail_headers(received_at);
-    CREATE INDEX IF NOT EXISTS mail_headers_key ON mail_headers(msg_key);
-    CREATE TABLE IF NOT EXISTS sync_state (
-      account TEXT NOT NULL, resource TEXT NOT NULL, cursor TEXT, window_from INTEGER, window_to INTEGER,
-      last_ok INTEGER, last_error TEXT, needs_reconnect INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (account, resource));`,
+    CREATE INDEX IF NOT EXISTS mail_headers_key ON mail_headers(msg_key);`,
 }]);
 
 export const SNIPPET_MAX = 200;
-const RESOURCE = 'mail';
+export const MAIL_RESOURCE = 'mail';
+/** Copies in two accounts arrive at slightly different times; further apart than this they are two messages. */
+export const COPY_WINDOW_MS = 5 * 60_000;
 
 /** One message's header as a provider reports it. */
 export interface HeaderIn {
@@ -46,7 +52,7 @@ export interface HeaderIn {
   labels: string[];
   listId: string | null;
   hasUnsub: boolean;
-  /** RFC 822 Message-ID (dedupe across accounts) */
+  /** RFC 822 Message-ID (dedupe across accounts, with the sender, subject and time) */
   messageId: string | null;
 }
 /** A change to a header already cached (IMAP flags, a Graph delta that only carries isRead/categories). */
@@ -69,10 +75,7 @@ export interface MailRow {
   received_at: number; unread: number; labels: string; list_id: string | null; has_unsub: number; msg_key: string;
   updated_seq: number | null;
 }
-export interface SyncStateRow {
-  account: string; resource: string; cursor: string | null; window_from: number | null; window_to: number | null;
-  last_ok: number | null; last_error: string | null; needs_reconnect: number;
-}
+export type { SyncStateRow } from './sync-state.js';
 
 // ── ids ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -89,76 +92,36 @@ export function parseMailId(id: string): { account: string; providerId: string }
   return mailId(out.account, out.providerId) === id ? out : null; // canonical form only
 }
 
-// ── text hygiene for header fields (they are shown as-is) ───────────────────────────────────────────────────────
-
-/** Control, zero-width, direction-override and soft-hyphen characters (built from code points, so the source holds none). */
-export const INVISIBLE = invisibleChars();
-function invisibleChars(): RegExp {
-  const esc = (n: number) => `\\u${n.toString(16).padStart(4, '0')}`;
-  const ranges: [number, number][] = [[0x00, 0x08], [0x0b, 0x0c], [0x0e, 0x1f], [0x7f, 0x7f], [0xad, 0xad], [0x200b, 0x200f], [0x202a, 0x202e], [0x2060, 0x2064], [0x2066, 0x2069], [0xfeff, 0xfeff]];
-  return new RegExp('[' + ranges.map(([a, b]) => (a === b ? esc(a) : `${esc(a)}-${esc(b)}`)).join('') + ']', 'g');
-}
-const ENTITY: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'" };
-/** One line of plain text: entities decoded (Gmail snippets carry them), invisible characters gone, links as hosts. */
-export function cleanLine(s: string | null | undefined, max = 500): string {
-  if (!s) return '';
-  const t = String(s)
-    .replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|[a-z]{2,6});/gi, (m, e: string) => {
-      const l = e.toLowerCase();
-      if (l.startsWith('#x')) { const n = Number.parseInt(l.slice(2), 16); return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : ''; }
-      if (l.startsWith('#')) { const n = Number.parseInt(l.slice(1), 10); return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : ''; }
-      return ENTITY[l] ?? m;
-    })
-    .replace(INVISIBLE, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return linksToHosts(t).slice(0, max);
+/** A sender address as stored: a plain addr-spec, lower-cased, or null. */
+export function cleanAddr(a: string | null | undefined): string | null {
+  const v = String(a ?? '').trim();
+  return v && isAddrSpec(v) ? v.toLowerCase() : null;
 }
 
-/** The host a URL points at, without "www." — or null when it is not an http(s) link. */
-export function hostOf(href: string): string | null {
-  const h = href.trim();
-  const withScheme = /^www\./i.test(h) ? `http://${h}` : h;
-  if (!/^https?:\/\//i.test(withScheme)) return null;
-  try { return new URL(withScheme).hostname.replace(/^www\./i, '').toLowerCase() || null; } catch { return null; }
-}
-/** Raw URLs in text become their host ("https://evil.example/track?id=1" → "evil.example"): never a clickable URL. */
-export function linksToHosts(text: string): string {
-  return text
-    .replace(/<\s*((?:https?:\/\/|www\.)[^\s<>]+)\s*>/gi, (_m, u: string) => { const h = hostOf(u); return h ? `(${h})` : ''; })
-    .replace(/\b(?:https?:\/\/|www\.)[^\s<>"')\]]+/gi, (u) => {
-      const tail = /[.,;:!?]+$/.exec(u)?.[0] ?? ''; // sentence punctuation after a link stays
-      return (hostOf(u.slice(0, u.length - tail.length)) ?? '') + tail;
-    });
-}
-
-/** "Name <a@b>" / "a@b" / "\"Name\" <a@b>" → its parts. */
-export function parseAddress(s: string | null | undefined): { name: string | null; addr: string | null } {
-  const v = String(s ?? '').trim();
-  if (!v) return { name: null, addr: null };
-  const m = /^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/.exec(v);
-  if (m) return { name: m[1].trim() || null, addr: m[2].trim().toLowerCase() };
-  const a = /[^\s<>"]+@[^\s<>"]+/.exec(v);
-  return { name: a ? null : v, addr: a ? a[0].toLowerCase() : null };
-}
-
-/** The dedupe key: the Message-ID, else sender|subject|minute — as listUniqueMessages does. */
-export function messageKey(h: Pick<HeaderIn, 'messageId' | 'fromAddr' | 'subject' | 'receivedAt'>): string {
+/**
+ * The dedupe key: Message-ID + sender address + subject (ASCII-lower-cased, so SQLite and JS agree). A message
+ * with no readable sender gets a key of its own and is never collapsed with anything.
+ */
+export function messageKey(account: string, h: Pick<HeaderIn, 'providerId' | 'messageId' | 'fromAddr' | 'subject'>): string {
+  const from = cleanAddr(h.fromAddr);
+  if (!from) return `u:${account}\n${h.providerId}`;
   const id = (h.messageId ?? '').trim().replace(/^<|>$/g, '').toLowerCase();
-  if (id) return `id:${id}`;
-  return `h:${(h.fromAddr ?? '').toLowerCase()}|${(h.subject ?? '').trim().toLowerCase()}|${Math.floor(h.receivedAt / 60_000)}`;
+  const subj = cleanLine(h.subject, 500).replace(/[A-Z]/g, (c) => c.toLowerCase());
+  return `${id ? `id:${id}` : 'h:'}\n${from}\n${subj}`;
 }
 
 // ── writes ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
 function rowFrom(account: string, provider: MailProviderKind, h: HeaderIn): Omit<MailRow, 'updated_seq'> {
+  const addr = cleanAddr(h.fromAddr);
+  const name = cleanLine(h.fromName, 200) || (addr || !h.fromAddr ? null : UNREADABLE_ADDRESS);
   return {
-    account, provider, provider_id: h.providerId, thread_id: h.threadId ?? null,
-    from_name: cleanLine(h.fromName, 200) || null, from_addr: (h.fromAddr ?? '').trim().toLowerCase().slice(0, 320) || null,
+    account, provider, provider_id: h.providerId, thread_id: h.threadId ? cleanLine(h.threadId, 200) || null : null,
+    from_name: name, from_addr: addr,
     subject: cleanLine(h.subject, 500) || null, snippet: cleanLine(h.snippet, SNIPPET_MAX) || null,
     received_at: Math.round(h.receivedAt), unread: h.unread ? 1 : 0,
-    labels: JSON.stringify([...new Set(h.labels.map(String))].slice(0, 50)),
-    list_id: h.listId ? cleanLine(h.listId, 200) || null : null, has_unsub: h.hasUnsub ? 1 : 0, msg_key: messageKey(h),
+    labels: JSON.stringify([...new Set(h.labels.map((l) => cleanLine(String(l), 100)).filter(Boolean))].slice(0, 50)),
+    list_id: h.listId ? cleanLine(h.listId, 200) || null : null, has_unsub: h.hasUnsub ? 1 : 0, msg_key: messageKey(account, h),
   };
 }
 const SAME_FIELDS = ['provider', 'thread_id', 'from_name', 'from_addr', 'subject', 'snippet', 'received_at', 'unread', 'labels', 'list_id', 'has_unsub', 'msg_key'] as const;
@@ -167,8 +130,8 @@ const same = (a: Omit<MailRow, 'updated_seq'>, b: MailRow) => SAME_FIELDS.every(
 function getRow(d: AppDb, account: string, providerId: string): MailRow | undefined {
   return d.prepare('SELECT * FROM mail_headers WHERE account = ? AND provider_id = ?').get(account, providerId) as MailRow | undefined;
 }
-function put(d: AppDb, r: Omit<MailRow, 'updated_seq'>): void {
-  const seq = recordEvent({ entity: 'mail', id: mailId(r.account, r.provider_id), payload: { key: r.msg_key } }, d);
+function put(d: AppDb, r: Omit<MailRow, 'updated_seq'>, prevKey?: string): void {
+  const seq = recordEvent({ entity: 'mail', id: mailId(r.account, r.provider_id), payload: { key: r.msg_key, ...(prevKey && prevKey !== r.msg_key ? { prevKey } : {}) } }, d);
   d.prepare(`INSERT INTO mail_headers (account, provider, provider_id, thread_id, from_name, from_addr, subject, snippet, received_at, unread, labels, list_id, has_unsub, msg_key, updated_seq)
              VALUES (@account, @provider, @provider_id, @thread_id, @from_name, @from_addr, @subject, @snippet, @received_at, @unread, @labels, @list_id, @has_unsub, @msg_key, @seq)
              ON CONFLICT (account, provider_id) DO UPDATE SET provider = excluded.provider, thread_id = excluded.thread_id, from_name = excluded.from_name,
@@ -199,14 +162,14 @@ export function applySync(account: string, provider: MailProviderKind, b: SyncBa
       const next = rowFrom(account, provider, h);
       const prev = getRow(d, account, h.providerId);
       if (prev && same(next, prev)) continue;
-      put(d, next);
+      put(d, next, prev?.msg_key);
       if (prev) out.changed++; else out.added++;
     }
     for (const p of b.patches ?? []) {
       const prev = getRow(d, account, p.providerId);
       if (!prev) continue;
       seen.add(p.providerId);
-      const next = { ...prev, ...(p.unread !== undefined ? { unread: p.unread ? 1 : 0 } : {}), ...(p.labels ? { labels: JSON.stringify([...new Set(p.labels.map(String))].slice(0, 50)) } : {}) };
+      const next = { ...prev, ...(p.unread !== undefined ? { unread: p.unread ? 1 : 0 } : {}), ...(p.labels ? { labels: JSON.stringify([...new Set(p.labels.map((l) => cleanLine(String(l), 100)).filter(Boolean))].slice(0, 50)) } : {}) };
       if (same(next, prev)) continue;
       const { updated_seq: _s, ...rest } = next;
       put(d, rest);
@@ -217,27 +180,32 @@ export function applySync(account: string, provider: MailProviderKind, b: SyncBa
     for (const r of cached) {
       if (gone.has(r.provider_id) || (b.full && !seen.has(r.provider_id)) || r.received_at < b.windowFrom) { drop(d, r); out.removed++; }
     }
-    d.prepare(`INSERT INTO sync_state (account, resource, cursor, window_from, window_to, last_ok, last_error, needs_reconnect)
-               VALUES (?, ?, ?, ?, ?, ?, NULL, 0)
-               ON CONFLICT (account, resource) DO UPDATE SET cursor = excluded.cursor, window_from = excluded.window_from,
-                 window_to = excluded.window_to, last_ok = excluded.last_ok, last_error = NULL, needs_reconnect = 0`)
-      .run(account, RESOURCE, b.cursor, b.windowFrom, b.windowTo, now);
+    recordSyncOk(account, MAIL_RESOURCE, { cursor: b.cursor, windowFrom: b.windowFrom, windowTo: b.windowTo }, now, d);
     return out;
   }).immediate();
 }
 
-/** A sync failed. `reconnect`: the sign-in is no longer valid (invalid_grant, 401) — the person must reconnect. */
-export function markSyncError(account: string, message: string, reconnect: boolean): void {
-  appDb().prepare(`INSERT INTO sync_state (account, resource, last_error, needs_reconnect) VALUES (?, ?, ?, ?)
-                   ON CONFLICT (account, resource) DO UPDATE SET last_error = excluded.last_error, needs_reconnect = excluded.needs_reconnect`)
-    .run(account, RESOURCE, message.slice(0, 300), reconnect ? 1 : 0);
-}
-/** An account's mail sync state: its cursor, window, last success and whether it needs reconnecting. */
-export function getSyncState(account: string): SyncStateRow | null {
-  return (appDb().prepare('SELECT * FROM sync_state WHERE account = ? AND resource = ?').get(account, RESOURCE) as SyncStateRow | undefined) ?? null;
-}
 export function knownIds(account: string): string[] {
   return (appDb().prepare('SELECT provider_id FROM mail_headers WHERE account = ?').all(account) as { provider_id: string }[]).map((r) => r.provider_id);
+}
+
+/** Every account with cached mail or mail sync state. */
+export function mailAccountsStored(): string[] {
+  return (appDb().prepare(`SELECT account FROM mail_headers UNION SELECT account FROM sync_state WHERE resource = ? ORDER BY account`).all(MAIL_RESOURCE) as { account: string }[]).map((r) => r.account);
+}
+
+/**
+ * Forget an account that is no longer connected (or whose address changed): its headers (each recorded as a
+ * deletion, so phones drop them) and its mail sync state. Returns how many headers went.
+ */
+export function purgeMailAccount(account: string): number {
+  const d = appDb();
+  return d.transaction((): number => {
+    const rows = d.prepare('SELECT * FROM mail_headers WHERE account = ?').all(account) as MailRow[];
+    for (const r of rows) drop(d, r);
+    deleteSyncState(account, MAIL_RESOURCE, d);
+    return rows.length;
+  }).immediate();
 }
 
 // ── reads ───────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -246,40 +214,93 @@ export function getMail(account: string, providerId: string): MailRow | null {
   return getRow(appDb(), account, providerId) ?? null;
 }
 
-/**
- * One row per message across accounts (the same email in Gmail and Outlook shows once): of the copies sharing a
- * dedupe key, the newest wins, ties broken by account then provider id — deterministic, so paging is stable.
- */
-const CANONICAL = `NOT EXISTS (SELECT 1 FROM mail_headers o WHERE o.msg_key = h.msg_key AND (o.received_at, o.account, o.provider_id) > (h.received_at, h.account, h.provider_id))`;
+/** `o` hides `h`: a copy of the same email in ANOTHER account, close in time, and the one preferred (newest, then
+ *  by account and id — deterministic, so paging is stable). */
+const HIDDEN_BY = (o: string, h: string) => `${o}.msg_key = ${h}.msg_key AND ${o}.account <> ${h}.account
+  AND abs(${o}.received_at - ${h}.received_at) <= ${COPY_WINDOW_MS}
+  AND (${o}.received_at, ${o}.account, ${o}.provider_id) > (${h}.received_at, ${h}.account, ${h}.provider_id)`;
+const VISIBLE = `NOT EXISTS (SELECT 1 FROM mail_headers o WHERE ${HIDDEN_BY('o', 'h')})`;
+
+function cmpTuple(a: MailRow, b: MailRow): number {
+  if (a.received_at !== b.received_at) return a.received_at < b.received_at ? -1 : 1;
+  if (a.account !== b.account) return a.account < b.account ? -1 : 1;
+  return a.provider_id === b.provider_id ? 0 : a.provider_id < b.provider_id ? -1 : 1;
+}
+const isCopy = (a: MailRow, b: MailRow) => a.msg_key === b.msg_key && a.account !== b.account && Math.abs(a.received_at - b.received_at) <= COPY_WINDOW_MS;
+const hides = (o: MailRow, h: MailRow) => isCopy(o, h) && cmpTuple(o, h) > 0;
 
 export interface MailPageCursor { receivedAt: number; account: string; providerId: string }
 export function listMail(o: { before?: MailPageCursor | null; limit: number }): MailRow[] {
-  const where = [CANONICAL];
+  const where = [VISIBLE];
   const args: unknown[] = [];
   if (o.before) { where.push('(h.received_at, h.account, h.provider_id) < (?, ?, ?)'); args.push(o.before.receivedAt, o.before.account, o.before.providerId); }
   return appDb().prepare(`SELECT h.* FROM mail_headers h WHERE ${where.join(' AND ')} ORDER BY h.received_at DESC, h.account DESC, h.provider_id DESC LIMIT ?`)
     .all(...args, o.limit) as MailRow[];
 }
-/** The copy shown for a dedupe key (null when no copy is left). */
-export function canonicalFor(key: string): MailRow | null {
-  return (appDb().prepare(`SELECT h.* FROM mail_headers h WHERE h.msg_key = ? AND ${CANONICAL}`).get(key) as MailRow | undefined) ?? null;
+
+function rowsWithKey(key: string): MailRow[] {
+  return appDb().prepare('SELECT * FROM mail_headers WHERE msg_key = ?').all(key) as MailRow[];
 }
-/** The accounts a message is in (for "also in Outlook"). */
-export function copiesOf(key: string): { account: string; provider_id: string }[] {
-  return appDb().prepare('SELECT account, provider_id FROM mail_headers WHERE msg_key = ? ORDER BY account').all(key) as { account: string; provider_id: string }[];
+/** For a dedupe key: the rows shown and the rows hidden as copies. */
+export function splitByKey(key: string): { visible: MailRow[]; hidden: MailRow[] } {
+  const rows = rowsWithKey(key);
+  const visible: MailRow[] = [], hidden: MailRow[] = [];
+  for (const r of rows) (rows.some((o) => hides(o, r)) ? hidden : visible).push(r);
+  return { visible, hidden };
 }
 
 /** The API shape (api/openapi.yaml MailHeader). */
 export function apiMailHeader(r: MailRow) {
   let labels: string[] = [];
   try { labels = JSON.parse(r.labels); } catch { labels = []; }
-  const copies = copiesOf(r.msg_key);
+  const copies = r.msg_key.startsWith('u:') ? [] : rowsWithKey(r.msg_key).filter((o) => isCopy(o, r));
   return {
     id: mailId(r.account, r.provider_id), account: r.account, provider: r.provider, threadId: r.thread_id,
     from: { name: r.from_name, addr: r.from_addr }, subject: r.subject ?? '', snippet: r.snippet ?? '',
     receivedAt: r.received_at, unread: r.unread === 1, labels, listId: r.list_id, hasUnsub: r.has_unsub === 1,
-    alsoIn: copies.filter((c) => c.account !== r.account).map((c) => c.account),
+    alsoIn: [...new Set(copies.map((c) => c.account))].sort(),
     updatedSeq: r.updated_seq ?? 0,
   };
 }
 export type ApiMailHeader = ReturnType<typeof apiMailHeader>;
+
+// ── /sync ───────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Every message shown (copies across accounts once), for /sync's full snapshot. Bounded by the 14-day window. */
+export function mailSnapshot(): ApiMailHeader[] {
+  const out: ApiMailHeader[] = [];
+  let before: MailPageCursor | null = null;
+  for (;;) {
+    const rows = listMail({ before, limit: 500 });
+    out.push(...rows.map(apiMailHeader));
+    if (rows.length < 500) return out;
+    const l = rows[rows.length - 1];
+    before = { receivedAt: l.received_at, account: l.account, providerId: l.provider_id };
+  }
+}
+
+/**
+ * Mail changes in a span of events, as current objects. For each dedupe key touched (and a key a row moved away
+ * from), every row shown now is upserted and every hidden copy's id deleted; a row deleted from the cache is deleted
+ * unless it is still shown. A row is never sent as deleted while it is listed (review of A8: a forged copy must not
+ * make a phone drop the real message).
+ */
+export function mailDelta(rows: { entity: string; entity_id: string; op: string; payload: string | null }[]): { upserts: ApiMailHeader[]; deletes: string[] } {
+  const keys = new Set<string>(), dels = new Set<string>();
+  for (const e of rows) {
+    if (e.entity !== 'mail') continue;
+    let p: { key?: string; prevKey?: string } = {};
+    try { p = JSON.parse(e.payload ?? '{}'); } catch { p = {}; }
+    if (p.key) keys.add(p.key);
+    if (p.prevKey) keys.add(p.prevKey);
+    if (e.op === 'delete') dels.add(e.entity_id);
+  }
+  const ups = new Map<string, ApiMailHeader>();
+  for (const k of keys) {
+    const { visible, hidden } = splitByKey(k);
+    for (const r of visible) { const v = apiMailHeader(r); ups.set(v.id, v); }
+    for (const r of hidden) dels.add(mailId(r.account, r.provider_id));
+  }
+  for (const id of ups.keys()) dels.delete(id);
+  return { upserts: [...ups.values()], deletes: [...dels] };
+}

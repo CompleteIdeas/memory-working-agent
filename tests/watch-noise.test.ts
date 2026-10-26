@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { takeOutcomeMark } from '../src/agent.js';
 import { tickScheduler } from '../src/scheduler.js';
+import { resetAppDb } from '../src/v2/db.js';
 
 describe('an outcome written into the answer', () => {
   it('is read at the end or the start, and leaves the message', () => {
@@ -78,6 +79,7 @@ describe('a job run that states its outcome in words', () => {
 
 describe('the scheduler', () => {
   const fire = async (task: Record<string, unknown>, result: Record<string, unknown>) => {
+    resetAppDb(':memory:'); // each fire here is its own world: one scheduled fire now runs once for good (v2 review H2)
     const outRoot = mkdtempSync(join(tmpdir(), 'mwa-noise-sched-'));
     const calls = { onFire: [] as Record<string, unknown>[], lastRun: [] as Record<string, unknown>[], completed: 0 };
     const memory = {

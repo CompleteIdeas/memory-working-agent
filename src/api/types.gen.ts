@@ -285,7 +285,7 @@ export interface paths {
         /**
          * Live updates (server-sent events), resumable from a cursor.
          * @description Events: `hello` {cursor, head}; `change` {seq, entity, id, op, data?} with `id: <seq>` (a job's change carries
-         *     its current view in `data`; a `mail` change has no data: catch up with /sync?collections=mail); `live` {session, type, stage, at} — a running try's progress, at most once a
+         *     its current view in `data`); `live` {session, type, stage, at} — a running try's progress, at most once a
          *     second per run; `reset` {cursor, reason} — the cursor was older than what is kept: call /sync without
          *     `since`. A comment every 15 s keeps the connection open. Reconnect with Last-Event-ID (EventSource does it).
          *
@@ -308,6 +308,131 @@ export interface paths {
         };
         /** What changed since a cursor, as current objects and deletions (the phone's offline catch-up). */
         get: operations["syncChanges"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/calendar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Events and drafts in a window, merged and sorted by start, with the double-bookings in it. */
+        get: operations["getCalendar"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/calendar/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Which calendars are connected, when they last synced, and whether one needs signing in again. */
+        get: operations["getCalendarAccounts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/calendar/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync the connected calendars now (the app calls this when it opens; MWA also syncs every 30 minutes). */
+        post: operations["refreshCalendar"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/calendar/drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add a draft from the person's own input. Nothing goes on a calendar until it is confirmed. */
+        post: operations["createCalendarDraft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/calendar/drafts/{id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Put the draft on the calendar with no invites (Google sendUpdates none; Outlook with no attendees). Adds it once, however often it is sent. */
+        post: operations["confirmCalendarDraft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/calendar/drafts/{id}/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Remove the draft. Nothing was on the calendar, so nothing changes there. */
+        post: operations["removeCalendarDraft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/calendar/drafts/{id}.ics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** The draft as an iCalendar file ("Just give me a file"). */
+        get: operations["getCalendarDraftIcs"];
         put?: never;
         post?: never;
         delete?: never;
@@ -397,7 +522,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Save a reply as a DRAFT in that account (threaded under the message). It is never sent: the person sends it from their mail app. */
+        /** Save a reply as a DRAFT in that account (threaded under the message). It is never sent: the person sends it from their mail app. 409 read_only when the account was connected without drafting. */
         post: operations["saveMailDraft"];
         delete?: never;
         options?: never;
@@ -411,7 +536,7 @@ export interface components {
     schemas: {
         Error: {
             error: {
-                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, bad_cursor, bad_limit, bad_body, too_long, gone, needs_reconnect, not_connected, provider_unavailable, unknown_collection, internal */
+                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
                 code: string;
                 /** @description Plain words for a person. */
                 message: string;
@@ -515,6 +640,8 @@ export interface components {
             goalId: string | null;
             /** @description The conversation it reports to. */
             session: string | null;
+            /** @description A repeating job's next run. */
+            nextRunAt: number | null;
         };
         Try: {
             id: string;
@@ -544,15 +671,107 @@ export interface components {
             estUsd: number | null;
             estMs: number | null;
             pagesRead: number | null;
+            /**
+             * @description Who ended it when its own run did not: the person, a cancel, the job itself, its goal being marked done, or the reaper (its process stopped).
+             * @enum {string|null}
+             */
+            endedBy: "person" | "cancel" | "self" | "goal-done" | "reaper" | "duplicate" | null;
+            /** @description False when its result was kept quiet (nothing new); null when not a scheduled fire. */
+            delivered: boolean | null;
         };
         JobList: {
             jobs: components["schemas"]["Job"][];
+            /** @description Pass as `before` for the next page; null on the last page. */
+            next: number | null;
         };
         JobDetail: {
             job: components["schemas"]["Job"];
             tries: components["schemas"]["Try"][];
             /** @description What happened, in plain words (after an action). */
             message?: string;
+        };
+        /** @description One thing on the calendar: an event from a connected calendar (kind `event`, from MWA's synced cache) or a draft
+         *     MWA holds (kind `draft`, shown dashed until the person confirms it). Timed: `start`/`end` are UTC instants.
+         *     All day: `start`/`end` are local dates (YYYY-MM-DD), end exclusive.
+         *      */
+        CalendarItem: {
+            /** @description An event: "<account>:<provider id>". A draft: "cd_…". */
+            id: string;
+            /** @enum {string} */
+            kind: "event" | "draft";
+            title: string;
+            start: string;
+            end: string;
+            allDay: boolean;
+            location: string | null;
+            /**
+             * @description Which calendar; a draft not yet tied to one is null.
+             * @enum {string|null}
+             */
+            provider: "google" | "outlook" | null;
+            /**
+             * @description Drafts only.
+             * @enum {string}
+             */
+            state?: "draft" | "confirmed" | "removed";
+            /** @description Drafts only: when the person confirmed it (ms). */
+            confirmedAt?: number | null;
+            /** @description Events only: a draft the person confirmed through MWA. */
+            addedByHelper?: boolean;
+            /**
+             * @description Drafts only: who proposed it. helper-after-reading = the helper had read outside content (an email, a web page) first; check it before confirming.
+             * @enum {string}
+             */
+            origin?: "you" | "helper" | "helper-after-reading";
+            /** @description Drafts only: a plain line about where it came from, when there is one. */
+            originNote?: string;
+        };
+        /** @description Two timed things that overlap (all-day, declined and cancelled events are not counted). */
+        CalendarConflict: {
+            id: string;
+            /** @description CalendarItem ids. */
+            between: string[];
+            titles: string[];
+            /** @description The overlap's start (UTC). */
+            start: string;
+            /** @description The overlap's end (UTC). */
+            end: string;
+        };
+        CalendarView: {
+            from: string;
+            to: string;
+            items: components["schemas"]["CalendarItem"][];
+            conflicts: components["schemas"]["CalendarConflict"][];
+        };
+        CalendarAccount: {
+            account: string;
+            /** @enum {string} */
+            provider: "google" | "outlook";
+            /** @description "Google Calendar", "Outlook". */
+            label: string;
+            connected: boolean;
+            /** @description The sign-in was revoked or expired: ask the person to connect it again. */
+            needsReconnect: boolean;
+            /** @description Last successful sync (ms). */
+            lastOk: number | null;
+            lastError: string | null;
+        };
+        CalendarAccounts: {
+            accounts: components["schemas"]["CalendarAccount"][];
+            results?: {
+                account: string;
+                ok: boolean;
+                /** @enum {string} */
+                skipped?: "not_connected";
+                error?: string;
+            }[];
+        };
+        DraftResult: {
+            draft: components["schemas"]["CalendarItem"];
+            /** @description The receipt, in plain words: "Added by your helper just now. No invites were sent." */
+            message: string;
+            /** @description Confirm only: it was already on the calendar; nothing new was added. */
+            already?: boolean;
         };
         /** @description One message in the inbox, headers only (bodies are never synced or stored). The same email in two accounts is one MailHeader (the newest copy), with the others in alsoIn. */
         MailHeader: {
@@ -600,8 +819,17 @@ export interface components {
             hasUnsub: boolean;
             alsoIn: string[];
             updatedSeq: number;
-            to: string | null;
-            /** @description Plain text, at most 100 KB: no remote images or tracking pixels, hidden text removed, links as "words (host)", long quoted history collapsed to one line. */
+            /** @description The recipients line, cleaned; anything that is not a plain address shows as (unreadable address). */
+            to: string;
+            /** @description Where a reply goes: the Reply-To, else the sender. */
+            replyTo: components["schemas"]["MailFrom"][];
+            /** @description A reply would go somewhere other than the sender (the Reply-To names another address). */
+            replyGoesElsewhere: boolean;
+            /** @description "Your reply will go to … (not the sender)." when replyGoesElsewhere. */
+            replyNote: string | null;
+            /** @description The HTML could not be converted within the time budget: bodyText is the plain-text part, or a note to open it in the mail app. */
+            tooComplex: boolean;
+            /** @description Plain text, at most 100 KB: no remote images or tracking pixels, hidden text removed, links as "words (host)" and raw URLs as their host, long quoted history collapsed to one line. Clients MUST render it as plain text with auto-linking OFF (no HTML, no linkify). */
             bodyText: string;
             truncated: boolean;
             quotedLinesHidden: number;
@@ -807,6 +1035,9 @@ export interface operations {
             query?: {
                 state?: "working" | "waiting" | "continuing" | "stopped_by_you" | "partly_done" | "stopped" | "scheduled" | "done";
                 archived?: "0" | "1";
+                limit?: number;
+                /** @description The `next` of the previous page. */
+                before?: number;
             };
             header?: never;
             path?: never;
@@ -1053,7 +1284,7 @@ export interface operations {
         parameters: {
             query?: {
                 since?: string;
-                /** @description Comma-separated: jobs, mail (mail is headers only). */
+                /** @description Comma-separated: jobs, calendar, mail (mail is headers only). */
                 collections?: string;
             };
             header?: never;
@@ -1073,13 +1304,216 @@ export interface operations {
                         reset: boolean;
                         upserts: {
                             jobs?: components["schemas"]["Job"][];
+                            calendar?: components["schemas"]["CalendarItem"][];
                             mail?: components["schemas"]["MailHeader"][];
                         };
                         deletes: {
                             jobs?: string[];
+                            calendar?: string[];
                             mail?: string[];
                         };
                     };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getCalendar: {
+        parameters: {
+            query?: {
+                /** @description A date (local midnight) or an ISO 8601 time. Default: yesterday. */
+                from?: string;
+                /** @description A date (that whole day included) or an ISO 8601 time. Default: 14 days ahead. At most 62 days after from. */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The calendar. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarView"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getCalendarAccounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The calendar accounts. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarAccounts"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    refreshCalendar: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The accounts after the sync, and how each went. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarAccounts"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createCalendarDraft: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    title: string;
+                    /** @description ISO 8601; no offset = local time; a bare date = all day. */
+                    start: string;
+                    /** @description Default: an hour after start (one day when all day). */
+                    end?: string;
+                    allDay?: boolean;
+                    location?: string;
+                    notes?: string;
+                    /**
+                     * @description Which calendar Confirm adds it to. Default: the connected one.
+                     * @enum {string}
+                     */
+                    provider?: "google" | "outlook";
+                    projectId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The same draft (same title and times) was already open; no second one was made. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftResult"];
+                };
+            };
+            /** @description The new draft. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftResult"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    confirmCalendarDraft: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    provider?: "google" | "outlook";
+                };
+            };
+        };
+        responses: {
+            /** @description Added (or it already was, `already` true). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftResult"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    removeCalendarDraft: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftResult"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getCalendarDraftIcs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A VCALENDAR with one VEVENT (UTC times, CRLF, folded at 75 octets); Content-Disposition names the file. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/calendar": string;
                 };
             };
             default: components["responses"]["Error"];
@@ -1229,7 +1663,13 @@ export interface operations {
                         sent: false;
                         account: string;
                         draftId: string | null;
+                        /** @description A retry found the draft an earlier try of this request saved; none was added. */
+                        alreadySaved: boolean;
                         message: string;
+                        /** @description Who the draft is addressed to. */
+                        to: components["schemas"]["MailFrom"][];
+                        replyGoesElsewhere: boolean;
+                        replyNote: string | null;
                     };
                 };
             };

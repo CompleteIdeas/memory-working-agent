@@ -22,7 +22,7 @@ import { budgetHold } from './billing.js';
 import { claimInterrupted, describeSteps, startHeartbeat, STALE_MS } from './transcript.js';
 import { configuredWatchGate, SAME_THRESHOLD, type WatchGate } from './watch-gate.js';
 import { liveRuns } from './live-runs.js';
-import { startFire, finishTry, tryEndFromResult, restartCutOff, queueContinuation, linkTry, dropQueuedTry, endScheduleTries, deferScheduleTries } from './v2/jobs.js';
+import { startFire, finishTry, tryEndFromResult, restartCutOff, queueContinuation, linkTry, dropQueuedTry, endScheduleTries, reapDeadTries } from './v2/jobs.js';
 
 export interface InterruptedRun { runId: string; instruction: string; session?: string; personId?: string; jobId?: string; recurring: boolean; resumed: boolean; steps: number; unfinished: number }
 
@@ -207,11 +207,19 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
   // Gate `check` shell execution on the unattended run_command policy — so a model/injection-authored
   // check can't run shell unattended unless the operator is in Developer mode (or a test opts in).
   const allowChecks = deps.checksAllowed ?? runCommandAllowed(false).ok;
+  // v2 (review H1): Tries a crashed process left running are ended first, so their fires can be claimed again.
+  reapDeadTries();
   const due = (await deps.memory.pendingScheduled()).filter((t) => t.due <= now());
   let fired = 0;
   for (const task of due) {
     // Paused by the person (F04): skipped, untouched, until resumed — resume sets the next due itself.
     if (task.paused) continue;
+    // v2 (review H2): the list above can be minutes old, and another process (Telegram runs its own scheduler on the
+    // same store) may have fired this task since. Read it again: still pending, at the same due, not paused.
+    if (deps.memory.getScheduled) {
+      const cur = await deps.memory.getScheduled(task.id).catch(() => undefined);
+      if (cur && (cur.status !== 'pending' || cur.due !== task.due || cur.paused)) { log(`\u00b7 already handled elsewhere: ${task.instruction.slice(0, 40)}`); continue; }
+    }
     // A GOAL owns its jobs (BL-05): a finished goal stops them for good; a blocked goal pauses them,
     // and the paused job backs off to its next interval (an hour for a one-off) instead of being
     // re-checked every tick. Costs no model call either way.
@@ -224,14 +232,13 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       catch { log(`\u00b7 skipped this tick (its goal could not be read): ${task.instruction.slice(0, 40)}`); continue; }
       if (goal?.status === 'done') {
         await deps.memory.completeScheduled(task.id);
-        endScheduleTries(task.id, 'stopped', 'Its goal was marked done, so it did not run.');
+        endScheduleTries(task.id, 'goal-done', 'Its goal was marked done, so it did not run.');
         log(`\u00b7 stopped (its goal is done): ${task.instruction.slice(0, 40)}`);
         continue;
       }
       if (goal?.status === 'blocked') {
         // back off to the job's own next slot (a daily job keeps its time), an hour for a one-off
         await deps.memory.rescheduleTask(task.id, task.recur ? nextRecur(task.recur, now()) : now() + 60 * 60_000);
-        if (!task.recur) deferScheduleTries(task.id, now() + 60 * 60_000);
         log(`\u00b7 paused (its goal is blocked): ${task.instruction.slice(0, 40)}`);
         continue;
       }
@@ -291,14 +298,17 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     if (hold.held) {
       log(`· held (monthly budget $${hold.budgetUsd} reached: $${hold.usedUsd} spent): ${task.instruction.slice(0, 50)}`);
       await deps.memory.rescheduleTask(task.id, now() + 60 * 60_000);
-      deferScheduleTries(task.id, now() + 60 * 60_000);
       continue;
     }
     // v2 (A3a): claim this fire's Try in app.db before anything else changes. Another process holding it means this
     // fire is theirs: nothing here touches the task. A database that cannot be used is not a reason to drop the work.
     const liveKey = `job_${task.id}`;
     const v2 = startFire(task, { liveKey, now: now() });
-    if (v2 === 'taken') { log(`\u00b7 already running elsewhere: ${task.instruction.slice(0, 40)}`); continue; }
+    if (v2 === 'taken') { log(`\u00b7 already run or running elsewhere: ${task.instruction.slice(0, 40)}`); continue; }
+    // Reschedule/complete at once, so a long/failed run can't re-fire next tick and a crash leaves the smallest gap
+    // between the claim and the task moving on (review H1). A crash inside it leaves a Try the reaper frees.
+    if (task.recur) await deps.memory.rescheduleTask(task.id, nextRecur(task.recur, now()));
+    else await deps.memory.completeScheduled(task.id);
     log(`⏰ firing: ${task.instruction.slice(0, 50)}${task.resumeAttempt ? ` (resume ${task.resumeAttempt})` : ''}`);
     // `origin` is honored only when it is a run SANDBOX inside the workspace (outRoot's parent):
     // serve sessions, Telegram chats and mailbox runs all are. `mwa run` is not — it passes the
@@ -310,9 +320,6 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // a normal task gets a fresh per-fire folder.
     const dir = task.dir ? resolve(task.dir) : resolve(deps.outRoot, `sched-${task.id.slice(0, 8)}-${now()}`);
     mkdirSync(dir, { recursive: true });
-    // Reschedule/complete BEFORE running, so a long/failed run can't re-fire next tick.
-    if (task.recur) await deps.memory.rescheduleTask(task.id, nextRecur(task.recur, now()));
-    else await deps.memory.completeScheduled(task.id);
     // Live events for a fired job (interface slice 2026-10-26: the Work view could only say "handed over 12m ago",
     // because a background run sent nothing). The run is tracked under `job_<id>`: /api/chat/live and /api/chat/attach
     // stream its stages with session=job_<id>, /api/chat/stop and /steer reach it, and the schedule rows carry `live`.
@@ -527,10 +534,11 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     const deliver = forced || (outcome === 'could-not' ? !failQuiet : !repeat && (policy === 'always' || (policy === 'changed' && outcome === 'changed')));
     // v2 (A3a): the Try ends with what the fire concluded — its own reason, the outcome after the job record's rules,
     // what it cost, how far it got and what is left.
-    if (v2) finishTry(v2.tryId, tryEndFromResult({ ...(r as object), outcome, summary: String(summary ?? '') } as Parameters<typeof tryEndFromResult>[0], { runId: live?.runId, pagesRead: (r as { pagesRead?: number }).pagesRead }));
+    // Whether it was delivered decides "result ready" (review M5); the fire id lets a re-run migration recognise it.
     // Receipts (BL-13): this fire's id, so every channel's record of its result lines up.
     const job = task.resumeOf ?? task.id;
     const fire = `${job.slice(0, 8)}-${now()}`;
+    if (v2) finishTry(v2.tryId, tryEndFromResult({ ...(r as object), outcome, summary: String(summary ?? '') } as Parameters<typeof tryEndFromResult>[0], { runId: live?.runId, pagesRead: (r as { pagesRead?: number }).pagesRead, delivered: deliver, fireId: fire }));
     if (!deliver) {
       const why = outcome === 'could-not' ? `could not finish again (${fails} in a row); told at 1, 3, 7, 15\u2026 in a row`
         : repeat ? 'the same message as its last one' : `told only ${policy === 'never' ? 'if it fails' : 'when something changes'}; this run: ${outcome}`;

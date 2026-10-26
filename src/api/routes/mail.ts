@@ -13,15 +13,23 @@
 import { ApiError, type Route } from '../router.js';
 import { apiMailHeader, listMail, parseMailId, type MailPageCursor } from '../../v2/mail.js';
 import { DRAFT_MAX_CHARS, MailError, mailAccounts, mailProviders, openMail, saveReplyDraft, syncMail } from '../../sync/mail.js';
+import { draftMessageId } from '../../sync/mail-mime.js';
+import type { Addr } from '../../v2/mail-text.js';
 
 export const SAVED_MESSAGE = 'Saved to your drafts. Nothing was sent.';
 export const MAILBOX_NOTE = 'Your helper reads and writes drafts. It never sends.';
 const REFRESH_WAIT_MS = 20_000;
 
 const asApi = (e: unknown): never => {
-  if (e instanceof MailError) throw new ApiError(e.status, e.code, e.message);
+  if (e instanceof MailError) throw new ApiError(e.status, e.code, e.message, e.transient);
   throw e;
 };
+/** Where a reply goes, said plainly when it is not the sender ("Your reply will go to fraud-desk@… (not the sender)"). */
+function replyNote(to: Addr[], elsewhere: boolean): string | null {
+  if (!elsewhere) return null;
+  const addrs = to.map((a) => a.addr).filter(Boolean).join(', ');
+  return addrs ? `Your reply will go to ${addrs} (not the sender).` : null;
+}
 function idParam(id: string): { account: string; providerId: string } {
   const p = parseMailId(id);
   if (!p) throw new ApiError(404, 'not_found', 'No such message.');
@@ -86,7 +94,8 @@ export const mailRoutes: Route[] = [
       const m = await openMail(account, providerId).catch(asApi);
       return {
         body: {
-          ...apiMailHeader(m.row), to: m.to, bodyText: m.body.text, truncated: m.body.truncated,
+          ...apiMailHeader(m.row), to: m.to, replyTo: m.replyTo, replyGoesElsewhere: m.replyGoesElsewhere, replyNote: replyNote(m.replyTo, m.replyGoesElsewhere),
+          bodyText: m.body.text, truncated: m.body.truncated, tooComplex: m.body.tooComplex,
           quotedLinesHidden: m.body.quotedLinesHidden, imagesHidden: m.body.imagesHidden, trackersRemoved: m.body.trackersRemoved,
           trust: 'untrusted' as const, fetchedAt: m.fetchedAt,
         },
@@ -95,13 +104,21 @@ export const mailRoutes: Route[] = [
   },
   {
     method: 'POST', path: '/mail/{id}/draft', scope: 'act',
-    handler: async ({ params, body }) => {
+    handler: async ({ params, body, req, caller }) => {
       const { account, providerId } = idParam(params.id);
       const text = (body as { body?: unknown } | undefined)?.body;
       if (typeof text !== 'string' || !text.trim()) throw new ApiError(400, 'bad_body', 'Send the reply as {"body": "…"}.');
       if (text.length > DRAFT_MAX_CHARS) throw new ApiError(400, 'too_long', `A reply can be up to ${DRAFT_MAX_CHARS} characters.`);
-      const r = await saveReplyDraft(account, providerId, text.replace(/\r\n?/g, '\n')).catch(asApi);
-      return { status: 201, body: { saved: true, sent: false, account: r.account, draftId: r.draftId, message: SAVED_MESSAGE } };
+      // the draft's own id comes from the Idempotency-Key: a retry after a lost answer finds the draft it made
+      const draftId = draftMessageId(caller, String(req.headers['idempotency-key'] ?? ''), account.split(':').slice(1).join(':'));
+      const r = await saveReplyDraft(account, providerId, text.replace(/\r\n?/g, '\n'), draftId).catch(asApi);
+      return {
+        status: 201,
+        body: {
+          saved: true, sent: false, account: r.account, draftId: r.draftId, alreadySaved: r.already, message: SAVED_MESSAGE,
+          to: r.to, replyGoesElsewhere: r.replyGoesElsewhere, replyNote: replyNote(r.to, r.replyGoesElsewhere),
+        },
+      };
     },
   },
 ];

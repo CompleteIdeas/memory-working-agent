@@ -3,12 +3,16 @@
  * Read and DRAFT only: there is deliberately no send in this interface.
  */
 import type { MailProviderKind, SyncBatch, SyncStateRow } from '../v2/mail.js';
+import type { Addr } from '../v2/mail-text.js';
+import { errorStatus, reconnectNeeded } from './errors.js';
 
 export interface RawBody {
   html: string | null;
   text: string | null;
-  /** the recipients line, as the provider reports it (shown in the reader; untrusted) */
-  to: string | null;
+  /** parsed structurally (untrusted: names are cleaned before they are shown) */
+  from: Addr[];
+  replyTo: Addr[];
+  to: Addr[];
 }
 
 export interface SyncOptions {
@@ -18,18 +22,33 @@ export interface SyncOptions {
   known: () => string[];
 }
 
+export interface DraftRequest {
+  body: string;
+  /** this draft's own Message-ID, derived from the request's Idempotency-Key (mail-mime.ts draftMessageId) */
+  draftId: string;
+}
+export interface DraftResult {
+  draftId: string | null;
+  /** who the reply is addressed to (the original's Reply-To, else its From) */
+  to: Addr[];
+  /** true: a draft with this draftId was already in Drafts, so none was added */
+  already: boolean;
+}
+
 export interface MailProvider {
-  /** a stable key for the connected account: 'gmail', 'imap', 'outlook' */
-  account: string;
+  /** the account key's provider part: 'google', 'imap', 'outlook' */
+  prefix: string;
   provider: MailProviderKind;
   /** for a person: "Gmail", "Gmail (app password)", "Outlook" */
   label: string;
+  /** The account key, 'prefix:<address>' (asks the provider for the signed-in address when it must). */
+  resolveAccount(): Promise<string>;
   /** Headers changed since `state.cursor` — or the whole window when there is no usable cursor. */
   sync(state: SyncStateRow | null, o: SyncOptions): Promise<SyncBatch>;
   /** One message's body, fetched now (never stored). Throws MessageGoneError when it no longer exists. */
   fetchBody(providerId: string): Promise<RawBody>;
-  /** Save `body` as a reply DRAFT to the message, with proper reply headers. Never sends. */
-  saveReplyDraft(providerId: string, body: string): Promise<{ draftId: string | null }>;
+  /** Save a reply DRAFT to the message, with proper reply headers — unless that draft is already there. Never sends. */
+  saveReplyDraft(providerId: string, req: DraftRequest): Promise<DraftResult>;
 }
 
 /** The message is not in the mailbox any more (deleted, moved, or the IMAP mailbox was reset). */
@@ -41,27 +60,31 @@ export class ReconnectError extends Error {
   constructor(message: string) { super(message); this.name = 'ReconnectError'; }
 }
 
+const errText = (e: unknown) => {
+  const x = e as { message?: string; responseText?: string; response?: { data?: unknown } };
+  let data = '';
+  try { data = x?.response?.data ? JSON.stringify(x.response.data).slice(0, 500) : ''; } catch { data = ''; }
+  return `${x?.message ?? ''} ${x?.responseText ?? ''} ${data}`;
+};
+
 /**
- * True when an error means the sign-in itself is no longer valid (so retrying will not help): Google's
- * `invalid_grant` (a revoked or expired refresh token — Google Cloud projects in "Testing" expire them after 7
- * days), an HTTP 401 from Gmail or Graph, a Microsoft token refresh refused, an IMAP login refused.
+ * True when an error means the sign-in itself is no longer valid (so retrying will not help). One test for the
+ * calendar and mail syncs: src/sync/errors.ts reconnectNeeded (invalid_grant, 401, a permission the sign-in lacks,
+ * an IMAP login refused, Microsoft's token refresh refused).
  */
 export function isReauthError(e: unknown): boolean {
-  if (e instanceof ReconnectError) return true;
-  const x = e as { message?: string; status?: number; code?: unknown; response?: { status?: number; data?: { error?: unknown } }; authenticationFailed?: boolean; responseText?: string };
-  if (!x || typeof x !== 'object') return false;
-  if (x.authenticationFailed) return true;
-  if (x.response?.data?.error === 'invalid_grant' || x.response?.data?.error === 'unauthorized_client') return true;
-  if (x.response?.status === 401 || x.status === 401 || x.code === 401 || x.code === '401') return true;
-  const msg = `${x.message ?? ''} ${x.responseText ?? ''}`;
-  return /invalid_grant|AUTHENTICATIONFAILED|Graph 401\b|token refresh failed: 40[01]\b|not connected/i.test(msg);
+  return e instanceof ReconnectError || reconnectNeeded(e);
 }
 
-/** The HTTP status an API error carries (gaxios puts it in a few places), or 0. */
+/** True when the sign-in works but does not allow drafting (Gmail without gmail.compose, Outlook with Mail.Read).
+ *  Checked BEFORE isReauthError on a draft: both are 403s, and this one needs a different reconnect. */
+export function isReadOnlyError(e: unknown): boolean {
+  return statusOf(e) === 403 && /insufficient|scope|ACCESS_TOKEN_SCOPE|AccessDenied|Access is denied/i.test(errText(e)) && !/rate ?limit|quota/i.test(errText(e));
+}
+
+/** The HTTP status an API error carries, or 0 (src/sync/errors.ts errorStatus). */
 export function statusOf(e: unknown): number {
-  const x = e as { status?: number; code?: unknown; response?: { status?: number } };
-  const n = Number(x?.response?.status ?? x?.status ?? x?.code);
-  return Number.isFinite(n) ? n : 0;
+  return errorStatus(e) ?? 0;
 }
 
 /** Run `fn` over items, at most `n` at once, keeping order. */
@@ -72,4 +95,15 @@ export async function mapLimit<T, R>(items: T[], n: number, fn: (t: T) => Promis
     while (next < items.length) { const i = next++; out[i] = await fn(items[i]); }
   }));
   return out;
+}
+
+/** Recipients of a reply: the Reply-To when there is one, else the From. */
+export function replyRecipients(from: Addr[], replyTo: Addr[]): Addr[] {
+  const r = replyTo.filter((a) => a.addr);
+  return r.length ? r : from.filter((a) => a.addr);
+}
+/** True when a reply would go somewhere other than the sender (Reply-To names other addresses). */
+export function replyGoesElsewhere(from: Addr[], to: Addr[]): boolean {
+  const senders = new Set(from.map((a) => a.addr).filter(Boolean));
+  return to.some((a) => a.addr && !senders.has(a.addr));
 }

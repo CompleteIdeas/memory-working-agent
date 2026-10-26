@@ -10,6 +10,7 @@ import { secureContext } from './net.js';
 import { deviceRoutes } from './routes/devices.js';
 import { jobRoutes } from './routes/jobs.js';
 import { streamRoutes } from './routes/stream.js';
+import { calendarRoutes } from './routes/calendar.js';
 import { mailRoutes } from './routes/mail.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -30,7 +31,7 @@ export const metaRoutes: Route[] = [
       body: {
         api: API_VERSION, server: VERSION, minClient: MIN_CLIENT,
         secure: secureContext(req),
-        features: ['jobs', 'mail'] as string[],
+        features: ['jobs', 'calendar', 'mail'] as string[],
       },
     }),
   },
@@ -38,7 +39,7 @@ export const metaRoutes: Route[] = [
 
 /** Every v1 route. Slices append their own arrays here. */
 export function v1Routes(): Route[] {
-  return [...metaRoutes, ...deviceRoutes, ...jobRoutes, ...streamRoutes, ...mailRoutes];
+  return [...metaRoutes, ...deviceRoutes, ...jobRoutes, ...streamRoutes, ...calendarRoutes, ...mailRoutes];
 }
 
 export function createV1Handler(deps: RouterDeps) {

@@ -32,6 +32,10 @@ export interface Reply {
   status?: number; body?: unknown; headers?: Record<string, string>;
   /** A GET that streams (server-sent events): the router writes the SSE headers and hands the response over. */
   stream?: (res: ServerResponse, req: IncomingMessage) => void;
+  /** A GET whose answer is not JSON (a calendar file): sent as-is with this content type. */
+  raw?: { contentType: string; body: string | Buffer };
+  /** A refusal that may not hold on a retry: the Idempotency-Key reservation is released, not settled. */
+  transient?: boolean;
 }
 export type Handler = (ctx: RouteCtx) => Promise<Reply> | Reply;
 export interface Route { method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'; path: string; scope: Scope; handler: Handler }
@@ -50,7 +54,9 @@ const MAX_BODY = 1_000_000;
 const IDEMPOTENCY_TTL_MS = 48 * 3_600_000;
 
 export class ApiError extends Error {
-  constructor(public status: number, public code: string, message: string) { super(message); }
+  /** transient: a refusal that may not hold on a retry (sign in again, connect a calendar, wait a moment) — not
+   *  remembered against the Idempotency-Key, so a retry with the same key runs again. */
+  constructor(public status: number, public code: string, message: string, public transient = false) { super(message); }
 }
 
 /** Compare dotted versions; -1, 0, 1. Missing parts count as 0. */
@@ -103,7 +109,9 @@ const errBody = (e: ApiError) => ({ error: { code: e.code, message: e.message } 
  * path with its ids, query and body (a hash) — so reusing it for another item is a 409, never a false success.
  *
  * Policy: whatever the HANDLER concluded is remembered and replayed for 48 h — a success, or a 4xx it returned or
- * threw (a retry of a refused action is refused the same way; send a new key to try again). Checks made before the
+ * threw (a retry of a refused action is refused the same way; send a new key to try again) — except a refusal marked
+ * `transient: true` (on the Reply or the ApiError: "sign in again", "connect a calendar", "busy"), which releases the key so
+ * a retry with it runs again (review of A7; A8 uses the same flag). Checks made before the
  * handler — sign-in, cross-site, a missing key, bad JSON — are not remembered. A 5xx or a crash releases the key, so
  * a retry runs again. A reservation older than 10 minutes with no answer (the process died mid-request) counts as
  * abandoned and may run again: the one window in which an action can repeat, which is why a handler that changes
@@ -199,7 +207,7 @@ export function createV1(routes: Route[], deps: RouterDeps): (req: IncomingMessa
         status = out.status ?? 200;
       } catch (e) {
         if (!(e instanceof ApiError) || e.status >= 500) throw e;
-        out = { status: e.status, body: errBody(e) }; status = e.status; // a refusal the handler concluded: remembered
+        out = { status: e.status, body: errBody(e), transient: e.transient }; status = e.status; // a refusal the handler concluded: remembered (unless transient)
       }
       if (out.stream && !write) {
         res.writeHead(status, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no', connection: 'keep-alive', ...out.headers });
@@ -207,9 +215,14 @@ export function createV1(routes: Route[], deps: RouterDeps): (req: IncomingMessa
         out.stream(res, req);
         return true;
       }
+      if (out.raw && !write) {
+        res.writeHead(status, { 'content-type': out.raw.contentType, 'cache-control': 'no-store', ...out.headers });
+        res.end(head ? undefined : out.raw.body);
+        return true;
+      }
       const text = JSON.stringify(out.body === undefined ? null : out.body); // throws before anything is sent
       if (reserved) {
-        if (status < 500) settle(reserved.key, reserved.caller, status, text, out.headers); else release(reserved.key, reserved.caller);
+        if (status < 500 && !out.transient) settle(reserved.key, reserved.caller, status, text, out.headers); else release(reserved.key, reserved.caller);
         reserved = null;
       }
       res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...out.headers });
