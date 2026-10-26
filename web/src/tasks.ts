@@ -36,8 +36,9 @@ export interface Task {
   reply?: string; reason?: string; runId?: string; turnId?: number; elapsedMs?: number; costUsd?: number;
   steps: SpineStep[];
   live?: LiveState;
-  /** offered to the background and not answered yet / handed over */
-  offer?: { answered?: 'background' | 'now' | 'failed'; note?: string };
+  /** offered to the background and not answered yet / handed over; `goal` is the goal's short id when the server
+   *  recorded the answer */
+  offer?: { answered?: 'background' | 'now' | 'failed'; note?: string; goal?: string };
   /** results a background job or a schedule posted for this task */
   results: ConversationTurn[];
   cards: Card[];
@@ -290,7 +291,8 @@ export function buildTasks(inp: Inputs): Task[] {
       startedAt: running ? t.ts : Math.max(prevEnd + 1, t.ts - 1), endedAt: running ? undefined : t.ts,
       reply: running ? undefined : t.reply, reason: running ? undefined : t.reason, runId: t.runId, turnId: running ? undefined : t.ts,
       steps: (t.runId && inp.stepsByRun?.[t.runId]) || [], results: [], cards: [], jobs: [], revisions: [], ...(rev ? { revises: rev } : {}),
-      ...(t.kind === 'offer' ? { offer: inp.offers?.[`${session}:${t.ts}`] ?? {} } : {}),
+      // the server's record of the answer (every device sees it) beats this page's memory of it, which beats nothing
+      ...(t.kind === 'offer' ? { offer: t.offer ? { answered: t.offer.answered, goal: t.offer.goal } : inp.offers?.[`${session}:${t.ts}`] ?? {} } : {}),
       ...(running ? { live: { runId: t.runId, startedAt: t.ts, steps: [], notes: [] } } : {}),
       ...(lostRun ? { error: 'This run ended without an answer (the server may have restarted). Ask again to redo it.' } : {}),
     };
@@ -333,7 +335,8 @@ export function buildTasks(inp: Inputs): Task[] {
   const words = (x: string) => x.toLowerCase().replace(/…$/, '').replace(/\s+/g, ' ').trim();
   for (const d of drafts) if (d.offer) {
     const w = words(d.words);
-    const g = inp.goals.find((x) => !used.has(x.id) && (x.record?.conv ? x.record.conv === session : true)
+    // the goal the server named when the offer was answered, else the one that matches by words and time
+    const g = (d.offer.goal ? inp.goals.find((x) => !used.has(x.id) && x.id.startsWith(d.offer!.goal!)) : undefined) ?? inp.goals.find((x) => !used.has(x.id) && (x.record?.conv ? x.record.conv === session : true)
       && w.startsWith(words(x.title).slice(0, 60)) && (!x.createdAt || (x.createdAt >= d.startedAt - 2000 && x.createdAt <= d.startedAt + 6 * 3_600_000)));
     if (g && (d.offer.answered === 'background' || !d.offer.answered)) { used.add(g.id); d.goal = g; if (!d.offer.answered) d.offer = { answered: 'background' }; }
     if (d.offer && !d.offer.answered && d.results.length) d.offer = { answered: 'background' };

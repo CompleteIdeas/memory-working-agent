@@ -58,6 +58,19 @@ describe('status, one per task', () => {
     expect(t.status).toBe('working');
     expect(buildTasks({ ...base, turns: [offer], goals: [] })[0].status).toBe('needs-you');
   });
+  // 3a (pending list 2026-10-26): the server records the answer on the offer turn, so the page need not guess
+  it('an offer the server recorded as answered is handed over on every device, linked to the goal it named', () => {
+    const offer = turn(1000, 'Draft the board letter', 'offer', { kind: 'offer', reason: 'offer', offer: { answered: 'background', goal: 'g2abcdef', at: 1200 } });
+    const lookalike = { id: 'g1xxxxxx', title: 'Draft the board letter', status: 'in_progress' as const, priority: 'normal', createdAt: 1100, jobs: 1, record: null, thought: null };
+    const named = { ...lookalike, id: 'g2abcdef00', createdAt: 1200 };
+    const [t] = buildTasks({ ...base, turns: [offer], goals: [lookalike, named] }); // no page memory of the answer at all
+    expect(t.offer).toMatchObject({ answered: 'background', goal: 'g2abcdef' });
+    expect(t.status).toBe('working');
+    expect(t.goal?.id).toBe('g2abcdef00'); // the goal the server named, not the one that matches by words and time
+    // "do it here" recorded on the server: not waiting, not working in the background
+    const now = turn(2000, 'Draft the board letter', 'offer', { kind: 'offer', reason: 'offer', offer: { answered: 'now', at: 2100 } });
+    expect(buildTasks({ ...base, turns: [now], goals: [] })[0].status).not.toBe('needs-you');
+  });
   it('reads a command verb from the command, not from a file name', () => {
     expect(commandInWords(`python -c "from pathlib import Path; p=Path('board-briefing.md'); print(p.is_file())"`).title).toBe('Run a small script on board-briefing.md');
     expect(commandInWords(`Rename-Item -LiteralPath 'C:\\g\\granted\\meeting-notes-oct.txt' -NewName 'meeting-notes-october.txt'`).title).toBe('Rename meeting-notes-oct.txt to meeting-notes-october.txt');

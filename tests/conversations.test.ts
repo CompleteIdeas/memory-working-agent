@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { appendTurn, readConversation, listConversations } from '../src/conversations.js';
+import { appendTurn, answerOffer, readConversation, listConversations } from '../src/conversations.js';
 import { continueGoal } from '../src/handoff.js';
 import { MwaMemory } from '../src/awm.js';
 
@@ -37,6 +37,35 @@ describe('conversation log', () => {
       expect(listConversations(30, p)[0].title).toBe('Results');
       appendTurn({ ts: 2, session: 'work-1', message: 'Thanks, send me the PDF', reply: 'ok', kind: 'chat' }, p);
       expect(listConversations(30, p)[0].title).toBe('Thanks, send me the PDF');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // Pending list 2026-10-26, 3a: the answer to "Work on it / do it here" is recorded on the server, so every device
+  // (and a reload) sees the offer as answered, instead of the page guessing from words and time.
+  it('records how an offer was answered on the offer turn, for every device', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-3a-'));
+    const p = join(dir, 'c.jsonl');
+    try {
+      expect(answerOffer('web-a', 'now', undefined, p)).toBeNull(); // nothing offered yet
+      appendTurn({ ts: 1000, session: 'web-a', message: 'Research AI news and write a newsletter', reply: 'I can work on this in the background.', kind: 'offer' }, p);
+      appendTurn({ ts: 1500, session: 'web-b', message: 'Draft the board letter', reply: 'I can work on this in the background.', kind: 'offer' }, p);
+      expect(answerOffer('web-a', 'background', 'a1b2c3d4', p, 2000)).toBe(1000);
+      const a = readConversation('web-a', 60, p);
+      expect(a).toHaveLength(1); // the answer rides on the offer, it is not a turn
+      expect(a[0]).toMatchObject({ kind: 'offer', offer: { answered: 'background', goal: 'a1b2c3d4', at: 2000 } });
+      expect(readConversation('web-b', 60, p)[0].offer).toBeUndefined(); // another conversation's offer stays open
+      expect(listConversations(30, p).find((c) => c.session === 'web-a')).toMatchObject({ turns: 1, lastMessage: 'Research AI news and write a newsletter' });
+      // a second offer in the same conversation is the one the next answer lands on; the first keeps its answer
+      appendTurn({ ts: 3000, session: 'web-a', message: 'Now summarise it for the board', reply: 'I can work on this in the background.', kind: 'offer' }, p);
+      expect(answerOffer('web-a', 'now', undefined, p, 3500)).toBe(3000);
+      const b = readConversation('web-a', 60, p);
+      expect(b.map((t) => t.offer)).toEqual([{ answered: 'background', goal: 'a1b2c3d4', at: 2000 }, { answered: 'now', at: 3500 }]);
+      expect(answerOffer('web-a', 'now', undefined, p)).toBeNull(); // both answered: nothing waiting
+      // two offers waiting and "Work on it" pressed on the earlier one: its words pick it, not the latest
+      appendTurn({ ts: 5000, session: 'web-a', message: 'Compare three grant programmes for the boathouse roof', reply: 'offer', kind: 'offer' }, p);
+      appendTurn({ ts: 6000, session: 'web-a', message: 'Write the AGM agenda from last year\'s minutes', reply: 'offer', kind: 'offer' }, p);
+      expect(answerOffer('web-a', 'background', 'ee112233', p, 6500, 'Compare three grant programmes for the boathouse roof')).toBe(5000);
+      expect(answerOffer('web-a', 'background', 'ff445566', p, 6600, 'words that match no offer')).toBe(6000); // falls back to the latest
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

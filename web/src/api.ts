@@ -253,7 +253,7 @@ export interface Notification {
 }
 
 // ── BL-71d: conversations and work ─────────────────────────────────────────────────────────────
-export interface ConversationTurn { ts: number; session: string; message: string; reply: string; reason?: string; kind?: 'chat' | 'result' | 'offer' | 'running'; runId?: string }
+export interface ConversationTurn { ts: number; session: string; message: string; reply: string; reason?: string; kind?: 'chat' | 'result' | 'offer' | 'running'; runId?: string; offer?: { answered: 'background' | 'now'; goal?: string; at: number } }
 export interface ConversationSummary { session: string; title: string; last: number; turns: number; lastMessage: string }
 export async function getConversations(): Promise<ConversationSummary[]> {
   try { return (await (bounceIfLocked(await fetch('/api/conversations'))).json()).conversations ?? []; } catch { return []; }

@@ -15,9 +15,14 @@ export interface ConversationTurn {
   tainted?: boolean;
   /** a scheduled or background result posted into this conversation, not a turn the person typed; `running` is a
    *  turn whose run has started and not finished (F09, 2026-10-24) — the page re-attaches to it after a reload */
-  kind?: 'chat' | 'result' | 'offer' | 'running';
+  kind?: 'chat' | 'result' | 'offer' | 'running' | 'offer-answer';
   /** the live run this turn belongs to: the `running` turn and its finished turn share it */
   runId?: string;
+  /** on an `offer` turn, how the person answered it (folded in from an `offer-answer` record); on an `offer-answer`
+   *  record, the answer itself. Pending list 2026-10-26, item 3a: the app used to guess this from words and time. */
+  offer?: { answered: 'background' | 'now'; goal?: string; at: number };
+  /** on an `offer-answer` record: the `ts` of the offer turn it answers */
+  answers?: number;
 }
 export interface ConversationSummary { session: string; title: string; last: number; turns: number; lastMessage: string }
 
@@ -54,9 +59,26 @@ function readAll(path: string): ConversationTurn[] {
   } catch { return []; }
 }
 
+/** The person answered the conversation's latest unanswered offer: "Work on it" (background, with the goal it made)
+ *  or "do it here" (now). Appended as its own record, so the log stays append-only; readConversation folds it into
+ *  the offer turn. Returns the offer's ts, or null when nothing was waiting. */
+export function answerOffer(session: string, answered: 'background' | 'now', goal?: string, path = conversationsPath(), now = Date.now(), message?: string): number | null {
+  const mine = readAll(path).filter((t) => t.session === session);
+  const answered0 = new Set(mine.filter((t) => t.kind === 'offer-answer').map((t) => t.answers));
+  const open = [...mine].reverse().filter((t) => t.kind === 'offer' && !answered0.has(t.ts));
+  // two offers waiting: the one whose words were sent back, else the latest
+  const offer = (message ? open.find((t) => t.message === message.slice(0, MAX_TEXT)) : undefined) ?? open[0];
+  if (!offer) return null;
+  appendTurn({ ts: now, session, message: offer.message, reply: '', kind: 'offer-answer', answers: offer.ts, offer: { answered, ...(goal ? { goal } : {}), at: now } }, path);
+  return offer.ts;
+}
+
 /** A conversation's turns, oldest first (the last `limit`). */
 export function readConversation(session: string, limit = 60, path = conversationsPath()): ConversationTurn[] {
-  const turns = readAll(path).filter((t) => t.session === session).sort((a, b) => a.ts - b.ts);
+  const all = readAll(path).filter((t) => t.session === session).sort((a, b) => a.ts - b.ts);
+  // An offer's answer rides on the offer turn, not as a turn of its own.
+  const answers = new Map(all.filter((t) => t.kind === 'offer-answer' && t.answers !== undefined).map((t) => [t.answers, t.offer] as const));
+  const turns = all.filter((t) => t.kind !== 'offer-answer').map((t) => (t.kind === 'offer' && answers.has(t.ts) ? { ...t, offer: answers.get(t.ts) } : t));
   // A `running` turn stands only until its run's finished turn is written (F09).
   const finished = new Set(turns.filter((t) => t.kind !== 'running' && t.runId).map((t) => t.runId));
   return turns.filter((t) => t.kind !== 'running' || !finished.has(t.runId)).slice(-limit);
@@ -66,6 +88,7 @@ export function readConversation(session: string, limit = 60, path = conversatio
 export function listConversations(limit = 30, path = conversationsPath()): ConversationSummary[] {
   const by = new Map<string, ConversationSummary>();
   for (const t of readAll(path).sort((a, b) => a.ts - b.ts)) {
+    if (t.kind === 'offer-answer') continue; // not a turn: an answer riding on one
     const s = by.get(t.session);
     const typed = t.kind !== 'result';
     if (!s) by.set(t.session, { session: t.session, title: typed ? titleOf(t.message) : 'Results', last: t.ts, turns: 1, lastMessage: titleOf(t.message) });

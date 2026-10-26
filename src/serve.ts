@@ -93,7 +93,7 @@ import { offersBackground, OFFER_TEXT, startBackgroundWork, continueGoal } from 
 import { scheduleRows, scheduleControl, type ScheduleAction } from './schedule-api.js';
 import { liveRuns, FINAL_EVENTS } from './live-runs.js';
 import { resolvePersonId } from './person.js';
-import { appendTurn, readConversation, listConversations } from './conversations.js';
+import { appendTurn, answerOffer, readConversation, listConversations } from './conversations.js';
 import { thinkMode, thinkDue, thinkOnce, thinkEveryMs, thinkDailyUsd, readThoughts, latestThoughts } from './thinking.js';
 import { exportDoc, exportFormats } from './doc-export.js';
 import { dbFile, runLogPath, notifyPath, installLogPath } from './paths.js';
@@ -426,6 +426,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     appendTurn({ ts: Date.now(), session: sessionId, message, reply: OFFER_TEXT, reason: 'offer', kind: 'offer' });
     res.end(); return;
   }
+  if (url.searchParams.get('stay') === '1') answerOffer(sessionId, 'now', undefined, undefined, undefined, message); // "do it here": the offer turn records the choice
   // F08 (usability review 2026-10-24): one live run per conversation. A message sent while one is going is not a
   // second run: the page hears `busy` and offers to add it to the running task (/api/chat/steer), send it
   // separately (a new conversation) or stop the run (/api/chat/stop) and send it.
@@ -1106,6 +1107,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           const recent = (sessions.get(session)?.history ?? []).slice(-3);
           const context = recent.length ? { text: recent.map((h, i) => `(${i + 1}) ${h.instruction.slice(0, 400)} → ${h.summary.slice(0, 600)}`).join('\n'), tainted: recent.some((h) => h.tainted) } : undefined;
           const started = await startBackgroundWork(memory, { message, session, personId, workspace: cfg.workspace ?? './mwa-workspace', context });
+          if (started) answerOffer(session, 'background', started.goalId.slice(0, 8), undefined, undefined, message); // the offer turn now says so, on every device
           res.end(JSON.stringify(started
             ? { ok: true, goal: started.goalId.slice(0, 8), message: "On it. I'll work on this in the background and post the result here when it's done. You can close this page." }
             : { ok: false, message: 'I couldn\'t set that up just now. Try again, or ask me to do it here.' }));
