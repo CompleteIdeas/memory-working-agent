@@ -11,7 +11,8 @@ export function connectTools(): RegisteredTool[] {
     {
       def: {
         name: 'connect_account',
-        description: 'Start connecting one of the person\'s accounts or services when THEY ask (e.g. "connect my Outlook", "set up Gmail", "hook up Telegram", "add GitHub"). '
+        description: 'Start connecting one of the person\'s accounts or services when THEY ask (e.g. "connect my Outlook", "set up Gmail", "hook up Telegram", "add GitHub"), '
+          + 'or when what they asked needs one that is not connected (e.g. "put this on my calendar" with no calendar): then OFFER it first with ask_user (which service, what it allows) and call this only after they say yes. '
           + 'Name the service; MWA knows what it needs. Outlook usually needs no password: you get a short sign-in code to give the person. Anything secret (a password, key or token) '
           + 'is typed by the person into a setup card in the app, never into the chat: tell them to use the card, and never ask them to paste a secret into a message. '
           + 'Call it again with the same service to see whether they finished.',

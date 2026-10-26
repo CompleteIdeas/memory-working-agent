@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyTool, effectOf, isSensitive, checkTripwires, buildDoneReport } from '../src/tools/governance.js';
+import { classifyTool, effectOf, isSensitive, checkTripwires, buildDoneReport, plainVerb } from '../src/tools/governance.js';
 
 describe('F3 governance: classification', () => {
   it('classifies real tools by reach', () => {
@@ -58,5 +58,29 @@ describe('F3 governance: done report (Explain)', () => {
   it('empty when nothing side-effecting happened', () => {
     expect(buildDoneReport([])).toBe('');
     expect(buildDoneReport([{ tool: 'read_file' }])).toBe('');
+  });
+});
+
+// Usability review 2026-10-26: the receipt and the offer are in plain words (SR-F13, SR-F19).
+describe('plain-language receipts and capability offers', () => {
+  it('names actions as a person would', () => {
+    expect(plainVerb('write_file')).toBe('saved a file');
+    expect(plainVerb('browser_open')).toBe('opened a web page');
+    expect(plainVerb('policy_save')).toBe('saved your preference');
+    expect(plainVerb('propose_event')).toBe('added a draft calendar event');
+    expect(plainVerb('web__open_page')).toBe('web open page'); // an unknown (MCP) tool keeps its name, spaced out
+  });
+  it('says a repeated action once, with a count', () => {
+    const r = buildDoneReport([{ verb: 'opened a web page', effect: 'external' }, { verb: 'opened a web page', effect: 'external' }, { verb: 'saved a file', effect: 'local' }]);
+    expect(r).toBe('What I did:\n· Reached outside your machine: opened a web page (2 times)\n· Changed things here: saved a file');
+  });
+  it('tells the agent to offer a missing connection instead of working around it', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('../src/agent.ts', import.meta.url), 'utf8');
+    expect(src).toMatch(/YET, BUT COULD: [^\n]*do not quietly work around it\. Ask first with ask_user/);
+    const { connectTools } = await import('../src/tools/connect.js');
+    const desc = connectTools().find((t) => t.def.name === 'connect_account')!.def.description;
+    expect(desc).toMatch(/OFFER it first with ask_user/);
+    expect(desc).toMatch(/only after they say yes/);
   });
 });

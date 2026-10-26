@@ -226,15 +226,35 @@ export function checkTripwires(actions: ActionLike[], cfg: TripwireConfig = {}):
   return { tripped: false };
 }
 
+// Usability review 2026-10-26 (SR-F13): the receipt read "Changed things here: write file" and "Reached outside your
+// machine: browser open" — tool names with the underscores taken out. A person reads what was done, in their words.
+const PLAIN_VERB: Record<string, string> = {
+  write_file: 'saved a file', edit_file: 'changed a file', delete_file: 'deleted a file', move_file: 'moved a file', copy_file: 'copied a file',
+  browser_open: 'opened a web page', browser_click: 'clicked on a web page', browser_type: 'typed into a web page', browser_select: 'picked an option on a web page',
+  browser_screenshot: 'took a picture of a web page', http_request: 'contacted a website', fetch: 'read a web page', web_search: 'searched the web',
+  draft_email: 'drafted an email', draft_outlook: 'drafted an email', send_email: 'sent an email', propose_event: 'added a draft calendar event',
+  propose_outlook_event: 'added a draft calendar event', policy_save: 'saved your preference', policy_forget: 'removed a preference',
+  schedule: 'scheduled a job', schedule_cancel: 'cancelled a scheduled job', schedule_update: 'changed a scheduled job',
+  install_connector: 'turned on a connection', uninstall_connector: 'turned off a connection', connect_account: 'started connecting an account',
+  add_mcp_server: 'added a tool', remove_mcp_server: 'removed a tool', run_command: 'ran a command', generate_image: 'made a picture',
+  vault_request: 'asked for a login to save', vault_forget: 'removed a saved login',
+};
+/** What a tool call did, in plain words; an unknown tool keeps its name, spaced out. */
+export function plainVerb(tool: string): string {
+  return PLAIN_VERB[tool] ?? tool.replace(/_+/g, ' ');
+}
+
 /**
  * Plain-language "here's what I did" — groups actions by reach and foregrounds outward/irreversible
  * ones, so a run nobody watched still ends with an honest, scannable account (the cold-review report).
+ * The same action done several times reads once, with a count ("opened a web page (3 times)").
  */
 export function buildDoneReport(actions: ActionLike[]): string {
   if (!actions.length) return '';
   const label = (a: ActionLike) => (a.verb ?? a.tool ?? '').trim();
-  const ext = actions.filter((a) => reachOf(a) === 'external').map(label).filter(Boolean);
-  const local = actions.filter((a) => reachOf(a) === 'local').map(label).filter(Boolean);
+  const once = (xs: string[]) => [...new Set(xs)].map((x) => { const n = xs.filter((y) => y === x).length; return n > 1 ? `${x} (${n} times)` : x; });
+  const ext = once(actions.filter((a) => reachOf(a) === 'external').map(label).filter(Boolean));
+  const local = once(actions.filter((a) => reachOf(a) === 'local').map(label).filter(Boolean));
   const parts: string[] = [];
   if (ext.length) parts.push(`· Reached outside your machine: ${ext.join('; ')}`);
   if (local.length) parts.push(`· Changed things here: ${local.join('; ')}`);

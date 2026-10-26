@@ -28,7 +28,7 @@ import { loadDomainPack, buildDomainContext } from './domain-pack.js';
 import { ONBOARD_PROTOCOL } from './onboard.js';
 import type { Memory, RecalledMemory, TrustTier } from './awm.js';
 import { isReservedConcept, unreservedConcept, isStoreConcept } from './reserved-concept.js';
-import { effectOf, isSensitive, classifyTool, buildDoneReport, checkTripwires, countsAsReach, readsUntrustedContent, markToolOutput, newFenceCode, outputSource, OTHER_FOLDER_MARK } from './tools/governance.js';
+import { effectOf, isSensitive, classifyTool, buildDoneReport, plainVerb, checkTripwires, countsAsReach, readsUntrustedContent, markToolOutput, newFenceCode, outputSource, OTHER_FOLDER_MARK } from './tools/governance.js';
 import { unbackedClaims, unbackedNote, unbackedNudge, asksForLater, type ClaimKind } from './claim-check.js';
 import { intentClassifier, type IntentClassifier, type RequestIntent } from './request-intent.js';
 import { TAINTED_JOB_MARK, parseLocalAt, ownWords, groundedInMessage } from './schedule-request.js';
@@ -240,6 +240,11 @@ const AGENT_SYSTEM = [
   // the documents included — answered "modify" on the two the record settles outright, one of them while citing the
   // very measurement (4/5 against 0/5) that settles it.
   'When asked whether to ACCEPT, REJECT or MODIFY a proposal (or whether to do something): if what you know settles it, say accept or reject outright and cite the measurement or decision that settles it, with its numbers and its date; say modify only for a specific change you name, with its reason. "Modify" is not a hedge, and "it needs testing" is not an answer when a test has been run.',
+  // Usability review 2026-10-26 (SR-F19): "put these on my calendar" with no calendar connected got an .ics file and
+  // "your calendar isn't connected" — the run checked connection_status, then worked around it without asking.
+  // Robert: "it should go, well, do you want to connect to your Outlook or Gmail … you could turn that on. Are you
+  // okay doing that? And then it gives you the option."
+  'CAN\'T YET, BUT COULD: when doing what the person asked needs an account or tool that is not connected or is turned off (connection_status or list_connectors says so) — e.g. "put this on my calendar" with no calendar connected — do not quietly work around it. Ask first with ask_user, in plain words and one short message: which one they use when there is a choice (e.g. Google Calendar or Outlook), what connecting or turning it on would let you do and what it would not, and the workaround as another choice ("or I can give you a file to import"). Start connect_account or install_connector only after they say yes. In a run the person is not watching, do the workaround and mention the offer in your result.',
   'ACTIONS REQUIRE THE TOOL: to draft an email you MUST call draft_email (it creates a real Gmail DRAFT in the connected account; it never sends). To schedule, call schedule. NEVER say you drafted, sent, scheduled, or saved something unless that tool call returned success THIS turn — writing the email text in your reply is NOT drafting it. If you are missing the recipient or details, get them from the thread (read_email) or ask_user first, then call draft_email.',
   'The PRIOR KNOWLEDGE block is auto-recalled from YOUR memory each turn — read it FIRST and USE it. If it already answers part of the request, do NOT search or look it up again; only act on what is genuinely missing. Supersede a numbered item by ref if a result disproves it.',
   // BL-48 (BL-40): the flight watch had seen 8:40; two days later the answer read the calendar's stale 10:15.
@@ -2278,7 +2283,7 @@ export async function runAgent(opts: {
       if (action.action === 'schedule_cancel' && !refused) { const c = /^canceled — "(.*)" will not run again/.exec(result); if (c) jobsCancelled.push(c[1]); }
       if (action.action === 'write_file' && !refused && !/^\[APPROVAL REQUIRED\]/.test(result) && typeof args.path === 'string') filesWritten.push(String(args.path));
       if (harnessOn && !refused && isSensitive(action.action)) {
-        const rec = { verb: action.action.replace(/_/g, ' '), tool: action.action, effect: effectOf(action.action), ...(allowedLogin ? { allowed: true } : {}) };
+        const rec = { verb: plainVerb(action.action), tool: action.action, effect: effectOf(action.action), ...(allowedLogin ? { allowed: true } : {}) };
         if (allowedLogin) allowedLogins++;
         runActions.push(rec);
         try { await memory.logAction({ verb: rec.verb, summary: result.slice(0, 200).replace(/\n/g, ' '), effect: rec.effect, tool: rec.tool }); } catch { /* */ }
