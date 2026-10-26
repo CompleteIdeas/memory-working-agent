@@ -127,7 +127,7 @@ function Shell({ dark, setDark, memN, onWizard }: { dark: boolean; setDark: (v: 
           <div className={view === 'chat' ? '' : 'hidden'}><Chat /></div>
           {view === 'tasks' && <TasksPage key={tasksFilter.n} initial={tasksFilter.f} />}
           {view === 'files' && <Files />}
-          {view === 'memory' && <Memory onAskRemove={(rule) => { store.send(`Remove this standing preference: "${rule}"`); go('chat'); }} />}
+          {view === 'memory' && <Memory />}
           {view === 'settings' && <Settings onWizard={onWizard} />}
         </main>
       </div>

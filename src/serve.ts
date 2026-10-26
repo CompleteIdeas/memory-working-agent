@@ -732,6 +732,19 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         res.end(JSON.stringify(quietState()));
         return;
       }
+      // Pending list 2026-10-26, 5c: the person removes a standing preference from its card or the Memory view
+      // directly — their own click, the same authority as Forget on a memory — instead of asking the chat for a
+      // policy_forget card. Every engram carrying the rule goes (removePolicy), or the rule stays in force.
+      if (p === '/api/policies/forget' && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        const rule = String(b.rule ?? '').slice(0, 600);
+        let removed = 0;
+        try { const m = new MwaMemory(SERVE_AGENT, dbFile()); removed = await m.removePolicy(rule); m.close(); } catch { /* */ }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: removed > 0, removed, message: removed > 0 ? 'Removed. It no longer applies to new tasks.' : 'No standing preference with those words was found.' }));
+        return;
+      }
       if (p === '/api/sources') {
         const session = String(url.searchParams.get('session') ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 60);
         const ws = resolve(loadConfig().workspace ?? './mwa-workspace');

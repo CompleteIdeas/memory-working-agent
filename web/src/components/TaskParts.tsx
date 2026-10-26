@@ -2,7 +2,21 @@ import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { STATUS_LABEL, plainCard, stateLine, clock, minsLeft, secs, shortenPaths, type Card, type Task, type TaskStatus } from '../tasks';
 import type { ScheduleRow } from '../api';
-import { TOOL_LABELS, stopRun } from '../api';
+import { TOOL_LABELS, stopRun, forgetPolicy } from '../api';
+
+/** 5c: a saved standing preference can be removed from its own card — the person's click, no chat, no second card. */
+export function RemovePreference({ rule, onRemoved }: { rule: string; onRemoved?: () => void }) {
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  if (!rule) return null;
+  if (msg) return <> {msg}</>;
+  return <> <button className="linkbtn" disabled={busy} onClick={async () => {
+    if (!window.confirm(`Remove this standing preference?\n\n"${rule}"\n\nIt will no longer apply to new tasks.`)) return;
+    setBusy(true); const r = await forgetPolicy(rule); setBusy(false);
+    setMsg(r.ok ? 'Removed: it no longer applies to new tasks.' : (r.message || "Couldn't remove it."));
+    if (r.ok) onRemoved?.();
+  }}>Remove it</button></>;
+}
 
 const CHIP: Record<TaskStatus, string> = { 'needs-you': 'you', working: 'run', scheduled: '', done: 'done', stopped: '', failed: 'fail' };
 export function StatusChip({ status }: { status: TaskStatus }) {
@@ -101,7 +115,7 @@ export function CardView({ card, telegram }: { card: Card; telegram: boolean }) 
       ) : (
         <p className={`text-[14px] mt-2 ${card.state === 'done' ? 'text-ok' : card.state === 'failed' || card.state === 'expired' ? 'text-signal' : ''}`}>
           {outcome[card.state]}{card.result && card.state !== 'declined' && card.state !== 'expired' ? ` ${shortenPaths(card.result).slice(0, 200).replace(/^(.)/, (m) => m.toUpperCase()).replace(/([^.!?])$/, '$1.')}` : ''}
-          {card.kind === 'captured-policy' && card.state === 'done' && <> You can remove it under Memory.</>}
+          {(card.kind === 'captured-policy' || card.tool === 'policy_save') && card.state === 'done' && <RemovePreference rule={p.rows.find((r) => r[0] === 'Preference')?.[1] ?? ''} />}
           {card.state === 'expired' && <> <button className="linkbtn" onClick={() => send(`Please ask me again: ${p.title}`, { session: card.session ?? session })}>Ask again</button></>}
         </p>
       )}
@@ -123,7 +137,8 @@ function ymd(ms: number): string { const d = new Date(ms); return `${d.getFullYe
 
 /** A scheduled job with its controls (D4, F04): Pause / Resume, Change time, Cancel with a ten-minute Undo. */
 export function JobCard({ row, cancelledAt }: { row: ScheduleRow; cancelledAt?: number }) {
-  const { jobAction, schedule } = useStore();
+  const { jobAction, schedule, live } = useStore();
+  const seen = live[`job_${row.id}`]; // 5e: the steps this page has followed of the job's live run
   // one request made several jobs (backend B3 catches exact twins only): say so, so the extras can go
   const twins = schedule.filter((j) => j.id !== row.id && words(j.request) === words(row.request)
     && (j.when === row.when || (!j.recur && !row.recur && Math.abs(j.due - row.due) < 30 * 60_000)));
@@ -160,7 +175,7 @@ export function JobCard({ row, cancelledAt }: { row: ScheduleRow; cancelledAt?: 
       {twinMsg && <p className="text-[13px] text-dim mt-1" role="status">{twinMsg}</p>}
       <dl className="kv">
         <dt>{off ? 'Was' : 'Runs'}</dt><dd>{row.when}</dd>
-        {row.live && <><dt>Running now</dt><dd aria-live="polite">{row.live.stage?.tool ? `${TOOL_LABELS[row.live.stage.tool] ?? String(row.live.stage.tool).replace(/_/g, ' ')}${row.live.stage.detail ? ` · ${shortenPaths(String(row.live.stage.detail))}` : ''}` : 'Starting'} · {Math.round(row.live.elapsedMs / 1000)}s{row.live.stopping ? ' · stopping' : ''}{!row.live.stopping && <> <button type="button" className="btn small" onClick={() => { void stopRun(`job_${row.id}`); }}>Stop</button></>}</dd></>}
+        {row.live && <><dt>Running now</dt><dd aria-live="polite">{row.live.stage?.tool ? `${TOOL_LABELS[row.live.stage.tool] ?? String(row.live.stage.tool).replace(/_/g, ' ')}${row.live.stage.detail ? ` · ${shortenPaths(String(row.live.stage.detail))}` : ''}` : 'Starting'} · {Math.round(row.live.elapsedMs / 1000)}s{seen?.steps.length ? ` · ${seen.steps.length} step${seen.steps.length === 1 ? '' : 's'} so far` : ''}{row.live.stopping ? ' · stopping' : ''}{!row.live.stopping && <> <button type="button" className="btn small" onClick={() => { void stopRun(`job_${row.id}`); }}>Stop</button></>}</dd></>}
         {!off && !row.paused && <><dt>Next</dt><dd>{new Date(row.due).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}</dd></>}
         {row.lastRun && <><dt>Last result</dt><dd>{shortenPaths(row.lastRun.summary).slice(0, 220)}{row.lastRun.value ? ` (${row.lastRun.value})` : ''} · {new Date(row.lastRun.at).toLocaleString([], { hour: 'numeric', minute: '2-digit', day: 'numeric', month: 'short' })}</dd></>}
         {row.fails ? <><dt>Problems</dt><dd className="text-signal">{row.fails} run{row.fails > 1 ? 's' : ''} could not finish</dd></> : null}

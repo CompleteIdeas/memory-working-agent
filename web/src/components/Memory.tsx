@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  getMemories, getSkills, getLessons, getPolicies, getQuestions, resolveQuestions, getPeople, type PersonRow,
+  getMemories, getSkills, getLessons, getPolicies, getQuestions, resolveQuestions, getPeople, forgetPolicy, type PersonRow,
   getRoutines, setRoutine, type RoutineRow,
   getActions, forgetMemory, correctMemory, type MemoryItem, type ActionItem,
 } from '../api';
@@ -86,7 +86,7 @@ function Group({ title, items, onChanged, ages, first = 6 }: { title: string; it
   );
 }
 
-export function Memory({ onAskRemove }: { onAskRemove?: (rule: string) => void }) {
+export function Memory() {
   const [items, setItems] = useState<MemoryItem[] | null>(null);
   const [actions, setActions] = useState<ActionItem[]>([]);
   const [skills, setSkills] = useState<{ name: string; content: string }[]>([]);
@@ -153,7 +153,11 @@ export function Memory({ onAskRemove }: { onAskRemove?: (rule: string) => void }
             {policies.map((p, i) => (
               <li key={i} className="flex flex-wrap items-center gap-2 rounded-[4px] border border-line bg-surface px-4 py-2.5 text-[14.5px]">
                 <span className="flex-1 min-w-[180px]">{p}</span>
-                {onAskRemove && <button className="btn small" onClick={() => onAskRemove(p)}>Remove…</button>}
+                <button className="btn small" onClick={async () => {
+                  // 5c: removed here and now (the person's own click), not through a chat and a second card
+                  if (!window.confirm(`Remove this standing preference?\n\n"${p}"\n\nIt will no longer apply to new tasks.`)) return;
+                  const r = await forgetPolicy(p); setMsg(r.ok ? 'Removed: it no longer applies to new tasks.' : (r.message || "Couldn't remove it.")); if (r.ok) load();
+                }}>Remove</button>
               </li>
             ))}
           </ul>

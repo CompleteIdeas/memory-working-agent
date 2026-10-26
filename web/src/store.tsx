@@ -36,6 +36,8 @@ interface Store {
   looseCards: PendingApproval[];
   send: (text: string, opts?: { stay?: boolean; session?: string; resume?: boolean | number }) => 'sent' | 'busy';
   busy: Busy | null; setBusy: (b: Busy | null) => void;
+  /** what this page sees live, by session — a chat's, or a background job's under `job_<id>` (5e) */
+  live: Record<string, LiveState>;
   stop: (session: string) => Promise<string>;
   steer: (session: string, text: string) => Promise<{ ok: boolean; message: string }>;
   answerOffer: (t: Task, work: boolean) => Promise<void>;
@@ -144,6 +146,15 @@ export function StoreProvider({ children, onActivity }: { children: ReactNode; o
     return () => { clearInterval(a); clearInterval(b); clearInterval(c); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // 5e (pending list 2026-10-26): a background job that is running now — follow its run under `job_<id>` for
+  // step-level progress, and re-read the schedule every few seconds while any job is live, not every 20 s.
+  useEffect(() => {
+    const running = schedule.filter((r) => r.live);
+    for (const r of running) attach(`job_${r.id}`);
+    if (!running.length) return;
+    const t = setInterval(() => { void loadSchedule(); void loadGoals(); }, 4_000);
+    return () => clearInterval(t);
+  }, [schedule, attach, loadSchedule, loadGoals]);
   // a running turn in any conversation we know of: follow it so its stage shows in the rail
   useEffect(() => {
     for (const [s, ts] of Object.entries(turns)) {
@@ -267,7 +278,7 @@ export function StoreProvider({ children, onActivity }: { children: ReactNode; o
 
   const value: Store = {
     session, openSession, newConversation, focus, convs, turns, pending, recent, auto, schedule, goals, status,
-    tasksFor, allTasks, looseCards, send, busy, setBusy, stop, steer, answerOffer, decide, deciding, jobAction, cancelled, refresh,
+    tasksFor, allTasks, looseCards, send, busy, setBusy, live, stop, steer, answerOffer, decide, deciding, jobAction, cancelled, refresh,
     toasts, toast, dismissToast,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

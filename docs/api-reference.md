@@ -31,6 +31,7 @@ nothing stopped, `message` runs as a plain message, still without the offer.
 | `/api/chat/stop` | POST | `{session}` — the run ends at its next step with reason `stopped` and a summary of what it kept |
 | `/api/chat/steer` | POST | `{session, message}` — queued into the run; the model gets it at its next step as the person's own words |
 | `/api/conversation?session=` | GET | `{session, folder, turns:[{ts, message, reply, reason?, kind: chat\|result\|offer\|running, runId?, offer?}]}` — the conversation in full. An `offer` turn (the agent offered to work in the background) carries `offer: {answered: background\|now, goal?, at}` once the person answered it, from any device: `goal` is the short id of the goal "Work on it" made |
+| `/api/policies/forget` | POST | `{rule}` → `{ok, removed, message}` — removes a standing preference by its words (every engram carrying the rule), the person's own click from the saved card or Memory › Standing preferences |
 | `/api/work/start` | POST | `{message, session}` → `{ok, goal, message}` — "Work on it": makes a goal and a job in the conversation's folder, and records the answer on the conversation's waiting offer (the one with these words, else the latest) |
 
 ### Sources

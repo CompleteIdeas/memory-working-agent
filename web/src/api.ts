@@ -334,6 +334,8 @@ export async function getVault(): Promise<VaultRow[]> {
   try { return (await (bounceIfLocked(await fetch('/api/vault', { cache: 'no-store' }))).json()).entries ?? []; } catch { return []; }
 }
 export const forgetVault = (name: string) => postJson('/api/vault/forget', { name });
+/** 5c: remove a standing preference by its words — the person's own click, no card */
+export const forgetPolicy = (rule: string) => postJson('/api/policies/forget', { rule });
 export interface QuietState { window: string | null; timeZone: string; fixed: boolean; invalid: boolean }
 export async function getQuiet(): Promise<QuietState | null> {
   try { return await (bounceIfLocked(await fetch('/api/quiet', { cache: 'no-store' }))).json(); } catch { return null; }
