@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { getStatus, getStats } from './api';
 import { StoreProvider, useStore } from './store';
 import { Chat } from './components/Chat';
@@ -11,6 +11,7 @@ import { TaskRail, TasksPage } from './components/Tasks';
 import { Settings } from './components/Settings';
 import { StatusChip } from './components/TaskParts';
 import { stateLine, STATUS_LABEL, type TaskStatus } from './tasks';
+import { chooseUi } from './v2/choose';
 
 // D5 (usability review 2026-10-24): Chat · Tasks · Files · Memory · Settings. Connect, Log and Warm-start moved into
 // Settings; Work became Tasks. Phones get a bottom tab bar instead of a nav row that was cut off at 390 px.
@@ -142,7 +143,7 @@ function Shell({ dark, setDark, memN, onWizard }: { dark: boolean; setDark: (v: 
   );
 }
 
-export default function App() {
+function V1App() {
   const [ready, setReady] = useState<boolean | null>(null);
   const [memN, setMemN] = useState(0);
   const [wizard, setWizard] = useState(false);
@@ -183,4 +184,21 @@ export default function App() {
       {viewing && <FileModal path={viewing} onClose={() => setViewing(null)} />}
     </StoreProvider>
   );
+}
+
+// v2 build, slice W1: the v2 app (web/src/v2) is chosen by `?ui=v2` (remembered in localStorage `mwa-ui`) or by
+// fixture mode (`?fixtures=1`); `?ui=v1` goes back. v1 stays the default until W6, and nothing in it changes: v2 is a
+// lazy chunk with its own styles that v1 never loads.
+const V2App = lazy(() => import('./v2'));
+export default function App() {
+  const [ui] = useState(() => {
+    let stored: string | null = null;
+    try { stored = localStorage.getItem('mwa-ui'); } catch { /* private mode */ }
+    const pick = chooseUi(location.search, stored);
+    const asked = new URLSearchParams(location.search).get('ui');
+    if (asked === 'v1' || asked === 'v2') { try { localStorage.setItem('mwa-ui', asked); } catch { /* */ } }
+    return pick;
+  });
+  if (ui === 'v2') return <Suspense fallback={null}><V2App /></Suspense>;
+  return <V1App />;
 }
