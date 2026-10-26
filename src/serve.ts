@@ -65,6 +65,7 @@ import { setJobRouteDeps, capFor, setCap } from './api/routes/jobs.js';
 import { setStreamDeps } from './api/routes/stream.js';
 import { startCalendarSync } from './sync/calendar.js';
 import { startMailSync } from './sync/mail.js';
+import { startImportant } from './v2/important-serve.js';
 import { mailSyncOn } from './sync/flags.js';
 import { migrateV2Once, describeReport } from './v2/migrate.js';
 import { reapDeadTries, personAction, jobByGoal, busyReason, viewJob, jobBySchedule, getJob } from './v2/jobs.js';
@@ -761,6 +762,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   // v2 (A7): keep the calendar cache fresh — shortly after start, then every 30 minutes (no model calls). The app
   // also asks for a refresh when it opens (POST /api/v1/calendar/refresh). MWA_CALENDAR_SYNC=0 turns it off.
   startCalendarSync();
+  // v2 (A9): the Important list — triage after each mail sync, double-bookings after each calendar sync, the derived
+  // sources (job results, approvals, reconnects) every minute. No model configured: rules and bulk-mail signs only.
+  startImportant({ memory: () => new MwaMemory(SERVE_AGENT, dbFile(), loadConfig().awm.workspace), running: () => new Set(liveRuns.all().map((r) => r.session)) });
   // v1 answers for itself: the password session, this machine (no password), or a paired device (src/api/auth.ts).
   // v2 (A3a review): existing goals, scheduled tasks and results become Jobs and Tries once, at server start, with or
   // without a model (the scheduler starts only with one), and Tries a crashed process left running are reaped. The
