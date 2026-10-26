@@ -106,7 +106,7 @@ export function historySource(env: NodeJS.ProcessEnv = process.env): HistorySour
 const median = (xs: number[]): number => { const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const finiteNum = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : NaN);
 
-interface RunRow { ts: number; job?: string; session?: string; costUsd: number; durationMs: number; reads: number; steps: number }
+interface RunRow { ts: number; job?: string; session?: string; costUsd: number; durationMs: number; reads: number; steps: number; planned?: boolean }
 interface Call { ts: number; bg: boolean }
 interface FileState { size: number; mtime: number; offset: number }
 interface HistoryState {
@@ -143,7 +143,8 @@ function parseRuns(text: string, into: RunRow[]): void {
     if (!(usd > 0) || !(ms > 0) || !(ts > 0)) continue;
     const reads = finiteNum(d.reads) >= 0 ? finiteNum(d.reads) : finiteNum(d.pagesRead) >= 0 ? finiteNum(d.pagesRead) : 0;
     const steps = finiteNum(d.steps) > 0 ? finiteNum(d.steps) : 0;
-    into.push({ ts, costUsd: usd, durationMs: ms, reads, steps, job: typeof d.job === 'string' ? d.job : undefined, session: typeof d.session === 'string' ? d.session : undefined });
+    into.push({ ts, costUsd: usd, durationMs: ms, reads, steps, job: typeof d.job === 'string' ? d.job : undefined, session: typeof d.session === 'string' ? d.session : undefined,
+      ...(finiteNum(d.planned) > 0 ? { planned: true } : {}) });
   }
 }
 function parseTokens(text: string, st: Pick<HistoryState, 'byJob' | 'bySession'>, from: number): void {
@@ -158,12 +159,34 @@ function parseTokens(text: string, st: Pick<HistoryState, 'byJob' | 'bySession'>
     else if (typeof d.session === 'string') { const a = st.bySession.get(d.session) ?? []; a.push(c); st.bySession.set(d.session, a); }
   }
 }
+/**
+ * A6 review: logs written before the fix hold, for a planned run, a row per step AND the plan's total row — the job
+ * counted about twice. A step row is dropped when a plan row of the same session spans it (its start to its end); the
+ * plan row takes the steps' job and reads when it has none. Step rows of a run with no session cannot be told apart
+ * from separate runs and are kept (the limitation: such logs still over-count a little). New logs have no step rows.
+ */
+export function withoutPlanSteps<T extends RunRow>(rows: T[]): T[] {
+  const plans = rows.filter((r) => r.planned && r.session);
+  if (!plans.length) return rows;
+  const out: T[] = [];
+  const merged = new Map<T, { job?: string; reads: number }>();
+  for (const r of rows) {
+    if (r.planned) { out.push(r); continue; }
+    const p = r.session ? plans.find((x) => x.session === r.session && r.ts >= x.ts - 1000 && r.ts + r.durationMs <= x.ts + x.durationMs + 5000) : undefined;
+    if (!p) { out.push(r); continue; }
+    const m = merged.get(p) ?? { reads: 0 };
+    m.job ??= r.job; m.reads += r.reads;
+    merged.set(p, m);
+  }
+  return out.map((r) => { const m = merged.get(r); return m ? { ...r, job: r.job ?? m.job, reads: r.reads || m.reads } : r; });
+}
+
 function computeStats(st: Pick<HistoryState, 'rows' | 'byJob' | 'bySession'>): HistoryStats {
   // Which tier each run used: its model calls in tokens.jsonl (the same job, or the same session, inside the run's
   // window) — background when most of them were background calls. A run with no logged calls is judged by what it
   // was: a scheduled job runs unattended (background calls), a chat does not.
   const tiers: Record<Tier, RunRow[]> = { main: [], background: [] };
-  for (const r of st.rows) {
+  for (const r of withoutPlanSteps(st.rows)) {
     const calls = (r.job ? st.byJob.get(r.job.slice(0, 8)) : r.session ? st.bySession.get(r.session) : undefined) ?? [];
     let n = 0, bgN = 0;
     for (const c of calls) if (c.ts >= r.ts - 1000 && c.ts <= r.ts + r.durationMs + 5000) { n++; if (c.bg) bgN++; }
@@ -337,6 +360,16 @@ export function estimateJob(job: JobRow, tries: TryRow[], o: { history?: History
   const recurring = job.kind === 'recurring' || job.kind === 'reminder';
   const hr = historyRate((o.history ?? historyStats())[jobTier(job)]);
   const typical = rounded(hr.pagesPerRun * hr.usdPerPage, hr.pagesPerRun * hr.msPerPage);
+
+  // A6 (review): a job whose size is known (the reads its attached files take) and that has no believed page count of
+  // its own is priced by that size: Start over = its reads, Continue = the reads not yet done, at the per-read rate.
+  const size = Number(job.size_reads ?? 0);
+  if (!recurring && size > 0 && !(p && isPages(p.progress_unit))) {
+    const at = (r: number) => rounded(r * hr.usdPerPage, r * hr.msPerPage);
+    const left = Math.max(0, size - reads);
+    return { basis: hr.basis, samples: hr.samples, startOver: at(size),
+      ...(!ended.length || finished ? {} : { continue: at(Math.max(1, left)) }) };
+  }
 
   if (recurring) {
     // a repeating job: one fire costs about what its recent fires cost

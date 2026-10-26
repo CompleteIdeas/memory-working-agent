@@ -1028,7 +1028,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** A plan's choice, made once: now (main model, its limit), background (a Job on the background model tier, with the default limit or capUsd), or a narrower ask (which is asked in turn). The same choice again answers what the first did (200); another choice is 409 already_chosen. */
+        /** A plan's choice, made once: now (main model, its limit), background (a Job on the background model tier, with the default limit or capUsd), or a narrower ask (which is asked in turn). The same choice again answers what the first did (200); another choice is 409 already_chosen; an archived project or a file gone is 409; a plan older than a day is 410 expired. */
         post: operations["chooseAsk"];
         delete?: never;
         options?: never;
@@ -1686,6 +1686,11 @@ export interface components {
             capDefault: number;
             /** @description In the background only: when it should be ready (epoch ms). */
             readyAt?: number;
+            /** @description Do it now only: the steps the run is given (its reads + 2; 40 to 120). */
+            steps?: number;
+            /** @description Do it now only: false when it would not finish within 120 steps or 30 minutes (it then carries on in the background). */
+            fits?: boolean;
+            note?: string;
         };
         /** @description A big ask, not started (SCENARIOS N04): what it is, what it would cost now (main model) and in the background
          *     (background model), narrower asks, and the limit it would stop at. Shown with "Or narrow it…" and "Details"
@@ -1702,14 +1707,17 @@ export interface components {
             now: components["schemas"]["AskPlanOption"];
             background: components["schemas"]["AskPlanOption"];
             narrow: {
-                /** @description "Only ICP Eventing Handbook · 61 pages, about 8¢" */
+                /** @description "Only ICP Eventing Handbook · 61 pages, about 8¢" (the name cleaned and capped). */
                 label: string;
-                text: string;
+                /** @description What the run is told to focus on, in fixed words: "the first attached file (61 pages)" — never a file name. For a model's proposal it is the label itself, given to the run fenced (and the run starts tainted). */
+                focus: string;
                 files: string[];
+                /** @description Counted pages (file narrows only; a model's page claim is never used). */
                 pages?: number;
-                usd: number;
+                /** @description File narrows only: a model's proposal keeps all the files and claims no price. */
+                usd?: number;
                 /**
-                 * @description file: one per attached file (deterministic); model: at most one, proposed by the cheap model and checked.
+                 * @description file: one per attached file, or the first 20 pages of one long file (deterministic); model: at most one label, proposed by the cheap model and checked.
                  * @enum {string}
                  */
                 by: "file" | "model";
@@ -1791,8 +1799,11 @@ export interface components {
             /** @enum {string} */
             source: "typed" | "voice";
             plan: components["schemas"]["AskPlan"] | null;
-            /** @enum {string} */
-            state: "planned" | "choosing" | "running" | "offered" | "answered" | "queued" | "narrowed" | "failed";
+            /**
+             * @description expired: a plan not chosen within a day (choose answers 410).
+             * @enum {string}
+             */
+            state: "planned" | "choosing" | "running" | "offered" | "answered" | "queued" | "narrowed" | "failed" | "expired";
             choice: Record<string, never> | null;
             jobId: string | null;
             runId: string | null;
@@ -1803,6 +1814,11 @@ export interface components {
             capUsd: number | null;
             /** @description A narrower ask: the plan it was chosen from. */
             parentId: string | null;
+            /** @description A narrower ask: the fixed note said in the instruction, and a model's suggested focus (fenced). */
+            focus: {
+                note: string;
+                suggested?: string;
+            } | null;
             updatedSeq: number;
         };
     };

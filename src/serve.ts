@@ -109,7 +109,8 @@ import { GENERAL, getProject, sessionOf, projectOfSession, crossTalk, apiProvena
 import { importConversations, describeConversationsReport } from './v2/migrate-conversations.js';
 import { setProjectRouteDeps, type ChatStart, type ChatExtras } from './api/routes/projects.js';
 import { setAskRouteDeps } from './api/routes/ask.js';
-import { finishAsk, setNarrowModel, narrowPrompt, firstJson, framedQuestion } from './v2/ask.js';
+import { finishAsk, setNarrowModel, narrowPrompt, firstJson, framedQuestion, askOfferAccepted, narrowAffordable, NARROW_CAP_USD } from './v2/ask.js';
+import { newLedger, withLedger, metered } from './spend.js';
 import { readCalls, billingSummary, callsCsv, setMonthlyBudget, providerBalance, monthStart, budgetHold } from './billing.js';
 import { thinkMode, thinkDue, thinkOnce, thinkEveryMs, thinkDailyUsd, readThoughts, latestThoughts } from './thinking.js';
 import { exportDoc, exportFormats } from './doc-export.js';
@@ -470,6 +471,8 @@ async function acceptProjectOffer(projectId: string, o: { message?: string; pers
     const started = await startBackgroundWork(memory, { message: offer.message, session, personId, workspace: cfg.workspace ?? './mwa-workspace' });
     if (!started) return null;
     answerOffer(session, 'background', started.goalId.slice(0, 8), undefined, undefined, offer.message);
+    // A6 review: an offer an ask made records the job it became
+    if (offer.id && started.v2JobId) { try { askOfferAccepted(offer.id, started.v2JobId); } catch { /* bookkeeping */ } }
     return { goal: started.goalId.slice(0, 8), message: "On it. I'll work on this in the background and post the result here when it's done." };
   } finally { memory.close(); }
 }
@@ -578,8 +581,8 @@ async function runChat(p: ChatParams, sink: ChatSink): Promise<void> {
     const filesNote = `\n\n(Files you write here are saved for the person and appear in their Files tab; when you mention one, link it by its path, e.g. [the notes](notes.md). Files from their earlier chats and jobs are theirs too: list_files with \`search\` finds one by name, and read_file opens it by that full path.${added.length ? ` Files they added to this chat: ${added.join(', ')}.` : ''})`;
     // A6: an ask's framing comes before the person's words (never the thing's own text: that is fenced, below), and its
     // attached files are named after them
-    const attachedNote = ex?.files?.length ? `\n\nFiles attached to this request (workspace paths; read them with read_document): ${ex.files.map((f) => `${f.path} (${f.pages} page${f.pages === 1 ? '' : 's'})`).join(', ')}.` : '';
-    const asked = (resumed?.instruction ?? framedQuestion(ex?.framing, message)) + attachedNote; // a resume runs the stopped task's own words, framed; the person's words stay the turn
+    // (A6 review) the files' paths are not here: they reach the run fenced, in `carried`; the note is fixed wording
+    const asked = (resumed?.instruction ?? framedQuestion(ex?.framing, message)) + (ex?.note ?? ''); // a resume runs the stopped task's own words, framed; the person's words stay the turn
     const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${asked}` : asked) + askNote + filesNote + await workNote(memory, sessionId, p.person, resumed?.stopped.message ?? message);
 
     // Per-person Profile (S1–S6): resolve who's talking, build their prompt context (identity guard +
@@ -605,7 +608,7 @@ async function runChat(p: ChatParams, sink: ChatSink): Promise<void> {
       personContext, // S2: per-person adaptation block (empty for the shared/unknown profile)
       personId: prepared.personId, identityInDoubt: prepared.mismatch, // S6 v2: gate sensitive confirms on step-up
       domainPackDir: process.env.MWA_DOMAIN_PACK, // optional domain pack (AGENT.md + topics) for a domain agent
-      budget: { maxSteps: ex?.budget?.maxSteps ?? 40, maxWallMs: 10 * 60_000, consolidateEvery: 10, maxTokens: Number(process.env.MWA_MAX_TOKENS ?? 400_000), ...(ex?.budget?.maxUsd ? { maxUsd: ex.budget.maxUsd } : {}) },
+      budget: { maxSteps: ex?.budget?.maxSteps ?? 40, maxWallMs: ex?.budget?.maxWallMs ?? 10 * 60_000, consolidateEvery: 10, maxTokens: Number(process.env.MWA_MAX_TOKENS ?? 400_000), ...(ex?.budget?.maxUsd ? { maxUsd: ex.budget.maxUsd } : {}) },
       onEvent: (type, d) => emitLive(type, d as Record<string, unknown>),
       signal: run.controller.signal, inbox: () => liveRuns.takeInbox(sessionId), // F06 Stop, F08 steer
     });
@@ -632,7 +635,7 @@ async function runChat(p: ChatParams, sink: ChatSink): Promise<void> {
     logger.error('chat', 'agent run failed', { session: sessionId, error: (e as Error).message.slice(0, 200) });
     // A5: the turn is finished with what went wrong, so no `running` turn stays behind
     const errReply = `This stopped with an error before it finished: ${(e as Error).message.slice(0, 300)}`;
-    const errTurn = appendTurn({ ts: Date.now(), session: sessionId, message, reply: errReply, reason: 'error', kind: 'chat', runId: run.runId });
+    const errTurn = appendTurn({ ts: Date.now(), session: sessionId, message, reply: errReply, reason: 'error', kind: 'chat', runId: run.runId, ...(ex?.about ? { about: ex.about } : {}), ...(ex?.source === 'voice' ? { source: 'voice' as const } : {}) });
     if (ex?.askId) { try { finishAsk(ex.askId, { turnId: errTurn, runId: run.runId, reply: errReply, tainted: ex.startTainted === true, ok: false }); } catch { /* */ } }
     emitLive('error', { message: (e as Error).message, runId: run.runId });
   } finally {
@@ -783,18 +786,27 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       const memory = new MwaMemory(SERVE_AGENT, dbFile(), cfg.awm.workspace);
       try {
         const personId = resolvePersonId({ channel: 'web', name: (o.person ?? '').trim() || undefined });
-        const started = await startBackgroundWork(memory, { message: o.message, session: sessionOf(projectId), personId, workspace: cfg.workspace ?? './mwa-workspace', capUsd: o.capUsd, modelTier: 'background' });
+        const started = await startBackgroundWork(memory, { message: o.message, session: sessionOf(projectId), personId, workspace: cfg.workspace ?? './mwa-workspace', capUsd: o.capUsd, modelTier: 'background',
+          ...(o.attachments ? { attachments: o.attachments } : {}),
+          // a model's suggested focus goes as fenced context, and the job starts tainted
+          ...(o.suggestedFocus ? { context: { text: o.suggestedFocus, tainted: true } } : {}) });
         return started?.v2JobId ? { jobId: started.v2JobId, goalId: started.goalId } : null;
       } finally { memory.close(); }
     },
     mailBody: async (account, providerId) => (await openMail(account, providerId)).body.text,
     models: () => { try { const m = loadConfig().models; return { fetch: m.fetch, background: m.background }; } catch { return null; } },
   });
+  // (A6 review) on the background tier, and only when it fits a 1¢ ledger: a model that would cost more is not asked
   setNarrowModel(async (input) => {
     const { system, user } = narrowPrompt(input);
-    const out = await getProvider('brain').chat({ system, messages: [{ role: 'user', content: user }], maxTokens: 200, reasoningEffort: 'minimal' });
-    const j = firstJson(out.text ?? '');
-    return j ? { label: String(j.label ?? ''), ask: String(j.ask ?? ''), ...(j.pages !== undefined ? { pages: Number(j.pages) } : {}) } : null;
+    return backgroundCalls.run(true, async () => {
+      const provider = getProvider('brain');
+      if (!narrowAffordable(provider.model, { system, user })) return null;
+      const ledger = newLedger({ cap: NARROW_CAP_USD });
+      const out = await withLedger(ledger, () => metered(provider).chat({ system, messages: [{ role: 'user', content: user }], maxTokens: 200, reasoningEffort: 'minimal' }));
+      const j = firstJson(out.text ?? '');
+      return j ? { label: String(j.label ?? '') } : null;
+    });
   });
   // v2 (A4): the live stream and /sync compute job views with the same running runs and waiting approvals.
   setStreamDeps({ running: () => new Set(liveRuns.all().map((r) => r.session)), pending: () => new Set(listPendingActions().map((a) => a.id)) });

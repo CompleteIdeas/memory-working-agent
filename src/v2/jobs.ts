@@ -159,7 +159,18 @@ export const ESTIMATES_MIGRATION: Migration = {
     -- a repeating follow-up of a capped run: the most all its fires together may spend (A3b re-review)
     ALTER TABLE jobs ADD COLUMN cap_total_usd REAL;`,
 };
-registerMigrations([JOBS_MIGRATION, JOBS_FIX_MIGRATION, ESTIMATES_MIGRATION]);
+/**
+ * Slice A6 (review): how much a job has to read, known before it starts — the big-ask plan counted its attached files
+ * the way read_document reads them. Without it a capped job's Continue was priced from the agent's own plan steps
+ * ("Finish the last 3 steps · about 30¢" on a 149-page read).
+ */
+export const JOB_SIZE_MIGRATION: Migration = {
+  name: '012-job-size',
+  sql: `
+    ALTER TABLE jobs ADD COLUMN size_reads INTEGER;
+    ALTER TABLE jobs ADD COLUMN size_pages INTEGER;`,
+};
+registerMigrations([JOBS_MIGRATION, JOBS_FIX_MIGRATION, ESTIMATES_MIGRATION, JOB_SIZE_MIGRATION]);
 
 export interface JobRow {
   id: string; project_id: string | null; kind: JobKind; title: string; request: string | null; person: string | null;
@@ -171,6 +182,8 @@ export interface JobRow {
   next_due_at: number | null; stopped_by: string | null; schedule_prefix: string | null;
   est_usd_first: number | null; est_ms_first: number | null;
   cap_total_usd?: number | null;
+  /** A6: read_document calls and pages its attached files take (known before it starts), or null */
+  size_reads?: number | null; size_pages?: number | null;
 }
 export interface TryRow {
   id: string; job_id: string; n: number; trigger: TryTrigger; run_id: string | null; live_key: string | null;
@@ -423,7 +436,7 @@ export function endScheduleTries(scheduleId: string, by: EndedBy, summary: strin
 }
 
 /** Set some of a Job's own fields (seen_at, lifecycle, where it stands…). */
-export function updateJob(jobId: string, f: Partial<Pick<JobRow, 'seen_at' | 'status' | 'where_it_stands' | 'stands_trust' | 'archived' | 'schedule_id' | 'session' | 'dir' | 'result_ref' | 'cap_usd' | 'next_due_at' | 'stopped_by' | 'model_tier'>>, d: AppDb = appDb()): JobRow | undefined {
+export function updateJob(jobId: string, f: Partial<Pick<JobRow, 'seen_at' | 'status' | 'where_it_stands' | 'stands_trust' | 'archived' | 'schedule_id' | 'session' | 'dir' | 'result_ref' | 'cap_usd' | 'next_due_at' | 'stopped_by' | 'model_tier' | 'size_reads' | 'size_pages' | 'est_usd_first' | 'est_ms_first'>>, d: AppDb = appDb()): JobRow | undefined {
   const keys = Object.keys(f).filter((k) => (f as Record<string, unknown>)[k] !== undefined);
   if (!keys.length) return getJob(jobId, d);
   return d.transaction(() => {

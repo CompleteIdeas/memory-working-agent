@@ -148,7 +148,7 @@ beforeAll(async () => {
   });
   const askRoute = { projectId: eventing.id, name: 'Eventing', confidence: 'given' as const, alternatives: [] };
   const built = buildPlan({ text: 'Learn everything about the rules', files: [], history: { main: null, background: null } });
-  const planned = insertAsk({ text: 'Learn everything about the rules', projectId: eventing.id, route: askRoute, kind: 'plan', mode: 'auto', plan: built.plan!, state: 'planned' });
+  const planned = insertAsk({ text: 'Learn everything about the rules', projectId: eventing.id, route: askRoute, kind: 'plan', mode: 'auto', plan: built.plan!, state: 'planned', createdAt: Date.UTC(2026, 10, 9, 14, 0) });
   const answered = insertAsk({ text: 'When do entries close?', projectId: eventing.id, route: askRoute, kind: 'answer', mode: 'auto', state: 'answered' });
   Object.assign(ids, { plannedAsk: planned.id, answeredAsk: answered.id });
   const v1 = createV1(v1Routes(), { authenticate: () => TEST_CALLER, sameOrigin: () => true });

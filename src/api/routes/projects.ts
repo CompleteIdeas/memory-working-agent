@@ -40,11 +40,14 @@ export interface ChatExtras {
   /** fenced context (the thing an item-scoped ask is about), and whether the run starts tainted */
   carried?: string;
   startTainted?: boolean;
-  /** a tighter budget than a chat's (an item-scoped ask: 8 steps, 5¢; a big ask done now: its spending limit) */
-  budget?: { maxSteps?: number; maxUsd?: number };
+  /** a budget other than a chat's (an item-scoped ask: 8 steps, 5¢; a big ask done now: its limit and room for every
+   *  read, up to 120 steps and 30 minutes) */
+  budget?: { maxSteps?: number; maxUsd?: number; maxWallMs?: number };
+  /** said after the person's words: fixed wording only (a narrower ask's focus, how many files are attached) */
+  note?: string;
   /** voice: the words came from the browser's speech recognition (recorded on the turn) */
   source?: 'voice' | 'typed';
-  /** files attached to the ask (workspace paths), named in the instruction */
+  /** files attached to the ask (workspace paths): their list reaches the run fenced, in `carried` */
   files?: { path: string; pages: number }[];
 }
 

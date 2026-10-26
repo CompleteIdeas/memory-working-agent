@@ -725,6 +725,9 @@ components:
         firstGuess: { type: boolean }
         capDefault: { type: number, description: 'The spending limit this choice gets unless the person sets one.' }
         readyAt: { type: integer, description: 'In the background only: when it should be ready (epoch ms).' }
+        steps: { type: integer, description: 'Do it now only: the steps the run is given (its reads + 2; 40 to 120).' }
+        fits: { type: boolean, description: 'Do it now only: false when it would not finish within 120 steps or 30 minutes (it then carries on in the background).' }
+        note: { type: string }
     AskPlan:
       type: object
       description: |
@@ -749,15 +752,15 @@ components:
           maxItems: 3
           items:
             type: object
-            required: [label, text, files, usd, by]
+            required: [label, focus, files, by]
             additionalProperties: false
             properties:
-              label: { type: string, description: '"Only ICP Eventing Handbook · 61 pages, about 8¢"' }
-              text: { type: string }
+              label: { type: string, description: '"Only ICP Eventing Handbook · 61 pages, about 8¢" (the name cleaned and capped).' }
+              focus: { type: string, description: 'What the run is told to focus on, in fixed words: "the first attached file (61 pages)" — never a file name. For a model''s proposal it is the label itself, given to the run fenced (and the run starts tainted).' }
               files: { type: array, items: { type: string } }
-              pages: { type: integer }
-              usd: { type: number }
-              by: { type: string, enum: [file, model], description: 'file: one per attached file (deterministic); model: at most one, proposed by the cheap model and checked.' }
+              pages: { type: integer, description: 'Counted pages (file narrows only; a model''s page claim is never used).' }
+              usd: { type: number, description: 'File narrows only: a model''s proposal keeps all the files and claims no price.' }
+              by: { type: string, enum: [file, model], description: 'file: one per attached file, or the first 20 pages of one long file (deterministic); model: at most one label, proposed by the cheap model and checked.' }
         capDefault: { type: number }
         basis: { type: string, enum: [this-job, history, default] }
     AskStart:
@@ -825,7 +828,7 @@ components:
         narrowed: { $ref: '#/components/schemas/AskStart' }
     Ask:
       type: object
-      required: [id, createdAt, text, projectId, route, kind, mode, about, files, source, plan, state, choice, jobId, runId, turnId, answer, tainted, capUsd, parentId, updatedSeq]
+      required: [id, createdAt, text, projectId, route, kind, mode, about, files, source, plan, state, choice, jobId, runId, turnId, answer, tainted, capUsd, parentId, focus, updatedSeq]
       additionalProperties: false
       properties:
         id: { type: string }
@@ -845,7 +848,7 @@ components:
         files: { type: array, items: { $ref: '#/components/schemas/AskFile' } }
         source: { type: string, enum: [typed, voice] }
         plan: { oneOf: [{ $ref: '#/components/schemas/AskPlan' }, { type: 'null' }] }
-        state: { type: string, enum: [planned, choosing, running, offered, answered, queued, narrowed, failed] }
+        state: { type: string, enum: [planned, choosing, running, offered, answered, queued, narrowed, failed, expired], description: 'expired: a plan not chosen within a day (choose answers 410).' }
         choice: { type: ['object', 'null'] }
         jobId: { type: ['string', 'null'] }
         runId: { type: ['string', 'null'] }
@@ -854,6 +857,14 @@ components:
         tainted: { type: ['boolean', 'null'] }
         capUsd: { type: ['number', 'null'] }
         parentId: { type: ['string', 'null'], description: 'A narrower ask: the plan it was chosen from.' }
+        focus:
+          type: ['object', 'null']
+          description: 'A narrower ask: the fixed note said in the instruction, and a model''s suggested focus (fenced).'
+          required: [note]
+          additionalProperties: false
+          properties:
+            note: { type: string }
+            suggested: { type: string }
         updatedSeq: { type: integer }
   responses:
     Error:
@@ -1966,7 +1977,7 @@ paths:
       - { name: id, in: path, required: true, schema: { type: string } }
     post:
       operationId: chooseAsk
-      summary: 'A plan''s choice, made once: now (main model, its limit), background (a Job on the background model tier, with the default limit or capUsd), or a narrower ask (which is asked in turn). The same choice again answers what the first did (200); another choice is 409 already_chosen.'
+      summary: 'A plan''s choice, made once: now (main model, its limit), background (a Job on the background model tier, with the default limit or capUsd), or a narrower ask (which is asked in turn). The same choice again answers what the first did (200); another choice is 409 already_chosen; an archived project or a file gone is 409; a plan older than a day is 410 expired.'
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
