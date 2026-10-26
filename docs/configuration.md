@@ -83,6 +83,7 @@ Provider API keys live in `.env` (never committed): `ANTHROPIC_API_KEY`, `AZURE_
 | `MWA_BROWSER` | on | `0` turns the agent browser's tools off. `MWA_BROWSER_DIR` (default `<data>/browser`) holds the per-person Chromium profiles; `MWA_CHROMIUM_PATH` names a Chromium to use instead of Playwright's. |
 | `MWA_BROWSER_MAX_CHARS` | `9000` | page text per snapshot; `MWA_BROWSER_TIMEOUT_MS` (`30000`) is the navigation timeout. |
 | `MWA_BROWSER_LOOKS` | `3` | how many times a run may look at a picture of the page (`browser_look`); only a model that takes images gets one, and never while a password box on the page holds a value. See docs/browser.md. |
+| `MWA_STRIP_CODES` | on | `0` stops hiding one-time codes and sign-in / reset links in what the agent reads from outside (pages, email, connectors). On, a code that words announce ("your verification code is …") and a link that signs in, resets or verifies with a token in it reach the model as `‹one-time code hidden›` / `‹one-time link hidden: host›`; the run's log says what it hid. Files and the agent's own output are never touched. |
 | `MWA_AGENT_ID` | `mwa-serve` | The AWM agent id the serve process recalls/writes under. |
 | `MWA_DOMAIN_PACK` | unset | Path to a domain pack (`AGENT.md` + `topics/`) — plugs a domain agent onto MWA. |
 | `MWA_HTTP_TIMEOUT_MS` | (default) | Timeout for the `http_request`/`read_document` tools. |

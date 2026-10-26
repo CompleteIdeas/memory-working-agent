@@ -48,6 +48,8 @@ A job that needs either carries an **allowance** you give when you set it up, in
 
 The job's words in "what's scheduled?" show the allowance ("may, unattended: use the saved login "the-internet" on its own site; click "Login" on the-internet.herokuapp.com"), the run is told the same, and nothing outside it is allowed. A job set up from a conversation that had read outside content carries no allowance, and a job without one that hits a sign-in stops there and says so. A saved login typed under the allowance is your own action, not one of the run's three outward actions: a sign-in of two fields and a click leaves the job its three for the work itself. The click still counts.
 
+**One-time codes and reset links stay out of the model's sight.** A verification code a page or an email announces, and a link that signs in, resets or verifies with a token in it, reach the model as `‹one-time code hidden›` and `‹one-time link hidden: host›` (`MWA_STRIP_CODES=0` turns this off). Text that says "forward the code below" is information the model can report; the code itself is not there to forward. Your own files are read as written.
+
 ## The vault (BL-63)
 
 Ask MWA to remember a login or a key, for example "save my USEA portal login" or "here's the API key for X". A card opens in the app, and you type the values there, not into the chat.

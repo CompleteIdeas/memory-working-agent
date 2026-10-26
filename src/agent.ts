@@ -15,6 +15,7 @@
  */
 import { readFileSync, statSync, appendFileSync, mkdirSync, existsSync } from 'node:fs';
 import { redactVault, vaultList, hasVaultRef } from './vault/vault.js';
+import { stripOneTimeSecrets, stripCodesOn } from './tools/one-time.js';
 import { randomUUID } from 'node:crypto';
 import { resolve, sep, dirname, join, basename } from 'node:path';
 import type { Provider } from './provider.js';
@@ -1037,6 +1038,8 @@ export async function runAgent(opts: {
   } : undefined);
   let compactionFailures = 0;
   const MAX_EXTERNAL = 3; // unattended runs pause BEFORE exceeding this many outward actions
+  const STRIP_CODES = stripCodesOn(); // 4c: one-time codes and sign-in links in outside content are hidden
+  let secretsHidden = 0;
   const MAX_ALLOWED_LOGINS = 4; // 3e: saved-login fields typed under the allowance that do not count (a sign-in is two)
   const ONE_VAULT_REF = /^\s*\{\{\s*vault:[a-z0-9-]+\.[a-z0-9-]+\s*\}\}\s*$/i; // the whole text is one reference
   const pageBudget = () => Math.max(1, Number(process.env.MWA_PAGE_BUDGET ?? 15) || 15);
@@ -2156,7 +2159,13 @@ export async function runAgent(opts: {
       const calNote = !called.failed && !draftNo && !pageNo && isCalendarList(action.action)
         ? await calendarCheck(action.action, called.text, opts.tools.defs().map((d) => d.name), (n, a) => opts.tools!.call(n, a, callCtx), calendarSeen) : '';
       // BL-63: a saved vault value never reaches the model, the history or the logs through a tool's output.
-      const result = redactVault(called.text + calNote);
+      // 4c (pending list 2026-10-26): nor does a one-time code or a sign-in / reset link that arrives in OUTSIDE
+      // content (a page, an email, a connector's result) — the classic injection prize. Own and local output is not
+      // touched: a file the person wrote may hold a number beside the word "code".
+      const redacted = redactVault(called.text + calNote);
+      const hidden = STRIP_CODES && !called.failed && readsUntrustedContent(action.action) ? stripOneTimeSecrets(redacted) : null;
+      const result = hidden?.text ?? redacted;
+      if (hidden && (hidden.codes || hidden.links)) { secretsHidden += hidden.codes + hidden.links; if (secretsHidden === hidden.codes + hidden.links) history.push(`(hid ${hidden.codes ? `${hidden.codes} one-time code${hidden.codes > 1 ? 's' : ''}` : ''}${hidden.codes && hidden.links ? ' and ' : ''}${hidden.links ? `${hidden.links} sign-in/reset link${hidden.links > 1 ? 's' : ''}` : ''} in ${action.action}'s result)`); }
       if (draftNo) gatesFired.push('draft');
       else if (!called.failed) {
         if (isDraft) { draftedTo.add(draftKey(args as Record<string, unknown>, action.action)); draftToolsOk.add(action.action); guardOnly.delete(action.action); }
