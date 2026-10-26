@@ -31,6 +31,7 @@ import { ToolRefusal } from './registry.js';
 import { urlRefusal } from './net-guard.js';
 import { resolveVaultRefs, hasVaultRef, siteHost, vaultName } from '../vault/vault.js';
 import { browserDir } from '../paths.js';
+import { loadConfig } from '../config.js';
 import { supportsImages } from '../provider.js';
 
 type Locator = { click(o?: object): Promise<void>; fill(v: string, o?: object): Promise<void>; selectOption(v: string | { label: string }, o?: object): Promise<string[]> };
@@ -137,10 +138,37 @@ export const BROWSING_GUIDE = [
 ].join('\n');
 
 /** Whether this request may go out: the same rules as http_request, for every hop. */
-async function allowed(u: string): Promise<boolean> {
+async function allowed(u: string, navigation = false): Promise<boolean> {
   if (/^(data|blob|about):/i.test(u)) return true;
   if (!/^https?:/i.test(u)) return false;
+  if (siteRefusal(u, navigation)) return false;
   return !(await urlRefusal(u));
+}
+
+// Pending list 2026-10-26, 4b (Muse gap): sites the browser may and may not reach, per site. `deny` hosts are never
+// reached by any request; with a non-empty `allow`, only those hosts can be opened or landed on (a page's own
+// resources — fonts, scripts, a CDN — are not held to the allow list, or most pages would break). Configured in
+// mwa.config.json (tools.browser.allow / deny) and MWA_BROWSER_ALLOW / MWA_BROWSER_DENY (comma lists); a host matches
+// itself and its subdomains, "*.example.com" only the subdomains.
+export function siteRules(env: NodeJS.ProcessEnv = process.env): { allow: string[]; deny: string[] } {
+  const list = (v: unknown) => (Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : []).map((s) => s.trim().toLowerCase()).filter(Boolean);
+  let cfg: { allow?: unknown; deny?: unknown } = {};
+  try { cfg = (loadConfig().tools as { browser?: { allow?: unknown; deny?: unknown } }).browser ?? {}; } catch { /* no config: no lists */ }
+  const fromEnv = (name: string) => String(env[name] ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  return { allow: [...list(cfg.allow), ...fromEnv('MWA_BROWSER_ALLOW')], deny: [...list(cfg.deny), ...fromEnv('MWA_BROWSER_DENY')] };
+}
+/** Whether `host` is one of the listed sites: itself or a subdomain of a listed host; "*.x" only a subdomain. */
+export function hostListed(host: string, list: string[]): boolean {
+  const h = host.toLowerCase().replace(/\.$/, '');
+  return list.some((e) => (e.startsWith('*.') ? h.endsWith(e.slice(1)) && h !== e.slice(2) : h === e || h.endsWith(`.${e}`)));
+}
+/** Why `url` is refused by the site lists, or null. `navigation`: the request is a page or frame being opened. */
+export function siteRefusal(url: string, navigation: boolean, rules = siteRules()): string | null {
+  let host = '';
+  try { host = new URL(url).hostname; } catch { return null; }
+  if (hostListed(host, rules.deny)) return `${host} is on the browser's deny list (tools.browser.deny / MWA_BROWSER_DENY)`;
+  if (navigation && rules.allow.length && !hostListed(host, rules.allow)) return `${host} is not on the browser's allow list (${rules.allow.slice(0, 6).join(', ')}${rules.allow.length > 6 ? ', …' : ''}); ask the person to add it in mwa.config.json (tools.browser.allow) if they want it reached`;
+  return null;
 }
 
 /** Pause every request this page makes — redirect hops included, which the Playwright route never sees — and refuse
@@ -193,10 +221,10 @@ async function unmarkControls(page: Page): Promise<void> {
 async function guardPage(ctx: Context, page: Page): Promise<void> {
   const cdp = await ctx.newCDPSession(page);
   cdpOf.set(page, cdp);
-  cdp.on('Fetch.requestPaused', (ev: { requestId: string; request: { url: string } }) => {
+  cdp.on('Fetch.requestPaused', (ev: { requestId: string; request: { url: string }; resourceType?: string }) => {
     void (async () => {
       let ok = false;
-      try { ok = await allowed(ev.request.url); } catch { ok = false; }
+      try { ok = await allowed(ev.request.url, ev.resourceType === 'Document'); } catch { ok = false; } // a redirect hop to a site off the allow list is refused here
       try { await cdp.send(ok ? 'Fetch.continueRequest' : 'Fetch.failRequest', ok ? { requestId: ev.requestId } : { requestId: ev.requestId, errorReason: 'BlockedByClient' }); }
       catch { /* the page or request is already gone */ }
     })();
@@ -326,7 +354,7 @@ function frameOf(page: Page, ref: number): Frame {
 /** Where a navigation landed, checked again: a redirect Chromium followed on its own must not reach a private address. */
 async function landedBadly(page: Page): Promise<string | null> {
   const urls = [page.url(), ...page.frames().map((f) => f.url())].filter((u) => /^https?:/i.test(u));
-  for (const u of urls) { const why = await urlRefusal(u); if (why) { try { await page.goto('about:blank'); } catch { /* */ } return `(refused: the page led to ${siteHost(u)} — ${why})`; } }
+  for (const u of urls) { const why = siteRefusal(u, true) ?? await urlRefusal(u); if (why) { try { await page.goto('about:blank'); } catch { /* */ } return `(refused: the page led to ${siteHost(u)} — ${why})`; } }
   return null;
 }
 
@@ -394,7 +422,7 @@ export function browserTools(): RegisteredTool[] {
         const url = String(args.url ?? '').trim();
         if (!/^https?:\/\//i.test(url)) throw new ToolRefusal('(refused: the address must start with http:// or https://)');
         if (hasVaultRef(url)) throw new ToolRefusal('(refused: a vault reference cannot go in an address)');
-        const why = await urlRefusal(url);
+        const why = siteRefusal(url, true) ?? await urlRefusal(url);
         if (why) throw new ToolRefusal(`(refused: ${why})`);
         const page = await pageFor(ctx, true);
         try { await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT }); }

@@ -26,6 +26,22 @@ describe('what counts as a consequential click, and as going ahead', () => {
     for (const m of ['Yes, submit it', 'go ahead', 'Confirmed — pay it']) expect([m, GO_AHEAD.test(m)]).toEqual([m, true]);
     for (const m of ['Fill out the entry form for Tessa', 'What does the page say?']) expect([m, GO_AHEAD.test(m)]).toEqual([m, false]);
   });
+  it('a site list names hosts and their subdomains; "*.x" only subdomains (4b)', async () => {
+    const { hostListed, siteRefusal } = await import('../src/tools/browser.js');
+    expect(hostListed('useventing.com', ['useventing.com'])).toBe(true);
+    expect(hostListed('www.useventing.com', ['useventing.com'])).toBe(true);
+    expect(hostListed('notuseventing.com', ['useventing.com'])).toBe(false);
+    expect(hostListed('www.useventing.com', ['*.useventing.com'])).toBe(true);
+    expect(hostListed('useventing.com', ['*.useventing.com'])).toBe(false);
+    expect(hostListed('WWW.USEventing.com.', ['useventing.com'])).toBe(true);
+    const rules = { allow: ['useventing.com'], deny: ['tracker.example'] };
+    expect(siteRefusal('https://www.useventing.com/results', true, rules)).toBeNull();
+    expect(siteRefusal('https://cdn.example/font.woff', false, rules)).toBeNull(); // a page's own resources are not held to the allow list
+    expect(siteRefusal('https://other.example/page', true, rules)).toMatch(/not on the browser's allow list \(useventing\.com\)/);
+    expect(siteRefusal('https://tracker.example/pixel', false, rules)).toMatch(/on the browser's deny list/);
+    expect(siteRefusal('https://a.tracker.example/pixel', true, rules)).toMatch(/deny list/);
+    expect(siteRefusal('https://anything.example/', true, { allow: [], deny: [] })).toBeNull(); // no lists: no site rule
+  });
   it('finding words and going back read the page: not outward actions against an unattended run\'s three (4e)', async () => {
     const { countsAsReach, effectOf } = await import('../src/tools/governance.js');
     for (const t of ['browser_find', 'browser_back', 'browser_open', 'browser_scroll']) expect([t, effectOf(t), countsAsReach(t)]).toEqual([t, 'external', false]);
@@ -67,7 +83,7 @@ describe.skipIf(!hasPlaywright)('in a real browser', () => {
   const hits: Record<string, number> = {}; let lastHeaders: Record<string, unknown> = {};
   const tool = (n: string) => browserTools().find((t) => t.def.name === n)!;
   const ctx = (extra: Record<string, unknown> = {}) => ({ sandboxDir: cfgDir, interactive: true, personId: 'jordan', ...extra });
-  const setPreset = (preset: string) => writeFileSync(join(cfgDir, 'mwa.config.json'), JSON.stringify({ tools: { access: { preset, grantedRoots: [] } } }));
+  const setPreset = (preset: string, browser?: { allow?: string[]; deny?: string[] }) => writeFileSync(join(cfgDir, 'mwa.config.json'), JSON.stringify({ tools: { access: { preset, grantedRoots: [] }, ...(browser ? { browser } : {}) } }));
 
   beforeAll(async () => {
     cfgDir = mkdtempSync(join(tmpdir(), 'mwa-browser-'));
@@ -208,6 +224,23 @@ describe.skipIf(!hasPlaywright)('in a real browser', () => {
     expect(await tool('browser_page').handler({}, ctx({ session: 'conv-look', runId: 'look-1' }))).not.toMatch(/__mwa_marks/);
     await tool('browser_type').handler({ ref: 2, text: 'hunter2' }, ctx({ session: 'conv-look', runId: 'look-1' }));
     await expect(tool('browser_look').handler({}, ctx({ session: 'conv-look', runId: 'look-1', brainModel: 'openai/gpt-6.1-sol' }))).rejects.toThrow(/password box on this page holds a value/);
+  }, 60_000);
+
+  // 4b: per-site allow / deny lists, from the config and from the environment.
+  it('refuses a denied site, refuses a site off a non-empty allow list, and opens a listed one', async () => {
+    const c = ctx({ session: 'conv-sites', runId: 'sites-1' });
+    setPreset('developer', { deny: ['127.0.0.1'] });
+    await expect(tool('browser_open').handler({ url: `${base}/` }, c)).rejects.toThrow(/127\.0\.0\.1 is on the browser's deny list/);
+    setPreset('developer', { allow: ['useventing.com'] });
+    await expect(tool('browser_open').handler({ url: `${base}/` }, c)).rejects.toThrow(/not on the browser's allow list \(useventing\.com\)/);
+    setPreset('developer', { allow: ['useventing.com', '127.0.0.1'] });
+    expect(await tool('browser_open').handler({ url: `${base}/` }, c)).toMatch(/Page: Entries/);
+    // a click that leads to a denied site (the redirect at /go is to this host, so deny it by the environment)
+    vi.stubEnv('MWA_BROWSER_DENY', ' 127.0.0.1 ,');
+    try {
+      await expect(tool('browser_page').handler({}, c)).rejects.toThrow(/deny list/); // the page it is on is now denied
+    } finally { vi.stubEnv('MWA_BROWSER_DENY', ''); }
+    setPreset('developer');
   }, 60_000);
 
   // 4d: a file a site offers lands in the conversation's folder, and the next description names it.

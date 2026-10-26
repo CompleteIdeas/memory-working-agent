@@ -40,6 +40,10 @@ export interface MwaConfig {
     installPolicy?: 'curated-only' | 'review-required' | 'off';
     /** local-machine access posture (chosen at setup) + folders the user granted. */
     access?: { preset?: 'locked-down' | 'assistant' | 'developer'; grantedRoots?: string[] };
+    /** the agent browser's sites (pending list 2026-10-26, 4b): `deny` hosts it never reaches (any request); with a
+     *  non-empty `allow`, only those hosts can be opened or landed on. A host matches itself and its subdomains;
+     *  "*.example.com" only the subdomains. MWA_BROWSER_ALLOW / MWA_BROWSER_DENY (comma lists) add to these. */
+    browser?: { allow?: string[]; deny?: string[] };
   };
   escalation: { maxFetchFailures: number };
 }
@@ -76,6 +80,10 @@ export function validateConfig(raw: Partial<MwaConfig>): string[] {
     if (raw.models.reason !== undefined && !isModelSpec(raw.models.reason)) w.push(`models.reason "${raw.models.reason}" should be "provider:model"`);
   }
   if (raw.tools?.builtins !== undefined && !Array.isArray(raw.tools.builtins)) w.push('tools.builtins should be an array of tool names');
+  for (const k of ['allow', 'deny'] as const) {
+    const v = (raw.tools?.browser as Record<string, unknown> | undefined)?.[k];
+    if (v !== undefined && !(Array.isArray(v) && v.every((s) => typeof s === 'string'))) w.push(`tools.browser.${k} should be an array of host names`);
+  }
   const preset = raw.tools?.access?.preset;
   if (preset !== undefined && !VALID_PRESETS.includes(preset)) w.push(`tools.access.preset "${preset}" is not one of ${VALID_PRESETS.join(' | ')}`);
   if (raw.style !== undefined && !INTERACTION_STYLES.includes(raw.style)) w.push(`style "${raw.style}" is not one of ${INTERACTION_STYLES.join(' | ')}`);
