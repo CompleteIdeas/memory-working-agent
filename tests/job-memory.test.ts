@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jobContext } from '../src/agent.js';
 import { tickScheduler, sameReading } from '../src/scheduler.js';
+import { resetAppDb } from '../src/v2/db.js';
 import type { JobLastRun } from '../src/awm.js';
 
 const prevTz = process.env.TZ;
@@ -58,6 +59,7 @@ describe('what a fire is told about its own job', () => {
 
 describe('the scheduler keeps the record and reports a change', () => {
   const fire = async (task: Record<string, unknown>, run: Record<string, unknown>) => {
+    resetAppDb(':memory:'); // each fire here is its own world: one scheduled fire now runs once for good (v2 review H2)
     const outRoot = mkdtempSync(join(tmpdir(), 'mwa-bl44-'));
     const saved: JobLastRun[] = []; const fired: { summary: string; outcome?: string }[] = []; const writes: string[] = []; const supersedes: string[] = []; const seen: Record<string, unknown>[] = [];
     const mem = {

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runAgent, AGENT_DONE_TOOL } from '../src/agent.js';
 import { tickScheduler } from '../src/scheduler.js';
+import { resetAppDb } from '../src/v2/db.js';
 import type { Provider, ChatResult, ChatInput } from '../src/provider.js';
 import { MwaMemory } from '../src/awm.js';
 
@@ -112,6 +113,7 @@ describe('run outcome — runtime evidence beats the claim', () => {
 
 describe('the scheduler delivers by policy, and completion is two-phase', () => {
   const fire = async (task: Record<string, unknown>, outcome: string) => {
+    resetAppDb(':memory:'); // each fire here is its own world: one scheduled fire now runs once for good (v2 review H2)
     const outRoot = mkdtempSync(join(tmpdir(), 'mwa-job-sched-'));
     const calls = { onFire: [] as Record<string, unknown>[], completed: 0, pending: [] as boolean[], seen: [] as Record<string, unknown>[] };
     const memory = {
@@ -195,6 +197,7 @@ describe('the contract survives storage', () => {
 
 describe('BL-02 review: nothing the person should hear is silenced', () => {
   const fire = async (task: Record<string, unknown>, result: Record<string, unknown>, checksAllowed = false) => {
+    resetAppDb(':memory:'); // each fire here is its own world: one scheduled fire now runs once for good (v2 review H2)
     const outRoot = mkdtempSync(join(tmpdir(), 'mwa-job-rev-'));
     const calls = { onFire: [] as Record<string, unknown>[], runs: 0 };
     const memory = {

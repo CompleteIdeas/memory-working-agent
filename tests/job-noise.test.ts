@@ -8,9 +8,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tickScheduler, textHash } from '../src/scheduler.js';
+import { resetAppDb } from '../src/v2/db.js';
 import type { JobLastRun } from '../src/awm.js';
 
 const fire = async (task: Record<string, unknown>, run: Record<string, unknown>) => {
+    resetAppDb(':memory:'); // each fire here is its own world: one scheduled fire now runs once for good (v2 review H2)
   const outRoot = mkdtempSync(join(tmpdir(), 'mwa-bl51-'));
   const fired: { summary: string; outcome?: string }[] = []; const fails: number[] = [];
   const mem = {

@@ -393,3 +393,19 @@ describe('lows: the list is batched and paged; Stop tells the truth about a run 
     expect(J.getTry(t!.id)!.state).toBe('running');
   });
 });
+
+describe('M10 in the live stream and /sync too', () => {
+  it('a device never receives another person\'s job, in a snapshot or a catch-up', async () => {
+    const { streamRoutes } = await import('../src/api/routes/stream.js');
+    const sync = streamRoutes.find((r) => r.path === '/sync')!;
+    const call = async (q: string) => (await sync.handler({ url: new URL(`http://x/api/v1/sync${q}`), who: OWNER, params: {}, body: undefined, caller: 'device:phone-1', req: {} as never }) as { body: { cursor: number; upserts: { jobs: { id: string }[] } } }).body;
+    const mine = J.createJob({ kind: 'background', title: 'Mine', person: 'web-robert' }).job;
+    const theirs = J.createJob({ kind: 'background', title: 'Theirs', person: 'tg-1000000001' }).job;
+    const snap = await call('');
+    expect(snap.upserts.jobs.map((x) => x.id)).toEqual([mine.id]);
+    J.updateJob(theirs.id, { seen_at: 1 }); J.updateJob(mine.id, { seen_at: 1 });
+    const later = await call(`?since=${snap.cursor}`);
+    expect(later.upserts.jobs.map((x) => x.id)).toEqual([mine.id]);
+    expect(JSON.stringify(later)).not.toContain(theirs.id);
+  });
+});
