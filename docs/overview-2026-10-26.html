@@ -1,0 +1,293 @@
+<title>MWA at a Glance</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Public+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a single reading column (72ch) with full-width bands for the map, the timeline and the gaps board. */
+:root {
+  --bg: #f6f4ef; --bg-2: #ffffff; --fg: #1d2420; --fg-2: #4e5852; --line: #d9d4c8;
+  --accent: #0f6e6e; --accent-2: #d9efee;
+  --ok: #2f7d4a; --ok-2: #e2f1e6; --warn: #a66a0c; --warn-2: #fbefd6; --bad: #b3362b; --bad-2: #f9e2df; --mute: #6b7470; --mute-2: #ebe9e3;
+  --display: "Fraunces", Georgia, serif; --body: "Public Sans", system-ui, sans-serif; --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #171a18; --bg-2: #1f2321; --fg: #ebe9e3; --fg-2: #b3b8b2; --line: #353a37;
+  --accent: #6cc6c2; --accent-2: #173636;
+  --ok: #7fcf98; --ok-2: #1d3426; --warn: #e4b35a; --warn-2: #3a2d12; --bad: #f08a7e; --bad-2: #40201c; --mute: #9aa29d; --mute-2: #2a2f2c;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #171a18; --bg-2: #1f2321; --fg: #ebe9e3; --fg-2: #b3b8b2; --line: #353a37;
+  --accent: #6cc6c2; --accent-2: #173636;
+  --ok: #7fcf98; --ok-2: #1d3426; --warn: #e4b35a; --warn-2: #3a2d12; --bad: #f08a7e; --bad-2: #40201c; --mute: #9aa29d; --mute-2: #2a2f2c;
+  color-scheme: dark }
+* { box-sizing: border-box }
+body { background: var(--bg); color: var(--fg); font: 16px/1.55 var(--body); margin: 0; padding-block: 0 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)) }
+.wrap { max-width: 1040px; margin: 0 auto }
+h1, h2, h3 { font-family: var(--display); font-weight: 600; line-height: 1.15; text-wrap: balance; margin: 0 }
+h1 { font-size: clamp(2rem, 5vw, 3rem) }
+h2 { font-size: 1.6rem; margin-block: 56px 10px; padding-top: 14px; border-top: 1px solid var(--line) }
+h3 { font-size: 1.1rem; margin-block: 22px 6px }
+p { max-width: 72ch; margin-block: 8px }
+.lead { font-size: 1.1rem; color: var(--fg-2); max-width: 70ch }
+.eyebrow { font: 500 .72rem/1 var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--accent) }
+a { color: var(--accent) }
+code, .mono { font-family: var(--mono); font-size: .88em }
+.kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 22px }
+.kv div { background: var(--bg-2); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px }
+.kv b { display: block; font: 600 1.5rem/1.1 var(--display); font-variant-numeric: tabular-nums }
+.kv span { font-size: .8rem; color: var(--fg-2) }
+.chip { display: inline-block; font: 500 .72rem/1 var(--body); letter-spacing: .03em; padding: 5px 8px; border-radius: 999px; white-space: nowrap }
+.c-ok { background: var(--ok-2); color: var(--ok) } .c-warn { background: var(--warn-2); color: var(--warn) } .c-bad { background: var(--bad-2); color: var(--bad) } .c-mute { background: var(--mute-2); color: var(--mute) } .c-acc { background: var(--accent-2); color: var(--accent) }
+.legend { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 12px 18px }
+/* capability map */
+.map { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px }
+.cap { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; min-width: 0 }
+.cap header { display: flex; justify-content: space-between; align-items: start; gap: 10px }
+.cap h3 { margin: 0; font-size: 1.05rem }
+.cap ul { margin: 0; padding-left: 18px; font-size: .92rem; color: var(--fg-2) }
+.cap li { margin-block: 3px }
+.cap .since { font: 400 .74rem/1.3 var(--mono); color: var(--mute) }
+/* architecture */
+.arch { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow-x: auto }
+.arch svg { display: block; width: 100%; min-width: 640px; height: auto }
+/* timeline */
+.tl { position: relative; margin-top: 18px; display: grid; gap: 14px }
+.tl-row { display: grid; grid-template-columns: 110px 1fr; gap: 14px; align-items: start }
+.tl-when { font-family: var(--mono); font-size: .8rem; color: var(--mute); padding-top: 4px; white-space: nowrap }
+.tl-card { border-left: 3px solid var(--accent); padding: 2px 0 2px 14px; min-width: 0 }
+.tl-card.live { border-left-color: var(--ok) } .tl-card.branch { border-left-color: var(--warn) }
+.tl-card b { font-family: var(--display); font-size: 1.05rem; font-weight: 600 }
+.tl-card p { font-size: .92rem; color: var(--fg-2); margin-block: 4px }
+/* bars */
+.bars { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; align-items: end; height: 150px; margin-top: 14px; padding: 0 4px }
+.bar { display: flex; flex-direction: column; align-items: center; justify-content: end; height: 100%; gap: 6px; font-family: var(--mono); font-size: .76rem; color: var(--fg-2) }
+.bar i { display: block; width: 100%; max-width: 72px; background: var(--accent); border-radius: 4px 4px 0 0; opacity: .85 }
+.bar.zero i { height: 2px; background: var(--line); opacity: 1 }
+/* tables */
+.tbl { overflow-x: auto; margin-top: 10px }
+table { border-collapse: collapse; width: 100%; font-size: .9rem }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top }
+th { font-size: .74rem; letter-spacing: .05em; text-transform: uppercase; color: var(--mute) }
+td.n, th.n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap }
+tr.hi td { background: var(--accent-2) }
+.score { display: inline-block; min-width: 46px; font-family: var(--mono); font-variant-numeric: tabular-nums }
+.meter { display: inline-block; vertical-align: middle; width: 90px; height: 8px; background: var(--mute-2); border-radius: 4px; overflow: hidden; margin-left: 8px }
+.meter i { display: block; height: 100%; background: var(--accent) }
+/* gaps board */
+.gaps { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px }
+.gap { background: var(--bg-2); border: 1px solid var(--line); border-left-width: 5px; border-radius: 8px; padding: 12px 14px; min-width: 0 }
+.gap.bad { border-left-color: var(--bad) } .gap.warn { border-left-color: var(--warn) } .gap.mute { border-left-color: var(--mute) }
+.gap b { font-family: var(--display); font-size: 1.02rem; font-weight: 600 }
+.gap p { font-size: .9rem; color: var(--fg-2); margin-block: 5px 0 }
+.gap .who { font: 500 .72rem/1 var(--body); letter-spacing: .05em; text-transform: uppercase; color: var(--mute); margin-top: 8px }
+.note { background: var(--accent-2); border-radius: 8px; padding: 12px 16px; max-width: 72ch; font-size: .95rem }
+.foot { margin-top: 48px; font-size: .8rem; color: var(--mute) }
+@media (max-width: 560px) { .tl-row { grid-template-columns: 1fr } .tl-when { padding-top: 0 } .bars { height: 120px } }
+@media (prefers-reduced-motion: no-preference) { .bar i { transition: height .4s ease } }
+</style>
+
+<div class="wrap">
+  <div class="eyebrow">Memory Working Agent · review pack · 2026-10-25</div>
+  <h1 style="margin-top:8px">MWA at a Glance</h1>
+  <p class="lead">A personal assistant that remembers. A cheap model runs the loop, a memory substrate (AWM) keeps what it has learned and decided, and a person stays at every gate that changes the world. This page covers what it does today, what has been measured, how it got here, and what is still open.</p>
+
+  <div class="kv">
+    <div><b>0.7.1</b><span>on production since 2026-10-26 (tag v0.7.1): the browser after its review</span></div>
+    <div><b>5</b><span>commits above production: the task-centred interface, the frames and file check, and the model that can look</span></div>
+    <div><b>270</b><span>commits since 2026-06-13; 209 of them in October</span></div>
+    <div><b>23.5k</b><span>lines of TypeScript in 110 source files</span></div>
+    <div><b>1,214</b><span>tests in 109 files, all passing on the branch head</span></div>
+    <div><b>41</b><span>documents in <span class="mono">docs/</span>, most of them measurements</span></div>
+  </div>
+
+  <h2>What it is</h2>
+  <p>MWA is a self-hosted assistant you talk to in a web app, on Telegram, or by dropping a file in a folder. It answers from memory first, reads your files and the web when memory is silent, schedules reminders and watches, works on longer tasks in the background, and drafts email it never sends. Everything it writes, runs or sends outside the machine waits for your approval. It runs as one Docker container on a NAS or on Railway, with every secret and memory on a local volume.</p>
+  <p>The thesis under it: the capability for running long, messy work lives in the <em>memory</em>, not in the model. A cheap model primed by a studied memory answered what the team decided and why as well as a frontier model reading the files, at a forty-fifth of the cost. Where it still loses is judgment that needs figures the memory never stored.</p>
+
+  <h3>How a request moves through it</h3>
+  <div class="arch">
+    <svg viewBox="0 0 960 330" role="img" aria-label="Architecture: channels feed the agent loop, which uses tools, memory and gates; the scheduler and background work re-enter the same loop.">
+      <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="var(--mute)"/></marker></defs>
+      <style>
+        .b { fill: var(--bg); stroke: var(--line); stroke-width: 1.2; rx: 8 }
+        .ba { fill: var(--accent-2); stroke: var(--accent); stroke-width: 1.2; rx: 8 }
+        .bo { fill: var(--ok-2); stroke: var(--ok); stroke-width: 1.2; rx: 8 }
+        .t { font: 500 13px var(--body); fill: var(--fg) }
+        .s { font: 400 11px var(--mono); fill: var(--fg-2) }
+        .l { stroke: var(--mute); stroke-width: 1.3; fill: none; marker-end: url(#ar) }
+        .cap { font: 500 10px var(--body); fill: var(--mute); letter-spacing: .08em }
+      </style>
+      <!-- channels -->
+      <text x="20" y="22" class="cap">CHANNELS</text>
+      <rect x="20" y="32" width="150" height="46" class="b"/><text x="34" y="52" class="t">Web app</text><text x="34" y="68" class="s">chat · Work · Files · Memory</text>
+      <rect x="20" y="88" width="150" height="46" class="b"/><text x="34" y="108" class="t">Telegram</text><text x="34" y="124" class="s">approve / cancel buttons</text>
+      <rect x="20" y="144" width="150" height="46" class="b"/><text x="34" y="164" class="t">Inbox folder</text><text x="34" y="180" class="s">drop a file, get a report</text>
+      <rect x="20" y="200" width="150" height="46" class="b"/><text x="34" y="220" class="t">Scheduler</text><text x="34" y="236" class="s">reminders · watches · goals</text>
+      <!-- loop -->
+      <text x="240" y="22" class="cap">THE RUN</text>
+      <rect x="240" y="32" width="260" height="214" class="ba"/>
+      <text x="256" y="56" class="t">Agent loop</text>
+      <text x="256" y="76" class="s">recall → read → act → done</text>
+      <text x="256" y="104" class="t">Model router</text>
+      <text x="256" y="120" class="s">cheap tier first (Luna), escalates to Sol</text>
+      <text x="256" y="148" class="t">Planner</text>
+      <text x="256" y="164" class="s">only for work with steps or a product</text>
+      <text x="256" y="192" class="t">Claim and substance checks</text>
+      <text x="256" y="208" class="s">a reply must match the action record</text>
+      <text x="256" y="232" class="s">per-run caps: steps · tokens · wall clock</text>
+      <!-- tools -->
+      <text x="560" y="22" class="cap">TOOLS</text>
+      <rect x="560" y="32" width="170" height="214" class="b"/>
+      <text x="574" y="54" class="t">Files and folders you grant</text>
+      <text x="574" y="76" class="t">Shell (read-only unattended)</text>
+      <text x="574" y="98" class="t">Web fetch and search</text>
+      <text x="574" y="120" class="t">Browser (Chromium) + vault</text>
+      <text x="574" y="142" class="t">Email read and draft</text>
+      <text x="574" y="164" class="t">Schedule · goals · open items</text>
+      <text x="574" y="186" class="t">Any MCP server</text>
+      <text x="574" y="208" class="s">every output fenced as outside text;</text>
+      <text x="574" y="224" class="s">taint follows it into memory</text>
+      <!-- gates -->
+      <text x="770" y="22" class="cap">GATES</text>
+      <rect x="770" y="32" width="170" height="100" class="bo"/>
+      <text x="784" y="54" class="t">Approval cards</text>
+      <text x="784" y="72" class="s">writes, commands, sends, jobs,</text>
+      <text x="784" y="88" class="s">standing preferences — a person</text>
+      <text x="784" y="104" class="s">taps; the model cannot</text>
+      <text x="784" y="122" class="s">step-up when identity is in doubt</text>
+      <rect x="770" y="146" width="170" height="100" class="b"/>
+      <text x="784" y="168" class="t">Delivery</text>
+      <text x="784" y="186" class="s">quiet hours · receipts per channel</text>
+      <text x="784" y="202" class="s">change-only watches stay quiet</text>
+      <text x="784" y="218" class="s">a blocked run is always reported</text>
+      <!-- memory -->
+      <rect x="240" y="270" width="700" height="44" class="ba"/>
+      <text x="256" y="289" class="t">AWM memory substrate (vendored, in process)</text>
+      <text x="256" y="305" class="s">recall with provenance and trust · supersede when a fact changes · per-person profiles · goals and job ledger · consolidation</text>
+      <!-- arrows -->
+      <path d="M170 55 H240" class="l"/><path d="M170 111 H240" class="l"/><path d="M170 167 H240" class="l"/><path d="M170 223 H240" class="l"/>
+      <path d="M500 139 H560" class="l"/><path d="M730 82 H770" class="l"/><path d="M730 196 H770" class="l"/>
+      <path d="M370 246 V270" class="l"/><path d="M645 246 V270" class="l"/>
+    </svg>
+  </div>
+
+  <h2>What it does today</h2>
+  <div class="legend">
+    <span class="chip c-ok">on production</span>
+    <span class="chip c-warn">built, not released</span>
+    <span class="chip c-bad">built, not exercised</span>
+    <span class="chip c-mute">proposed or blocked</span>
+  </div>
+  <div class="map">
+    <div class="cap"><header><h3>Chat that answers from memory</h3><span class="chip c-ok">on production</span></header>
+      <ul><li>Recalls with the person's words first, then reads files or the web on a miss</li><li>Every memory carries where it came from and how far to trust it</li><li>Supersedes a fact the moment a result proves it wrong</li><li>Fast path for greetings; thinking-time proposals between conversations (BL-71e)</li></ul><span class="since">0.1 → BL-74, 2026-10-23</span></div>
+    <div class="cap"><header><h3>Reminders, watches, goals</h3><span class="chip c-ok">on production</span></header>
+      <ul><li>Jobs carry an owner, a completion condition and a delivery policy (BL-02)</li><li>A watch keeps its last reading and reports a change once, with old and new (BL-44, BL-62d)</li><li>Goals own their jobs; fan-out is budgeted (BL-05)</li><li>Quiet hours; delivery receipts per channel (BL-07, BL-13)</li></ul><span class="since">0.5 → BL-69</span></div>
+    <div class="cap"><header><h3>Approvals a person gives</h3><span class="chip c-ok">on production</span></header>
+      <ul><li>Writes, commands, sends and captured preferences are staged as cards; the model cannot approve (BL-03)</li><li>One durable store shared by web and Telegram (BL-18)</li><li>Automatic approval with a Clef reviewer is built and kept <b>off</b> until shadow data says otherwise (BL-72)</li></ul><span class="since">0.6.0, 2026-10-15</span></div>
+    <div class="cap"><header><h3>Injection and taint defence</h3><span class="chip c-ok">on production</span></header>
+      <ul><li>Tool, web and inbox text is fenced; planted instructions followed 0 of 8 after BL-01 (4 of 9 before)</li><li>Taint follows outside text into anything that lasts (BL-17)</li><li>Network guard pinned per connection; no reach into this machine or cloud metadata (BL-16c)</li><li>Startup warns about models that failed the fence (BL-23)</li></ul><span class="since">0.6.0</span></div>
+    <div class="cap"><header><h3>Background work</h3><span class="chip c-ok">on production</span></header>
+      <ul><li>"Want me to work on this?" hands a research-and-write request to the background (BL-71b)</li><li>Work view, Continue, reopenable conversations (BL-71d)</li><li>A run cut off by a restart resumes in the same folder (BL-10); out-of-room runs queue a resume</li><li>A cheap model's job is checked and escalated to a stronger one when it stalls or hedges (BL-73)</li></ul><span class="since">BL-71, 2026-10-22</span></div>
+    <div class="cap"><header><h3>Files and granted folders</h3><span class="chip c-ok">on production</span></header>
+      <ul><li>Files area: open, download as Word, PDF or web page, share, add (BL-70)</li><li>Read the owner's files from any chat or job (BL-71c)</li><li>Access presets: locked-down, assistant, developer; a PATH folder is never written into (BL-27)</li></ul><span class="since">BL-70, 2026-10-22</span></div>
+    <div class="cap"><header><h3>Browser and vault</h3><span class="chip c-warn">reviewed; fixes unreleased</span></header>
+      <ul><li>Chromium through Playwright: open, re-read, click, type, choose, scroll, screenshot, with controls numbered for the model (BL-64)</li><li>Vault holds logins and keys the agent uses without seeing them (BL-63)</li><li>Reviewed 2026-10-25 at 50 of 100. Since then, on the branch: a redirect can no longer reach MWA's own API or a private address; one tab per conversation; a browsing guide in the prompt; and a job may carry the person's allowance to sign in and click a named control unattended.</li></ul><span class="since">BL-63/64 → 2026-10-25</span></div>
+    <div class="cap"><header><h3>Connectors</h3><span class="chip c-ok">on production</span></header>
+      <ul><li>Telegram with approve and cancel buttons; allowed chat ids only</li><li>Gmail and Outlook: read and draft, never send; bring-your-own sign-in (BL-62)</li><li>Calendar read; "connect an account by asking" in chat</li><li>Any MCP server registers as tools, labelled third-party</li></ul><span class="since">0.1 → BL-62</span></div>
+    <div class="cap"><header><h3>Who it is talking to</h3><span class="chip c-ok">on production</span></header>
+      <ul><li>Per-person profile, hard-isolated; tone and format only, never facts or gates</li><li>A contradicted identity blocks sensitive actions until a step-up code is verified out of band</li><li>Scheduled runs run as the job's owner</li></ul><span class="since">0.5.0, 2026-07-02</span></div>
+    <div class="cap"><header><h3>Models and routing</h3><span class="chip c-ok">on production</span></header>
+      <ul><li>Default chat model GPT-6.1 Sol through OpenRouter, US hosts only; data stays where told (BL-58, BL-61)</li><li>Luna as the cheap tier for background work; Clef (Cloudflare 27B) as a classifier where calibrated</li><li>Ollama and local models get the whole prompt (BL-20)</li><li>Real per-call cost recorded</li></ul><span class="since">BL-58 → BL-61, 2026-10-19</span></div>
+    <div class="cap"><header><h3>Deployment</h3><span class="chip c-ok">on production</span></header>
+      <ul><li>One Docker image, guided first-run setup, password gate, health check, graceful shutdown</li><li>NAS guide (Synology, Tailscale-only); Railway dogfood instance</li><li>Tauri desktop tray app (0.3.3); SQLite, PGlite or Postgres memory backends</li></ul><span class="since">0.2 → 0.6</span></div>
+    <div class="cap"><header><h3>Self-build and measurement</h3><span class="chip c-ok">on production</span></header>
+      <ul><li>MWA works on its own repo with a person at the gates (BL-14a); sandboxed check runner (BL-14c)</li><li>An isolated reviewer attacks every diff; a Clef second opinion on commits (BL-24)</li><li>Promise assessment, delivery harness, injection harness, experience pilot</li></ul><span class="since">BL-14, 2026-10-15</span></div>
+    <div class="cap"><header><h3>Usability backend slice</h3><span class="chip c-ok">on production</span></header>
+      <ul><li>Agent is told the granted folders; search covers them (F07)</li><li>Schedule controls: cancel with undo, pause, resume, update (F04); duplicate reminders refused</li><li>Cards match what happened; granted-folder writes need approval (F02, F03)</li><li>Live runs: stop, steer, re-attach after a reload (F05, F06, F08, F09)</li><li>One data folder for all runtime files (F16)</li></ul><span class="since">65a8a31, 2026-10-24</span></div>
+    <div class="cap"><header><h3>Answering better from memory</h3><span class="chip c-ok">on production</span></header>
+      <ul><li>A question is answered directly, however long; only work with steps is planned (f95bbd6)</li><li>Sampled answers: draft three times and merge; off by default, measured neutral (cba50b1, ac9edfd)</li><li>Pilot fixes: file search tool, focused recall, abstract cap, exact-numbers and verdict rules (1320dfe)</li></ul><span class="since">0.7.0, 2026-10-25</span></div>
+    <div class="cap"><header><h3>Proposed or blocked</h3><span class="chip c-mute">proposed or blocked</span></header>
+      <ul><li>BL-25 effectiveness scorecard on every merge (ready)</li><li>BL-22 pinned memories in AWM (blocked upstream)</li><li>BL-37 flag runs that acted on planted instructions; BL-42 jobs on AWM's coordination module (proposed)</li><li>BL-14b: unattended self-build needs Robert's taps</li></ul><span class="since">docs/build-queue.md</span></div>
+  </div>
+
+  <h2>What has been measured</h2>
+  <p>MWA's numbers come from harnesses that run the real thing, scored by fixed rubrics or an independent judge. The ones that decide what to build next:</p>
+
+  <h3>Experience pilot: can a cheap model answer like a team member?</h3>
+  <p>Eighteen questions about MWA's own record (lookups, synthesis, current state, rationale, apply, judgment), three repeats each, judged by Gemini 3.8 Flash. Luna is the cheap model, Sol the strong one.</p>
+  <div class="tbl"><table>
+    <tr><th>Arm</th><th class="n">Score</th><th>Bar</th><th class="n">$ / answer</th><th>Reading</th></tr>
+    <tr><td>Luna, nothing</td><td class="n">3 / 54</td><td><span class="meter"><i style="width:6%"></i></span></td><td class="n">0.011</td><td>the model knows nothing of the project</td></tr>
+    <tr><td>Luna + files + search tool</td><td class="n">16 / 54</td><td><span class="meter"><i style="width:30%"></i></span></td><td class="n">0.010</td><td>wanders the folder: 132 searches, 141 reads</td></tr>
+    <tr><td>Luna + studied memory (planning on)</td><td class="n">31–35 / 54</td><td><span class="meter"><i style="width:63%"></i></span></td><td class="n">0.015</td><td>matches Sol on rationale and current state</td></tr>
+    <tr class="hi"><td>Luna + studied memory, planning off</td><td class="n">39 / 54</td><td><span class="meter"><i style="width:72%"></i></span></td><td class="n">0.0075</td><td>the planner was splitting every long question</td></tr>
+    <tr><td>Sol + files + search tool</td><td class="n">46 / 54</td><td><span class="meter"><i style="width:85%"></i></span></td><td class="n">0.658</td><td>the ceiling: reads until it has the figures</td></tr>
+  </table></div>
+  <p>Three questions stay at zero on every memory arm because the figure they need was never stored. Two figure-indexing passes stored them but crowded the decision memories out of the ten prime slots (30 of 54). The next attempt should put values inside the fact memories, not beside them.</p>
+
+  <h3>Other bars</h3>
+  <div class="tbl"><table>
+    <tr><th>Harness</th><th class="n">Result</th><th>What it shows</th></tr>
+    <tr><td>Planted instructions in tool output</td><td class="n">0 of 8 followed</td><td>was 4 of 9 before fencing; gpt-5.4-mini holds the fence, cheaper models follow 2 to 4 of 8</td></tr>
+    <tr><td>Promise assessment, fair rerun (BL-53)</td><td class="n">31 / 50 vs 22 / 50</td><td>MWA against a plain model with cron, two personas, 14 simulated days; the first pass had tied 21 to 21</td></tr>
+    <tr><td>Scheduled delivery</td><td class="n">6 of 6</td><td>on the 0.6.0 image, with receipts per channel</td></tr>
+    <tr><td>Usability review (9 of 11 use cases walked)</td><td class="n">30 → 71 / 100</td><td>baseline against a prototype; target 85; backend half built, interface half pending</td></tr>
+    <tr><td>Clef as a judge of runs and replies</td><td class="n">69 of 221 false alarms</td><td>rejected for claim judging; kept for intent (42 of 43 caught, 0 of 86 false) and the watch gate</td></tr>
+  </table></div>
+
+  <h2>How it got here</h2>
+  <div class="bars" aria-label="Commits per month">
+    <div class="bar"><i style="height:22%"></i><span>Jun · 46</span></div>
+    <div class="bar"><i style="height:4.3%"></i><span>Jul · 9</span></div>
+    <div class="bar"><i style="height:2.9%"></i><span>Aug · 6</span></div>
+    <div class="bar zero"><i></i><span>Sep · 0</span></div>
+    <div class="bar"><i style="height:100%"></i><span>Oct · 209</span></div>
+  </div>
+  <p style="font-size:.85rem;color:var(--mute);margin-top:6px">Commits per month. October is the self-referential build loop: one queue item at a time, each through the suite, an audit and an isolated reviewer.</p>
+
+  <div class="tl">
+    <div class="tl-row"><div class="tl-when">2026-06-13</div><div class="tl-card"><b>0.1.0 · the conductor</b><p>A cheap model orchestrating coding tasks on AWM. The A/B/C benchmark: cheap plus memory matched a frontier model at a third of the cost. AWM vendored as a submodule; Telegram, scheduler, mailbox.</p></div></div>
+    <div class="tl-row"><div class="tl-when">2026-06-17</div><div class="tl-card"><b>0.2.0 – 0.3.3 · a product</b><p>Web front door, Docker and Synology delivery, first npm release, production hardening, modular tool registry and MCP bridge, domain packs, model picker and guided first run, the Tauri desktop app.</p></div></div>
+    <div class="tl-row"><div class="tl-when">2026-06-29</div><div class="tl-card"><b>0.4.0 · the memory substrate</b><p>Every memory and action carries provenance, trust, namespace and an action record. Glass Box transparency, injection safety, governance with explain, approve and undo, calibrated confidence, topic scoping, earned routines.</p></div></div>
+    <div class="tl-row"><div class="tl-when">2026-07-02</div><div class="tl-card"><b>0.5.0 · a person on the other end</b><p>Per-person profile and dossier, step-up verification when identity is in doubt, the scheduler's change-detection gate, pluggable memory backends, Tailscale, CSRF hardening. Then a quiet summer.</p></div></div>
+    <div class="tl-row"><div class="tl-when">2026-10-15</div><div class="tl-card live"><b>0.6.0 · approval only a person can give</b><p>The build loop's first release: fenced tool output, taint lineage, job contracts and outcomes, the approvals panel and Telegram buttons, one approval store, goals and fan-out budgets, quiet hours, inbox watcher in Docker, self-build with a person at the gates.</p></div></div>
+    <div class="tl-row"><div class="tl-when">2026-10-15 → 10-23</div><div class="tl-card live"><b>After 0.6.0 · what the harnesses found</b><p>Detectors armed by a person, delivery receipts, crash recovery, sandboxed checks, network pinning, recall like Claude Code, the promise assessment and its fair rerun, Clef calibrations, the lesson gate, reminders and watches that hold, open items, quiet statuses, Sol as default on US hosts, the vault and the browser, connect-by-asking, Files, background work with goals and a Work view, memory that answers. Deployed 2026-10-23.</p></div></div>
+    <div class="tl-row"><div class="tl-when">2026-10-25</div><div class="tl-card live"><b>0.7.0 · released</b><p>The ten days since 0.6.0 as one release: the assessments and pilots, background work, memory that answers, the browser and vault, Files, Sol by default, the usability backend slice and the planner that plans work rather than questions. Merged, tagged and deployed to the Railway instance the same day.</p></div></div>
+  </div>
+
+  <h3>The six commits that closed the release, and three since</h3>
+  <div class="tbl"><table>
+    <tr><th>Commit</th><th>Date</th><th>What it adds</th></tr>
+    <tr><td class="mono">1320dfe</td><td class="mono">10-23</td><td>Experience pilot: file search tool, focused task-start recall, abstract cap, primed sources, exact-numbers and verdict rules</td></tr>
+    <tr><td class="mono">ecee927</td><td class="mono">10-24</td><td>Vendor AWM v0.20.1: consolidation keeps distinct facts, supersede inherits confidence, embedding model stamped</td></tr>
+    <tr><td class="mono">cba50b1</td><td class="mono">10-24</td><td>Sampled answers (<span class="mono">MWA_ANSWER_SAMPLES</span>, off by default)</td></tr>
+    <tr><td class="mono">65a8a31</td><td class="mono">10-24</td><td>Usability backend slice: granted folders, schedule controls, truthful cards, live runs, one data folder</td></tr>
+    <tr><td class="mono">ac9edfd</td><td class="mono">10-24</td><td>Sampling gate ignores a run's own memory writes</td></tr>
+    <tr><td class="mono">f95bbd6</td><td class="mono">10-25</td><td>Plan work, not questions: <span class="mono">wantsPlan</span> replaces the length-only trigger</td></tr>
+    <tr><td class="mono">4dc1842</td><td class="mono">10-25</td><td>Browser: redirect guard at three layers, one tab per conversation, dropdowns, scrolling, re-read (unreleased)</td></tr>
+    <tr><td class="mono">1685956</td><td class="mono">10-25</td><td>Browser: a browsing guide in the run prompt (unreleased)</td></tr>
+    <tr><td class="mono">3cce8f1</td><td class="mono">10-25</td><td>Browser in the back end: a job carries the person's allowance for unattended sign-in and named clicks (unreleased)</td></tr>
+  </table></div>
+
+  <h2>Gaps and open decisions</h2>
+  <div class="gaps">
+    <div class="gap warn"><b>Release the interface as 0.8.0</b><p>The task-centred workspace from the usability review is built and scored 85 of 100 on the review's own rubric, replayed on the real runtime, with zero accessibility violations. It changes every screen, so it is a version of its own. Also on the branch: frames in the snapshot, the file check, and the model that can look at the page.</p><div class="who">decision · release</div></div>
+    <div class="gap mute"><b>Browser review: closed out</b><p>All sixteen findings have a fix on the branch: the redirect guard, one tab per conversation, forms surviving the go-ahead turn, dropdowns, scrolling, honest cut notes, plain labels, the background phrase, the browsing guide, the unattended allowance, frames and cookie walls, the file check, Stop and steer in the app, and a model that can look at the page a few times a run. Measured: the NPR front page answered 2 of 2, a layout question answered from the picture.</p><div class="who">done · browser</div></div>
+    <div class="gap mute"><b>Usability: built to 85, with a tail</b><p>The interface slice landed at 85.0 on the real runtime (baseline 30, prototype 71). Left for later: a task side panel on wide screens, file versions for revisions, editing a preference from its card, step-level progress for background jobs, screen-reader and zoom tests.</p><div class="who">open · interface tail</div></div>
+    <div class="gap bad"><b>Judgment questions still miss the figures</b><p>Three of eighteen pilot questions fail on every memory arm because the deciding number was never stored. Two figure passes stored it and lost elsewhere. The fix has to enrich the fact memories, not add memories.</p><div class="who">open · study coverage</div></div>
+    <div class="gap mute"><b>Released: 0.7.0</b><p>Bumped, written up in the changelog, tagged, merged and deployed on 2026-10-25. The build queue's &quot;unmerged&quot; notes for BL-70 to BL-74 were stale and are corrected.</p><div class="who">done · release</div></div>
+    <div class="gap warn"><b>Automatic approvals stay off</b><p>BL-72's Clef reviewer is built. Live approval waits for shadow data from real runs, which nobody has reviewed yet; BL-36's claim check is in shadow for the same reason.</p><div class="who">waiting · shadow review</div></div>
+    <div class="gap mute"><b>Every five minutes became once: fixed</b><p>The interface replay saw six one-off jobs from one "every 5 minutes" request. The schedule step now holds a one-off once when the person's words give an interval, and books it as a repeat when the model takes the hint.</p><div class="who">done · scheduler</div></div>
+    <div class="gap warn"><b>Background jobs: what the interface replay surfaced</b><p>No live step events for background runs; a run that hits its budget resumes and then posts a "stuck" result and check-script cards; the server's open-work note pulls unrelated chats into an open goal; exploratory reads are staged as decisions; a reworded or near-time duplicate job slips past the twin check.</p><div class="who">open · background work</div></div>
+    <div class="gap warn"><b>Cost reporting overstates</b><p><span class="mono">costUsd</span> on a run counts more than the provider charged. Noted during the pilot, not yet traced.</p><div class="who">open · observability</div></div>
+    <div class="gap mute"><b>Queue items waiting on a decision</b><p>BL-25 scorecard on every merge (ready); BL-22 pinned memories (blocked upstream); BL-37 planted-instruction flagging and BL-42 coordination-module jobs (proposed); BL-14b unattended self-build (needs taps).</p><div class="who">decision · queue</div></div>
+    <div class="gap mute"><b>Thinking cadence and the rulebook test</b><p>How often thinking time runs and its cap await a decision; the rulebook test needs Robert's own files; the curiosity loop and "think hard once" are scoped, not built.</p><div class="who">decision · scope</div></div>
+  </div>
+
+  <h3>What works and should be kept</h3>
+  <p>The review's positive finding, and the pilot's: approvals a person gives are understood and trusted; the Files area and granted-folder reads work once the agent knows about them; memory of a stated preference carries across conversations; a cheap model on studied memory answers decisions and reasons like a team member at a cent an answer; the injection fence holds on the models MWA recommends.</p>
+
+  <div class="note" style="margin-top:28px"><b>Where the detail lives.</b> The queue and every decision: <span class="mono">docs/build-queue.md</span>. Releases: <span class="mono">CHANGELOG.md</span>. Measurements: <span class="mono">docs/experience-pilot-2026-10-23.md</span>, <span class="mono">docs/assessment-2026-10-19.md</span>, <span class="mono">docs/clef-calibration-2026-10-18.md</span>, <span class="mono">docs/usability-backend-slice-2026-10-24.md</span>. Every setting: <span class="mono">docs/configuration.md</span>. The HTTP API: <span class="mono">docs/api-reference.md</span>.</div>
+
+  <p class="foot">Compiled 2026-10-25 from the repository at v0.7.0 (82b6edb), its changelog and build queue, the pilot and usability reports, and the session record. Production = origin/master = v0.7.0, Railway deployment 9649d7fc. Counts are from git and the test runner on that head.</p>
+</div>

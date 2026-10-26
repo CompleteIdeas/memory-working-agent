@@ -1,0 +1,168 @@
+MWA INTERFACE SLICE: REPORT (2026-10-25)
+========================================
+
+What was built: the task-centred workspace from the usability review of 2026-10-24 (decisions D1–D6), in web/src of
+the bl72-approvals worktree (C:/Users/robert/AppData/Local/Temp/mwa-clean), on the real runtime: a local `mwa serve` on
+127.0.0.1:7867, GPT-6 Luna (openrouter) for chat and background, the review's granted folder, no simulated backend.
+Nothing is committed; everything is left in the worktree.
+
+Verdict: the rubric comes to 85.0 / 100, which meets the 85 target exactly. That score is borderline: two
+dimensions rated 4 rest mostly on evidence from chat runs. Use cases: 8 of 9 pass on the runtime. U04 (watch a file)
+fails three times because of model/backend behaviour; the interface side of it works.
+
+
+1. RUBRIC (review section 10, same weights; total = sum of weight x rating / 4)
+-------------------------------------------------------------------------------
+Dimension                                   Weight  Baseline  Prototype  Now   Evidence (real runtime)
+Task framing and context                    10%     2         3          4     "I can read: granted · 4 files" above every input, with details and a Settings link. U01 answered from the granted folder with 2 pointer actions and 0 clicks at 1440 and at 390. The offer card says what each choice does and that nothing has started. Titles come from the person's words.
+Contextual controls, information, effort    15%     1         3          3     Cards sit inside their task, in plain words: title, file, folder, expiry clock, with the exact action only on demand. One card covers the same action however it was staged (U05: "asked 2 ways, one decision"). Schedule controls appear in the task and in Tasks; there is a Needs-you count. Pointer counts: U01 2 (was 3, failed), U02 3 to hand off (was 8), U05 4–6 (7), U07 5 (5). Why not 4: backend noise still reaches the owner. Check-script and listing cards still need a decision, and one request still makes several jobs (U03: 3; U04: 6). Cleaning up the jobs now takes one click.
+Progress, waiting and continuity            15%     1         2          4     Stage line per step with elapsed time ("Step 2: Reading a file · granted (your folder) · 12s"). A reload during a run re-attached 3 out of 3 times (slice a, U08 at 1440 and 390) and finished without a second refresh. The return digest groups Needs you, Finished, Problem and Coming up. Status comes from one model, so the rail, the task, the phone strip and the digest agree. Background work shows "handed over 5:29 PM · 12m ago" and the goal's own "where it stands" note; its result lands in the task with a toast. Caveat: background runs have no step-level stage (no backend events).
+Steering, decisions and user control        15%     0         3          4     Stop goes from requested to effective: "Stopped after step 3. Nothing was written." Continue picks the task up again. "Add a note" reached the run (U06: an informal draft with the date, shown as "you added while it ran"). A second message during a run opens a chooser: add to the task, send separately, or stop and send. Pause, resume, change time, cancel and undo all work at both widths. Approve and Don't settle any duplicates too. Don't works by keyboard: 4 Shift+Tab then Enter.
+Recovery and preservation of useful work    10%     1         3          3     Expired: "Expired at … Nothing was changed. Ask again". Declined: "You said don't. Nothing was changed." Cancel has a ten-minute Undo. A run the server lost shows failed, with the reason and Try again. Stopped shows "Continue from where it stopped". Why not 4: a revision overwrites the file (no file versions), and Ask again re-asks the model rather than re-staging the card.
+Result review, refinement, outcome clarity  15%     2         3          3     Revise is nested as version 2 under the task, verified at both widths: a 25-word note that keeps 15 Nov. Markdown tables render in the viewer (U02, U09). "What I did · n steps" is kept after the reply. Status gives the reason ("could not finish (got stuck)"). Why not 4: no file versions or diff, and results depend on the model (U01-m390 first run gave the wrong date).
+Visual hierarchy, coherence and identity    10%     2         3          3     Same Instrument identity. Rail plus conversation, and one chip language for status everywhere. Memory is about 2,450 px at 1440 (baseline 8,617) and about 3,300 px at 390 (baseline 12,362). Why not 4: there is no task side panel, so wide screens have empty margins. Tasks and Settings are long pages (Connections is embedded whole).
+Accessibility and device suitability        10%     1         3          3     axe (WCAG 2 A/AA, 2.1 A/AA, 2.2 AA tags) finds 0 violations on all 6 views plus the file viewer, at 1440 and 390, light and dark. No target under 24 px (buttons 32–36 px, 44 px on touch). No horizontal scroll at 390; this run found and fixed a real 468 px zoom-out. Phone bottom tab bar, keyboard decision path, live-region announcements. Kept at 3 on the review's own standard: no screen reader, zoom or real-device test.
+TOTAL                                                30.0      71.3       85.0
+
+
+2. USE CASES (U01–U09, real runtime, recorder.cjs counting; pointer = clicks + fields + 2 x selects)
+------------------------------------------------------------------------------------------------
+Columns: viewport, outcome, pointer (click/field/key/scroll/context), first stage / settled time per message.
+Baseline figures are from the review (d1440).
+
+U01 Ask a quick question about my files                    baseline: FAILED, 3 pointer (17.4 s / 15.3 s, file not found)
+  d1440  PASS  2 (0/2/2/0/0)   5.5/18.9 s; 3.4/18.9 s. $4,200, 1 November 2026; facilities 92.75% and admin 98.3%, from the granted folder.
+  m390   PASS  2 (0/2/2/0/0)   -/9.7 s; 5.0/31.8 s (second run). The first m390 run gave "by October", a model error under concurrent load.
+U02 Hand a longer job to the background, come back to it   baseline: done, 8 pointer, result at 770 s, Work showed the wrong status
+  d1440  PASS (with backend noise)  3 pointer to hand off; 5 (4/1/1/1/1) including opening the file and Tasks.
+         Attempt 1 FAILED: the run hit its budget, a resume got stuck, no file was written.
+         Attempt 2: board-briefing.md was correct and its table rendered in the viewer. The result landed in the task 1,352 s after hand-off; other tests ran in parallel.
+         The backend's resume then added a "stuck" result and 2 check-script cards. The task shows this honestly ("ended with a problem", 2 decisions waiting).
+  m390   hand-off only (--short): 3 (2/1/1/0/1). The phone strip showed "WORKING · Research and write… · working in the background · View".
+U03 Set a reminder and a recurring job; change, pause, cancel, undo   baseline: cancel FAILED, 9 pointer
+  d1440  PASS  12 (9/3/2/2/1)   26.7 s (reminder), 24.0 s (weekday job). Change time to 07:30, Pause, Resume, Cancel, Undo cancel and Cancel are all clicks with instant effect, confirmed in /api/schedule. Core path (set both, change time, cancel): 6 pointer.
+  m390   PASS  12 (9/3/2/0/1)   The weekday job was correctly refused as a twin of the one from the 1440 run; the time change was tested on the reminder instead.
+  Backend: one request made 3 weekday jobs (flagged as duplicates in the card), and "9am" was booked at 8:59.
+U04 Watch a file and report a change                        baseline: noticed after 8.5 min, hedged; Stop failed
+  d1440  FAIL (model/backend), 3 attempts, 4 pointer each (including the 📎 file).
+         Attempts 1 and 2: "every 5 minutes" was scheduled as a one-off. Attempt 3 made six one-offs a minute apart.
+         The reply claimed "every 5 minutes"; the job card showed the real one-off times.
+         Attempt 3: 7,810 was reported 430 s (7.2 min) after the edit, but hedged ("couldn't find the previous value").
+         Interface part verified: Stop watching from the card, "Keep this one, cancel the other" on the real duplicates, 0 watches left.
+U05 Approve, decline, expire, duplicates                     baseline: FAILED, 7 pointer, 4 cards for 1 preference
+  d1440  PASS  6 (3/3/3/0/1). Preference: 1 card per rule, approved.
+         Copy: staged two ways (write_file plus Copy-Item); after the placement fix it shows as one decision.
+         Don't: file not created (checked on disk). Rename card in plain words; expiry clock visible; Needs you = 2; no Telegram text.
+  m390   PASS  4 (1/3/8/0/1). Copy shown as "asked 2 ways, one decision"; Don't by keyboard (4 Shift+Tab + Enter) withdrew both. File not created. Rename card: "Rename meeting-notes-oct.txt to meeting-notes-october.txt".
+  Expired cards (the first U05 conversation, left alone): "Decision · expired · Copy supplier-list.txt to supplier-list-copy.txt … Expired at 4:54 PM. Nothing was changed. Ask again". Screenshots: evidence/replay/U05-expired-d1440.jpg and U05-expired-m390.jpg (final build).
+U06 Correct mid-task, then revise                            baseline: FAILED, 6 pointer
+  d1440  PASS (attempt 3)  6 (3/3/2/0/0). The correction went through the chooser into the running task. The draft is informal and states 15 November 2026.
+         Revise: version 2 nested under the task in 42.6 s; the file is now 25 words with the date.
+         Attempt 2 was hijacked by an open background goal (the server's work note), and wrote the board briefing instead.
+  m390   PASS  6 (3/3/2/0/0). Revision 23.5 s, nested, keeps the date.
+U07 Remember a fact and a preference across conversations   baseline: recall worked, 5 stray cards, Memory 8,600 px
+  d1440  PASS  5 (3/2/2/0/1). 1 card (Save a standing preference), approved. New conversation: "You're Robin, the club treasurer… £ sign and no pence" in 11.5 s. Memory shows Robin's notes under About you.
+  m390   PASS  5 (3/2/2/0/1). First message took 193 s under load; recall in 18.7 s; Memory 3,387 px.
+U08 Come back after time away; refresh during a run          baseline: needed a second manual refresh, 4 pointer
+  d1440  PASS  5 (3/2/2/1/2). Digest after a simulated 3 h away. Search "briefing" in Tasks found the task. Reload 3 s into a run: still working with its stage, finished 30.0 s later with no second refresh.
+  m390   PASS  5 (3/2/2/1/2). Same, 57.7 s.
+U09 Add files to a chat; open produced files                 baseline: 4 pointer, answer hidden under the dock on a phone
+  d1440  PASS  6 (4/2/1/0/1): 📎 + choose 2 files, ask, Files, open, close. Correct in 39.3 s. The viewer renders the Markdown table; axe 0 in the viewer.
+  m390   PASS  6 (4/2/1/0/1). Correct in 66.8 s; the answer is visible and not covered (top 253 px of 844).
+
+Slice checks (evidence/logs and evidence/slices)
+  A-live-d1440: stage labels, note into the run, reload re-attach, busy chooser.
+  Stop-d1440: Stop requested at step 2, "Stopped after step 3. Nothing was written.", status "stopped", then Continue (done).
+  Settings-d1440: quiet hours set to 21:00-07:00 and turned off (confirmed by /api/quiet); a saved login forgotten (/api/vault empty). Activity log shows the owner's words, with no internal prompts.
+  Twins-d1440: duplicate-job control on real duplicates.
+
+
+3. AXE (axe-core 4.10.2, tags wcag2a/aa, wcag21a/aa, wcag22aa)
+-------------------------------------------------------------
+Final build, after the last change: Chat, Tasks, Needs you, Files, Memory, Settings (activity log open) and the file
+viewer, at 1440 and 390, light and dark: 0 violations, 0 targets under 24 px, no horizontal scroll (scrollWidth and
+innerWidth both checked). Every use-case run also ran axe at its end state: 0 violations in all 17.
+Baseline for comparison: 13 nodes on Chat, 141 on Memory and 97 on Log at 1440, and 220 on Memory at 390.
+Logs: evidence/logs/sweep.jsonl, sweep-dark.jsonl (final), sweep-pre-final.jsonl.
+
+
+4. FILES CHANGED (worktree, uncommitted)
+---------------------------------------
+web/src (the interface)
+  new  web/src/tasks.ts               task model: one status per request; cards placed and de-duplicated; plain wording; revisions; Telegram and path filters
+  new  web/src/store.tsx              one store: conversations, cards, schedule, goals, live runs (stream or re-attach), offers, notes
+  new  web/src/components/TaskBlock.tsx   a task in the conversation
+  new  web/src/components/TaskParts.tsx   status chip, live status (Stop, Add a note), decision card, schedule card (Pause/Resume/Change time/Cancel/Undo, duplicates)
+  new  web/src/components/Tasks.tsx       Tasks rail (desktop) and Tasks page (search, status filters, schedule, background work, Needs you)
+  new  web/src/components/Settings.tsx    Settings: access/model/connections (existing Connections), quiet hours, saved logins, warm-up, activity log
+  mod  web/src/App.tsx                    shell: Chat · Tasks · Files · Memory · Settings, Needs you, rail, phone tab bar, active-task strip, toasts, announcer
+  mod  web/src/api.ts                     live/attach/stop/steer, schedule rows and controls, sources, vault, quiet; stage parsing; tool labels
+  mod  web/src/components/Chat.tsx        conversation built from tasks; "I can read"; redirect chooser; digest; conversation finder
+  mod  web/src/components/Memory.tsx      About you, standing preferences, learned notes grouped and collapsed, newest/older marks, specialist detail behind one disclosure
+  mod  web/src/components/Log.tsx         activity log in the owner's words
+  mod  web/src/components/Markdown.tsx    tables
+  mod  web/src/components/Files.tsx, Connections.tsx, OnboardWizard.tsx, Onboarding.tsx, SetupCards.tsx   contrast tokens, labels, target sizes
+  mod  web/src/index.css                  D6 tokens (text #57554f, signal #b3380b; #ec4a18 kept as the accent for bars), .btn/.chip/.kv/tables
+  del  web/src/components/Approvals.tsx (the shared dock), web/src/components/Work.tsx (replaced by Tasks)
+Server (small additions, tested; I judged them unavoidable)
+  new  src/settings-api.ts              vault list/forget (names only) and quiet hours get/set
+  mod  src/serve.ts                     +3 routes: GET /api/vault, POST /api/vault/forget, GET/POST /api/quiet (same-origin)
+  mod  src/tools/approval.ts            createdAt on pending and recent cards (places a card in the task that raised it)
+  mod  src/schedule-api.ts              session on schedule rows (shows a job inside the task that set it up)
+Tests and docs
+  new  tests/settings-api.test.ts       4 tests (vault never leaks a value; quiet hours; fixed deployment; schedule session)
+  new  tests/web-tasks.test.ts          15 tests for the task model
+  mod  docs/api-reference.md            new routes and fields
+Checks: root `tsc --noEmit` clean; web `tsc -p web/tsconfig.json` clean; `npm run build:ui` clean.
+Full vitest suite: 115 files, 1,251 tests pass. tests/browser.test.ts ("in a real browser") failed once while a
+Playwright walk ran in parallel, and passes alone (12 of 12). I did not touch src/tools/browser.ts or src/agent.ts.
+Untouched pre-existing worktree state: deleted files under gauntlet-runs/ and results/, and a modified
+vendor/agent-working-memory, were already there before this work.
+
+
+5. SPEND
+--------
+About $0.42 of model spend: run log 62 runs, $0.4167; provider-reported tokens.jsonl, 798 calls, $0.369.
+Budget was about $6.
+
+
+6. NOT DONE, AND WHY
+--------------------
+- Task side panel (the prototype's third zone) and a full-screen task sheet on phones. Instead, picking a task opens its conversation and scrolls to it. This saved scope; the cost is empty margins at 1440 (rubric 7 at 3).
+- File versions (v1/v2/v3 with selection) for revised documents. No backend keeps file versions; a revision overwrites the file. The task shows each version's reply.
+- "Edit wording" on a preference card, and removing a preference directly. Remove sends a chat request, which stages the policy_forget card; there is no direct route.
+- "Ask again" on an expired card re-asks the model; there is no re-stage API.
+- Step-level progress for background jobs. The scheduler emits no live events, so the task shows hand-off time and the goal's note.
+- Screen reader, 200–400% zoom and real-device tests. Not run (same caveat as the review).
+- 1280, 1920 and 360 viewports were not re-walked; only 1440 and 390 as asked. Layout is fluid, but this is unverified.
+- U10 (connectors) and U11 (warm-start) were not walked. The code is unchanged; Connect lives in Settings and the warm-up is started from Settings.
+- U02 at 390 was checked to the hand-off only, so the phone did not wait 20 min for the result.
+
+
+7. BACKEND GAPS HIT (for the next backend slice)
+-----------------------------------------------
+1. The step detail is cut at 120 characters (agent.ts emit('step')), so a long granted-folder path loses its file name. The interface names the folder ("granted (your folder)") but cannot name the file.
+2. Background and scheduled runs emit no live stage events (no liveRuns entry), so their progress is coarse.
+3. After a background run hits its budget, the resume chain posts a second result ("stuck", "can't confirm the file") and stages check-script cards. Seen twice in U02. The owner then sees a correct file plus a "problem".
+4. One request can still make several jobs. The B3 twin gate misses differently worded instructions (U03: 3 weekday jobs) and one-offs a minute apart (U04: 6). "Every 5 minutes" was scheduled as a one-off in 3 of 3 U04 attempts, while the reply said "every 5 minutes"; the claim check did not catch it.
+5. The work note (serve.ts workNote) pulls unrelated chats into an open background goal. In U06 attempt 2 and U09 at 1440, the run wrote the board briefing instead of answering.
+6. agent.ts:2549 hard-codes "the approvals panel in the app, or the button in Telegram". The interface filters it out when Telegram is not connected (F20); it should be fixed at the source.
+7. Exploratory reads and check scripts are still staged as owner decisions (F19, backend part): listing a folder with PowerShell, and python "does the file exist" checks.
+8. `revise: <turnId>` targeting is not built. The Revise box sends a normal message that names the task and quotes the answer, which worked in all runs.
+9. Answering an offer ("Work on it") is not recorded on the offer turn. The interface links the offer to its goal by words and time, so another device shows it as handed over.
+10. Ended cards in /api/approvals `recent` carry `at` but not `expiresAt`; the interface shows the expiry from `at`.
+11. Stop has no server Resume. "Continue from where it stopped" sends a message, which worked.
+12. Memory concepts carry "person unknown: …". The interface strips the prefix and files these under About you, but the people record still lists fields as "missing" while those notes exist.
+
+
+8. EVIDENCE
+-----------
+Folder: C:/Users/robert/AppData/Local/Temp/claude/C--Users-robert-Personal-Projects/52c4fea5-9723-4bcc-bc4c-6e7e574cf114/scratchpad/mwa-interface/
+  PLAN.md
+  scripts/           ilib.cjs, recorder.cjs (unchanged counting rules), u01–u09.cjs, s-a-live.cjs, s-stop.cjs,
+                     s-settings.cjs, s-twins.cjs, sweep.cjs, collect.cjs, start-server.sh, rebuild.sh
+  evidence/replay/   U01–U09 at d1440 and m390: numbered step screenshots plus full.jpg
+  evidence/slices/   A-live, Stop, Settings, Twins
+  evidence/sweep/    every view at d1440 and m390, light and dark, viewport and full page, plus the viewer
+  evidence/logs/     <use case>.jsonl and .result.json, summary.json, sweep*.jsonl, attempt files for U02/U04/U06
+  run/               the instance's data directory (server stopped; nothing listens on 7867)
