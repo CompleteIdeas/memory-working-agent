@@ -16,6 +16,10 @@ address it touches), `dispatch`, `sleep`, `escalate`, `verify`, `ask`, `steered`
 Concurrency is capped (`MWA_MAX_CONCURRENT`, default 4) — over the cap returns an
 `error` event ("at capacity"). One run per conversation: a message sent while one is going gets a `busy` event
 (`{runId, message, startedAt, elapsedMs, stopping, stage?}`) and no second run.
+`stay=1` runs a request in the chat that would otherwise be offered to the background; `resume=1` ("Continue from
+where it stopped") picks the conversation's last stopped run up from its own words, framed as a resume in the same
+folder, without the offer or the continuity classifier (the `topic` event carries `resumed: true`); with nothing
+stopped, `message` runs as a plain message.
 
 ### Live runs (usability review 2026-10-24)
 | Route | Method | Body / effect |

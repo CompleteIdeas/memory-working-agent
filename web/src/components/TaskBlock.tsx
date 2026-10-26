@@ -84,7 +84,8 @@ export function TaskBlock({ task, highlight }: { task: Task; highlight?: boolean
             <button className="linkbtn text-[13px]" aria-expanded={showSteps} onClick={() => setShowSteps(!showSteps)}>{showSteps ? 'Hide what I did' : `What I did · ${task.steps.length} step${task.steps.length === 1 ? '' : 's'}`}</button>
           )}
           {canRevise && !revising && <button className="btn small" onClick={() => setRevising(true)}>Revise</button>}
-          {task.status === 'stopped' && !task.offer && <button className="btn small" onClick={() => send(`Continue the task I stopped, from where you stopped: "${task.title.replace(/"/g, "'")}". Keep what is already done.`, { session: task.session })}>Continue from where it stopped</button>}
+          {/* 3b: the server resumes the stopped run from its own words (resume=1); these words are what the person sees */}
+          {task.status === 'stopped' && !task.offer && <button className="btn small" onClick={() => send(`Continue from where it stopped: "${task.title.replace(/"/g, "'")}". Keep what is already done.`, { session: task.session, resume: true })}>Continue from where it stopped</button>}
           {task.status === 'failed' && <button className="btn small" onClick={() => send(task.words.replace(/^⏰\s*/, ''), { session: task.session, stay: true })}>Try again</button>}
         </div>
       )}

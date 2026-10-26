@@ -68,6 +68,23 @@ export function handoffInstruction(message: string, goalShort: string, context?:
   ].join('\n');
 }
 
+/** "Continue from where it stopped" on a chat run the person stopped (pending list 2026-10-26, 3b; interface report
+ *  11). The run's folder is the conversation's, so its files are already there; what a plain "continue" message
+ *  lost was the task itself: the page could only send the task's short title, and the continuity classifier could
+ *  call that a fresh topic after an idle gap. This frames the stopped turn's own words, verbatim, the way the budget
+ *  resume frames a run that ran out of room (agent.ts), and the chat runs it as a continuation without asking the
+ *  classifier. Null when nothing in the conversation was stopped. */
+export function resumeInstruction(turns: { kind?: string; reason?: string; message: string; reply: string }[]): { instruction: string; stopped: { message: string; reply: string } } | null {
+  const stopped = [...turns].reverse().find((t) => (t.kind ?? 'chat') === 'chat' && t.reason === 'stopped');
+  if (!stopped) return null;
+  const instruction = [
+    `Continue this task from where it stopped. The person stopped the earlier attempt partway; its last word was: "${stopped.reply.replace(/\s+/g, ' ').trim().slice(0, 400)}".`,
+    'FIRST check what is already in the working folder (with list_files and read_file, not a shell command) and keep it; then do ONLY the remaining work and finish. Do not start over.',
+    '', 'THE TASK:', stopped.message.slice(0, 4000),
+  ].join('\n');
+  return { instruction, stopped: { message: stopped.message, reply: stopped.reply } };
+}
+
 /** BL-71d: "Continue" on a goal — a job due now that picks up from where the goal's record says it stands,
  *  in the folder of the conversation it came from (so its files are there), reporting back to that
  *  conversation. A record written after outside content makes the job start tainted: its words are data. */

@@ -508,8 +508,9 @@ export interface ChatHandlers {
 }
 
 /** Open the SSE chat stream for one message; returns the EventSource so it can be closed. */
-export function chatStream(message: string, session: string, h: ChatHandlers, opts: { stay?: boolean } = {}): EventSource {
-  return listen(new EventSource(`/api/chat?session=${encodeURIComponent(session)}&message=${encodeURIComponent(message)}${opts.stay ? '&stay=1' : ''}`), h);
+export function chatStream(message: string, session: string, h: ChatHandlers, opts: { stay?: boolean; resume?: boolean } = {}): EventSource {
+  // resume: pick the stopped run up from its own words (the server frames it); the message is what the person sees
+  return listen(new EventSource(`/api/chat?session=${encodeURIComponent(session)}&message=${encodeURIComponent(message)}${opts.stay ? '&stay=1' : ''}${opts.resume ? '&resume=1' : ''}`), h);
 }
 /** Re-attach to the run going in a conversation (F09): its events so far, then live, to the result. */
 export function attachStream(session: string, h: ChatHandlers): EventSource {

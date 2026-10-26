@@ -33,7 +33,7 @@ interface Store {
   allTasks: Task[];
   /** cards whose conversation is not one of these (Telegram, a scheduled run) */
   looseCards: PendingApproval[];
-  send: (text: string, opts?: { stay?: boolean; session?: string }) => 'sent' | 'busy';
+  send: (text: string, opts?: { stay?: boolean; session?: string; resume?: boolean }) => 'sent' | 'busy';
   busy: Busy | null; setBusy: (b: Busy | null) => void;
   stop: (session: string) => Promise<string>;
   steer: (session: string, text: string) => Promise<{ ok: boolean; message: string }>;
@@ -166,7 +166,7 @@ export function StoreProvider({ children, onActivity }: { children: ReactNode; o
 
   const isRunning = useCallback((s: string) => { const last = (turns[s] ?? []).slice(-1)[0]; return !!live[s] || local.some((l) => l.session === s && !l.result && !l.error) || (last?.kind === 'running' && !(last.runId && lost.has(last.runId))); }, [live, local, turns, lost]);
 
-  const send = useCallback((text: string, opts: { stay?: boolean; session?: string } = {}): 'sent' | 'busy' => {
+  const send = useCallback((text: string, opts: { stay?: boolean; session?: string; resume?: boolean } = {}): 'sent' | 'busy' => {
     const t = text.trim(); const s = opts.session ?? session;
     if (!t) return 'sent';
     if (isRunning(s)) { setBusy({ session: s, message: t }); return 'busy'; }
@@ -189,7 +189,7 @@ export function StoreProvider({ children, onActivity }: { children: ReactNode; o
         void loadApprovals(); void loadSchedule(); void loadGoals(); void loadConvs(); onActivity?.();
       },
       onError: (m) => { patch((x) => ({ ...x, error: m })); void loadTurns(s); },
-    }, { stay: opts.stay });
+    }, { stay: opts.stay, resume: opts.resume });
     return 'sent';
   }, [session, isRunning, attach, loadTurns, loadApprovals, loadSchedule, loadGoals, loadConvs, onActivity]);
 

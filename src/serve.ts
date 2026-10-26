@@ -89,7 +89,7 @@ import { setSetupDeps, listSetupRequests, submitSetupRequest, cancelSetupRequest
 import { awmCliPath, loadEmbeddings, loadPostgresStore } from './awm-api.js';
 import { MEMORY_OFF, agentMemory } from './memory-off.js';
 import { listFiles, insideRoot, fileHeaders, saveUpload, deleteFile, sessionFolder, uploadsIn, MAX_UPLOAD, readShares, createShare, revokeShare, shareFor } from './files.js';
-import { offersBackground, OFFER_TEXT, startBackgroundWork, continueGoal } from './handoff.js';
+import { offersBackground, OFFER_TEXT, startBackgroundWork, continueGoal, resumeInstruction } from './handoff.js';
 import { scheduleRows, scheduleControl, type ScheduleAction } from './schedule-api.js';
 import { liveRuns, FINAL_EVENTS } from './live-runs.js';
 import { resolvePersonId } from './person.js';
@@ -419,9 +419,13 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
   const send = (type: string, data: Record<string, unknown>) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
   if (!message) { send('error', { message: 'empty message' }); res.end(); return; }
+  // 3b (pending list 2026-10-26): "Continue from where it stopped" — the run the person stopped is picked up from
+  // its own words, framed as a resume (resumeInstruction), not re-read from the page's title. Never offered to the
+  // background (the task's words could match the offer test) and never put to the continuity classifier.
+  const resume = url.searchParams.get('resume') === '1';
   // BL-71b: a request that researches and writes something up is offered to the background first; the
   // person picks. "Stay here" sends it again with stay=1, and it runs in the chat as before.
-  if (url.searchParams.get('stay') !== '1' && process.env.MWA_OFFER_BACKGROUND !== '0' && offersBackground(message)) {
+  if (!resume && url.searchParams.get('stay') !== '1' && process.env.MWA_OFFER_BACKGROUND !== '0' && offersBackground(message)) {
     send('result', { reason: 'offer', summary: OFFER_TEXT, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0, offer: { kind: 'start', message } });
     appendTurn({ ts: Date.now(), session: sessionId, message, reply: OFFER_TEXT, reason: 'offer', kind: 'offer' });
     res.end(); return;
@@ -465,12 +469,13 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
 
     // AUTO-CHAIN, but know when to stop: continue the current topic, start a new one, or ask.
     const topicTurns = s.history.slice(s.topicStart);
-    const relation = CARRY_ALL ? (s.history.length ? 'continue' as const : 'fresh' as const) : await classifyContinuity(brain, topicTurns, message, idleMs);
+    const resumed = resume ? resumeInstruction(readConversation(sessionId, 80)) : null; // null: nothing stopped — a plain message
+    const relation = resumed ? 'continue' as const : CARRY_ALL ? (s.history.length ? 'continue' as const : 'fresh' as const) : await classifyContinuity(brain, topicTurns, message, idleMs);
     const hadContext = topicTurns.length > 0;
     if (relation === 'fresh') s.topicStart = s.history.length;
     // F5: topic-scoped memory is OPT-IN (MWA_TOPIC_NAMESPACE=1). Default OFF preserves cross-session continuity.
     if (process.env.MWA_TOPIC_NAMESPACE === '1') memory.setNamespace(`${sessionId}-t${s.topicStart}`);
-    emitLive('topic', { relation, hadContext });
+    emitLive('topic', { relation, hadContext, ...(resumed ? { resumed: true } : {}) });
     const carriedTurns = relation === 'continue' ? s.history.slice(Math.max(CARRY_ALL ? 0 : s.topicStart, s.history.length - CARRY_TURNS)) : [];
     const ctx = carriedTurns.map((h, i) => `(${i + 1}) ${h.instruction} → ${h.summary}`).join('\n');
     // If any carried turn read external content, its replies may quote that content: send the whole
@@ -482,7 +487,8 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     // BL-70: the person sees this chat's folder in the Files tab, and a link by file name opens it there.
     const added = uploadsIn(resolve(cfg.workspace ?? './mwa-workspace'), sessionFolder(sessionId));
     const filesNote = `\n\n(Files you write here are saved for the person and appear in their Files tab; when you mention one, link it by its path, e.g. [the notes](notes.md). Files from their earlier chats and jobs are theirs too: list_files with \`search\` finds one by name, and read_file opens it by that full path.${added.length ? ` Files they added to this chat: ${added.join(', ')}.` : ''})`;
-    const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${message}` : message) + askNote + filesNote + await workNote(memory, sessionId, url.searchParams.get('person'), message);
+    const asked = resumed?.instruction ?? message; // a resume runs the stopped task's own words, framed; the person's words stay the turn
+    const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${asked}` : asked) + askNote + filesNote + await workNote(memory, sessionId, url.searchParams.get('person'), resumed?.stopped.message ?? message);
 
     // Per-person Profile (S1–S6): resolve who's talking, build their prompt context (identity guard +
     // primer + intake hint, with PII redacted on an identity mismatch). Off-switch MWA_PERSON_PROFILE=0.

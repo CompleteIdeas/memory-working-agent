@@ -8,7 +8,38 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { MwaMemory } from '../src/awm.js';
-import { offersBackground, goalTitle, startBackgroundWork, handoffInstruction, hasPasted, ownText } from '../src/handoff.js';
+import { offersBackground, goalTitle, startBackgroundWork, handoffInstruction, hasPasted, ownText, resumeInstruction } from '../src/handoff.js';
+
+// 3b (pending list 2026-10-26): "Continue from where it stopped" resumes the stopped run from its own words
+describe('resumeInstruction', () => {
+  const task = 'Research three rowing-club newsletter formats, compare them in a table and save it as formats.md with a recommendation at the top';
+  it('frames the last stopped turn verbatim, with what its last word was, and says not to start over', () => {
+    const turns = [
+      { kind: 'chat', reason: 'done', message: 'What time is it in Lisbon?', reply: '4 pm' },
+      { kind: 'chat', reason: 'stopped', message: task, reply: 'Stopped after step 3. Kept: formats.md. Nothing was sent or changed outside this folder.' },
+      { kind: 'result', reason: 'done', message: 'Continue: newsletter', reply: 'posted' },
+    ];
+    const r = resumeInstruction(turns)!;
+    expect(r.stopped.message).toBe(task);
+    expect(r.instruction).toContain(`THE TASK:\n${task}`); // the person's words, not a title
+    expect(r.instruction).toContain('last word was: "Stopped after step 3. Kept: formats.md.');
+    expect(r.instruction).toContain('Do not start over');
+    expect(r.instruction).toContain('list_files and read_file, not a shell command');
+  });
+  it('is null when nothing in the conversation was stopped, so the words run as a plain message', () => {
+    expect(resumeInstruction([{ kind: 'chat', reason: 'done', message: task, reply: 'Here it is.' }])).toBeNull();
+    expect(resumeInstruction([])).toBeNull();
+    // a stopped background job's result turn is not a chat run to resume here
+    expect(resumeInstruction([{ kind: 'result', reason: 'stopped', message: task, reply: 'Stopped.' }])).toBeNull();
+  });
+  it('picks the most recent stopped run when two were stopped', () => {
+    const turns = [
+      { kind: 'chat', reason: 'stopped', message: 'first task', reply: 'Stopped after step 1. Nothing was written.' },
+      { kind: 'chat', reason: 'stopped', message: 'second task', reply: 'Stopped after step 2. Nothing was written.' },
+    ];
+    expect(resumeInstruction(turns)!.stopped.message).toBe('second task');
+  });
+});
 
 describe('offersBackground', () => {
   it.each([
