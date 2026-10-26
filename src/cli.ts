@@ -196,16 +196,24 @@ async function main(): Promise<void> {
     loadEnv();
     const { flags } = parseFlags(rest);
     if (flags.data) process.env.MWA_DATA_DIR = resolve(String(flags.data));
-    const { migrateV2, describeReport } = await import('./v2/migrate.js');
+    const { migrateV2, describeReport, migrationRecordedAt } = await import('./v2/migrate.js');
     const { runLogPath, notifyPath } = await import('./paths.js');
     const m = new MwaMemory(String(flags.agent ?? process.env.MWA_AGENT_ID ?? 'mwa-serve'), flags.db ?? dbFile(), loadConfig().awm.workspace);
     try {
-      const report = await migrateV2(m, { notifyFile: notifyPath(), runsFile: runLogPath(), dryRun: flags['dry-run'] !== undefined });
+      const dryRun = flags['dry-run'] !== undefined;
+      // Review M1: once recorded (at the first start, or an earlier run), a real run needs --force; v2 has been
+      // recording fires live since, and a re-run only adds what is missing — but it should be a decision.
+      const at = migrationRecordedAt();
+      if (at && !dryRun && flags.force === undefined) {
+        console.log(`Already migrated on ${new Date(at).toISOString().slice(0, 16).replace('T', ' ')} UTC. Run with --dry-run to see what a re-run would add, or --force to run it again.`);
+        return;
+      }
+      const report = await migrateV2(m, { notifyFile: notifyPath(), runsFile: runLogPath(), dryRun });
       console.log(describeReport(report));
     } finally { m.close(); }
     return;
   }
-  console.error(`unknown command: ${cmd}\nusage: mwa serve | mwa run "<instruction>" | mwa watch [--once] | mwa connect <gmail|outlook|telegram> | mwa consolidate | mwa migrate-v2 [--dry-run] | mwa setup`);
+  console.error(`unknown command: ${cmd}\nusage: mwa serve | mwa run "<instruction>" | mwa watch [--once] | mwa connect <gmail|outlook|telegram> | mwa consolidate | mwa migrate-v2 [--dry-run] [--force] | mwa setup`);
   process.exit(1);
 }
 

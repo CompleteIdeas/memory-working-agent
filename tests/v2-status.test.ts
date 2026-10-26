@@ -48,7 +48,7 @@ const rows: Row[] = [
   { name: 'done and opened', job: { seen_at: 5_000 }, tries: [T(1, { reason: 'done', outcome: 'changed' })], state: 'done', label: 'Done', detail: /Finished/, action: 'open', ready: false },
   { name: 'opened before a newer Try ended = result ready again', job: { seen_at: 1001 }, tries: [T(1, { reason: 'done', outcome: 'changed' }), T(2, { trigger: 'continue', reason: 'done', outcome: 'changed', ended_at: 2000 })], state: 'done', label: 'Result ready', detail: /Finished/, ready: true },
   { name: 'after two auto-continues the last one finished: done (SR-F16 the other way)', tries: [T(1, { reason: 'budget' }), T(2, { reason: 'budget' }), T(3, { reason: 'done', outcome: 'changed' })], state: 'done', label: 'Result ready', detail: /Finished/, ready: true },
-  { name: 'no-change is done, not failed', tries: [T(1, { trigger: 'fire', reason: 'done', outcome: 'no-change', summary: 'Checked: nothing new.' })], job: { kind: 'recurring' }, state: 'done', label: 'Result ready', detail: /Checked: nothing new\./ },
+  { name: 'a recurring job between fires is scheduled, with what its last fire said (no-change is not failed)', tries: [T(1, { trigger: 'fire', reason: 'done', outcome: 'no-change', summary: 'Checked: nothing new.' })], job: { kind: 'recurring' }, state: 'scheduled', label: 'Result ready', detail: /^Last run: Checked: nothing new\.$/ },
 ];
 
 describe('jobStatus truth table (first match wins)', () => {
