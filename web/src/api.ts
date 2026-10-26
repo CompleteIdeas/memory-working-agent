@@ -433,6 +433,7 @@ export const TOOL_LABELS: Record<string, string> = {
   browser_scroll: 'Scrolling the page',
   browser_look: 'Looking at the page',
   browser_find: 'Finding words on the page',
+  document_look: 'Looking at a page of a document',
   browser_back: 'Going back a page',
   browser_screenshot: 'Taking a screenshot',
   // the rest of the tools and actions a run can take (interface slice 2026-10-25: a stage line read "list connectors")

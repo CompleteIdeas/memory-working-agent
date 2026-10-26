@@ -269,8 +269,8 @@ const listFilesTool: RegisteredTool = {
 const readFileTool: RegisteredTool = {
   def: {
     name: 'read_file',
-    description: 'Read a file (size-capped): one in your working folder, or any file the person already has from another chat or job (give its full path — list_files with `search` finds it).',
-    parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    description: 'Read a file: one in your working folder, or any file the person already has from another chat or job (give its full path — list_files with `search` finds it). A long file comes in windows: the result says how to read on (`offset`).',
+    parameters: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'number', description: 'read on from this character (the last result says which)' } }, required: ['path'] },
   },
   handler: async (args, ctx) => {
     const found = readable(ctx, String(args.path ?? ''));
@@ -278,8 +278,10 @@ const readFileTool: RegisteredTool = {
     const full = found.path;
     const mark = found.other ? `${OTHER_FOLDER_MARK}\n` : '';
     try {
-      if (statSync(full).size > CAP * 6) return `${mark}(large file; first ${CAP} bytes)\n` + readFileSync(full, 'utf8').slice(0, CAP);
-      return mark + readFileSync(full, 'utf8').slice(0, CAP);
+      const text = readFileSync(full, 'utf8');
+      // a short file comes whole, as before; a long one in windows the model can walk (production review 2026-10-27)
+      if (text.length <= CAP && !args.offset) return mark + text;
+      return mark + windowOf(text, args.offset, CAP, basename(full), 'read_file', { path: String(args.path) });
     } catch (e) {
       // Not-found is an ANSWER, not a failure: a run checking "does this exist yet?" before writing
       // it got "(could not read: ENOENT…)", which both reads as an error and counts as one in the
@@ -419,6 +421,7 @@ const httpRequestTool: RegisteredTool = {
         method: { type: 'string', description: 'GET (default), POST, etc.' },
         body: { type: 'string', description: 'optional request body' },
         headers: { type: 'object', additionalProperties: { type: 'string' }, description: 'optional headers, e.g. {"Authorization": "Bearer {{vault:my-api.key}}"}. A {{vault:…}} reference (vault_list) is filled in only for its own site.' },
+        offset: { type: 'number', description: 'read on from this character of a long answer (the last result says which)' },
       },
       required: ['url'],
     },
@@ -454,8 +457,9 @@ const httpRequestTool: RegisteredTool = {
         ...(body ? { body } : {}), headers,
       });
       if (typeof res === 'string') return res;
-      const text = (await res.text()).slice(0, CAP);
-      return `status=${res.status}\n${text}`;
+      const text = await res.text();
+      // a long answer comes in windows the model can walk (production review 2026-10-27: "the same truncated opening")
+      return `status=${res.status}\n${text.length <= CAP && !args.offset ? text : windowOf(text, args.offset, CAP, url.slice(0, 80), 'http_request', { url })}`;
     } catch (e) {
       return `(http_request failed: ${(e as Error).name === 'AbortError' ? 'timed out' : (e as Error).message.slice(0, 120)})`;
     } finally {
@@ -467,59 +471,151 @@ const httpRequestTool: RegisteredTool = {
 /** read_document's fetch timeout: MWA_DOCUMENT_TIMEOUT_MS when it is a positive number, else 60 s. */
 function documentTimeoutMs(): number { const n = Number(process.env.MWA_DOCUMENT_TIMEOUT_MS); return Number.isFinite(n) && n > 0 ? n : 60_000; }
 
+/**
+ * Production review 2026-10-27: "Learn everything you can about the rules of eventing" from an uploaded PDF never
+ * got its answer — read_document gave the first 8,000 characters with no way to read on or to pick the pages with
+ * the qualification tables, and "read some of those pages visually" could only mean a shell command. Now: pages, an
+ * offset to read on from (every reader says how), and document_look, which hands the model a page as a picture the
+ * way browser_look does.
+ */
+/** The bytes of a document: a local file inside an allowed folder, or an http(s) URL through the guard. */
+async function loadDocument(src: string, ctx: ToolContext): Promise<Buffer | string> {
+  if (/^https?:\/\//i.test(src)) {
+    // MWA refusing before anything is sent is flagged (BL-16); the site's own answer — a 404, an error,
+    // a redirect the guard refuses after the first request — is a RESULT, as before: a "tell me when it's
+    // posted" job must be able to see "not there yet" without reporting a failure every run.
+    const firstHop = await urlRefusal(src);
+    if (firstHop) throw new ToolRefusal(`(refused: ${firstHop})`);
+    // A site that never answers must not hold the run: the connection has no timeout of its own.
+    const res = await guardedFetch(src, { headers: { 'user-agent': 'Mozilla/5.0 (MWA)' }, signal: AbortSignal.timeout(documentTimeoutMs()) });
+    if (typeof res === 'string') return res;
+    if (!res.ok) return `(couldn't fetch ${src}: ${res.status})`;
+    return Buffer.from(await res.arrayBuffer());
+  }
+  // Local file: confine to the allowed folders (workspace + granted) — not arbitrary paths.
+  // read_document's output is outside content already (classed external): another chat's file needs no mark.
+  const found = readable(ctx, src);
+  if (!found) throw new ToolRefusal(outsideRefusal(ctx, src, 'file'));
+  return readFileSync(found.path);
+}
+const isPdf = (src: string, buf: Buffer) => src.toLowerCase().endsWith('.pdf') || buf.subarray(0, 5).toString('latin1') === '%PDF-';
+/** "3-5", "4", "2-" → [first, last] within 1..count; nothing or nonsense → the whole document. */
+export function pageRange(spec: unknown, count: number): [number, number] {
+  const m = /^\s*(\d+)\s*(?:-\s*(\d*))?\s*$/.exec(String(spec ?? ''));
+  if (!m || count < 1) return [1, Math.max(1, count)];
+  const a = Math.min(Math.max(1, Number(m[1])), count);
+  const b = m[2] === undefined ? a : m[2] === '' ? count : Math.min(Math.max(a, Number(m[2])), count);
+  return [a, b];
+}
+/** The window of `text` from `offset`, headed by where it is and how to read on. */
+export function windowOf(text: string, offset: unknown, max: number, what: string, tool: string, extra: Record<string, unknown> = {}): string {
+  const total = text.length;
+  const off = Math.min(Math.max(0, Math.floor(Number(offset) || 0)), total);
+  const slice = text.slice(off, off + max);
+  const end = off + slice.length;
+  const again = Object.entries({ ...extra, offset: end }).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(', ');
+  const where = total === 0 ? 'no text' : `characters ${off + 1}–${end} of ${total}`;
+  const how = end < total ? `; to read on, call ${tool} again with ${again}` : total ? '; that is the end' : '';
+  return `(${what}; ${where}${how})\n${slice}`;
+}
+/** A PDF's pages as text, kept for the last few documents: reading a 73-page rulebook page by page re-parsed the
+ *  whole file each call (0.7 s each). Keyed by a hash of the bytes, so a changed file is read afresh. */
+const pdfPagesCache = new Map<string, string[]>();
+async function pdfPages(buf: Buffer): Promise<string[]> {
+  const { createHash } = await import('node:crypto');
+  const key = createHash('sha1').update(buf).digest('hex');
+  const hit = pdfPagesCache.get(key);
+  if (hit) { pdfPagesCache.delete(key); pdfPagesCache.set(key, hit); return hit; }
+  const { getDocumentProxy, extractText } = await import('unpdf');
+  const pdf = await getDocumentProxy(new Uint8Array(buf));
+  const { text } = await extractText(pdf, { mergePages: false });
+  const pages: string[] = Array.isArray(text) ? text.map((t) => String(t ?? '')) : [String(text ?? '')];
+  pdfPagesCache.set(key, pages);
+  while (pdfPagesCache.size > 4) pdfPagesCache.delete(pdfPagesCache.keys().next().value as string);
+  return pages;
+}
+const MAX_DOCUMENT_LOOKS = Math.max(0, Number(process.env.MWA_DOCUMENT_LOOKS ?? 6) || 0);
+const documentLooks = new Map<string, number>(); // per run
+
 const readDocumentTool: RegisteredTool = {
   def: {
     name: 'read_document',
-    description: 'Read a document as text — a LOCAL file path (must be inside a folder you\'re allowed to access) OR an http(s) URL. Handles PDF, Word (.docx), and plain text / markdown / CSV / JSON. Use this to ACTUALLY read a PDF (e.g. a camp Leaders Guide) — never guess its contents.',
-    parameters: { type: 'object', properties: { source: { type: 'string', description: 'a file path or http(s) URL' }, max_chars: { type: 'number', description: 'cap returned text, default 8000' } }, required: ['source'] },
+    description: 'Read a document as text — a LOCAL file path (must be inside a folder you\'re allowed to access) OR an http(s) URL. Handles PDF, Word (.docx), and plain text / markdown / CSV / JSON. A PDF is read by page: `pages` ("3-5", "7", "4-") picks them, and every result says how to read on (`offset`). For a table, a form or a page whose text comes back jumbled, document_look shows you the page. Use this to ACTUALLY read a PDF (e.g. a camp Leaders Guide) — never guess its contents.',
+    parameters: { type: 'object', properties: { source: { type: 'string', description: 'a file path or http(s) URL' }, pages: { type: 'string', description: 'PDF pages to read, e.g. "3-5", "7" or "4-" (default: all)' }, offset: { type: 'number', description: 'read on from this character (the last result says which)' }, max_chars: { type: 'number', description: 'cap returned text, default 8000' } }, required: ['source'] },
   },
   handler: async (args, ctx) => {
     const src = String(args.source ?? '').trim();
     if (!src) throw new ToolRefusal('(refused: no source given)');
-    const max = Math.min(Number(args.max_chars ?? 8000), 40000);
+    const max = Math.min(Math.max(500, Number(args.max_chars ?? 8000) || 8000), 40000);
+    const name = src.replace(/^.*[\\/]/, '').slice(0, 80);
     try {
-      let buf: Buffer;
-      if (/^https?:\/\//i.test(src)) {
-        // MWA refusing before anything is sent is flagged (BL-16); the site's own answer — a 404, an error,
-        // a redirect the guard refuses after the first request — is a RESULT, as before: a "tell me when it's
-        // posted" job must be able to see "not there yet" without reporting a failure every run.
-        const firstHop = await urlRefusal(src);
-        if (firstHop) throw new ToolRefusal(`(refused: ${firstHop})`);
-        // A site that never answers must not hold the run: the connection has no timeout of its own.
-        const res = await guardedFetch(src, { headers: { 'user-agent': 'Mozilla/5.0 (MWA)' }, signal: AbortSignal.timeout(documentTimeoutMs()) });
-        if (typeof res === 'string') return res;
-        if (!res.ok) return `(couldn't fetch ${src}: ${res.status})`;
-        buf = Buffer.from(await res.arrayBuffer());
-      } else {
-        // Local file: confine to the allowed folders (workspace + granted) — not arbitrary paths.
-        // read_document's output is outside content already (classed external): another chat's file needs no mark.
-        const found = readable(ctx, src);
-        if (!found) throw new ToolRefusal(outsideRefusal(ctx, src, 'file'));
-        buf = readFileSync(found.path);
-      }
+      const loaded = await loadDocument(src, ctx);
+      if (typeof loaded === 'string') return loaded;
+      const buf = loaded;
       const lower = src.toLowerCase();
-      if (lower.endsWith('.pdf') || buf.subarray(0, 5).toString('latin1') === '%PDF-') {
-        const { getDocumentProxy, extractText } = await import('unpdf');
-        const pdf = await getDocumentProxy(new Uint8Array(buf));
-        const { text } = await extractText(pdf, { mergePages: true });
-        const t = Array.isArray(text) ? text.join('\n') : String(text ?? '');
-        return t.trim().slice(0, max) || '(PDF has no extractable text — likely scanned images)';
+      if (isPdf(src, buf)) {
+        const pages = await pdfPages(buf);
+        const [a, b] = pageRange(args.pages, pages.length);
+        const chosen = pages.slice(a - 1, b).map((t, i) => `[page ${a + i} of ${pages.length}]\n${t.trim()}`).join('\n\n');
+        if (!chosen.replace(/\[page \d+ of \d+\]/g, '').trim()) return `(${name}: ${pages.length} page${pages.length === 1 ? '' : 's'}; pages ${a}–${b} have no extractable text — scanned images, or a drawn table. document_look shows you a page as a picture.)`;
+        return windowOf(chosen, args.offset, max, `${name}: ${pages.length} page${pages.length === 1 ? '' : 's'}, showing ${a === b ? `page ${a}` : `pages ${a}–${b}`}${b < pages.length ? ` (pages: "${b + 1}-" reads the rest)` : ''}`, 'read_document', { source: src, ...(args.pages ? { pages: String(args.pages) } : {}) });
       }
       if (lower.endsWith('.docx')) {
         const m: any = await import('mammoth');
         const fn = m.extractRawText ?? m.default?.extractRawText;
         const { value } = await fn({ buffer: buf });
-        return String(value ?? '').slice(0, max);
+        return windowOf(String(value ?? ''), args.offset, max, name, 'read_document', { source: src });
       }
       const text = buf.toString('utf8');
       // HTML (a web page or .html file) → strip to readable text, not raw markup.
       if (lower.endsWith('.html') || lower.endsWith('.htm') || /<!doctype html|<html[\s>]/i.test(text.slice(0, 1024))) {
-        return htmlToText(text).slice(0, max) || '(no readable text on that page)';
+        const plain = htmlToText(text);
+        return plain ? windowOf(plain, args.offset, max, name, 'read_document', { source: src }) : '(no readable text on that page)';
       }
-      return text.slice(0, max);
+      return windowOf(text, args.offset, max, name, 'read_document', { source: src });
     } catch (e) {
       if (e instanceof ToolRefusal) throw e;
       return `(could not read document: ${(e as Error).message.slice(0, 140)})`;
+    }
+  },
+};
+
+const documentLookTool: RegisteredTool = {
+  def: {
+    name: 'document_look',
+    description: 'Look at one page of a PDF (or an image file) as a picture, shown to you on your next step: a table, a form, a scanned page, a layout that read_document\'s text does not carry. A file in your folder, the person\'s uploads or a granted folder, or an http(s) URL. A few times a run; read the text first.',
+    parameters: { type: 'object', properties: { source: { type: 'string', description: 'the PDF or image: a file path or http(s) URL' }, page: { type: 'number', description: 'the page to look at (1-based), default 1' } }, required: ['source'] },
+  },
+  handler: async (args, ctx) => {
+    const src = String(args.source ?? '').trim();
+    if (!src) throw new ToolRefusal('(refused: no source given)');
+    const { supportsImages } = await import('../provider.js');
+    if (!supportsImages(ctx.brainModel ?? '')) throw new ToolRefusal(`(this model${ctx.brainModel ? ` (${ctx.brainModel})` : ''} cannot see images — read the pages with read_document instead)`);
+    const key = ctx.runId ?? 'run';
+    const used = documentLooks.get(key) ?? 0;
+    if (used >= MAX_DOCUMENT_LOOKS) throw new ToolRefusal(`(refused: this run has already looked at ${MAX_DOCUMENT_LOOKS} pages — read the rest as text with read_document)`);
+    const name = src.replace(/^.*[\\/]/, '').slice(0, 80);
+    try {
+      const loaded = await loadDocument(src, ctx);
+      if (typeof loaded === 'string') return loaded;
+      const sharp = (await import('sharp')).default;
+      let png: Buffer; let where: string;
+      if (isPdf(src, loaded)) {
+        const { getDocumentProxy, renderPageAsImage } = await import('unpdf');
+        const pdf = await getDocumentProxy(new Uint8Array(loaded));
+        const count = pdf.numPages;
+        const page = Math.min(Math.max(1, Math.floor(Number(args.page) || 1)), count);
+        const rendered = await renderPageAsImage(pdf, page, { canvasImport: () => import('@napi-rs/canvas'), scale: 1.5 });
+        png = Buffer.from(rendered); where = `page ${page} of ${count} of ${name}`;
+      } else if (/\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(src) || /^\x89PNG|^\xff\xd8/.test(loaded.subarray(0, 4).toString('latin1'))) {
+        png = loaded; where = name;
+      } else throw new ToolRefusal(`(refused: ${name} is not a PDF or an image — read_document reads it as text)`);
+      const jpeg = await sharp(png).resize({ width: 1280, height: 1800, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 72 }).toBuffer();
+      documentLooks.set(key, used + 1);
+      return { text: `(looking at ${where}; the picture is attached to your next step — read it as a reader would, and quote its figures and names exactly)`, image: { mime: 'image/jpeg', data: jpeg.toString('base64') } };
+    } catch (e) {
+      if (e instanceof ToolRefusal) throw e;
+      return `(could not show the page: ${(e as Error).message.slice(0, 140)})`;
     }
   },
 };
@@ -531,6 +627,7 @@ export const BUILTIN_TOOLS: Record<string, RegisteredTool> = {
   read_file: readFileTool,
   write_file: writeFileTool,
   read_document: readDocumentTool,
+  document_look: documentLookTool,
   http_request: httpRequestTool,
 };
 

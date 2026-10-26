@@ -64,6 +64,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "@napi-rs/canvas": "^0.1.100",
     "agent-working-memory": "^0.10.0",
     "better-sqlite3": "^12.6.2",
     "docx": "9.5.1",
