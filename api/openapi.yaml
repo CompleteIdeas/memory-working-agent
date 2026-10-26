@@ -48,7 +48,7 @@ components:
           required: [code, message]
           additionalProperties: false
           properties:
-            code: { type: string, description: 'Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal' }
+            code: { type: string, description: 'Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, bad_cursor, bad_limit, bad_body, too_long, gone, needs_reconnect, not_connected, provider_unavailable, unknown_collection, internal' }
             message: { type: string, description: Plain words for a person. }
     Scope:
       type: string
@@ -197,6 +197,82 @@ components:
         job: { $ref: '#/components/schemas/Job' }
         tries: { type: array, items: { $ref: '#/components/schemas/Try' } }
         message: { type: string, description: 'What happened, in plain words (after an action).' }
+    MailHeader:
+      type: object
+      description: 'One message in the inbox, headers only (bodies are never synced or stored). The same email in two accounts is one MailHeader (the newest copy), with the others in alsoIn.'
+      required: [id, account, provider, threadId, from, subject, snippet, receivedAt, unread, labels, listId, hasUnsub, alsoIn, updatedSeq]
+      additionalProperties: false
+      properties:
+        id: { type: string, pattern: '^m_[A-Za-z0-9_-]+$', description: Opaque. }
+        account: { type: string, description: 'The connected account: gmail, imap or outlook.' }
+        provider: { type: string, enum: [gmail, imap, outlook] }
+        threadId: { type: ['string', 'null'] }
+        from: { $ref: '#/components/schemas/MailFrom' }
+        subject: { type: string }
+        snippet: { type: string, maxLength: 200, description: 'One line of plain text (links shown as hosts). Empty for IMAP.' }
+        receivedAt: { type: integer }
+        unread: { type: boolean }
+        labels: { type: array, items: { type: string }, description: 'Gmail labels incl. categories (CATEGORY_PROMOTIONS and so on); Outlook categories and inference:focused or inference:other.' }
+        listId: { type: ['string', 'null'], description: 'The List-Id (mailing lists, newsletters).' }
+        hasUnsub: { type: boolean, description: 'It carries an unsubscribe option (List-Unsubscribe).' }
+        alsoIn: { type: array, items: { type: string }, description: 'Other accounts holding a copy of the same email.' }
+        updatedSeq: { type: integer }
+    MailFrom:
+      type: object
+      required: [name, addr]
+      additionalProperties: false
+      properties:
+        name: { type: ['string', 'null'] }
+        addr: { type: ['string', 'null'] }
+    MailMessage:
+      type: object
+      description: 'A message opened in the reader. The body is fetched from the provider now, sanitised to plain text and kept only briefly in the server memory. It is UNTRUSTED content: show it as text, never as HTML, and fence it before a model reads it.'
+      required: [id, account, provider, threadId, from, subject, snippet, receivedAt, unread, labels, listId, hasUnsub, alsoIn, updatedSeq, to, bodyText, truncated, quotedLinesHidden, imagesHidden, trackersRemoved, trust, fetchedAt]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        account: { type: string }
+        provider: { type: string, enum: [gmail, imap, outlook] }
+        threadId: { type: ['string', 'null'] }
+        from: { $ref: '#/components/schemas/MailFrom' }
+        subject: { type: string }
+        snippet: { type: string }
+        receivedAt: { type: integer }
+        unread: { type: boolean }
+        labels: { type: array, items: { type: string } }
+        listId: { type: ['string', 'null'] }
+        hasUnsub: { type: boolean }
+        alsoIn: { type: array, items: { type: string } }
+        updatedSeq: { type: integer }
+        to: { type: ['string', 'null'] }
+        bodyText: { type: string, description: 'Plain text, at most 100 KB: no remote images or tracking pixels, hidden text removed, links as "words (host)", long quoted history collapsed to one line.' }
+        truncated: { type: boolean }
+        quotedLinesHidden: { type: integer }
+        imagesHidden: { type: integer, description: 'Pictures not shown (their alt text appears as [picture: alt]).' }
+        trackersRemoved: { type: integer, description: 'Tracking pixels removed.' }
+        trust: { type: string, const: untrusted }
+        fetchedAt: { type: integer }
+    MailAccount:
+      type: object
+      required: [account, provider, label, needsReconnect, lastOk, lastError, windowFrom, syncing]
+      additionalProperties: false
+      properties:
+        account: { type: string }
+        provider: { type: string, enum: [gmail, imap, outlook] }
+        label: { type: string, description: 'Gmail, Gmail (app password), Outlook.' }
+        needsReconnect: { type: boolean, description: 'The sign-in is no longer valid (revoked or expired): reconnect in Settings.' }
+        lastOk: { type: ['integer', 'null'] }
+        lastError: { type: ['string', 'null'] }
+        windowFrom: { type: ['integer', 'null'], description: 'Mail is kept from this time on (14 days).' }
+        syncing: { type: boolean }
+    MailRefresh:
+      type: object
+      required: [done, accounts, message]
+      additionalProperties: false
+      properties:
+        done: { type: boolean }
+        accounts: { type: array, items: { $ref: '#/components/schemas/MailAccount' } }
+        message: { type: string }
   responses:
     Error:
       description: An error.
@@ -434,7 +510,7 @@ paths:
       summary: Live updates (server-sent events), resumable from a cursor.
       description: |
         Events: `hello` {cursor, head}; `change` {seq, entity, id, op, data?} with `id: <seq>` (a job's change carries
-        its current view in `data`); `live` {session, type, stage, at} — a running try's progress, at most once a
+        its current view in `data`; a `mail` change has no data: catch up with /sync?collections=mail); `live` {session, type, stage, at} — a running try's progress, at most once a
         second per run; `reset` {cursor, reason} — the cursor was older than what is kept: call /sync without
         `since`. A comment every 15 s keeps the connection open. Reconnect with Last-Event-ID (EventSource does it).
       parameters:
@@ -451,7 +527,7 @@ paths:
       summary: What changed since a cursor, as current objects and deletions (the phone's offline catch-up).
       parameters:
         - { name: since, in: query, required: false, schema: { type: string, pattern: '^[0-9]{1,15}$' } }
-        - { name: collections, in: query, required: false, schema: { type: string, default: jobs } }
+        - { name: collections, in: query, required: false, schema: { type: string, default: jobs }, description: 'Comma-separated: jobs, mail (mail is headers only).' }
       responses:
         '200':
           description: Changes. `reset` true means a full snapshot (no since, or too old).
@@ -468,8 +544,105 @@ paths:
                     type: object
                     properties:
                       jobs: { type: array, items: { $ref: '#/components/schemas/Job' } }
+                      mail: { type: array, items: { $ref: '#/components/schemas/MailHeader' } }
                   deletes:
                     type: object
                     properties:
                       jobs: { type: array, items: { type: string } }
+                      mail: { type: array, items: { type: string } }
+        default: { $ref: '#/components/responses/Error' }
+  /mail:
+    get:
+      operationId: listMail
+      summary: 'The plain mailbox ("All email"): headers, newest first, one row per message across accounts.'
+      parameters:
+        - { name: before, in: query, required: false, schema: { type: string }, description: 'nextBefore from the previous page.' }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200':
+          description: A page of headers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mail, nextBefore, note, connected]
+                additionalProperties: false
+                properties:
+                  mail: { type: array, items: { $ref: '#/components/schemas/MailHeader' } }
+                  nextBefore: { type: ['string', 'null'] }
+                  note: { type: string, description: '"Your helper reads and writes drafts. It never sends."' }
+                  connected: { type: boolean, description: 'Some mail account is connected.' }
+        default: { $ref: '#/components/responses/Error' }
+  /mail/accounts:
+    get:
+      operationId: listMailAccounts
+      summary: The connected mail accounts, and whether one needs reconnecting.
+      responses:
+        '200':
+          description: The accounts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts, note]
+                additionalProperties: false
+                properties:
+                  accounts: { type: array, items: { $ref: '#/components/schemas/MailAccount' } }
+                  note: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /mail/refresh:
+    post:
+      operationId: refreshMail
+      summary: 'Check the mail now (the app calls it when it opens). 200 when done within 20 s, else 202 and changes arrive on /stream.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Checked.
+          content: { application/json: { schema: { $ref: '#/components/schemas/MailRefresh' } } }
+        '202':
+          description: Still checking.
+          content: { application/json: { schema: { $ref: '#/components/schemas/MailRefresh' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /mail/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: readMail
+      summary: 'Open a message: its body as sanitised plain text, marked untrusted. 404 gone when it left the mailbox; 409 needs_reconnect; 502 provider_unavailable.'
+      responses:
+        '200':
+          description: The message.
+          content: { application/json: { schema: { $ref: '#/components/schemas/MailMessage' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /mail/{id}/draft:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: saveMailDraft
+      summary: 'Save a reply as a DRAFT in that account (threaded under the message). It is never sent: the person sends it from their mail app.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: { type: string, minLength: 1, maxLength: 20000, description: Plain text. }
+      responses:
+        '201':
+          description: 'Saved to your drafts. Nothing was sent.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [saved, sent, account, draftId, message]
+                additionalProperties: false
+                properties:
+                  saved: { type: boolean, const: true }
+                  sent: { type: boolean, const: false }
+                  account: { type: string }
+                  draftId: { type: ['string', 'null'] }
+                  message: { type: string }
         default: { $ref: '#/components/responses/Error' }

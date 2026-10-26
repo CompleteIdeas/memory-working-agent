@@ -12,6 +12,8 @@
  * writes app.db too.
  *
  * Visibility: device changes (names, revocations) go to admin callers only (A2 review note).
+ * Mail (A8): /sync's `mail` collection carries headers only — bodies are never synced; on the stream a mail change is
+ * a notice without data (catch up with /sync?collections=mail).
  */
 import type { ServerResponse, IncomingMessage } from 'node:http';
 import { ApiError, type Route } from '../router.js';
@@ -20,6 +22,7 @@ import { getJob, listJobs, viewJob } from '../../v2/jobs.js';
 import { apiJob } from './jobs.js';
 import { liveRuns, type LiveEvent } from '../../live-runs.js';
 import type { Caller } from '../auth.js';
+import { apiMailHeader, canonicalFor, copiesOf, listMail, mailId, type ApiMailHeader, type MailPageCursor } from '../../v2/mail.js';
 
 export const EVENT_RETENTION_MS = 7 * 24 * 3_600_000;
 const POLL_MS = 1_000, KEEPALIVE_MS = 15_000, BATCH = 500, STEP_EVERY_MS = 1_000;
@@ -86,6 +89,46 @@ function present(rows: EventRow[], who: Caller | null) {
   return out;
 }
 
+/** The collections /sync serves. `mail` is headers only: bodies are never synced (fetched on open, A8). */
+const COLLECTIONS = ['jobs', 'mail'];
+
+/** Every message, once across accounts (the same copy listMail shows). Bounded by the 14-day window. */
+function allMail() {
+  const out: ApiMailHeader[] = [];
+  let before: MailPageCursor | null = null;
+  for (;;) {
+    const rows = listMail({ before, limit: 500 });
+    out.push(...rows.map(apiMailHeader));
+    if (rows.length < 500) return out;
+    const l = rows[rows.length - 1];
+    before = { receivedAt: l.received_at, account: l.account, providerId: l.provider_id };
+  }
+}
+/**
+ * Mail changes as current objects. Copies of one email in several accounts are one message: for each dedupe key
+ * touched, the copy shown now is upserted and every other copy's id deleted (a client that never had it ignores it).
+ */
+function mailDelta(rows: EventRow[]): { upserts: ApiMailHeader[]; deletes: string[] } {
+  const keys = new Set<string>(), dels = new Set<string>();
+  for (const e of rows) {
+    if (e.entity !== 'mail') continue;
+    let key: string | undefined;
+    try { key = (JSON.parse(e.payload ?? '{}') as { key?: string }).key; } catch { key = undefined; }
+    if (key) keys.add(key);
+    if (e.op === 'delete') dels.add(e.entity_id);
+  }
+  const upserts: ApiMailHeader[] = [];
+  for (const k of keys) {
+    const shown = canonicalFor(k);
+    if (shown) {
+      const v = apiMailHeader(shown);
+      upserts.push(v); dels.delete(v.id);
+      for (const c of copiesOf(k)) { const id = mailId(c.account, c.provider_id); if (id !== v.id) dels.add(id); }
+    }
+  }
+  return { upserts, deletes: [...dels] };
+}
+
 function parseCursor(v: string | null | undefined): number {
   if (v === null || v === undefined || v === '') return 0;
   if (!/^\d{1,15}$/.test(v)) throw new ApiError(400, 'bad_cursor', 'The cursor must be a number the server gave you.');
@@ -142,22 +185,28 @@ export const streamRoutes: Route[] = [
     handler: ({ url, who }) => {
       trimEvents();
       const since = parseCursor(url.searchParams.get('since'));
-      const wanted = (url.searchParams.get('collections') ?? 'jobs').split(',').map((s) => s.trim()).filter(Boolean);
-      const unknown = wanted.filter((w) => w !== 'jobs');
-      if (unknown.length) throw new ApiError(400, 'unknown_collection', `Unknown collection: ${unknown.join(', ')}. Available: jobs.`);
+      const wanted = [...new Set((url.searchParams.get('collections') ?? 'jobs').split(',').map((s) => s.trim()).filter(Boolean))];
+      const unknown = wanted.filter((w) => !COLLECTIONS.includes(w));
+      if (unknown.length) throw new ApiError(400, 'unknown_collection', `Unknown collection: ${unknown.join(', ')}. Available: ${COLLECTIONS.join(', ')}.`);
       const cursor = headSeq();
       const c = ctx();
+      const upserts: Record<string, unknown[]> = {}, deletes: Record<string, string[]> = {};
       if (since === 0 || cursorTooOld(since)) {
-        const jobs = listJobs({}).map((j) => apiJob(viewJob(j, c)));
-        return { body: { cursor, reset: true, upserts: { jobs }, deletes: { jobs: [] } } };
+        if (wanted.includes('jobs')) { upserts.jobs = listJobs({}).map((j) => apiJob(viewJob(j, c))); deletes.jobs = []; }
+        if (wanted.includes('mail')) { upserts.mail = allMail(); deletes.mail = []; }
+        return { body: { cursor, reset: true, upserts, deletes } };
       }
       const rows = appDb().prepare('SELECT seq, ts, entity, entity_id, op, payload FROM events WHERE seq > ? AND seq <= ? ORDER BY seq').all(since, cursor) as EventRow[];
-      const ups = new Map<string, unknown>(), dels = new Set<string>();
-      for (const m of present(rows, who)) {
-        if (m.entity !== 'job') continue;
-        if (m.op === 'delete') { dels.add(m.id); ups.delete(m.id); } else { ups.set(m.id, m.data); dels.delete(m.id); }
+      if (wanted.includes('jobs')) {
+        const ups = new Map<string, unknown>(), dels = new Set<string>();
+        for (const m of present(rows, who)) {
+          if (m.entity !== 'job') continue;
+          if (m.op === 'delete') { dels.add(m.id); ups.delete(m.id); } else { ups.set(m.id, m.data); dels.delete(m.id); }
+        }
+        upserts.jobs = [...ups.values()]; deletes.jobs = [...dels];
       }
-      return { body: { cursor, reset: false, upserts: { jobs: [...ups.values()] }, deletes: { jobs: [...dels] } } };
+      if (wanted.includes('mail')) { const d = mailDelta(rows); upserts.mail = d.upserts; deletes.mail = d.deletes; }
+      return { body: { cursor, reset: false, upserts, deletes } };
     },
   },
 ];

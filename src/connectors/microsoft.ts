@@ -21,7 +21,16 @@ const TENANT = process.env.MICROSOFT_TENANT ?? 'common'; // common = personal + 
 const REDIRECT_PORT = Number(process.env.MWA_MS_OAUTH_PORT ?? 7798);
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/oauth`;
 const AUTH_BASE = `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0`;
-const GRAPH = 'https://graph.microsoft.com/v1.0';
+const GRAPH_DEFAULT = 'https://graph.microsoft.com/v1.0';
+/** The Graph base URL. MWA_GRAPH_BASE points it elsewhere (v2 tests: a fake Graph server). */
+export const graphBase = (): string => (process.env.MWA_GRAPH_BASE || GRAPH_DEFAULT).replace(/\/+$/, '');
+/** An absolute Graph link (@odata.nextLink, @odata.deltaLink) as a path for graph(). */
+export function graphPath(link: string): string {
+  const base = graphBase();
+  if (link.startsWith(base + '/')) return link.slice(base.length);
+  if (link.startsWith(GRAPH_DEFAULT + '/')) return link.slice(GRAPH_DEFAULT.length);
+  throw new Error('That Graph link is not on the Graph host.');
+}
 
 const SCOPES_RW = ['offline_access', 'User.Read', 'Mail.ReadWrite', 'Calendars.ReadWrite'];
 const SCOPES_RO = ['offline_access', 'User.Read', 'Mail.Read'];
@@ -79,7 +88,7 @@ async function accessToken(): Promise<string> {
 
 /** A Microsoft Graph call with the signed-in token (v2: the calendar and mail sync use it). */
 export async function graph(path: string, init: RequestInit = {}): Promise<any> {
-  const res = await fetch(`${GRAPH}${path}`, { ...init, headers: { authorization: `Bearer ${await accessToken()}`, 'content-type': 'application/json', ...(init.headers ?? {}) } });
+  const res = await fetch(`${graphBase()}${path}`, { ...init, headers: { authorization: `Bearer ${await accessToken()}`, 'content-type': 'application/json', ...(init.headers ?? {}) } });
   if (!res.ok) throw new Error(`Graph ${res.status}: ${(await res.text()).slice(0, 160)}`);
   return res.status === 204 ? {} : res.json();
 }
@@ -259,7 +268,7 @@ export async function listRecentOutlook(opts: { days?: number; max?: number; onP
     }
     // Graph paginates with @odata.nextLink (absolute URL); strip the base so graph() can use it.
     const next: string | undefined = r['@odata.nextLink'];
-    path = next ? next.replace(/^https:\/\/graph\.microsoft\.com\/v1\.0/, '') : null;
+    path = next ? graphPath(next) : null;
   }
   return out;
 }

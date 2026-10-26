@@ -63,6 +63,7 @@ import { createV1Handler } from './api/v1.js';
 import { makeAuthenticate } from './api/auth.js';
 import { setJobRouteDeps } from './api/routes/jobs.js';
 import { setStreamDeps } from './api/routes/stream.js';
+import { startMailSync } from './sync/mail.js';
 import { migrateV2Once, describeReport } from './v2/migrate.js';
 import { runAgent } from './agent.js';
 import { preparePersonTurn, learnFromTurn } from './person-turn.js';
@@ -1624,6 +1625,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   });
   const host = process.env.MWA_SERVE_HOST ?? '127.0.0.1';
   await new Promise<void>((r) => server.listen(port, host, r));
+  // v2 (A8): mail headers for "All email" and triage — every 15 minutes (and on app open via POST /api/v1/mail/refresh).
+  // Headers only, no model calls; nothing happens while no mail account is connected.
+  if (process.env.MWA_MAIL_SYNC !== '0') startMailSync();
   // Graceful shutdown: stop accepting connections, let in-flight requests drain, then exit
   // (a supervisor / Docker restart policy brings us back). Hard-exit after 10s as a backstop.
   const shutdown = (sig: string) => {

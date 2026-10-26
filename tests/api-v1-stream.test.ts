@@ -95,7 +95,7 @@ describe('/sync', () => {
   });
   it('refuses a cursor that is not a number and a collection it does not have', async () => {
     expect((await j(await fetch(`${base}/sync?since=abc`))).body.error.code).toBe('bad_cursor');
-    expect((await j(await fetch(`${base}/sync?collections=jobs,mail`))).body.error.code).toBe('unknown_collection');
+    expect((await j(await fetch(`${base}/sync?collections=jobs,calendars`))).body.error.code).toBe('unknown_collection');
   });
 });
 
