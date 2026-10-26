@@ -125,9 +125,17 @@ export function refresh(): Promise<AccountOutcome[]> {
       if (!connected) { out.push({ account: provider, provider, ok: false, skipped: 'not_connected' }); continue; }
       out.push(await syncCalendar(provider));
     }
+    for (const fn of syncedHooks) { try { fn(out); } catch (e) { logger.warn('calendar', 'after-sync hook failed', { error: shortError(e) }); } }
     return out;
   })().finally(() => { running = null; });
   return running;
+}
+
+/** v2 A9: run after every calendar refresh (double-bookings on the Important list). Returns an unsubscribe function. */
+const syncedHooks: ((r: AccountOutcome[]) => void)[] = [];
+export function onCalendarSynced(fn: (r: AccountOutcome[]) => void): () => void {
+  syncedHooks.push(fn);
+  return () => { const i = syncedHooks.indexOf(fn); if (i >= 0) syncedHooks.splice(i, 1); };
 }
 
 /** Which calendars are connected and whether one needs signing in again (GET /calendar/accounts). */

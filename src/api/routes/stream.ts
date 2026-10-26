@@ -20,6 +20,10 @@
  *
  * Mail (A8): /sync's 'mail' collection carries headers only — bodies are never synced. On the stream a mail change is
  * a notice without data (catch up with /sync?collections=mail).
+ *
+ * Important (A9): an item changing is sent as entity 'item' with the item as it is now (or a deletion once it is gone,
+ * someone else's, or aged out); /sync has an 'important' collection. Ownership as for jobs: the owner's items only —
+ * in a single-owner app that is all of them.
  */
 import type { ServerResponse, IncomingMessage } from 'node:http';
 import { ApiError, type Route } from '../router.js';
@@ -30,6 +34,8 @@ import { liveRuns, type LiveEvent } from '../../live-runs.js';
 import type { Caller } from '../auth.js';
 import { calendarItemById, calendarItems } from '../../v2/calendar.js';
 import { mailSnapshot, mailDelta } from '../../v2/mail.js';
+import { importantSnapshot, importantDelta, itemForStream } from '../../v2/important.js';
+import { triageNow, triageTz } from '../../v2/triage.js';
 
 export const EVENT_RETENTION_MS = 7 * 24 * 3_600_000;
 const POLL_MS = 1_000, KEEPALIVE_MS = 15_000, BATCH = 500, STEP_EVERY_MS = 1_000;
@@ -85,8 +91,17 @@ function present(rows: EventRow[], who: Caller | null) {
   // calendar (A7): an event or a draft changing sends the item as it is now (or its deletion), once per batch
   const lastForCal = new Map<string, number>();
   rows.forEach((e, i) => { if (CAL_ENTITIES.has(e.entity)) lastForCal.set(e.entity_id, i); });
+  const lastForItem = new Map<string, number>();
+  rows.forEach((e, i) => { if (e.entity === 'item') lastForItem.set(e.entity_id, i); });
   rows.forEach((e, i) => {
     if (e.entity === 'device' && !who?.scopes.has('admin')) return;
+    if (e.entity === 'item') {
+      if (lastForItem.get(e.entity_id) !== i) return;
+      const data = itemForStream(e.entity_id, triageNow(), triageTz());
+      if (data === undefined) return; // not the owner's: never sent
+      out.push({ seq: e.seq, entity: 'item', id: e.entity_id, op: data ? 'upsert' : 'delete', ...(data ? { data } : {}) });
+      return;
+    }
     if (CAL_ENTITIES.has(e.entity)) {
       if (lastForCal.get(e.entity_id) !== i) return;
       const data = e.op === 'delete' ? null : calendarItemById(e.entity_id);
@@ -110,7 +125,7 @@ function present(rows: EventRow[], who: Caller | null) {
 const CAL_ENTITIES = new Set(['cal_event', 'cal_draft']);
 /** The calendar collection's full snapshot: every cached event and every draft not removed. */
 const calendarSnapshot = () => calendarItems('0000-01-01T00:00:00.000Z', '9999-12-31T23:59:59.999Z');
-const COLLECTIONS = ['jobs', 'calendar', 'mail'];
+const COLLECTIONS = ['jobs', 'calendar', 'mail', 'important'];
 
 function parseCursor(v: string | null | undefined): number {
   if (v === null || v === undefined || v === '') return 0;
@@ -179,6 +194,7 @@ export const streamRoutes: Route[] = [
         if (want.has('jobs')) { upserts.jobs = viewJobs(listJobs({}).filter(visibleJob), c).map(apiJob); deletes.jobs = []; }
         if (want.has('calendar')) { upserts.calendar = calendarSnapshot(); deletes.calendar = []; }
         if (want.has('mail')) { upserts.mail = mailSnapshot(); deletes.mail = []; }
+        if (want.has('important')) { upserts.important = importantSnapshot(triageNow(), triageTz()); deletes.important = []; }
         return { body: { cursor, reset: true, upserts, deletes } };
       }
       const rows = appDb().prepare('SELECT seq, ts, entity, entity_id, op, payload FROM events WHERE seq > ? AND seq <= ? ORDER BY seq').all(since, cursor) as EventRow[];
@@ -191,6 +207,7 @@ export const streamRoutes: Route[] = [
       }
       for (const k of ['jobs', 'calendar'] as const) if (want.has(k)) { upserts[k] = [...ups[k].values()]; deletes[k] = [...dels[k]]; }
       if (want.has('mail')) { const d = mailDelta(rows); upserts.mail = d.upserts; deletes.mail = d.deletes; }
+      if (want.has('important')) { const d = importantDelta(rows, triageNow(), triageTz()); upserts.important = d.upserts; deletes.important = d.deletes; }
       return { body: { cursor, reset: false, upserts, deletes } };
     },
   },

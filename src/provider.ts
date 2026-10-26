@@ -131,8 +131,9 @@ export const US_OPENROUTER_HOSTS = ['openai', 'anthropic', 'google-vertex/us', '
  */
 export const backgroundCalls = new AsyncLocalStorage<boolean>();
 
-/** Which run a model call belongs to, for the token log (set by runAgent). */
-export const callTags = new AsyncLocalStorage<{ session?: string; job?: string; run?: string }>();
+/** Which run a model call belongs to, for the token log (set by runAgent). `purpose` names work that is not a run
+ *  (v2 A9: 'triage-headers', 'triage-deep-read'), so tokens.jsonl can attribute the triage budget. */
+export const callTags = new AsyncLocalStorage<{ session?: string; job?: string; run?: string; purpose?: string }>();
 
 /**
  * Cost (2026-10-23): one line per model call in tokens.jsonl beside the run log (MWA_TOKEN_LOG; "0" turns it off):

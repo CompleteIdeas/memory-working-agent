@@ -57,6 +57,12 @@ export function eventTitles(listing: string): string[] {
 
 const CHANGE = /\b(?:moved?|moving|resched\w*|postpon\w*|cancel\w*|called off|new (?:time|date|day|location|room|link)|changed?|push(?:ed)? (?:back|to)|delay\w*|instead|updated? (?:time|invite|invitation))\b/i;
 
+/** True when a line of text says an event moved, was cancelled or changed (the Important list's calendar-change
+ *  items read an email's subject and snippet with the same test, slice A9). */
+export function saysChange(text: string): boolean {
+  return CHANGE.test(text) || /\b(?:moves|rescheduled|pushed|new time|now (?:on|at))\b|\u2192/i.test(text);
+}
+
 /** The search result's messages (a header line and the lines under it) that say an event changed. */
 export function changeHits(searchText: string): string[] {
   const msgs: string[] = [];

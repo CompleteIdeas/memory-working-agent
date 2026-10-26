@@ -125,7 +125,15 @@ async function syncAll(o: { now?: () => number }): Promise<MailSyncReport> {
   if (purged.length) for (const k of [...bodyCache.keys()]) if (purged.some((a) => k.startsWith(`${a}\n`))) bodyCache.delete(k);
   const report = { at: (o.now ?? Date.now)(), accounts, purged };
   lastReport = report;
+  for (const fn of syncedHooks) { try { fn(report); } catch (e) { logger.warn('mail', 'after-sync hook failed', { error: shortError(e) }); } }
   return report;
+}
+
+/** v2 A9: run after every mail sync (triage). A hook never fails the sync. Returns an unsubscribe function. */
+const syncedHooks: ((r: MailSyncReport) => void)[] = [];
+export function onMailSynced(fn: (r: MailSyncReport) => void): () => void {
+  syncedHooks.push(fn);
+  return () => { const i = syncedHooks.indexOf(fn); if (i >= 0) syncedHooks.splice(i, 1); };
 }
 
 /** Sync now and every 15 minutes (the server process only). Returns a stop function. */
