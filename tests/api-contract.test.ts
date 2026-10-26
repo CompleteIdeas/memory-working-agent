@@ -19,9 +19,15 @@ import { mailId } from '../src/v2/mail.js';
 import { setMailProviders, syncMail } from '../src/sync/mail.js';
 import { MessageGoneError } from '../src/sync/mail-types.js';
 import { refreshImportant, factItem, setTriageDeps } from '../src/v2/triage.js';
-import { itemId, upsertItem } from '../src/v2/important.js';
+import { itemId, upsertItem, ruleIdFor } from '../src/v2/important.js';
 import { setImportantRouteDeps } from '../src/api/routes/important.js';
 import { localDate, addDays } from '../src/sync/tz.js';
+import { setProjectRouteDeps } from '../src/api/routes/projects.js';
+import { createProject, setEmbedder } from '../src/v2/projects.js';
+import { appendTurn } from '../src/conversations.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const spec = parse(readFileSync(new URL('../api/openapi.yaml', import.meta.url), 'utf8'));
 const METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
@@ -117,12 +123,24 @@ beforeAll(async () => {
   const fact = upsertItem(factItem({ kind: 'event', title: 'Book fair', date: day, start: '15:00', end: '18:00', place: 'Oakwood Elementary' },
     { from_name: 'Oakwood school newsletter', from_addr: 'news@oakwood.example', received_at: Date.now() - 60_000 }, ids.mailGone, Date.now(), 'America/New_York'), 'America/New_York');
   Object.assign(ids, { item: itemId(`mail:${ids.mail}`), item2: itemId(`mail:${ids.mailGone}`), fact: fact.id, skippedMail: mailId('google:me@example.com', 'c3') });
+  // A5: two projects with a turn each; a stub embedder (the routing model is exercised in tests/projects-routing) and a
+  // fake chat start (no model)
+  setEmbedder(async (t) => [t.length % 7, 1, t.includes('horse') ? 3 : 0]);
+  setProjectRouteDeps({
+    workspace: () => mkdtempSync(join(tmpdir(), 'mwa-a5-ws-')), startChat: async () => ({ state: 'started', runId: 'live_contract' }),
+    stop: (id) => id === ids.eventing, steer: (id) => id === ids.eventing, attach: () => null,
+    acceptOffer: async (id) => (id === ids.eventing ? { goal: 'abcd1234', message: 'On it.' } : null),
+  });
+  const eventing = createProject({ name: 'Eventing', icon: 'horse' });
+  const family = createProject({ name: 'Family & school' });
+  const turn = appendTurn({ ts: Date.now(), session: `p-${eventing.id}`, message: 'When do entries close?', reply: 'Friday at 5pm.', kind: 'chat' })!;
+  Object.assign(ids, { eventing: eventing.id, family: family.id, turn });
   const v1 = createV1(v1Routes(), { authenticate: () => TEST_CALLER, sameOrigin: () => true });
   server = createServer(async (req, res) => { if (!(await v1(req, res))) { res.writeHead(404); res.end(); } });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
-afterAll(() => { server?.close(); setCalendarSyncDeps(null); setMailProviders(null); setTriageDeps(null); setImportantRouteDeps(null); });
+afterAll(() => { server?.close(); setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); });
 
 /** One request per operation (and a few error cases). Slices append theirs. */
 const ids: Record<string, string> = {};
@@ -158,11 +176,17 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'GET /jobs', path: '/jobs?state=nonsense', status: 400 },
   { op: 'GET /jobs/{id}', path: () => `/jobs/${ids.partly}`, status: 200 },
   { op: 'GET /jobs/{id}', path: '/jobs/j_nope', status: 404 },
+  { op: 'GET /jobs/{id}/estimate', path: () => `/jobs/${ids.partly}/estimate`, status: 200 },
+  { op: 'GET /jobs/{id}/estimate', path: () => `/jobs/${ids.done}/estimate`, status: 200 },
+  { op: 'GET /jobs/{id}/estimate', path: () => `/jobs/${ids.watch}/estimate`, status: 409 },
+  { op: 'GET /jobs/{id}/estimate', path: '/jobs/j_nope/estimate', status: 404 },
+  { op: 'POST /jobs/{id}/continue', path: () => `/jobs/${ids.partly}/continue`, init: () => ({ ...post(), body: JSON.stringify({ capUsd: 0 }) }), status: 400 },
+  { op: 'POST /jobs/{id}/start-over', path: () => `/jobs/${ids.failed}/start-over`, init: () => ({ ...post(), body: JSON.stringify({ capUsd: 21 }) }), status: 400 },
   { op: 'POST /jobs/{id}/stop', path: () => `/jobs/${ids.running}/stop`, init: post, status: 200 },
   { op: 'POST /jobs/{id}/stop', path: () => `/jobs/${ids.done}/stop`, init: post, status: 409 },
   { op: 'POST /jobs/{id}/continue', path: () => `/jobs/${ids.done}/continue`, init: post, status: 409 },
   { op: 'POST /jobs/{id}/continue', path: () => `/jobs/${ids.partly}/continue`, init: post, status: 202 },
-  { op: 'POST /jobs/{id}/start-over', path: () => `/jobs/${ids.failed}/start-over`, init: post, status: 202 },
+  { op: 'POST /jobs/{id}/start-over', path: () => `/jobs/${ids.failed}/start-over`, init: () => ({ ...post(), body: JSON.stringify({ capUsd: 0.5 }) }), status: 202 },
   { op: 'POST /jobs/{id}/open', path: () => `/jobs/${ids.done}/open`, init: post, status: 200 },
   { op: 'POST /jobs/{id}/pause', path: () => `/jobs/${ids.watch}/pause`, init: post, status: 200 },
   { op: 'POST /jobs/{id}/pause', path: () => `/jobs/${ids.done}/pause`, init: post, status: 409 },
@@ -202,7 +226,42 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /important/refresh', path: '/important/refresh', init: post, status: 200 },
   { op: 'GET /sync', path: '/sync?collections=important', status: 200 },
   { op: 'GET /sync', path: '/sync?since=1&collections=important,mail', status: 200 },
+  { op: 'GET /triage/rules', path: '/triage/rules', status: 200 },
+  { op: 'DELETE /triage/rules/{id}', path: () => `/triage/rules/${ruleIdFor('sender', 'ellen@example.com')}`, init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 200 },
+  { op: 'DELETE /triage/rules/{id}', path: '/triage/rules/tr_nopenopenope', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 404 },
   { op: 'GET /sync', path: '/sync?since=1&collections=calendar', status: 200 },
+  // A5 projects and threads
+  { op: 'GET /projects', path: '/projects', status: 200 },
+  { op: 'GET /projects', path: '/projects?archived=1', status: 200 },
+  { op: 'POST /projects', path: '/projects', init: () => ({ ...post(), body: JSON.stringify({ name: 'AI newsletter', icon: 'spark' }) }), status: 201 },
+  { op: 'POST /projects', path: '/projects', init: () => ({ ...post(), body: JSON.stringify({ name: 'eventing' }) }), status: 409 },
+  { op: 'POST /projects', path: '/projects', init: () => ({ ...post(), body: JSON.stringify({ name: '  ' }) }), status: 400 },
+  { op: 'GET /projects/suggest', path: '/projects/suggest?text=Is%20the%20horse%20sound%3F', status: 200 },
+  { op: 'GET /projects/suggest', path: () => `/projects/suggest?text=Is%20the%20horse%20sound%3F&from=${ids.family}`, status: 200 },
+  { op: 'GET /projects/suggest', path: '/projects/suggest', status: 400 },
+  { op: 'PATCH /projects/{id}', path: () => `/projects/${ids.family}`, init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ name: 'Family and school', icon: 'home' }) }), status: 200 },
+  { op: 'PATCH /projects/{id}', path: '/projects/general', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ archived: true }) }), status: 409 },
+  { op: 'PATCH /projects/{id}', path: '/projects/pr_nope', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ name: 'x' }) }), status: 404 },
+  { op: 'GET /projects/{id}/thread', path: () => `/projects/${ids.eventing}/thread`, status: 200 },
+  { op: 'GET /projects/{id}/thread', path: () => `/projects/${ids.eventing}/thread?before=nonsense`, status: 400 },
+  { op: 'GET /projects/{id}/thread', path: '/projects/pr_nope/thread', status: 404 },
+  { op: 'POST /projects/{id}/messages', path: () => `/projects/${ids.eventing}/messages`, init: () => ({ ...post(), body: JSON.stringify({ text: 'Is Comet entered?' }) }), status: 202 },
+  { op: 'POST /projects/{id}/messages', path: () => `/projects/${ids.eventing}/messages`, init: post, status: 400 },
+  { op: 'GET /projects/{id}/work', path: () => `/projects/${ids.eventing}/work`, status: 200 },
+  { op: 'GET /projects/{id}/work', path: '/projects/general/work', status: 200 },
+  { op: 'GET /projects/{id}/files', path: '/projects/general/files', status: 200 },
+  { op: 'POST /turns/{id}/move', path: () => `/turns/${ids.turn}/move`, init: () => ({ ...post(), body: JSON.stringify({ projectId: ids.family }) }), status: 200 },
+  { op: 'POST /turns/{id}/move', path: () => `/turns/${ids.turn}/move`, init: () => ({ ...post(), body: JSON.stringify({ projectId: ids.family }) }), status: 409 },
+  { op: 'POST /turns/{id}/move', path: '/turns/tu_000000000000/move', init: () => ({ ...post(), body: JSON.stringify({ projectId: 'general' }) }), status: 404 },
+  { op: 'POST /projects/{id}/stop', path: () => `/projects/${ids.eventing}/stop`, init: post, status: 200 },
+  { op: 'POST /projects/{id}/stop', path: () => `/projects/${ids.family}/stop`, init: post, status: 409 },
+  { op: 'POST /projects/{id}/steer', path: () => `/projects/${ids.eventing}/steer`, init: () => ({ ...post(), body: JSON.stringify({ text: 'Also the ride times' }) }), status: 200 },
+  { op: 'POST /projects/{id}/steer', path: () => `/projects/${ids.family}/steer`, init: () => ({ ...post(), body: JSON.stringify({ text: 'x' }) }), status: 409 },
+  { op: 'GET /projects/{id}/live', path: () => `/projects/${ids.eventing}/live`, status: 200 },
+  { op: 'POST /projects/{id}/offer/accept', path: () => `/projects/${ids.eventing}/offer/accept`, init: post, status: 202 },
+  { op: 'POST /projects/{id}/offer/accept', path: () => `/projects/${ids.family}/offer/accept`, init: post, status: 409 },
+  { op: 'GET /sync', path: '/sync?collections=projects,turns', status: 200 },
+  { op: 'GET /sync', path: '/sync?since=1&collections=projects,turns,jobs', status: 200 },
 ];
 
 describe('responses match the contract', () => {

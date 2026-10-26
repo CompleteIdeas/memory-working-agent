@@ -38,8 +38,8 @@ from a code-grounded plan (2026-10-26); file:line references there were checked 
 | A5 | Projects and threads, routing suggestion, provenance | M | A3a | |
 | A6 | Ask v1, big-ask plan, item-scoped ask (fenced, tainted) | M–L | A3b, A5 | |
 | A7 | Calendar sync (Google, Outlook) + MWA-held drafts, Confirm/Remove, .ics, conflicts | M–L | A0 | done, merged (review fixed) |
-| A8 | Mail header sync (Gmail history, IMAP, Graph delta) + reader + save draft | M–L | A0 | |
-| A9 | Triage and Important items, Handled / Not important / skipped | L | A7, A8, A3a | built on v2-a9 (not merged); waiting-reply and PDFs deferred |
+| A8 | Mail header sync (Gmail history, IMAP, Graph delta) + reader + save draft | M–L | A0 | done, merged (review fixed) |
+| A9 | Triage and Important items, Handled / Not important / skipped | L | A7, A8, A3a | built on v2-a9 with review fixes (not merged); waiting-reply and PDFs deferred |
 | A10 | Today composite | S | A3a, A7, A9 | |
 | W1 | v2 web shell + typed client + IndexedDB store + fixture server from prototype data | L | A1 | |
 | W2–W5 | Today+Calendar · Important+mail · Projects+Ask+plan · Settings+first run+devices | M each | W1 + backend | |

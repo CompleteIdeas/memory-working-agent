@@ -24,6 +24,9 @@
  * Important (A9): an item changing is sent as entity 'item' with the item as it is now (or a deletion once it is gone,
  * someone else's, or aged out); /sync has an 'important' collection. Ownership as for jobs: the owner's items only —
  * in a single-owner app that is all of them.
+ * Projects (A5): a project or a thread's turn changing is sent with its current shape; /sync has 'projects' (all of
+ * them, archived included, so an archive reaches the phone) and 'turns' (a snapshot holds each active project's latest
+ * 50; a delta holds every turn changed since the cursor, a moved one included with its new project).
  */
 import type { ServerResponse, IncomingMessage } from 'node:http';
 import { ApiError, type Route } from '../router.js';
@@ -34,8 +37,9 @@ import { liveRuns, type LiveEvent } from '../../live-runs.js';
 import type { Caller } from '../auth.js';
 import { calendarItemById, calendarItems } from '../../v2/calendar.js';
 import { mailSnapshot, mailDelta } from '../../v2/mail.js';
-import { importantSnapshot, importantDelta, itemForStream } from '../../v2/important.js';
+import { importantSnapshot, itemForStream } from '../../v2/important.js';
 import { triageNow, triageTz } from '../../v2/triage.js';
+import { apiProject, apiTurn, getProject, getTurn, listProjects, recentTurns } from '../../v2/projects.js';
 
 export const EVENT_RETENTION_MS = 7 * 24 * 3_600_000;
 const POLL_MS = 1_000, KEEPALIVE_MS = 15_000, BATCH = 500, STEP_EVERY_MS = 1_000;
@@ -93,6 +97,8 @@ function present(rows: EventRow[], who: Caller | null) {
   rows.forEach((e, i) => { if (CAL_ENTITIES.has(e.entity)) lastForCal.set(e.entity_id, i); });
   const lastForItem = new Map<string, number>();
   rows.forEach((e, i) => { if (e.entity === 'item') lastForItem.set(e.entity_id, i); });
+  const lastForProject = new Map<string, number>(), lastForTurn = new Map<string, number>();
+  rows.forEach((e, i) => { if (e.entity === 'project') lastForProject.set(e.entity_id, i); else if (e.entity === 'turn') lastForTurn.set(e.entity_id, i); });
   rows.forEach((e, i) => {
     if (e.entity === 'device' && !who?.scopes.has('admin')) return;
     if (e.entity === 'item') {
@@ -106,6 +112,14 @@ function present(rows: EventRow[], who: Caller | null) {
       if (lastForCal.get(e.entity_id) !== i) return;
       const data = e.op === 'delete' ? null : calendarItemById(e.entity_id);
       out.push({ seq: e.seq, entity: 'calendar', id: e.entity_id, op: data ? 'upsert' : 'delete', ...(data ? { data } : {}) });
+      return;
+    }
+    if (e.entity === 'project' || e.entity === 'turn') {
+      const last = e.entity === 'project' ? lastForProject : lastForTurn;
+      if (last.get(e.entity_id) !== i) return; // one message per project or turn per batch: as it is now
+      const data = e.op === 'delete' ? null : e.entity === 'project' ? (() => { const p = getProject(e.entity_id); return p ? apiProject(p) : null; })()
+        : (() => { const t = getTurn(e.entity_id); return t ? apiTurn(t, undefined, { summary: true }) : null; })();
+      out.push({ seq: e.seq, entity: e.entity, id: e.entity_id, op: data ? 'upsert' : 'delete', ...(data ? { data } : {}) });
       return;
     }
     const j = jobIdOf(e);
@@ -125,7 +139,10 @@ function present(rows: EventRow[], who: Caller | null) {
 const CAL_ENTITIES = new Set(['cal_event', 'cal_draft']);
 /** The calendar collection's full snapshot: every cached event and every draft not removed. */
 const calendarSnapshot = () => calendarItems('0000-01-01T00:00:00.000Z', '9999-12-31T23:59:59.999Z');
-const COLLECTIONS = ['jobs', 'calendar', 'mail', 'important'];
+const COLLECTIONS = ['jobs', 'calendar', 'mail', 'projects', 'turns', 'important'];
+/** A /sync delta answers at most this many events, and stops early near this many bytes (`more: true`). */
+export const SYNC_PAGE = 500;
+export const SYNC_MAX_BYTES = 5 * 1024 * 1024;
 
 function parseCursor(v: string | null | undefined): number {
   if (v === null || v === undefined || v === '') return 0;
@@ -187,28 +204,46 @@ export const streamRoutes: Route[] = [
       const unknown = wanted.filter((w) => !COLLECTIONS.includes(w));
       if (unknown.length) throw new ApiError(400, 'unknown_collection', `Unknown collection: ${unknown.join(', ')}. Available: ${COLLECTIONS.join(', ')}.`);
       const want = new Set(wanted);
-      const cursor = headSeq();
+      const head = headSeq();
       const c = ctx();
       const upserts: Record<string, unknown[]> = {}, deletes: Record<string, string[]> = {};
       if (since === 0 || cursorTooOld(since)) {
         if (want.has('jobs')) { upserts.jobs = viewJobs(listJobs({}).filter(visibleJob), c).map(apiJob); deletes.jobs = []; }
         if (want.has('calendar')) { upserts.calendar = calendarSnapshot(); deletes.calendar = []; }
         if (want.has('mail')) { upserts.mail = mailSnapshot(); deletes.mail = []; }
+        if (want.has('projects')) { upserts.projects = listProjects({ archived: true }).map(apiProject); deletes.projects = []; }
+        if (want.has('turns')) { upserts.turns = recentTurns(50).map((t) => apiTurn(t, undefined, { summary: true })); deletes.turns = []; }
         if (want.has('important')) { upserts.important = importantSnapshot(triageNow(), triageTz()); deletes.important = []; }
-        return { body: { cursor, reset: true, upserts, deletes } };
+        return { body: { cursor: head, reset: true, more: false, upserts, deletes } };
       }
-      const rows = appDb().prepare('SELECT seq, ts, entity, entity_id, op, payload FROM events WHERE seq > ? AND seq <= ? ORDER BY seq').all(since, cursor) as EventRow[];
-      const ups = { jobs: new Map<string, unknown>(), calendar: new Map<string, unknown>() };
-      const dels = { jobs: new Set<string>(), calendar: new Set<string>() };
-      for (const m of present(rows, who)) {
-        const k = m.entity === 'job' ? 'jobs' : m.entity === 'calendar' ? 'calendar' : null;
+      // A page of at most SYNC_PAGE events and about SYNC_MAX_BYTES of answer (review of A5: a delta across the
+      // conversation import was 127 MB). `more: true` — call again with the returned cursor.
+      const page = appDb().prepare('SELECT seq, ts, entity, entity_id, op, payload FROM events WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?').all(since, head, SYNC_PAGE + 1) as EventRow[];
+      let more = page.length > SYNC_PAGE;
+      const fetched = page.slice(0, SYNC_PAGE);
+      const rows: EventRow[] = [];
+      const presented: ReturnType<typeof present> = [];
+      let bytes = 0;
+      for (let i = 0; i < fetched.length; i += 100) {
+        const chunk = fetched.slice(i, i + 100);
+        const out = present(chunk, who);
+        rows.push(...chunk); presented.push(...out);
+        bytes += JSON.stringify(out).length;
+        if (bytes >= SYNC_MAX_BYTES && i + 100 < fetched.length) { more = true; break; }
+      }
+      const cursor = more && rows.length ? rows[rows.length - 1].seq : head;
+      const KEYS = ['jobs', 'calendar', 'projects', 'turns', 'important'] as const;
+      const COLL: Record<string, (typeof KEYS)[number]> = { job: 'jobs', calendar: 'calendar', project: 'projects', turn: 'turns', item: 'important' };
+      const ups = Object.fromEntries(KEYS.map((k) => [k, new Map<string, unknown>()])) as Record<(typeof KEYS)[number], Map<string, unknown>>;
+      const dels = Object.fromEntries(KEYS.map((k) => [k, new Set<string>()])) as Record<(typeof KEYS)[number], Set<string>>;
+      for (const m of presented) {
+        const k = COLL[m.entity];
         if (!k || !want.has(k)) continue;
         if (m.op === 'delete') { dels[k].add(m.id); ups[k].delete(m.id); } else { ups[k].set(m.id, m.data); dels[k].delete(m.id); }
       }
-      for (const k of ['jobs', 'calendar'] as const) if (want.has(k)) { upserts[k] = [...ups[k].values()]; deletes[k] = [...dels[k]]; }
+      for (const k of KEYS) if (want.has(k)) { upserts[k] = [...ups[k].values()]; deletes[k] = [...dels[k]]; }
       if (want.has('mail')) { const d = mailDelta(rows); upserts.mail = d.upserts; deletes.mail = d.deletes; }
-      if (want.has('important')) { const d = importantDelta(rows, triageNow(), triageTz()); upserts.important = d.upserts; deletes.important = d.deletes; }
-      return { body: { cursor, reset: false, upserts, deletes } };
+      return { body: { cursor, reset: false, more, upserts, deletes } };
     },
   },
 ];

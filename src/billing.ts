@@ -13,6 +13,8 @@ import { configPath } from './config.js';
 
 export interface Call {
   ts: number; session?: string; job?: string; run?: string; model: string; route?: string; served?: string; bg?: boolean;
+  /** work that is not a run, by name (v2 A9: 'triage-headers', 'triage-deep-read') */
+  purpose?: string;
   in: number; cached: number; out: number; reasoning: number; cost: number;
 }
 export interface Tokens { in: number; cached: number; out: number; reasoning: number }
@@ -23,6 +25,8 @@ export interface BillingSummary {
   days: { day: string; cost: number; calls: number }[];
   byModel: ({ model: string } & Bucket)[];
   bySession: ({ session: string; kind: 'chat' | 'job' | 'other' } & Bucket)[];
+  /** this month's calls made for a named purpose rather than a run: mail triage shows here as its own line */
+  byPurpose: ({ purpose: string; label: string } & Bucket)[];
   budget: { monthlyUsd: number | null; usedUsd: number; pct: number | null; state: 'none' | 'ok' | 'warn' | 'over'; fixed: boolean };
   balance: { provider: string; remainingUsd: number; at: number } | null;
   logPath: string;
@@ -35,19 +39,23 @@ export function tokenLogPath(env: NodeJS.ProcessEnv = process.env): string {
 const MAX_READ = 16 * 1024 * 1024; // the log only grows: the last 16 MB is months of calls
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0);
 
-/** The calls logged since `sinceMs`, oldest first. A line that is not JSON is skipped. */
-export function readCalls(path = tokenLogPath(), sinceMs = 0): Call[] {
-  if (!existsSync(path)) return [];
-  let text: string;
+/** The last `max` bytes of a log that only grows, whole lines only; null when it is missing or unreadable.
+ *  (Shared with v2/estimate.ts, which reads runs.jsonl and tokens.jsonl the same way.) */
+export function readTail(path: string, max = MAX_READ): string | null {
+  if (!existsSync(path)) return null;
   try {
     const size = statSync(path).size;
-    if (size <= MAX_READ) text = readFileSync(path, 'utf8');
-    else {
-      const fd = openSync(path, 'r');
-      try { const buf = Buffer.alloc(MAX_READ); readSync(fd, buf, 0, MAX_READ, size - MAX_READ); text = buf.toString('utf8'); text = text.slice(text.indexOf('\n') + 1); }
-      finally { closeSync(fd); }
-    }
-  } catch { return []; }
+    if (size <= max) return readFileSync(path, 'utf8');
+    const fd = openSync(path, 'r');
+    try { const buf = Buffer.alloc(max); readSync(fd, buf, 0, max, size - max); const text = buf.toString('utf8'); return text.slice(text.indexOf('\n') + 1); }
+    finally { closeSync(fd); }
+  } catch { return null; }
+}
+
+/** The calls logged since `sinceMs`, oldest first. A line that is not JSON is skipped. */
+export function readCalls(path = tokenLogPath(), sinceMs = 0): Call[] {
+  const text = readTail(path);
+  if (text === null) return [];
   const out: Call[] = [];
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
@@ -56,6 +64,7 @@ export function readCalls(path = tokenLogPath(), sinceMs = 0): Call[] {
     const ts = num(d.ts);
     if (!ts || ts < sinceMs) continue;
     out.push({ ts, session: typeof d.session === 'string' ? d.session : undefined, job: typeof d.job === 'string' ? d.job : undefined, run: typeof d.run === 'string' ? d.run : undefined,
+      ...(typeof d.purpose === 'string' && d.purpose ? { purpose: d.purpose.slice(0, 40) } : {}),
       model: String(d.model ?? 'unknown'), route: typeof d.route === 'string' ? d.route : undefined, served: typeof d.served === 'string' ? d.served : undefined, bg: d.bg === true,
       in: num(d.in), cached: num(d.cached), out: num(d.out), reasoning: num(d.reasoning), cost: num(d.cost) });
   }
@@ -72,6 +81,8 @@ export const dayOf = (ms: number): string => { const d = new Date(ms); return `$
 /** The first instant of the local calendar month `ms` is in. */
 export const monthStart = (ms: number): number => { const d = new Date(ms); return new Date(d.getFullYear(), d.getMonth(), 1).getTime(); };
 
+const PURPOSE_LABEL: Record<string, string> = { 'triage-headers': 'Sorting your mail', 'triage-deep-read': 'Reading newsletters for dates' };
+
 /** A session's kind from its name: the web app's conversations are `web-…`, fired jobs run under `job_<id>`. */
 const kindOf = (c: Call): 'chat' | 'job' | 'other' => (c.job || /^job_/.test(c.session ?? '') ? 'job' : /^(web|tg|telegram|chat|mail)/i.test(c.session ?? '') ? 'chat' : 'other');
 
@@ -81,6 +92,7 @@ export function billingSummary(calls: Call[], nowMs = Date.now(), budgetUsd: num
   const month = emptyBucket();
   const byModel = new Map<string, Bucket>();
   const bySession = new Map<string, Bucket & { kind: 'chat' | 'job' | 'other' }>();
+  const byPurpose = new Map<string, Bucket>();
   const byDay = new Map<string, { cost: number; calls: number }>();
   const since30 = nowMs - 30 * 86_400_000;
   for (const c of calls) {
@@ -89,6 +101,7 @@ export function billingSummary(calls: Call[], nowMs = Date.now(), budgetUsd: num
       const m = byModel.get(c.model) ?? emptyBucket(); add(m, c); byModel.set(c.model, m);
       const key = c.session ?? '(no session)';
       const s = bySession.get(key) ?? { ...emptyBucket(), kind: kindOf(c) }; add(s, c); bySession.set(key, s);
+      if (c.purpose) { const p = byPurpose.get(c.purpose) ?? emptyBucket(); add(p, c); byPurpose.set(c.purpose, p); }
     }
     if (c.ts >= since30) { const day = dayOf(c.ts); const d = byDay.get(day) ?? { cost: 0, calls: 0 }; d.cost += c.cost; d.calls++; byDay.set(day, d); }
   }
@@ -104,6 +117,7 @@ export function billingSummary(calls: Call[], nowMs = Date.now(), budgetUsd: num
     days,
     byModel: [...byModel.entries()].map(([model, b]) => ({ model, ...finish(b) })).sort((a, b) => b.cost - a.cost),
     bySession: [...bySession.entries()].map(([session, b]) => ({ session, kind: b.kind, ...finish(b) })).sort((a, b) => b.cost - a.cost).slice(0, 10),
+    byPurpose: [...byPurpose.entries()].map(([purpose, b]) => ({ purpose, label: PURPOSE_LABEL[purpose] ?? purpose, ...finish(b) })).sort((a, b) => b.cost - a.cost),
     budget: { monthlyUsd: budgetUsd, usedUsd: used, pct, state, fixed },
     balance,
     logPath,

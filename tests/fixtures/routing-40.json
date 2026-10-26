@@ -1,0 +1,104 @@
+{
+  "about": "A5 routing fixture: four of the person's projects, a few earlier messages in each thread (what the centroid is built from), and 40 new messages labelled with the project they belong to (10 each). Written for the accuracy gate in tests/projects-routing.test.ts; the messages avoid the project names on purpose.",
+  "projects": [
+    {
+      "key": "eventing",
+      "name": "Eventing",
+      "thread": [
+        "When do entries close for the Stable View schooling day?",
+        "Remind me what Ellen said about Willow's canter transitions.",
+        "What do I need to pack for the horse trials next month?",
+        "Find the dressage test for Beginner Novice A.",
+        "Is the cross-country course at Stable View open for schooling this weekend?",
+        "Book the farrier for Comet before the competition."
+      ]
+    },
+    {
+      "key": "family",
+      "name": "Family & school",
+      "thread": [
+        "Can Riley go on the Saturday morning library trip?",
+        "When is the next parent-teacher conference at Oakwood Elementary?",
+        "Add Riley's dentist appointment on Wednesday to the calendar.",
+        "What did the PTA email say about the book fair volunteers?",
+        "Remind me to sign the permission slip for the field trip.",
+        "Who is picking the kids up from soccer practice on Thursday?"
+      ]
+    },
+    {
+      "key": "ainews",
+      "name": "AI newsletter",
+      "thread": [
+        "Pull together this week's AI news for the newsletter.",
+        "Draft a one-line blurb for each of the top five stories.",
+        "Dana wants my top three stories by Thursday.",
+        "Summarise the new open-weights model release for subscribers.",
+        "What did The Batch cover this week?",
+        "Check the issue's links before it goes out."
+      ]
+    },
+    {
+      "key": "house",
+      "name": "House & garden",
+      "thread": [
+        "Remind me what the gutter quotes were.",
+        "When should I plant the tulip bulbs this fall?",
+        "Find a plumber to look at the leaking kitchen faucet.",
+        "The gutter guards from Hillside ship Thursday.",
+        "How often should the furnace filter be changed?",
+        "Compare the two quotes for repainting the deck."
+      ]
+    }
+  ],
+  "messages": [
+    { "text": "How many penalties do you get for a refusal at a cross-country fence?", "project": "eventing" },
+    { "text": "Can you find a clinic with a show-jumping coach in December?", "project": "eventing" },
+    { "text": "What's the vaccination rule for horses at USEF competitions?", "project": "eventing" },
+    { "text": "Remind me to clean the tack and the saddle before Saturday.", "project": "eventing" },
+    { "text": "Which stud sizes should Willow wear on wet ground?", "project": "eventing" },
+    { "text": "What's my ride time for dressage on Saturday?", "project": "eventing" },
+    { "text": "Order more fly spray and hoof oil for the barn.", "project": "eventing" },
+    { "text": "Did I pay the entry fee for the November horse trial?", "project": "eventing" },
+    { "text": "Write up notes from today's lesson on Comet's jumping.", "project": "eventing" },
+    { "text": "Is the trailer due for its inspection before we haul to the show?", "project": "eventing" },
+
+    { "text": "What time does school let out early on the Wednesday before Thanksgiving?", "project": "family" },
+    { "text": "Riley needs a costume for the class play next Friday.", "project": "family" },
+    { "text": "Can we make the book fair on Saturday the 14th?", "project": "family" },
+    { "text": "Email the teacher that Riley will miss school on Monday.", "project": "family" },
+    { "text": "Find a babysitter for Friday night.", "project": "family" },
+    { "text": "What's on the school lunch menu next week?", "project": "family" },
+    { "text": "Sign the kids up for the winter swim lessons.", "project": "family" },
+    { "text": "When is Grandma's birthday party, and what should we bring?", "project": "family" },
+    { "text": "Help me plan Riley's homework schedule around soccer.", "project": "family" },
+    { "text": "Did the pediatrician send the flu shot reminder?", "project": "family" },
+
+    { "text": "Find three stories about AI regulation in Europe from this week.", "project": "ainews" },
+    { "text": "Write the intro paragraph for Thursday's issue.", "project": "ainews" },
+    { "text": "How many subscribers opened last week's edition?", "project": "ainews" },
+    { "text": "Is there anything new on GPU shortages worth including?", "project": "ainews" },
+    { "text": "Rewrite the headline about the chatbot benchmark so it's less hype.", "project": "ainews" },
+    { "text": "Add a short section on a useful AI tool readers can try.", "project": "ainews" },
+    { "text": "Check whether the research paper on reasoning models is peer reviewed.", "project": "ainews" },
+    { "text": "Schedule the issue to send at 7am on Thursday.", "project": "ainews" },
+    { "text": "Collect reader replies to last week's question about AI at work.", "project": "ainews" },
+    { "text": "What did the big labs announce at the developer conference?", "project": "ainews" },
+
+    { "text": "When should I aerate and overseed the lawn?", "project": "house" },
+    { "text": "Get a quote for replacing the roof shingles.", "project": "house" },
+    { "text": "The dishwasher is making a grinding noise. What could it be?", "project": "house" },
+    { "text": "Which mulch is best for the rose beds?", "project": "house" },
+    { "text": "Schedule the chimney sweep before we light the fireplace.", "project": "house" },
+    { "text": "How do I winterize the outdoor hose bibs?", "project": "house" },
+    { "text": "Find an electrician to install a ceiling fan in the bedroom.", "project": "house" },
+    { "text": "What paint color did we use in the hallway?", "project": "house" },
+    { "text": "Prune the hydrangeas: now or in spring?", "project": "house" },
+    { "text": "Did the HVAC company confirm the annual service visit?", "project": "house" }
+  ],
+  "unsure": [
+    "What's on my plate tomorrow?",
+    "Thanks, that's helpful.",
+    "Can you remind me about it later?",
+    "What time is it in London?"
+  ]
+}

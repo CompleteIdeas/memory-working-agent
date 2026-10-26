@@ -16,11 +16,12 @@
  */
 import { ApiError, type Route } from '../router.js';
 import {
-  apiItem, getItem, payloadOf, putRule, putVerdict, getVerdict, setItemState, visibleItem, itemByKey, GROUPS, MAIL_KINDS,
-  type Group, type ItemRow, type MailKind,
+  apiItem, getItem, payloadOf, putRule, putVerdict, getVerdict, setItemState, visibleItem, itemByKey, listRules, deleteRule, GROUPS,
+  type Group, type ItemRow,
 } from '../../v2/important.js';
+import { isFreemail } from '../../v2/mail-trust.js';
 import {
-  applyRulesNow, importantList, kindPlural, refreshImportant, skippedMail, sortingView, triageNow, triageTz, rebuildItems,
+  applyRulesNow, importantList, kindPlural, refreshImportant, skippedMail, sortingView, triageNow, triageTz, rebuildItems, headerKind, ruleEffect,
 } from '../../v2/triage.js';
 import { appDb, recordEvent } from '../../v2/db.js';
 import { getMail, parseMailId, mailId } from '../../v2/mail.js';
@@ -130,21 +131,43 @@ export const importantRoutes: Route[] = [
       const now = triageNow();
       const m = mailOf(r);
       let message: string;
-      let rule: { match: string; value: string } | null = null;
+      let rule: { id: string; match: string; value: string } | null = null;
+      let effect: { messages: number; senders: number } | null = null;
       if (m?.row?.from_addr) {
         // the person's tap is the only thing that writes a rule
         const addr = m.row.from_addr.toLowerCase();
-        const kind = (r.kind && (MAIL_KINDS as readonly string[]).includes(r.kind) ? r.kind : getVerdict(m.id)?.kind ?? 'other') as MailKind;
-        const from = cleanLine(m.row.from_name, 120) || addr;
-        if (scope === 'kind') { putRule('kind', kind, 'skip', now); rule = { match: 'kind', value: kind }; message = `Got it. I'll skip ${kindPlural(kind)}.`; }
-        else if (scope === 'domain') { putRule('domain', domainOf(addr), 'skip', now); rule = { match: 'domain', value: domainOf(addr) }; message = `Got it. I'll skip messages from ${domainOf(addr)}.`; }
-        else { putRule('sender', addr, 'skip', now); rule = { match: 'sender', value: addr }; message = `Got it. I'll skip messages like this from ${from}.`; }
+        const dom = domainOf(addr);
+        // a kind is learned only when the headers establish it (a list, a promotion, a receipt) — never a kind the
+        // model inferred from text the sender wrote (review of A9, H2)
+        const kind = headerKind(m.row);
+        if (scope === 'kind' && !kind) throw new ApiError(400, 'kind_not_available', `I can only learn a kind from how a message is sent (a mailing list, a promotion, a receipt). Choose "messages from ${addr}" instead.`);
+        if (scope === 'domain' && isFreemail(dom)) throw new ApiError(400, 'freemail_domain', `${dom} is a free email service: skipping it would hide everyone who uses it, people you know included. Choose "messages from ${addr}" instead.`);
+        const made = scope === 'kind' ? putRule('kind', kind!, 'skip', now) : scope === 'domain' ? putRule('domain', dom, 'skip', now) : putRule('sender', addr, 'skip', now);
+        rule = { id: made.id, match: made.match_kind, value: made.value };
+        effect = ruleEffect(made);
+        const others = effect.senders > 1 ? ` This will hide mail from ${effect.senders} senders (${effect.messages} messages now).` : '';
+        message = scope === 'kind' ? `Got it. I'll skip ${kindPlural(kind!)}.${others}` : scope === 'domain' ? `Got it. I'll skip messages from ${dom}.${others}` : `Got it. I'll skip messages like this from ${addr}.`;
       } else {
         message = m ? "Got it. I've taken it off your list (that message is no longer in your inbox, so I can't learn from it)." : "Got it. I've taken it off your list.";
       }
       const after = setItemState(r.id, 'not-important', now)!;
       if (rule) applyRulesNow(now, triageTz());
-      return { body: { item: out(getItem(after.id) ?? after), rule, message } };
+      return { body: { item: out(getItem(after.id) ?? after), rule, ...(effect ? { effect } : {}), message } };
+    },
+  },
+  {
+    method: 'GET', path: '/triage/rules', scope: 'read',
+    handler: () => ({ body: { rules: listRules().map((x) => ({ id: x.id, match: x.match_kind, value: x.value, verdict: x.verdict, createdAt: x.ts, effect: ruleEffect(x) })) } }),
+  },
+  {
+    method: 'DELETE', path: '/triage/rules/{id}', scope: 'act',
+    handler: ({ params }) => {
+      const x = /^tr_[A-Za-z0-9_-]{4,40}$/.test(params.id) ? deleteRule(params.id) : null;
+      if (!x) throw new ApiError(404, 'not_found', 'No such rule.');
+      applyRulesNow(triageNow(), triageTz());
+      void refreshImportant().catch(() => { /* next refresh */ });
+      const what = x.match_kind === 'sender' ? `messages from ${x.value}` : x.match_kind === 'domain' ? `messages from ${x.value}` : x.match_kind === 'kind' ? kindPlural(x.value) : `the list ${x.value}`;
+      return { body: { removed: { id: x.id, match: x.match_kind, value: x.value, verdict: x.verdict }, message: `Undone. I'll sort ${what} as usual again.` } };
     },
   },
   {
@@ -156,8 +179,8 @@ export const importantRoutes: Route[] = [
       const id = mailId(row.account, row.provider_id);
       const now = triageNow();
       const from = cleanLine(row.from_name, 120) || row.from_addr || 'this sender';
-      let rule: { match: string; value: string } | null = null;
-      if (row.from_addr) { putRule('sender', row.from_addr, 'important', now); rule = { match: 'sender', value: row.from_addr.toLowerCase() }; }
+      let rule: { id: string; match: string; value: string } | null = null;
+      if (row.from_addr) { const made = putRule('sender', row.from_addr, 'important', now); rule = { id: made.id, match: 'sender', value: made.value }; }
       else {
         const prev = getVerdict(id);
         putVerdict({ mail_id: id, verdict: 'important', kind: prev?.kind ?? 'other', reason_code: 'person', why: prev?.why ?? null, model: prev?.model ?? null, cost_usd: 0, ts: now });
@@ -180,6 +203,7 @@ export const importantRoutes: Route[] = [
     method: 'POST', path: '/items/{id}/action', scope: 'act',
     handler: async ({ params }) => {
       const r = loadItem(params.id);
+      if (r.gone || r.state !== 'open') throw new ApiError(409, 'not_open', 'That item is no longer on your list.');
       if (!r.action_kind) throw new ApiError(409, 'no_action', 'This item has nothing to do.');
       const p = payloadOf(r) ?? {};
       const tz = triageTz();
@@ -208,6 +232,7 @@ export const importantRoutes: Route[] = [
           if (!id) throw new ApiError(503, 'unavailable', 'I could not set that reminder just now. Try again in a moment.', true);
           const note = `I'll remind you ${atText(at, tz)}.`;
           const after = setPayload(r, { reminded: note, reminderId: id }, `${r.why ?? ''} ${note}`.trim());
+          rebuildItems(triageNow(), tz);
           return { body: { kind: r.action_kind, done: true, message: note, item: out(after) } };
         }
         case 'review-reply':
@@ -219,8 +244,12 @@ export const importantRoutes: Route[] = [
         case 'review-approval':
           return { body: { kind: r.action_kind, done: false, route: { view: 'approval', approvalId: String(p.approvalId ?? r.source_ref ?? '') }, message: 'Review it.', item: out(r) } };
         case 'draft-note':
-          // the note itself is drafted by the helper when the person sends this to Ask (slice A6); nothing is written here
-          return { body: { kind: r.action_kind, done: false, route: { view: 'ask', about: r.id, prefill: String(p.prefill ?? ''), date: String(p.date ?? localDate(triageNow(), tz)) }, message: 'Ask your helper to draft the note.', item: out(r) } };
+          // the note itself is drafted by the helper when the person sends this to Ask (slice A6), which loads the two
+          // events' titles itself, fenced: no title text travels in an instruction from here (review of A9, M4)
+          {
+            const about = p.about as { kind?: string; id?: string } | undefined;
+            return { body: { kind: r.action_kind, done: false, route: { view: 'ask', item: r.id, about: { kind: 'conflict', id: String(about?.id ?? r.source_ref ?? '') }, date: String(p.date ?? localDate(triageNow(), tz)) }, message: 'Ask your helper to draft the note.', item: out(r) } };
+          }
       }
       throw new ApiError(409, 'no_action', 'This item has nothing to do.');
     },

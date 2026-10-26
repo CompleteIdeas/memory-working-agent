@@ -54,6 +54,15 @@ registerMigrations([{
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, day TEXT NOT NULL, purpose TEXT NOT NULL, model TEXT,
       n INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0);
     CREATE INDEX IF NOT EXISTS triage_calls_day ON triage_calls(day);`,
+}, {
+  // A9 review: a verdict remembers how often the model was asked (an unsure answer is asked again, a few times) and
+  // its flags ('phishing:<reason>', 'low-trust'); an item carries a caution and the sender's address.
+  name: '010-important-review',
+  sql: `
+    ALTER TABLE triage_verdicts ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE triage_verdicts ADD COLUMN flags TEXT;
+    ALTER TABLE items ADD COLUMN caution TEXT CHECK (caution IS NULL OR caution IN ('phishing','unverified'));
+    ALTER TABLE items ADD COLUMN from_addr TEXT;`,
 }]);
 
 export type ItemSource = 'mail' | 'newsletter' | 'pdf' | 'calendar-conflict' | 'calendar-change' | 'deadline' | 'waiting-reply' | 'job-result' | 'approval' | 'connection';
@@ -70,10 +79,11 @@ export interface ItemRow {
   ts: number; from_label: string | null; title: string; why: string | null; trust: 'trusted' | 'untrusted';
   action_kind: ActionKind | null; action_payload: string | null; state: ItemState; handled_at: number | null;
   person: string | null; kind: string | null; gone: number; created_at: number; updated_seq: number | null;
+  caution: 'phishing' | 'unverified' | null; from_addr: string | null;
 }
 export interface VerdictRow {
   mail_id: string; verdict: 'important' | 'skip'; kind: MailKind; reason_code: string; why: string | null; model: string | null;
-  cost_usd: number; ts: number; deep_read_at: number | null;
+  cost_usd: number; ts: number; deep_read_at: number | null; attempts: number; flags: string | null;
 }
 export type RuleMatch = 'sender' | 'domain' | 'list-id' | 'kind';
 export interface RuleRow { id: string; match_kind: RuleMatch; value: string; verdict: 'important' | 'skip'; created_by: 'person'; ts: number }
@@ -92,9 +102,13 @@ export interface ItemIn {
   action?: { kind: ActionKind; payload?: Record<string, unknown> } | null; person?: string | null; kind?: string | null;
   /** kept with the item whether or not it has an action (a fact's parsed date, so a refresh can rebuild it) */
   data?: Record<string, unknown>;
+  /** 'phishing': the deterministic signal fired; 'unverified': urgent language from a bulk or no-reply sender */
+  caution?: 'phishing' | 'unverified' | null;
+  /** the sender's address, shown beside the display name on anything from outside */
+  fromAddr?: string | null;
 }
 
-const CONTENT = ['source', 'source_ref', 'project_id', 'group_day', 'ts', 'from_label', 'title', 'why', 'trust', 'action_kind', 'action_payload', 'person', 'kind'] as const;
+const CONTENT = ['source', 'source_ref', 'project_id', 'group_day', 'ts', 'from_label', 'title', 'why', 'trust', 'action_kind', 'action_payload', 'person', 'kind', 'caution', 'from_addr'] as const;
 
 export function getItem(id: string, d: AppDb = appDb()): ItemRow | null {
   return (d.prepare('SELECT * FROM items WHERE id = ?').get(id) as ItemRow | undefined) ?? null;
@@ -115,7 +129,7 @@ export function upsertItem(x: ItemIn, tz: string, now = Date.now(), d: AppDb = a
     from_label: x.from ?? null, title: x.title.slice(0, 300), why: x.why ? x.why.slice(0, 300) : null, trust: x.trust,
     action_kind: x.action?.kind ?? null,
     action_payload: x.data || x.action?.payload ? JSON.stringify({ ...(x.data ?? {}), ...(x.action?.payload ?? {}) }) : null,
-    person: x.person ?? null, kind: x.kind ?? null,
+    person: x.person ?? null, kind: x.kind ?? null, caution: x.caution ?? null, from_addr: x.fromAddr ?? null,
   };
   if (cur && cur.gone === 0 && CONTENT.every((k) => cur[k] === next[k])) return cur;
   const id = cur?.id ?? itemId(x.dedupeKey);
@@ -197,7 +211,7 @@ export function apiItem(r: ItemRow, now: number, tz: string, d: AppDb = appDb())
   const label = r.action_kind === 'remind' && typeof p?.label === 'string' ? p.label : r.action_kind ? ACTION_LABEL[r.action_kind] : null;
   return {
     id: r.id, source: r.source, sourceRef: r.source_ref, group: groupOf(r.group_day, now, tz), day: r.group_day, ts: r.ts,
-    from: r.from_label, title: r.title, why: r.why, trust: r.trust, kind: r.kind,
+    from: r.from_label, fromAddress: r.from_addr, caution: r.caution, title: r.title, why: r.why, trust: r.trust, kind: r.kind,
     action: r.action_kind ? { kind: r.action_kind, label: label!, ...(p?.preview && typeof p.preview === 'object' ? { preview: p.preview as Record<string, unknown> } : {}) } : null,
     state: r.state, handledAt: r.handled_at, projectId: r.project_id,
     mailId: typeof p?.mailId === 'string' ? p.mailId : r.source_ref?.startsWith('m_') ? r.source_ref : null,
@@ -222,13 +236,18 @@ export function verdictsFor(mailIds: string[], d: AppDb = appDb()): Map<string, 
 }
 /** Store a verdict (keeps when it was deep-read unless told otherwise). No event: a verdict is not on any list by
  *  itself — the item it makes or removes records the change. */
-export function putVerdict(v: Omit<VerdictRow, 'deep_read_at'> & { deep_read_at?: number | null }, d: AppDb = appDb()): void {
-  d.prepare(`INSERT INTO triage_verdicts (mail_id, verdict, kind, reason_code, why, model, cost_usd, ts, deep_read_at)
-             VALUES (@mail_id, @verdict, @kind, @reason_code, @why, @model, @cost_usd, @ts, @deep_read_at)
+export function putVerdict(v: Omit<VerdictRow, 'deep_read_at' | 'attempts' | 'flags'> & { deep_read_at?: number | null; attempts?: number; flags?: string | null }, d: AppDb = appDb()): void {
+  d.prepare(`INSERT INTO triage_verdicts (mail_id, verdict, kind, reason_code, why, model, cost_usd, ts, deep_read_at, attempts, flags)
+             VALUES (@mail_id, @verdict, @kind, @reason_code, @why, @model, @cost_usd, @ts, @deep_read_at, @attempts, @flags)
              ON CONFLICT (mail_id) DO UPDATE SET verdict = excluded.verdict, kind = excluded.kind, reason_code = excluded.reason_code,
                why = excluded.why, model = excluded.model, cost_usd = triage_verdicts.cost_usd + excluded.cost_usd, ts = excluded.ts,
-               deep_read_at = COALESCE(excluded.deep_read_at, triage_verdicts.deep_read_at)`)
-    .run({ ...v, deep_read_at: v.deep_read_at ?? null });
+               deep_read_at = COALESCE(excluded.deep_read_at, triage_verdicts.deep_read_at),
+               attempts = triage_verdicts.attempts + excluded.attempts, flags = excluded.flags`)
+    .run({ ...v, deep_read_at: v.deep_read_at ?? null, attempts: v.attempts ?? 0, flags: v.flags ?? null });
+}
+/** Forget a verdict: the message is decided again on the next refresh (a rule that decided it was deleted). */
+export function dropVerdict(mailId: string, d: AppDb = appDb()): void {
+  d.prepare('DELETE FROM triage_verdicts WHERE mail_id = ?').run(mailId);
 }
 export function markDeepRead(mailId: string, at: number, cost: number, d: AppDb = appDb()): void {
   d.prepare('UPDATE triage_verdicts SET deep_read_at = ?, cost_usd = cost_usd + ? WHERE mail_id = ?').run(at, cost, mailId);
@@ -246,10 +265,23 @@ export function listRules(d: AppDb = appDb()): RuleRow[] {
 export function putRule(match: RuleMatch, value: string, verdict: 'important' | 'skip', now = Date.now(), d: AppDb = appDb()): RuleRow {
   const v = value.trim().toLowerCase().slice(0, 300);
   if (!v) throw new Error('A rule needs a value.');
-  const id = 'tr_' + createHash('sha256').update(`${match}\n${v}`).digest('base64url').slice(0, 16);
+  const id = ruleIdFor(match, v);
   d.prepare(`INSERT INTO triage_rules (id, match_kind, value, verdict, created_by, ts) VALUES (?, ?, ?, ?, 'person', ?)
              ON CONFLICT (match_kind, value) DO UPDATE SET verdict = excluded.verdict, ts = excluded.ts`).run(id, match, v, verdict, now);
   return d.prepare('SELECT * FROM triage_rules WHERE match_kind = ? AND value = ?').get(match, v) as RuleRow;
+}
+/** A rule's id: stable per (kind of match, value). */
+export function ruleIdFor(match: RuleMatch, value: string): string {
+  return 'tr_' + createHash('sha256').update(`${match}\n${value.trim().toLowerCase()}`).digest('base64url').slice(0, 16);
+}
+export function getRule(id: string, d: AppDb = appDb()): RuleRow | null {
+  return (d.prepare('SELECT * FROM triage_rules WHERE id = ?').get(id) as RuleRow | undefined) ?? null;
+}
+/** Undo a rule (the person's own action). Returns the rule removed, or null. */
+export function deleteRule(id: string, d: AppDb = appDb()): RuleRow | null {
+  const r = getRule(id, d);
+  if (r) d.prepare('DELETE FROM triage_rules WHERE id = ?').run(id);
+  return r;
 }
 
 // ── spend ──────────────────────────────────────────────────────────────────────────────────────────────────────

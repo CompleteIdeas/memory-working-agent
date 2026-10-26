@@ -10,6 +10,7 @@
  * returns validated tool calls, not hand-parsed JSON. A text fallback in brain.ts
  * covers providers/models that don't emit tool_calls.
  */
+import { priceFor, warnUnknownPrice, UNKNOWN_PRICE } from './model-prices.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { appendFileSync, mkdirSync } from 'node:fs';
@@ -72,7 +73,9 @@ export interface ChatResult {
   /** `cacheRead`/`cacheWrite` are 0 on providers without explicit prompt caching. They are
    *  reported rather than folded into `input` so a caller can SEE whether caching is working —
    *  a cache that silently misses looks exactly like no caching at all. */
-  usage: { input: number; output: number; cacheRead?: number; cacheWrite?: number; cost?: number };
+  usage: { input: number; output: number; cacheRead?: number; cacheWrite?: number; cost?: number;
+    /** the cached tokens are part of `input` (OpenAI-style prompt_tokens), not reported beside it (Anthropic-style) */
+    cacheInInput?: boolean };
 }
 // `usage.cost` (USD) is the provider's own bill for the call when it reports one — OpenRouter does, per call,
 // at the endpoint that served it (BL-58: MWA's flat OpenRouter rate was wrong for every model).
@@ -362,7 +365,7 @@ class OpenAICompatProvider implements Provider {
           lastErr = `${this.id}: the reply was all hidden reasoning, cut off at ${maxTokens} tokens`;
           continue;
         }
-        return { text, toolCalls, usage: { input: spent.input, output: spent.output, ...(cached ? { cacheRead: cached } : {}), ...(spent.costKnown ? { cost: spent.cost } : {}) } };
+        return { text, toolCalls, usage: { input: spent.input, output: spent.output, ...(cached ? { cacheRead: cached, cacheInInput: true } : {}), ...(spent.costKnown ? { cost: spent.cost } : {}) } };
       }
       const errText = await res.text();
       lastErr = `${this.id} ${res.status}: ${errText.slice(0, 200)}`;
@@ -371,7 +374,9 @@ class OpenAICompatProvider implements Provider {
       if (res.status === 400 && body.reasoning && /reasoning is mandatory/i.test(errText)) { delete body.reasoning; this.reasoningMandatory = true; continue; } // once per provider, not every call
       if (res.status !== 429 && res.status < 500) break;
     }
-    throw new Error(lastErr);
+    // A reply already paid for (thrown away for hidden reasoning) still cost its tokens: the error carries them, so the
+    // cost meter (src/spend.ts) bills them even though the call failed (A3b re-review).
+    throw Object.assign(new Error(lastErr), spent.input || spent.output || spent.costKnown ? { usage: { input: spent.input, output: spent.output, ...(spent.costKnown ? { cost: spent.cost } : {}) } } : {});
   }
 }
 
@@ -568,8 +573,20 @@ export const OPENAI_COMPAT: Record<string, { base: string; keyEnv?: string; base
   ollama: { base: 'http://localhost:11434/v1', baseEnv: 'OLLAMA_BASE_URL', keyless: true, price: [0, 0] },
 };
 
+/**
+ * A model's list price per 1M tokens [in, out] (src/model-prices.ts): what a call costs when its provider reports no
+ * bill of its own. A local model is free; a model nobody priced is counted conservatively (never as free), said once.
+ */
+export function listPrice(model: string, local = false): [number, number] {
+  if (local) return [0, 0];
+  const p = priceFor(model);
+  if (p) return [p.in, p.out];
+  warnUnknownPrice(model);
+  return [UNKNOWN_PRICE.in, UNKNOWN_PRICE.out];
+}
+
 function anthropicFor(model: string, suffix = ''): Provider {
-  const price: [number, number] = /haiku/i.test(model) ? [1, 5] : [3, 15];
+  const price = listPrice(model);
   return new AnthropicProvider(model, price, new Anthropic({ apiKey: requireKey('ANTHROPIC_API_KEY'), maxRetries: 4 }), suffix);
 }
 
@@ -588,7 +605,7 @@ export function resolveProvider(spec: string): Provider {
   }
   if (provider === 'azure' || (!provider && /^gpt-/i.test(model))) {
     const base = process.env.AZURE_GPT_BASE_URL, key = process.env.AZURE_GPT_API_KEY;
-    if (base && key) return new AzureGptProvider(provider ? model : (process.env.AZURE_GPT_DEPLOYMENT ?? model), [0.75, 4.5], base, key);
+    if (base && key) { const m = provider ? model : (process.env.AZURE_GPT_DEPLOYMENT ?? model); return new AzureGptProvider(m, priceFor(m) ? listPrice(m) : [0.75, 4.5], base, key); }
     return anthropicFor('claude-haiku-4-5-20251001', ' (brain-fallback)'); // azure asked-for but unconfigured → still run
   }
   // Ollama's own API, not its /v1 shim: only the native API can set the context size (BL-20).
@@ -600,7 +617,7 @@ export function resolveProvider(spec: string): Provider {
   if (oc) {
     const base = (oc.baseEnv && process.env[oc.baseEnv]) || oc.base;
     const key = oc.keyless ? undefined : requireKey(oc.keyEnv!);
-    return new OpenAICompatProvider(model, oc.price, base, key, provider);
+    return new OpenAICompatProvider(model, listPrice(model, oc.keyless === true), base, key, provider);
   }
   throw new Error(`Unknown model provider in "${spec}". Use anthropic:, azure:, openai:, openrouter:, gemini:, or ollama:`);
 }
@@ -737,6 +754,8 @@ class BackgroundSwitch implements Provider {
   get id(): string { return this.active().id; }
   get model(): string { return this.active().model; }
   get price(): [number, number] { return this.active().price; }
+  /** the provider that answers a call made now (the cost meter prices by it) */
+  current(): Provider { return this.active(); }
   chat(input: ChatInput): Promise<ChatResult> {
     if (backgroundCalls.getStore() !== true) return this.main.chat(input);
     const e = String(process.env.MWA_BACKGROUND_EFFORT ?? 'high').trim().toLowerCase();

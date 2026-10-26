@@ -61,14 +61,15 @@ import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, ru
 import { logger, readLogs, type LogLevel } from './logger.js';
 import { createV1Handler } from './api/v1.js';
 import { makeAuthenticate } from './api/auth.js';
-import { setJobRouteDeps } from './api/routes/jobs.js';
+import { setJobRouteDeps, capFor, setCap } from './api/routes/jobs.js';
 import { setStreamDeps } from './api/routes/stream.js';
 import { startCalendarSync } from './sync/calendar.js';
 import { startMailSync } from './sync/mail.js';
 import { startImportant } from './v2/important-serve.js';
 import { mailSyncOn } from './sync/flags.js';
 import { migrateV2Once, describeReport } from './v2/migrate.js';
-import { reapDeadTries, personAction } from './v2/jobs.js';
+import { reapDeadTries, personAction, jobByGoal, busyReason, viewJob, jobBySchedule, getJob } from './v2/jobs.js';
+import { historyStats } from './v2/estimate.js';
 import { runAgent } from './agent.js';
 import { preparePersonTurn, learnFromTurn } from './person-turn.js';
 import { INTAKE_FIELDS } from './person-intake.js';
@@ -103,7 +104,10 @@ import { offersBackground, OFFER_TEXT, startBackgroundWork, continueGoal, resume
 import { scheduleRows, scheduleControl, type ScheduleAction } from './schedule-api.js';
 import { liveRuns, FINAL_EVENTS } from './live-runs.js';
 import { resolvePersonId } from './person.js';
-import { appendTurn, answerOffer, readConversation, listConversations } from './conversations.js';
+import { appendTurn, answerOffer, readConversation, listConversations, conversationsPath } from './conversations.js';
+import { GENERAL, getProject, sessionOf, projectOfSession, crossTalk, apiProvenance, interruptStaleRunning, resultSessionFor, threadOfSession, runningIn, type Provenance } from './v2/projects.js';
+import { importConversations, describeConversationsReport } from './v2/migrate-conversations.js';
+import { setProjectRouteDeps, type ChatStart } from './api/routes/projects.js';
 import { readCalls, billingSummary, callsCsv, setMonthlyBudget, providerBalance, monthStart, budgetHold } from './billing.js';
 import { thinkMode, thinkDue, thinkOnce, thinkEveryMs, thinkDailyUsd, readThoughts, latestThoughts } from './thinking.js';
 import { exportDoc, exportFormats } from './doc-export.js';
@@ -425,48 +429,112 @@ async function workNote(memory: MwaMemory, sessionId: string, person: string | n
   } catch { return ''; }
 }
 
+/** Where a chat's events go: an SSE response (/api/chat), or the v1 send that answers as soon as the run starts. */
+interface ChatSink { write(type: string, data: Record<string, unknown>): void; ping(): void; end(): void; onClose(fn: () => void): void }
+interface ChatParams { message: string; sessionId: string; resumeParam: string; stay: boolean; person: string | null }
+
 /** Stream one runAgent over SSE: every onEvent becomes an SSE event for the spine. */
 async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-  const message = (url.searchParams.get('message') ?? '').trim();
-  const sessionId = url.searchParams.get('session') || 'default';
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-  const send = (type: string, data: Record<string, unknown>) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
-  if (!message) { send('error', { message: 'empty message' }); res.end(); return; }
+  const sink: ChatSink = {
+    write: (type, data) => { try { res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* gone */ } },
+    ping: () => { try { res.write(': keepalive\n\n'); } catch { /* */ } },
+    end: () => res.end(),
+    onClose: (fn) => { req.on('close', fn); },
+  };
+  // A5: `projectId` sends it into that project's thread (session p-<id>); without it, the session as before (kept in General).
+  let sessionId = url.searchParams.get('session') || 'default';
+  const projectParam = url.searchParams.get('projectId');
+  if (projectParam) {
+    const p = getProject(projectParam);
+    if (!p || p.archived) { sink.write('error', { message: p ? `${p.name} is archived. Restore it first.` : 'No such project.' }); sink.end(); return; }
+    sessionId = sessionOf(p.id);
+  }
+  await runChat({ message: (url.searchParams.get('message') ?? '').trim(), sessionId, resumeParam: url.searchParams.get('resume') ?? '', stay: url.searchParams.get('stay') === '1', person: url.searchParams.get('person') }, sink);
+}
+
+/** A5: "Work on it" on an offer in a project's thread (v1): the same as /api/work/start — a goal and a job that starts
+ *  now in the thread's folder; the offer turn records it. Null when there is no waiting offer with those words. */
+async function acceptProjectOffer(projectId: string, o: { message?: string; person?: string }): Promise<{ goal: string; message: string } | null> {
+  if (MEMORY_OFF) return null;
+  const session = sessionOf(projectId);
+  const waiting = readConversation(session, 200).filter((t) => t.kind === 'offer' && !t.offer);
+  const offer = o.message ? waiting.find((t) => t.message === o.message) : waiting[waiting.length - 1];
+  if (!offer) return null;
+  const cfg = loadConfig();
+  const memory = new MwaMemory(SERVE_AGENT, dbFile(), cfg.awm.workspace);
+  try {
+    const personId = resolvePersonId({ channel: 'web', name: (o.person ?? '').trim() || undefined });
+    const started = await startBackgroundWork(memory, { message: offer.message, session, personId, workspace: cfg.workspace ?? './mwa-workspace' });
+    if (!started) return null;
+    answerOffer(session, 'background', started.goalId.slice(0, 8), undefined, undefined, offer.message);
+    return { goal: started.goalId.slice(0, 8), message: "On it. I'll work on this in the background and post the result here when it's done." };
+  } finally { memory.close(); }
+}
+
+/** A5: a message sent into a project from /api/v1: the same run as /api/chat, answered once it has started (or offered,
+ *  or refused as busy). Its progress goes out on /stream; its answer lands in the thread. */
+function startProjectChat(projectId: string, text: string, o: { stay?: boolean; person?: string }): Promise<ChatStart> {
+  return new Promise((done) => {
+    let settled = false;
+    const settle = (v: ChatStart) => { if (!settled) { settled = true; done(v); } };
+    const sink: ChatSink = {
+      write: (type, data) => {
+        if (type === 'run') settle({ state: 'started', runId: String(data.runId), ...(data.turn ? { turnId: String(data.turn) } : {}) });
+        else if (type === 'result' && data.reason === 'offer') settle({ state: 'offer', message: String(data.summary ?? OFFER_TEXT), ...(data.turn ? { turnId: String(data.turn) } : {}) });
+        else if (type === 'busy') settle({ state: 'busy', message: 'An answer is still being written in this project. Wait for it, or add to it.' });
+        else if (type === 'error') settle({ state: 'busy', message: String(data.message ?? 'That could not start just now. Try again in a moment.') });
+      },
+      ping: () => { /* */ },
+      end: () => settle({ state: 'busy', message: 'That could not start just now. Try again in a moment.' }),
+      onClose: () => { /* nobody to detach: the run is followed on /stream */ },
+    };
+    void runChat({ message: text, sessionId: sessionOf(projectId), resumeParam: '', stay: o.stay === true, person: o.person ?? null }, sink)
+      .catch((e) => settle({ state: 'busy', message: (e as Error).message.slice(0, 200) }));
+  });
+}
+
+async function runChat(p: ChatParams, sink: ChatSink): Promise<void> {
+  const { message, sessionId } = p;
+  const send = (type: string, data: Record<string, unknown>) => sink.write(type, data);
+  if (!message) { send('error', { message: 'empty message' }); sink.end(); return; }
   // 3b (pending list 2026-10-26): "Continue from where it stopped" — the run the person stopped is picked up from
   // its own words, framed as a resume (resumeInstruction), not re-read from the page's title. Never offered to the
   // background (the task's words could match the offer test) and never put to the continuity classifier.
-  const resumeParam = url.searchParams.get('resume') ?? '';
+  const resumeParam = p.resumeParam;
   const resume = resumeParam !== '' && resumeParam !== '0';
   const resumeTs = /^\d{6,}$/.test(resumeParam) ? Number(resumeParam) : undefined; // the card's own stopped turn, when the page names it
   // BL-71b: a request that researches and writes something up is offered to the background first; the
   // person picks. "Stay here" sends it again with stay=1, and it runs in the chat as before.
-  if (!resume && url.searchParams.get('stay') !== '1' && process.env.MWA_OFFER_BACKGROUND !== '0' && offersBackground(message)) {
-    send('result', { reason: 'offer', summary: OFFER_TEXT, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0, offer: { kind: 'start', message } });
-    appendTurn({ ts: Date.now(), session: sessionId, message, reply: OFFER_TEXT, reason: 'offer', kind: 'offer' });
-    res.end(); return;
+  if (!resume && !p.stay && process.env.MWA_OFFER_BACKGROUND !== '0' && offersBackground(message)) {
+    const turn = appendTurn({ ts: Date.now(), session: sessionId, message, reply: OFFER_TEXT, reason: 'offer', kind: 'offer' });
+    send('result', { reason: 'offer', summary: OFFER_TEXT, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0, offer: { kind: 'start', message }, ...(turn ? { turn } : {}) });
+    sink.end(); return;
   }
   // F08 (usability review 2026-10-24): one live run per conversation. A message sent while one is going is not a
   // second run: the page hears `busy` and offers to add it to the running task (/api/chat/steer), send it
   // separately (a new conversation) or stop the run (/api/chat/stop) and send it.
-  const busy = liveRuns.describe(sessionId);
-  if (busy) { send('busy', busy); res.end(); return; }
+  // A5: one run at a time per PROJECT, whichever session names it (p-general and an older client's conversation kept in
+  // General are the same thread).
+  const busy = liveRuns.describe(sessionId) ?? busyInProject(threadOf(sessionId));
+  if (busy) { send('busy', busy as unknown as Record<string, unknown>); sink.end(); return; }
   // "do it here": the offer with these words records the choice — only once the run really starts (audit 2026-10-26)
-  if (url.searchParams.get('stay') === '1') answerOffer(sessionId, 'now', undefined, undefined, undefined, message);
+  if (p.stay) answerOffer(sessionId, 'now', undefined, undefined, undefined, message);
   // Concurrency cap — reserve the slot ATOMICALLY (before any await) so a burst of near-simultaneous
   // chats can't all pass the gate during the classifyContinuity / preparePersonTurn round-trips.
-  if (activeRuns >= MAX_CONCURRENT) { send('error', { message: "I'm at capacity right now (too many chats running) — try again in a moment." }); res.end(); return; }
+  if (activeRuns >= MAX_CONCURRENT) { send('error', { message: "I'm at capacity right now (too many chats running) — try again in a moment." }); sink.end(); return; }
   activeRuns++;
   // The live run: its events are kept and handed to every reader attached to this conversation — this response
   // first, and any page that re-attaches after a reload (F09). Its abort handle is the person's Stop (F06).
   const run = liveRuns.start(sessionId, message);
-  const off = liveRuns.attach(sessionId, (e) => { res.write(`event: ${e.type}\ndata: ${JSON.stringify(e.data)}\n\n`); });
+  const off = liveRuns.attach(sessionId, (e) => sink.write(e.type, e.data as Record<string, unknown>));
   const emitLive = (type: string, data: Record<string, unknown>) => liveRuns.record(sessionId, type, data);
-  appendTurn({ ts: run.startedAt, session: sessionId, message, reply: '', kind: 'running', runId: run.runId });
-  emitLive('run', { runId: run.runId, startedAt: run.startedAt });
+  const runningTurn = appendTurn({ ts: run.startedAt, session: sessionId, message, reply: '', kind: 'running', runId: run.runId });
+  emitLive('run', { runId: run.runId, startedAt: run.startedAt, ...(runningTurn ? { turn: runningTurn } : {}) });
   // Heartbeat: keep the SSE stream alive during slow steps so proxies/browsers don't drop it mid-run.
-  const hb = setInterval(() => { try { res.write(': keepalive\n\n'); } catch { /* */ } }, 15_000);
+  const hb = setInterval(() => sink.ping(), 15_000);
   // The page going away does not stop the run (it re-attaches); only its reader is detached.
-  req.on('close', () => { clearInterval(hb); off?.(); });
+  sink.onClose(() => { clearInterval(hb); off?.(); });
 
   // Hoisted so the finally can always release them even if setup (buildRegistry etc.) throws.
   let memory: MwaMemory | undefined;
@@ -504,11 +572,11 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     const added = uploadsIn(resolve(cfg.workspace ?? './mwa-workspace'), sessionFolder(sessionId));
     const filesNote = `\n\n(Files you write here are saved for the person and appear in their Files tab; when you mention one, link it by its path, e.g. [the notes](notes.md). Files from their earlier chats and jobs are theirs too: list_files with \`search\` finds one by name, and read_file opens it by that full path.${added.length ? ` Files they added to this chat: ${added.join(', ')}.` : ''})`;
     const asked = resumed?.instruction ?? message; // a resume runs the stopped task's own words, framed; the person's words stay the turn
-    const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${asked}` : asked) + askNote + filesNote + await workNote(memory, sessionId, url.searchParams.get('person'), resumed?.stopped.message ?? message);
+    const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${asked}` : asked) + askNote + filesNote + await workNote(memory, sessionId, p.person, resumed?.stopped.message ?? message);
 
     // Per-person Profile (S1–S6): resolve who's talking, build their prompt context (identity guard +
     // primer + intake hint, with PII redacted on an identity mismatch). Off-switch MWA_PERSON_PROFILE=0.
-    const personName = (url.searchParams.get('person') ?? '').trim() || undefined;
+    const personName = (p.person ?? '').trim() || undefined;
     const prepared = await preparePersonTurn(memory, { channel: 'web', name: personName }, message);
     const personContext = prepared.personContext;
     emitLive('person', { id: prepared.personId, notes: prepared.notes }); // Glass-Box: who + how much we know
@@ -536,15 +604,20 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     const summary = (r.resumeQueued ? `${r.summary}\n\nI ran out of room in this chat, so I'm continuing in the background. The result will appear here when it's done.` : r.summary)
       + (hold.held ? `\n\n(This month's model spend has reached the $${hold.budgetUsd} budget — $${hold.usedUsd} so far. Scheduled jobs wait until next month or a higher budget in Settings › Billing; chats still run.)` : '');
     const turnTs = Date.now();
-    appendTurn({ ts: turnTs, session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat', tainted: r.tainted === true, runId: run.runId, ...(resumed?.stopped.ts !== undefined ? { resumes: resumed.stopped.ts } : {}) }); // BL-71d; the runId retires the `running` turn (F09); `resumes` keeps the task's own words reachable (3b)
+    // A5: the other projects whose memories this answer used ("using what I know from Eventing").
+    const provenance = crossTalkFor(sessionId, await memory.usedMemories(r.summary, { exclude: prepared.terms ?? [] }).catch(() => []));
+    const turnId = appendTurn({ ts: turnTs, session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat', tainted: r.tainted === true, runId: run.runId, ...(provenance.length ? { provenance } : {}), ...(r.v2JobId ? { job: r.v2JobId } : {}), ...(resumed?.stopped.ts !== undefined ? { resumes: resumed.stopped.ts } : {}) }); // BL-71d; the runId retires the `running` turn (F09); `resumes` keeps the task's own words reachable (3b)
     // S3/S5 — LEARN durable facts about this person + recompress their dossier (suppressed for the
     // shared 'unknown' profile and on an identity mismatch). Before the result closes the stream, so an attached
     // page hears it too; it is quick and runs on the reply, not the person's wait.
     const learned = r.tainted || MEMORY_OFF ? 0 : await learnFromTurn(brain, memory, prepared, message, r.summary);
     if (learned) emitLive('learned', { about: prepared.personId, count: learned });
-    emitLive('result', { reason: r.reason, summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)), runId: run.runId, turnId: turnTs, elapsedMs: turnTs - run.startedAt, ...(r.staged?.length ? { staged: r.staged } : {}), ...(r.v2JobId ? { job: r.v2JobId } : {}) });
+    emitLive('result', { reason: r.reason, summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)), runId: run.runId, turnId: turnTs, elapsedMs: turnTs - run.startedAt,
+      ...(turnId ? { turn: turnId } : {}), ...(provenance.length ? { provenance: apiProvenance(provenance) } : {}), ...(r.staged?.length ? { staged: r.staged } : {}), ...(r.v2JobId ? { job: r.v2JobId } : {}) });
   } catch (e) {
     logger.error('chat', 'agent run failed', { session: sessionId, error: (e as Error).message.slice(0, 200) });
+    // A5: the turn is finished with what went wrong, so no `running` turn stays behind
+    appendTurn({ ts: Date.now(), session: sessionId, message, reply: `This stopped with an error before it finished: ${(e as Error).message.slice(0, 300)}`, reason: 'error', kind: 'chat', runId: run.runId });
     emitLive('error', { message: (e as Error).message, runId: run.runId });
   } finally {
     activeRuns--;
@@ -552,8 +625,24 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     liveRuns.finish(sessionId); off?.();
     if (close) await close();
     memory?.close();
-    res.end();
+    sink.end();
   }
+}
+
+/** A5: a run's used memories as cross-talk provenance — the projects other than this thread's (General for an older
+ *  conversation's session). Never fails the chat. */
+function crossTalkFor(sessionId: string, used: { id: string; session?: string }[]): Provenance[] {
+  try { return crossTalk(used, { projectId: threadOf(sessionId), session: sessionId }); } catch { return []; }
+}
+
+const threadOf = (sessionId: string) => threadOfSession(sessionId);
+/** A run going in a project's thread, under whichever session it was started. */
+function busyInProject(projectId: string): ReturnType<typeof liveRuns.describe> {
+  try { const s = runningIn(projectId, liveRuns.all().map((r) => r.session)); return s ? liveRuns.describe(s) : null; } catch { return null; }
+}
+/** The live session of a project's run, if one is going. */
+function liveSessionOf(projectId: string): string | null {
+  try { return runningIn(projectId, liveRuns.all().map((r) => r.session)); } catch { return null; }
 }
 
 /** BL-70: a document converted for download (web page, Word or PDF), always as an attachment. */
@@ -647,6 +736,27 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       try { return await continueGoal(m, { goalId, personId, workspace: loadConfig().workspace ?? './mwa-workspace', holdsReservation: true }); } finally { m.close(); }
     },
   });
+  // v2 (A5): the conversations kept before Projects move into General's thread, once, before anything is answered
+  // (synchronous: a turn written meanwhile would land beside them). The old log is only read.
+  // Review of A5: incremental (it picks up lines an older build appended since), streamed in batches, and in the
+  // background — /meta and /projects say "Importing older conversations…" while it runs. Then the turns a crashed
+  // process left `running` are marked interrupted.
+  void importConversations({ file: conversationsPath() })
+    .then((conv) => { if (conv.lines || conv.badLines) logger.info('v2', describeConversationsReport(conv)); })
+    .catch((e) => logger.error('v2', 'importing older conversations failed (it continues from where it stopped at the next start)', { error: (e as Error).message.slice(0, 200) }))
+    .finally(() => { try { interruptStaleRunning(SERVER_START, new Set(liveRuns.all().map((r) => r.runId))); } catch { /* */ } });
+  setProjectRouteDeps({
+    workspace: () => resolve(loadConfig().workspace ?? './mwa-workspace'),
+    startChat: startProjectChat,
+    // what the server carried for both threads (and the older conversation it left) is read again on their next run
+    onTurnMoved: (from, to, legacy) => { sessions.delete(sessionOf(from)); sessions.delete(sessionOf(to)); if (legacy) sessions.delete(legacy); },
+    live: (projectId) => { const s = liveSessionOf(projectId); return s ? { session: s, run: liveRuns.describe(s) } : null; },
+    stop: (projectId) => { const s = liveSessionOf(projectId); return s ? liveRuns.stop(s) : false; },
+    steer: (projectId, text) => { const s = liveSessionOf(projectId); return s ? liveRuns.steer(s, text) : false; },
+    attach: (projectId, fn) => { const s = liveSessionOf(projectId); return s ? liveRuns.attach(s, fn) : null; },
+    finalEvents: FINAL_EVENTS,
+    acceptOffer: acceptProjectOffer,
+  });
   // v2 (A4): the live stream and /sync compute job views with the same running runs and waiting approvals.
   setStreamDeps({ running: () => new Set(liveRuns.all().map((r) => r.session)), pending: () => new Set(listPendingActions().map((a) => a.id)) });
   // v2 (A7): keep the calendar cache fresh — shortly after start, then every 30 minutes (no model calls). The app
@@ -659,6 +769,8 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   // v2 (A3a review): existing goals, scheduled tasks and results become Jobs and Tries once, at server start, with or
   // without a model (the scheduler starts only with one), and Tries a crashed process left running are reaped. The
   // first /api/v1 request waits for it (at most 15 s; the slow reads happen before its short transaction).
+  // v2 (A3b review, M7): read the run history once now, off any request, so estimates never parse logs inline.
+  { const t = setTimeout(() => { try { historyStats(); } catch { /* estimates fall back to the default */ } }, 2_000); t.unref?.(); }
   v2Ready = MEMORY_OFF ? Promise.resolve() : (async () => {
     reapDeadTries();
     const m = new MwaMemory(SERVE_AGENT, dbFile(), loadConfig().awm.workspace);
@@ -1192,7 +1304,16 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
             res.end(JSON.stringify({ ok: true, message: status === 'done' ? 'Marked done. Its jobs stop.' : status === 'blocked' ? 'Paused. Its jobs wait.' : 'Updated.' }));
             return;
           }
+          // v2 (A3b review, M6): this older Continue sets the goal's Job a spending limit too — the one asked for
+          // (capUsd), else the default policy — so it is not a way around the limit the job stopped at.
+          let undoCap: (() => void) | undefined;
+          const gj = jobByGoal(goal.id);
+          if (gj && !busyReason(gj.id)) {
+            try { undoCap = setCap(gj, capFor(b, viewJob(gj, { running: new Set(), pending: new Set() }), 'continue')); }
+            catch (e) { res.end(JSON.stringify({ ok: false, message: (e as Error).message })); return; }
+          }
           const c = await continueGoal(memory, { goalId: goal.id, personId: me, workspace: cfg.workspace ?? './mwa-workspace' });
+          if (!c || c.already) undoCap?.();
           res.end(JSON.stringify(c ? { ok: true, session: c.session, message: c.already ? "I'm already on it. The result will appear in its conversation." : "Picking it up now. I'll post the result in its conversation." } : { ok: false, message: 'That goal is finished. Reopen it first.' }));
         } finally { memory.close(); }
         return;
@@ -1213,7 +1334,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           // The turns before it: "look those up and write it up" needs them (BL-71 review). Fenced if any read outside content.
           const recent = (sessions.get(session)?.history ?? []).slice(-3);
           const context = recent.length ? { text: recent.map((h, i) => `(${i + 1}) ${h.instruction.slice(0, 400)} → ${h.summary.slice(0, 600)}`).join('\n'), tainted: recent.some((h) => h.tainted) } : undefined;
-          const started = await startBackgroundWork(memory, { message, session, personId, workspace: cfg.workspace ?? './mwa-workspace', context });
+          // v2 (A3b): an optional spending limit for the hand-off (the "cap" in its Details): above 0, at most $20.
+          const capRaw = typeof b.capUsd === 'number' ? b.capUsd : undefined;
+          if (capRaw !== undefined && !(Number.isFinite(capRaw) && capRaw > 0 && capRaw <= 20)) { res.end(JSON.stringify({ ok: false, message: 'A spending limit must be above $0 and at most $20.' })); return; }
+          const started = await startBackgroundWork(memory, { message, session, personId, workspace: cfg.workspace ?? './mwa-workspace', context, ...(capRaw !== undefined ? { capUsd: capRaw } : {}) });
           if (started) answerOffer(session, 'background', started.goalId.slice(0, 8), undefined, undefined, message); // the offer turn now says so, on every device
           res.end(JSON.stringify(started
             ? { ok: true, goal: started.goalId.slice(0, 8), message: "On it. I'll work on this in the background and post the result here when it's done. You can close this page." }
@@ -1725,7 +1849,12 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
             ...(title ? { title } : {}), ...(task.notify ? { session: task.notify } : {}),
           });
           // BL-71d: the result belongs to the conversation that asked for it, so it is there when that one is reopened.
-          if (task.notify && !task.notify.startsWith('tg-')) appendTurn({ ts: Date.now(), session: task.notify, message: title ?? task.instruction.slice(0, 300), reply: r.summary, reason: r.reason, kind: 'result' });
+          if (task.notify && !task.notify.startsWith('tg-')) {
+            // A5: a job whose message was moved to another project reports there now
+            let session = task.notify;
+            try { const job = (task.v2job ? getJob(task.v2job) : undefined) ?? jobBySchedule(task.id); session = resultSessionFor(task.notify, job?.project_id); } catch { /* where the task said */ }
+            appendTurn({ ts: Date.now(), session, message: title ?? task.instruction.slice(0, 300), reply: r.summary, reason: r.reason, kind: 'result', ...(r.job ? { job: String(r.job) } : {}) });
+          }
           // BL-13: saved in the app's feed (or not). Whether an open tab is handed it is recorded when one is.
           if (r.job && r.fire) recordReceipt({ job: r.job, fire: r.fire, channel: 'app', status: saved ? 'stored' : 'failed', ...(saved ? {} : { detail: 'could not write the app feed' }) });
           console.log(`  ⏰ fired: ${task.instruction.slice(0, 60)} → ${r.summary.slice(0, 80)}`);

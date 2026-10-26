@@ -27,6 +27,10 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { appDb, registerMigrations, recordEvent, type AppDb, type Migration } from './db.js';
 import { storeHooks, type ScheduleOpts, type ScheduledTask, type GoalStatus } from '../awm.js';
 import { jobStatus, normalizeRemaining, type JobStatus } from './status.js';
+import { estimateJob, estimateForTrigger, stepCost, defaultCapUsd, firstGuess, fireCapUsd, CAP_MAX_USD, type JobEstimate, type StepCost } from './estimate.js';
+import { reserveForFollowUp, spendLedger, type Ledger } from '../spend.js';
+import { readTail, tokenLogPath } from '../billing.js';
+import { priceFor, UNKNOWN_PRICE } from '../model-prices.js';
 import { INSTANCE, instanceAlive, startHeartbeat, transcriptsDir } from '../transcript.js';
 
 export type JobKind = 'background' | 'recurring' | 'reminder' | 'plan' | 'live';
@@ -140,7 +144,22 @@ export const JOBS_FIX_MIGRATION: Migration = {
       WHERE schedule_id IS NOT NULL AND due_at IS NOT NULL AND (ended_by IS NULL OR ended_by NOT IN ('reaper','duplicate'));
     CREATE TABLE IF NOT EXISTS job_locks (job_id TEXT PRIMARY KEY, holder TEXT NOT NULL, at INTEGER NOT NULL);`,
 };
-registerMigrations([JOBS_MIGRATION, JOBS_FIX_MIGRATION]);
+/**
+ * Slice A3b: the first estimate a job was given when it started, so a finished job can say "I guessed about $0.35 ·
+ * it cost $0.41". (004 and 005 are the calendar and mail slices' steps.)
+ */
+export const ESTIMATES_MIGRATION: Migration = {
+  name: '006-estimates',
+  sql: `
+    ALTER TABLE jobs ADD COLUMN est_usd_first REAL;
+    ALTER TABLE jobs ADD COLUMN est_ms_first INTEGER;
+    -- pages read, fetched or in the browser (estimates price work by them), and the allowance the Try's run was given
+    ALTER TABLE tries ADD COLUMN reads INTEGER;
+    ALTER TABLE tries ADD COLUMN cap_usd REAL;
+    -- a repeating follow-up of a capped run: the most all its fires together may spend (A3b re-review)
+    ALTER TABLE jobs ADD COLUMN cap_total_usd REAL;`,
+};
+registerMigrations([JOBS_MIGRATION, JOBS_FIX_MIGRATION, ESTIMATES_MIGRATION]);
 
 export interface JobRow {
   id: string; project_id: string | null; kind: JobKind; title: string; request: string | null; person: string | null;
@@ -150,6 +169,8 @@ export interface JobRow {
   result_ref: string | null; seen_at: number | null; status: JobLifecycle; archived: number;
   session: string | null; dir: string | null; legacy_key: string | null;
   next_due_at: number | null; stopped_by: string | null; schedule_prefix: string | null;
+  est_usd_first: number | null; est_ms_first: number | null;
+  cap_total_usd?: number | null;
 }
 export interface TryRow {
   id: string; job_id: string; n: number; trigger: TryTrigger; run_id: string | null; live_key: string | null;
@@ -160,12 +181,15 @@ export interface TryRow {
   est_usd: number | null; est_ms: number | null; updated_seq: number; schedule_id: string | null;
   pages_read: number | null; legacy_key: string | null; ended_by: EndedBy | null; delivered: number | null;
   fire_id: string | null; schedule_prefix: string | null;
+  reads: number | null; cap_usd: number | null;
 }
 
 export interface NewJob {
   kind: JobKind; title: string; request?: string; person?: string; createdAt?: number; scheduleId?: string;
   legacyGoalId?: string; capUsd?: number; session?: string; dir?: string; legacyKey?: string; status?: JobLifecycle;
   whereItStands?: string; standsTrust?: string; nextDueAt?: number;
+  /** the project it works for; left out, a `p-<id>` session names it (A5) */
+  projectId?: string | null;
 }
 export interface NewTry {
   trigger: TryTrigger; state?: TryState; dueAt?: number; scheduleId?: string; liveKey?: string; runId?: string;
@@ -175,7 +199,7 @@ export interface NewTry {
 export interface TryEnd {
   reason?: string; outcome?: string; costUsd?: number; steps?: number; toolCalls?: number; summary?: string;
   progress?: { done: number; total: number; unit?: string }; remaining?: string; capHit?: string; tainted?: boolean;
-  staged?: string[]; pagesRead?: number; endedAt?: number; startedAt?: number; runId?: string;
+  staged?: string[]; pagesRead?: number; reads?: number; endedAt?: number; startedAt?: number; runId?: string;
   /** false: the scheduler kept this result quiet (deliver=changed and nothing new) — not "result ready" */
   delivered?: boolean; fireId?: string; endedBy?: EndedBy;
 }
@@ -246,6 +270,11 @@ export function listJobs(o: { archived?: boolean; limit?: number; before?: numbe
   return d.prepare(`SELECT * FROM jobs ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY updated_seq DESC ${o.limit ? 'LIMIT @limit' : ''}`)
     .all({ ...(o.before != null ? { before: o.before } : {}), ...(o.limit ? { limit: o.limit } : {}) }) as JobRow[];
 }
+/** A project's jobs, most recently changed first (A5). General also holds the jobs no project claims. */
+export function projectJobs(projectId: string, o: { limit?: number } = {}, d: AppDb = appDb()): JobRow[] {
+  return d.prepare(`SELECT * FROM jobs WHERE archived = 0 AND (project_id = @p OR (@p = 'general' AND project_id IS NULL)) ORDER BY updated_seq DESC LIMIT @limit`)
+    .all({ p: projectId, limit: Math.max(1, Math.min(500, o.limit ?? 100)) }) as JobRow[];
+}
 export function jobByGoal(goalId: string, d: AppDb = appDb()): JobRow | undefined {
   return d.prepare('SELECT * FROM jobs WHERE legacy_goal_id = ? ORDER BY created_at LIMIT 1').get(goalId) as JobRow | undefined;
 }
@@ -263,10 +292,20 @@ export function jobByPrefix(prefix: string, d: AppDb = appDb()): JobRow | undefi
     ?? (d.prepare('SELECT j.* FROM jobs j JOIN tries t ON t.job_id = j.id WHERE t.schedule_prefix = ? ORDER BY t.n LIMIT 1').get(p) as JobRow | undefined);
 }
 
+function projectFor(d: AppDb, id: string | null): string | null {
+  if (!id) return null;
+  try {
+    const p = d.prepare('SELECT archived FROM projects WHERE id = ?').get(id) as { archived: number } | undefined;
+    return p && !p.archived ? id : 'general';
+  } catch { return null; /* no projects table in this database */ }
+}
 function insertJob(d: AppDb, j: NewJob): JobRow {
   const id = newId('j');
-  d.prepare(`INSERT INTO jobs (id, kind, title, request, person, created_at, schedule_id, legacy_goal_id, cap_usd, session, dir, legacy_key, status, where_it_stands, stands_trust, next_due_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, j.kind, j.title.slice(0, 300), j.request?.slice(0, 4000) ?? null, j.person ?? null,
+  // A5: a Job made from a project's thread (its session is `p-<project id>`) works for that project — one that exists;
+  // a session naming none (deleted, made up) or an archived one makes it General's.
+  const projectId = projectFor(d, j.projectId ?? (j.session && j.session.startsWith('p-') && j.session.length > 2 ? j.session.slice(2) : null));
+  d.prepare(`INSERT INTO jobs (id, project_id, kind, title, request, person, created_at, schedule_id, legacy_goal_id, cap_usd, session, dir, legacy_key, status, where_it_stands, stands_trust, next_due_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, projectId, j.kind, j.title.slice(0, 300), j.request?.slice(0, 4000) ?? null, j.person ?? null,
     j.createdAt ?? Date.now(), j.scheduleId ?? null, j.legacyGoalId ?? null, j.capUsd ?? null, j.session ?? null, j.dir ?? null,
     j.legacyKey ?? null, j.status ?? 'active', j.whereItStands ?? null, j.standsTrust ?? null, j.nextDueAt ?? null);
   bumpJob(d, id, j.person);
@@ -318,6 +357,8 @@ export function linkTry(tryId: string, scheduleId: string, dueAt: number | undef
     if (job && !job.schedule_id && job.kind !== 'recurring') d.prepare('UPDATE jobs SET schedule_id = ? WHERE id = ?').run(scheduleId, job.id);
     bumpTry(d, tryId, t.job_id);
   }).immediate();
+  const t = getTry(tryId, d);
+  if (t) stampEstimates(t.job_id, d);
 }
 
 /** Claim a queued Try for this process: `UPDATE … WHERE state='queued' RETURNING`. Null when someone else has it. */
@@ -345,10 +386,10 @@ export function endTry(tryId: string, e: TryEnd, d: AppDb = appDb()): TryRow | n
     const ended = e.endedAt ?? Date.now();
     const remaining = normalizeRemaining(e.remaining);
     d.prepare(`UPDATE tries SET state = 'ended', ended_at = ?, started_at = COALESCE(started_at, ?), run_id = COALESCE(?, run_id), reason = ?, outcome = ?, cost_usd = ?, steps = ?, tool_calls = ?,
-      progress_done = ?, progress_total = ?, progress_unit = ?, remaining = ?, cap_hit = ?, summary = ?, tainted = ?, staged = ?, pages_read = ?, delivered = ?, fire_id = COALESCE(?, fire_id), ended_by = ? WHERE id = ?`)
+      progress_done = ?, progress_total = ?, progress_unit = ?, remaining = ?, cap_hit = ?, summary = ?, tainted = ?, staged = ?, pages_read = ?, reads = ?, delivered = ?, fire_id = COALESCE(?, fire_id), ended_by = ? WHERE id = ?`)
       .run(ended, e.startedAt ?? null, e.runId ?? null, e.reason ?? null, e.outcome ?? null, finite(e.costUsd), finite(e.steps), finite(e.toolCalls),
         p ? p.done : null, p ? p.total : null, p ? clampText(p.unit, 40) : null, remaining ? remaining.slice(0, 400) : null, e.capHit ?? null,
-        e.summary ? String(e.summary).slice(0, 4000) : null, e.tainted ? 1 : 0, e.staged?.length ? JSON.stringify(e.staged.slice(0, 50)) : null, finite(e.pagesRead),
+        e.summary ? String(e.summary).slice(0, 4000) : null, e.tainted ? 1 : 0, e.staged?.length ? JSON.stringify(e.staged.slice(0, 50)) : null, finite(e.pagesRead), finite(e.reads ?? e.pagesRead),
         e.delivered === undefined ? null : e.delivered ? 1 : 0, e.fireId ?? null, e.endedBy ?? null, tryId);
     // The Job shows the latest word: this Try's progress and what it left (none said = none known now).
     d.prepare('UPDATE jobs SET progress_done = ?, progress_total = ?, progress_unit = COALESCE(?, progress_unit), remaining = ? WHERE id = ?')
@@ -382,7 +423,7 @@ export function endScheduleTries(scheduleId: string, by: EndedBy, summary: strin
 }
 
 /** Set some of a Job's own fields (seen_at, lifecycle, where it stands…). */
-export function updateJob(jobId: string, f: Partial<Pick<JobRow, 'seen_at' | 'status' | 'where_it_stands' | 'stands_trust' | 'archived' | 'schedule_id' | 'session' | 'dir' | 'result_ref' | 'cap_usd' | 'next_due_at' | 'stopped_by'>>, d: AppDb = appDb()): JobRow | undefined {
+export function updateJob(jobId: string, f: Partial<Pick<JobRow, 'seen_at' | 'status' | 'where_it_stands' | 'stands_trust' | 'archived' | 'schedule_id' | 'session' | 'dir' | 'result_ref' | 'cap_usd' | 'next_due_at' | 'stopped_by' | 'model_tier'>>, d: AppDb = appDb()): JobRow | undefined {
   const keys = Object.keys(f).filter((k) => (f as Record<string, unknown>)[k] !== undefined);
   if (!keys.length) return getJob(jobId, d);
   return d.transaction(() => {
@@ -423,6 +464,171 @@ export function jobLocked(jobId: string, d: AppDb = appDb()): boolean {
   return !!lock && Date.now() - lock.at < LOCK_STALE_MS;
 }
 
+// ── Estimates and the dollar cap (slice A3b) ────────────────────────────────────────────────────────────────────
+
+/**
+ * Stamp the Tries of a Job that have not run to the end and carry no estimate yet with what they are expected to cost
+ * (est_usd, est_ms: a fresh start the whole job, anything else what is left), and give a Job that is only now starting
+ * its first estimate (est_usd_first), kept for "I guessed about $0.35 · it cost $0.41". Best-effort: an estimate never
+ * blocks the work it describes.
+ */
+export function stampEstimates(jobId: string, d: AppDb = appDb()): void {
+  try {
+    const job = getJob(jobId, d);
+    if (!job) return;
+    const tries = triesOf(jobId, d);
+    const open = tries.filter((t) => t.state !== 'ended' && t.est_usd == null);
+    if (!open.length) return;
+    const e = estimateJob(job, tries);
+    d.transaction(() => {
+      for (const t of open) {
+        const a = estimateForTrigger(e, t.trigger);
+        if (!a) continue;
+        d.prepare('UPDATE tries SET est_usd = ?, est_ms = ? WHERE id = ? AND est_usd IS NULL').run(a.usd, a.ms, t.id);
+        bumpTry(d, t.id, jobId);
+      }
+      // The first estimate: a one-off job starting (nothing has ended yet). A repeating job has no "whole job" to guess.
+      const first = open[0];
+      const a = estimateForTrigger(e, first.trigger);
+      if (a && job.est_usd_first == null && job.kind !== 'recurring' && job.kind !== 'reminder' && !tries.some((t) => t.state === 'ended')) {
+        d.prepare('UPDATE jobs SET est_usd_first = ?, est_ms_first = ? WHERE id = ? AND est_usd_first IS NULL').run(a.usd, a.ms, jobId);
+        bumpJob(d, jobId);
+      }
+    }).immediate();
+  } catch (e) { console.error('[v2] could not estimate a job:', (e as Error).message.slice(0, 160)); }
+}
+
+/** Who authorises spending: the person's own start (first, continue, start over) or a scheduled fire. An automatic
+ *  continuation or a resume after a restart spends from the same authorisation. */
+const AUTHORISING = new Set<TryTrigger>(['first', 'continue', 'start-over', 'fire']);
+
+/** The spend of the Tries running in THIS process, live (the scheduler registers each fire's ledger). */
+export const runningSpend = new Map<string, Ledger>();
+
+/** What the token log says a Try's run spent: its task's calls (tagged with the task's 8-character id) inside the
+ *  Try's window — each call's own cost, or, for a line without one (openai:, gemini: direct), its tokens at the
+ *  model's list price (an unpriced model conservatively). Null when the log has no such calls at all. */
+export function loggedSpend(t: Pick<TryRow, 'schedule_id' | 'started_at' | 'ended_at'>, now = Date.now()): number | null {
+  if (!t.schedule_id || t.started_at == null) return null;
+  try {
+    const job = t.schedule_id.slice(0, 8);
+    const to = (t.ended_at ?? now) + 5000, from = t.started_at - 1000;
+    let found = 0, usd = 0;
+    for (const line of (readTail(tokenLogPath()) ?? '').split('\n')) {
+      if (!line.includes(job)) continue;
+      let d: Record<string, unknown>;
+      try { d = JSON.parse(line); } catch { continue; }
+      const ts = Number(d.ts);
+      if (d.job !== job || !(ts >= from && ts <= to)) continue;
+      found++;
+      if (typeof d.cost === 'number' && Number.isFinite(d.cost)) { usd += d.cost; continue; }
+      const p = priceFor(String(d.model ?? '')) ?? UNKNOWN_PRICE;
+      usd += (Number(d.in) || 0) / 1e6 * p.in + (Number(d.out) || 0) / 1e6 * p.out;
+    }
+    return found ? usd : null;
+  } catch { return null; }
+}
+
+/** A call that landed after its Try reported (the lesson judge past its timeout): added to the Try's cost. */
+export function addTryCost(tryId: string, usd: number, d: AppDb = appDb()): void {
+  if (!(usd > 0)) return;
+  try {
+    d.transaction(() => {
+      const t = getTry(tryId, d);
+      if (!t) return;
+      d.prepare('UPDATE tries SET cost_usd = COALESCE(cost_usd, 0) + ? WHERE id = ?').run(usd, tryId);
+      bumpTry(d, tryId, t.job_id);
+    }).immediate();
+  } catch { /* bookkeeping */ }
+}
+
+/** What a Try has spent, as well as it can be known: its recorded cost; for one still running here, its live ledger;
+ *  for one reaped or running elsewhere, the token log — and when nothing says, the whole allowance it was given
+ *  (`Infinity` when that is unknown too), so a restart or a second process never gets the allowance again. */
+function spendOf(t: TryRow): number {
+  if (t.state === 'ended' && typeof t.cost_usd === 'number') return Math.max(0, t.cost_usd);
+  if (t.state === 'queued') return 0;
+  const live = runningSpend.get(t.id);
+  if (live) return live.usd;
+  if (t.state === 'ended' && t.ended_by !== 'reaper' && !t.started_at) return 0; // stopped before it started
+  const logged = loggedSpend(t);
+  if (logged !== null) return logged;
+  return typeof t.cap_usd === 'number' ? t.cap_usd : Infinity;
+}
+
+/**
+ * The dollar cap for a Try's run: the Job's `cap_usd` (a repeating job without one: the per-fire default,
+ * MWA_FIRE_CAP_USD) less what the Tries since the person last said go have spent — ended, reaped and still running
+ * ones alike — so a job capped at 15¢ that ran out of steps at 11¢ continues automatically with 4¢, not another 15¢.
+ * Undefined: no cap. 0: nothing is left to spend.
+ */
+export function runCapUsd(jobId: string, tryId: string | undefined, d: AppDb = appDb()): number | undefined {
+  try {
+    const job = getJob(jobId, d);
+    if (!job) return undefined;
+    const recurring = job.kind === 'recurring';
+    const cap = job.cap_usd != null && job.cap_usd > 0 ? job.cap_usd : recurring ? fireCapUsd() : undefined;
+    if (cap === undefined) return undefined;
+    const tries = triesOf(jobId, d);
+    const me = tryId ? tries.find((t) => t.id === tryId) : undefined;
+    const upTo = me ? me.n : Infinity;
+    const before = tries.filter((t) => t.n < upTo && t.ended_by !== 'duplicate');
+    const auth = me && AUTHORISING.has(me.trigger) ? me : [...before].reverse().find((t) => AUTHORISING.has(t.trigger));
+    // a repeating job's fire is its own go-ahead: earlier fires do not count against it
+    const since = recurring && me?.trigger === 'fire' ? [] : before.filter((t) => t.state !== 'queued' && (!auth || t.n >= auth.n));
+    const spent = since.reduce((s, t) => s + spendOf(t), 0);
+    if (!Number.isFinite(spent)) return 0;
+    let left = cap - spent;
+    // ...unless it carries a total (a repeating follow-up of a capped run): all its fires together stay inside it
+    if (job.cap_total_usd != null) {
+      const all = before.filter((t) => t.state !== 'queued').reduce((s, t) => s + spendOf(t), 0);
+      left = Math.min(left, Number.isFinite(all) ? job.cap_total_usd - all : 0);
+    }
+    return Math.max(0, Math.round(left * 1e6) / 1e6);
+  } catch { return undefined; }
+}
+
+/** Record the allowance a Try's run was given (so a crash cannot hand the same allowance out twice). */
+export function setTryAllowance(tryId: string, usd: number | undefined, d: AppDb = appDb()): void {
+  try { d.prepare('UPDATE tries SET cap_usd = ? WHERE id = ?').run(usd ?? null, tryId); } catch { /* bookkeeping */ }
+}
+
+/** What one step of this job costs (the scheduler projects the first step with it, and the default limits use it). */
+export function jobStepCost(jobId: string, d: AppDb = appDb()): StepCost | null {
+  try { const job = getJob(jobId, d); return job ? stepCost(job, triesOf(jobId, d)) : null; } catch { return null; }
+}
+
+/**
+ * The default limit for a run of this job (policy, review of A3b): room for the estimate twice over, or for it plus
+ * three of the job's largest steps and the wrap-up, whichever is more; at least 25¢ (50¢ for a first guess); at most
+ * $5 for a hand-off's first run and $20 for a Continue or Start over.
+ */
+export function defaultCapFor(job: JobRow, tries: TryRow[], which: 'first' | 'continue' | 'start-over', e: JobEstimate | null = estimateOf(job, tries)): number {
+  const est = which === 'continue' ? (e?.continue?.usd ?? e?.startOver?.usd ?? 0) : (e?.startOver?.usd ?? 0);
+  return defaultCapUsd(est, stepCost(job, tries), !e || firstGuess(e), which === 'first' ? HANDOFF_FIRST_MAX : CAP_MAX_USD);
+}
+const HANDOFF_FIRST_MAX = 5;
+const d0 = () => appDb();
+
+/**
+ * The dollar side of a Try's run budget (the scheduler's): the allowance (runCapUsd), the expected cost of one step
+ * (the first step is projected with it), and whether a last unit may finish past the cap. An allowance below one
+ * step's worth — or 1¢, whichever is more — is no allowance (`wait`): the job waits for the person (review M4).
+ */
+export function fireBudget(jobId: string, tryId: string, d: AppDb = appDb()): { maxUsd?: number; stepUsd?: number; finishGrace?: boolean; wait: boolean; exhausted?: boolean } {
+  const maxUsd = runCapUsd(jobId, tryId, d);
+  if (maxUsd === undefined) return { wait: false };
+  const step = jobStepCost(jobId, d);
+  const stepUsd = step?.usd;
+  // a repeating job whose total allowance is used up stops firing (the scheduler pauses it)
+  if (maxUsd < Math.max(0.01, stepUsd ?? 0)) return { maxUsd, wait: true, ...(getJob(jobId, d)?.cap_total_usd != null ? { exhausted: true } : {}) };
+  const tries = triesOf(jobId, d);
+  const me = tries.find((t) => t.id === tryId);
+  const last = [...tries].reverse().find((t) => t.state === 'ended' && t.progress_total != null && t.progress_done != null);
+  const finishGrace = !!me && me.trigger !== 'first' && me.trigger !== 'start-over' && me.trigger !== 'fire' && !!last && (last.progress_total! - last.progress_done!) <= 1;
+  return { maxUsd, ...(stepUsd ? { stepUsd } : {}), ...(finishGrace ? { finishGrace } : {}), wait: false };
+}
+
 // ── The scheduler's side ────────────────────────────────────────────────────────────────────────────────────────
 
 /** A scheduled task's Job kind. */
@@ -455,7 +661,7 @@ export function startFire(task: ScheduledTask, o: { liveKey: string; runId?: str
   try {
     const db = d ?? appDb();
     startHeartbeat();
-    return db.transaction((): { jobId: string; tryId: string; n: number } | 'taken' => {
+    const out = db.transaction((): { jobId: string; tryId: string; n: number } | 'taken' => {
       const claim = (t: TryRow): { jobId: string; tryId: string; n: number } | 'taken' => {
         // another Try of this same fire (not reaped) means it is someone else's, or already done
         const other = db.prepare(`SELECT 1 FROM tries WHERE schedule_id = ? AND due_at = ? AND id != ? AND (ended_by IS NULL OR ended_by NOT IN ('reaper','duplicate'))`).get(task.id, task.due, t.id);
@@ -483,6 +689,8 @@ export function startFire(task: ScheduledTask, o: { liveKey: string; runId?: str
       const t = insertTry(db, job.id, { trigger, state: 'queued', dueAt: task.due, scheduleId: task.id, liveKey: o.liveKey });
       return claim(t);
     }).immediate();
+    if (out !== 'taken') stampEstimates(out.jobId, db);
+    return out;
   } catch (e) {
     console.error('[v2] could not claim a try:', (e as Error).message.slice(0, 160));
     return null;
@@ -671,7 +879,32 @@ export function onGoalStatus(goalId: string, status: GoalStatus, d: AppDb = appD
   }).immediate();
 }
 
-storeHooks.scheduled = (id, instruction, due, opts) => onScheduled(id, instruction, due, opts);
+storeHooks.scheduled = (id, instruction, due, opts) => {
+  onScheduled(id, instruction, due, opts);
+  const job = jobBySchedule(id);
+  if (!job) return;
+  // A one-off follow-up scheduled by a run that has a dollar cap carries what is left of that run's allowance as its
+  // own cap (review of A3b, M6): otherwise "schedule the rest for later" would be a way around the person's limit.
+  // A separate Job, not a Try of the same one: the follow-up is new work with its own time and words, and the person
+  // sees, stops or continues it on its own; linking it would make the capped job look "working" until it fires.
+  //
+  // Review of A3b (HIGH): the allowance is RESERVED, not copied — half of what is left (after one call's worth kept
+  // for the run's own wrap-up) moves to the follow-up and out of the run's cap, so a run and all its follow-ups
+  // together can never be authorised past the run's cap. A repeating follow-up gets a per-fire limit of
+  // min(the default fire limit, its share) and its share as a TOTAL: it stops firing (paused) once that is spent.
+  // (The alternative — sending repeating follow-ups of a capped run to the person for approval — would make every
+  // "check this again tomorrow" a card to tap; a bounded total keeps the limit without the interruption.)
+  if (!opts.resumeAttempt && !opts.v2try && opts.kind !== 'reminder' && job.cap_usd == null && (!opts.recur || job.schedule_id === id)) {
+    const l = spendLedger.getStore();
+    const share = reserveForFollowUp(l, l && l.calls ? l.usd / l.calls : 0.01);
+    if (share !== undefined) {
+      const cap = Math.max(0.0001, share);
+      if (opts.recur) d0().prepare('UPDATE jobs SET cap_total_usd = ? WHERE id = ?').run(cap, job.id);
+      updateJob(job.id, { cap_usd: opts.recur ? Math.max(0.0001, Math.min(fireCapUsd() ?? cap, cap)) : cap });
+    }
+  }
+  stampEstimates(job.id);
+};
 storeHooks.scheduleChanged = (id, change, due) => onScheduleChanged(id, change, due);
 storeHooks.goalRecord = (goalId, rec) => onGoalRecord(goalId, rec);
 storeHooks.goalStatus = (goalId, status) => onGoalStatus(goalId, status);
@@ -692,20 +925,32 @@ export function ownerOwns(person: string | null | undefined, env: NodeJS.Process
 
 // ── Reading a Job with its status ───────────────────────────────────────────────────────────────────────────────
 
-export interface JobView { job: JobRow; tries: TryRow[]; status: JobStatus }
+export interface JobView { job: JobRow; tries: TryRow[]; status: JobStatus; estimate: JobEstimate | null; caps: { continue?: number; startOver?: number } }
 export interface ViewCtx { running: Set<string>; pending: Set<string>; now?: number }
 
-function statusOf(job: JobRow, tries: TryRow[], ctx: ViewCtx): JobStatus {
+function statusOf(job: JobRow, tries: TryRow[], ctx: ViewCtx, estimate: JobEstimate | null): JobStatus {
   const staged = tries.flatMap((t) => { try { return t.staged ? (JSON.parse(t.staged) as string[]) : []; } catch { return []; } });
   const pendingApprovals = staged.filter((s) => ctx.pending.has(s)).length;
   const alive = new Map<string, boolean>();
   const claimerAliveCached = (c: string) => { if (!alive.has(c)) alive.set(c, claimerAlive(c, ctx.now)); return alive.get(c)!; };
-  return jobStatus(job, tries, { running: ctx.running, pendingApprovals, now: ctx.now, claimerAlive: claimerAliveCached });
+  const caps = estimate ? capsOf(job, tries, estimate) : {};
+  return jobStatus(job, tries, { running: ctx.running, pendingApprovals, now: ctx.now, claimerAlive: claimerAliveCached,
+    ...(estimate ? { estimates: { ...estimate, continueCap: caps.continue, startOverCap: caps.startOver } } : {}) });
+}
+/** The limits a Continue and a Start over would get by default (shown on their buttons: "up to 40¢"). */
+function capsOf(job: JobRow, tries: TryRow[], e: JobEstimate): { continue?: number; startOver?: number } {
+  try { return { continue: defaultCapFor(job, tries, 'continue', e), startOver: defaultCapFor(job, tries, 'start-over', e) }; } catch { return {}; }
+}
+/** A Job's estimates (null for a repeating job, or when they cannot be made). */
+function estimateOf(job: JobRow, tries: TryRow[]): JobEstimate | null {
+  if (job.kind === 'recurring' || job.kind === 'reminder') return null;
+  try { return estimateJob(job, tries); } catch { return null; }
 }
 /** A Job, its Tries and its status. `running`: the live keys of runs going now; `pending`: approvals still waiting. */
 export function viewJob(job: JobRow, ctx: ViewCtx, d: AppDb = appDb()): JobView {
   const tries = triesOf(job.id, d);
-  return { job, tries, status: statusOf(job, tries, ctx) };
+  const estimate = estimateOf(job, tries);
+  return { job, tries, status: statusOf(job, tries, ctx, estimate), estimate, caps: estimate ? capsOf(job, tries, estimate) : {} };
 }
 /** Many Jobs at once: one query for all their Tries (no N+1). */
 export function viewJobs(jobs: JobRow[], ctx: ViewCtx, d: AppDb = appDb()): JobView[] {
@@ -716,5 +961,5 @@ export function viewJobs(jobs: JobRow[], ctx: ViewCtx, d: AppDb = appDb()): JobV
     const chunk = ids.slice(i, i + 500);
     for (const t of d.prepare(`SELECT * FROM tries WHERE job_id IN (${chunk.map(() => '?').join(',')}) ORDER BY job_id, n`).all(...chunk) as TryRow[]) byJob.get(t.job_id)!.push(t);
   }
-  return jobs.map((job) => { const tries = byJob.get(job.id) ?? []; return { job, tries, status: statusOf(job, tries, ctx) }; });
+  return jobs.map((job) => { const tries = byJob.get(job.id) ?? []; const estimate = estimateOf(job, tries); return { job, tries, status: statusOf(job, tries, ctx, estimate), estimate, caps: estimate ? capsOf(job, tries, estimate) : {} }; });
 }

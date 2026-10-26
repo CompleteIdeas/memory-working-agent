@@ -27,12 +27,14 @@ export function filesChangedSince(dir: string, since: number, limit = 12): strin
   return out.sort((a, b) => b.m - a.m).slice(0, limit).map((x) => x.p);
 }
 
-export interface RunEnd { outcome?: string; summary: string; tainted?: boolean; staged?: string[]; reason: string }
+export interface RunEnd { outcome?: string; summary: string; tainted?: boolean; staged?: string[]; reason: string; capHit?: string }
 
 /** The record a run's end writes, in words a person reads. */
 export function recordFromRun(r: RunEnd): { state: string; next?: string } {
   const said = r.summary.replace(/\s+/g, ' ').trim().slice(0, 500) || '(no summary)';
   if (r.outcome === 'blocked') return { state: `Waiting on you. ${said}`, next: r.staged?.length ? `Approve or decline the ${r.staged.length} action(s) waiting in the app, then continue.` : 'Answer what it asked, then continue.' };
+  // v2 (A3b): the person's dollar cap ended it — it waits for them, it did not get stuck.
+  if (r.capHit === 'usd') return { state: `Waiting on you: it reached the spending limit you set. ${said}`, next: 'Continue to finish it (you can set a new limit).' };
   if (r.outcome === 'could-not') return { state: `Stuck. ${said}`, next: r.reason === 'budget' || r.reason === 'stuck' ? 'Continue where it stopped (it ran out of time).' : 'Try again, or change the approach.' };
   return { state: said };
 }
