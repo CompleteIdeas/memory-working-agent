@@ -44,11 +44,8 @@ registerMigrations([{
       provider TEXT CHECK (provider IS NULL OR provider IN ('google','outlook')), account TEXT, provider_id TEXT, confirmed_at INTEGER,
       confirm_lease INTEGER, confirm_token TEXT, orphan_provider_id TEXT,
       created_at INTEGER NOT NULL, changed_at INTEGER, updated_seq INTEGER);
-    CREATE INDEX IF NOT EXISTS cal_drafts_start ON cal_drafts(start_utc);
-    CREATE TABLE IF NOT EXISTS sync_state (
-      account TEXT NOT NULL, resource TEXT NOT NULL, cursor TEXT, window_from INTEGER, window_to INTEGER,
-      last_ok INTEGER, last_error TEXT, needs_reconnect INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (account, resource));`,
+    CREATE INDEX IF NOT EXISTS cal_drafts_start ON cal_drafts(start_utc);`,
+  // sync_state is the shared base migration (src/v2/db.ts '001b-sync-state'), created before this one.
 }]);
 
 export type CalProvider = 'google' | 'outlook';
@@ -69,10 +66,8 @@ export interface CalDraftRow {
   confirm_lease: number | null; confirm_token: string | null; orphan_provider_id: string | null;
   created_at: number; changed_at: number | null; updated_seq: number | null;
 }
-export interface SyncStateRow {
-  account: string; resource: string; cursor: string | null; window_from: number | null; window_to: number | null;
-  last_ok: number | null; last_error: string | null; needs_reconnect: number;
-}
+// sync state: one shared table and module with the mail sync (A8)
+export { getSyncState, setSyncState, syncStates, type SyncStateRow } from './sync-state.js';
 
 /** An event as the sync hands it over (already in UTC). */
 export interface CalEventIn {
@@ -277,21 +272,6 @@ export function pruneOldDrafts(now = Date.now(), maxAgeMs = DRAFT_KEEP_MS): numb
     }
     return ids.length;
   })();
-}
-
-// ── sync state ───────────────────────────────────────────────────────────────────────────────────────────────────
-
-export function getSyncState(account: string, resource: string): SyncStateRow | null {
-  return (appDb().prepare('SELECT * FROM sync_state WHERE account = ? AND resource = ?').get(account, resource) as SyncStateRow | undefined) ?? null;
-}
-export function setSyncState(account: string, resource: string, set: Partial<Omit<SyncStateRow, 'account' | 'resource'>>, d: AppDb = appDb()): void {
-  d.prepare(`INSERT INTO sync_state (account, resource) VALUES (?, ?) ON CONFLICT (account, resource) DO NOTHING`).run(account, resource);
-  const cols = Object.keys(set);
-  if (!cols.length) return;
-  d.prepare(`UPDATE sync_state SET ${cols.map((c) => `${c} = @${c}`).join(', ')} WHERE account = @account AND resource = @resource`).run({ ...set, account, resource });
-}
-export function syncStates(resource: string): SyncStateRow[] {
-  return appDb().prepare('SELECT * FROM sync_state WHERE resource = ? ORDER BY account').all(resource) as SyncStateRow[];
 }
 
 // ── the API shape (api/openapi.yaml: CalendarItem) ───────────────────────────────────────────────────────────────

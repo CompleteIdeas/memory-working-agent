@@ -13,3 +13,5 @@ export function flagOn(value: string | undefined | null, dflt: boolean): boolean
 export const v2DraftsOn = (env: Record<string, string | undefined> = process.env): boolean => flagOn(env.MWA_V2_DRAFTS, true);
 /** The 30-minute calendar sync in serve: on unless turned off. */
 export const calendarSyncOn = (env: Record<string, string | undefined> = process.env): boolean => flagOn(env.MWA_CALENDAR_SYNC, true);
+/** The 15-minute mail header sync in serve (A8): on unless turned off. */
+export const mailSyncOn = (env: Record<string, string | undefined> = process.env): boolean => flagOn(env.MWA_MAIL_SYNC, true);

@@ -1,6 +1,6 @@
 /**
  * Google (Gmail + Calendar) connector — read + DRAFT, never send/commit.
- * Scopes: gmail.readonly (read), gmail.compose (create DRAFTS, cannot send),
+ * Scopes: gmail.readonly (read), gmail.compose (drafts; the scope itself COULD send — MWA never calls send),
  * calendar.events (create tentative/proposed events). Matches the agreed safety
  * model: MWA reads, triages, and drafts; the human reviews + sends in Gmail/Calendar.
  *
@@ -21,7 +21,7 @@ import { resetCalendarProvider } from '../v2/calendar.js';
 const tokenPath = (): string => connectorTokenPath('google-token.json', 'MWA_GOOGLE_TOKEN');
 const SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.compose', // create drafts, NOT send
+  'https://www.googleapis.com/auth/gmail.compose', // drafts. The scope allows sending too; MWA never calls send.
   'https://www.googleapis.com/auth/calendar.events',
 ];
 const REDIRECT_PORT = Number(process.env.MWA_GOOGLE_OAUTH_PORT ?? 7799);

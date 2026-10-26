@@ -441,13 +441,102 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/mail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The plain mailbox ("All email"): headers, newest first, one row per message across accounts. */
+        get: operations["listMail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mail/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The connected mail accounts, and whether one needs reconnecting. */
+        get: operations["listMailAccounts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mail/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Check the mail now (the app calls it when it opens). 200 when done within 20 s, else 202 and changes arrive on /stream. */
+        post: operations["refreshMail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mail/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** Open a message: its body as sanitised plain text, marked untrusted. 404 gone when it left the mailbox; 409 needs_reconnect; 502 provider_unavailable. */
+        get: operations["readMail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mail/{id}/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Save a reply as a DRAFT in that account (threaded under the message). It is never sent: the person sends it from their mail app. 409 read_only when the account was connected without drafting. */
+        post: operations["saveMailDraft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         Error: {
             error: {
-                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
+                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
                 code: string;
                 /** @description Plain words for a person. */
                 message: string;
@@ -683,6 +772,93 @@ export interface components {
             message: string;
             /** @description Confirm only: it was already on the calendar; nothing new was added. */
             already?: boolean;
+        };
+        /** @description One message in the inbox, headers only (bodies are never synced or stored). The same email in two accounts is one MailHeader (the newest copy), with the others in alsoIn. */
+        MailHeader: {
+            /** @description Opaque. */
+            id: string;
+            /** @description The connected account: gmail, imap or outlook. */
+            account: string;
+            /** @enum {string} */
+            provider: "gmail" | "imap" | "outlook";
+            threadId: string | null;
+            from: components["schemas"]["MailFrom"];
+            subject: string;
+            /** @description One line of plain text (links shown as hosts). Empty for IMAP. */
+            snippet: string;
+            receivedAt: number;
+            unread: boolean;
+            /** @description Gmail labels incl. categories (CATEGORY_PROMOTIONS and so on); Outlook categories and inference:focused or inference:other. */
+            labels: string[];
+            /** @description The List-Id (mailing lists, newsletters). */
+            listId: string | null;
+            /** @description It carries an unsubscribe option (List-Unsubscribe). */
+            hasUnsub: boolean;
+            /** @description Other accounts holding a copy of the same email. */
+            alsoIn: string[];
+            updatedSeq: number;
+        };
+        MailFrom: {
+            name: string | null;
+            addr: string | null;
+        };
+        /** @description A message opened in the reader. The body is fetched from the provider now, sanitised to plain text and kept only briefly in the server memory. It is UNTRUSTED content: show it as text, never as HTML, and fence it before a model reads it. */
+        MailMessage: {
+            id: string;
+            account: string;
+            /** @enum {string} */
+            provider: "gmail" | "imap" | "outlook";
+            threadId: string | null;
+            from: components["schemas"]["MailFrom"];
+            subject: string;
+            snippet: string;
+            receivedAt: number;
+            unread: boolean;
+            labels: string[];
+            listId: string | null;
+            hasUnsub: boolean;
+            alsoIn: string[];
+            updatedSeq: number;
+            /** @description The recipients line, cleaned; anything that is not a plain address shows as (unreadable address). */
+            to: string;
+            /** @description Where a reply goes: the Reply-To, else the sender. */
+            replyTo: components["schemas"]["MailFrom"][];
+            /** @description A reply would go somewhere other than the sender (the Reply-To names another address). */
+            replyGoesElsewhere: boolean;
+            /** @description "Your reply will go to … (not the sender)." when replyGoesElsewhere. */
+            replyNote: string | null;
+            /** @description The HTML could not be converted within the time budget: bodyText is the plain-text part, or a note to open it in the mail app. */
+            tooComplex: boolean;
+            /** @description Plain text, at most 100 KB: no remote images or tracking pixels, hidden text removed, links as "words (host)" and raw URLs as their host, long quoted history collapsed to one line. Clients MUST render it as plain text with auto-linking OFF (no HTML, no linkify). */
+            bodyText: string;
+            truncated: boolean;
+            quotedLinesHidden: number;
+            /** @description Pictures not shown (their alt text appears as [picture: alt]). */
+            imagesHidden: number;
+            /** @description Tracking pixels removed. */
+            trackersRemoved: number;
+            /** @constant */
+            trust: "untrusted";
+            fetchedAt: number;
+        };
+        MailAccount: {
+            account: string;
+            /** @enum {string} */
+            provider: "gmail" | "imap" | "outlook";
+            /** @description Gmail, Gmail (app password), Outlook. */
+            label: string;
+            /** @description The sign-in is no longer valid (revoked or expired): reconnect in Settings. */
+            needsReconnect: boolean;
+            lastOk: number | null;
+            lastError: string | null;
+            /** @description Mail is kept from this time on (14 days). */
+            windowFrom: number | null;
+            syncing: boolean;
+        };
+        MailRefresh: {
+            done: boolean;
+            accounts: components["schemas"]["MailAccount"][];
+            message: string;
         };
     };
     responses: {
@@ -1108,7 +1284,7 @@ export interface operations {
         parameters: {
             query?: {
                 since?: string;
-                /** @description Comma-separated: jobs, calendar. */
+                /** @description Comma-separated: jobs, calendar, mail (mail is headers only). */
                 collections?: string;
             };
             header?: never;
@@ -1129,10 +1305,12 @@ export interface operations {
                         upserts: {
                             jobs?: components["schemas"]["Job"][];
                             calendar?: components["schemas"]["CalendarItem"][];
+                            mail?: components["schemas"]["MailHeader"][];
                         };
                         deletes: {
                             jobs?: string[];
                             calendar?: string[];
+                            mail?: string[];
                         };
                     };
                 };
@@ -1336,6 +1514,163 @@ export interface operations {
                 };
                 content: {
                     "text/calendar": string;
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listMail: {
+        parameters: {
+            query?: {
+                /** @description nextBefore from the previous page. */
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of headers. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        mail: components["schemas"]["MailHeader"][];
+                        nextBefore: string | null;
+                        /** @description "Your helper reads and writes drafts. It never sends." */
+                        note: string;
+                        /** @description Some mail account is connected. */
+                        connected: boolean;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listMailAccounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The accounts. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        accounts: components["schemas"]["MailAccount"][];
+                        note: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    refreshMail: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Checked. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailRefresh"];
+                };
+            };
+            /** @description Still checking. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailRefresh"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    readMail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The message. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailMessage"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    saveMailDraft: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Plain text. */
+                    body: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Saved to your drafts. Nothing was sent. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        saved: true;
+                        /** @constant */
+                        sent: false;
+                        account: string;
+                        draftId: string | null;
+                        /** @description A retry found the draft an earlier try of this request saved; none was added. */
+                        alreadySaved: boolean;
+                        message: string;
+                        /** @description Who the draft is addressed to. */
+                        to: components["schemas"]["MailFrom"][];
+                        replyGoesElsewhere: boolean;
+                        replyNote: string | null;
+                    };
                 };
             };
             default: components["responses"]["Error"];

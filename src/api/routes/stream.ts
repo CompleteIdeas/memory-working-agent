@@ -17,6 +17,9 @@
  * Calendar (A7): a cached event or a draft changing is sent as entity 'calendar' with the item as it is now (or a
  * deletion — a removed draft, a cancelled event, or a confirmed draft once its event is in the cache); /sync has a
  * 'calendar' collection.
+ *
+ * Mail (A8): /sync's 'mail' collection carries headers only — bodies are never synced. On the stream a mail change is
+ * a notice without data (catch up with /sync?collections=mail).
  */
 import type { ServerResponse, IncomingMessage } from 'node:http';
 import { ApiError, type Route } from '../router.js';
@@ -26,6 +29,7 @@ import { apiJob, visibleJob } from './jobs.js';
 import { liveRuns, type LiveEvent } from '../../live-runs.js';
 import type { Caller } from '../auth.js';
 import { calendarItemById, calendarItems } from '../../v2/calendar.js';
+import { mailSnapshot, mailDelta } from '../../v2/mail.js';
 
 export const EVENT_RETENTION_MS = 7 * 24 * 3_600_000;
 const POLL_MS = 1_000, KEEPALIVE_MS = 15_000, BATCH = 500, STEP_EVERY_MS = 1_000;
@@ -106,7 +110,7 @@ function present(rows: EventRow[], who: Caller | null) {
 const CAL_ENTITIES = new Set(['cal_event', 'cal_draft']);
 /** The calendar collection's full snapshot: every cached event and every draft not removed. */
 const calendarSnapshot = () => calendarItems('0000-01-01T00:00:00.000Z', '9999-12-31T23:59:59.999Z');
-const COLLECTIONS = ['jobs', 'calendar'];
+const COLLECTIONS = ['jobs', 'calendar', 'mail'];
 
 function parseCursor(v: string | null | undefined): number {
   if (v === null || v === undefined || v === '') return 0;
@@ -174,6 +178,7 @@ export const streamRoutes: Route[] = [
       if (since === 0 || cursorTooOld(since)) {
         if (want.has('jobs')) { upserts.jobs = viewJobs(listJobs({}).filter(visibleJob), c).map(apiJob); deletes.jobs = []; }
         if (want.has('calendar')) { upserts.calendar = calendarSnapshot(); deletes.calendar = []; }
+        if (want.has('mail')) { upserts.mail = mailSnapshot(); deletes.mail = []; }
         return { body: { cursor, reset: true, upserts, deletes } };
       }
       const rows = appDb().prepare('SELECT seq, ts, entity, entity_id, op, payload FROM events WHERE seq > ? AND seq <= ? ORDER BY seq').all(since, cursor) as EventRow[];
@@ -185,6 +190,7 @@ export const streamRoutes: Route[] = [
         if (m.op === 'delete') { dels[k].add(m.id); ups[k].delete(m.id); } else { ups[k].set(m.id, m.data); dels[k].delete(m.id); }
       }
       for (const k of ['jobs', 'calendar'] as const) if (want.has(k)) { upserts[k] = [...ups[k].values()]; deletes[k] = [...dels[k]]; }
+      if (want.has('mail')) { const d = mailDelta(rows); upserts.mail = d.upserts; deletes.mail = d.deletes; }
       return { body: { cursor, reset: false, upserts, deletes } };
     },
   },

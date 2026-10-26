@@ -15,6 +15,9 @@ import { setJobRouteDeps } from '../src/api/routes/jobs.js';
 import { createJob, addTry, claimTry, endTry } from '../src/v2/jobs.js';
 import { addDraft, setDraftProviders } from '../src/sync/drafts.js';
 import { setCalendarSyncDeps } from '../src/sync/calendar.js';
+import { mailId } from '../src/v2/mail.js';
+import { setMailProviders, syncMail } from '../src/sync/mail.js';
+import { MessageGoneError } from '../src/sync/mail-types.js';
 
 const spec = parse(readFileSync(new URL('../api/openapi.yaml', import.meta.url), 'utf8'));
 const METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
@@ -88,12 +91,25 @@ beforeAll(async () => {
   const spare = addDraft({ title: 'Spare', start: '2026-11-15T15:00:00-05:00', end: '2026-11-15T16:00:00-05:00' }).draft;
   Object.assign(ids, { fair: fair.id, spare: spare.id });
   Object.assign(ids, { partly: partly.job.id, done: done.job.id, running: running.job.id, failed: failed.job.id, watch: watch.job.id });
+  // A8: one fake mail account (in memory) with two messages, one of which is gone by the time it is opened
+  const header = (providerId: string, subject: string, at: number) => ({
+    providerId, threadId: `t-${providerId}`, fromName: 'Coach Ellen', fromAddr: 'ellen@example.com', subject, snippet: 'Can you confirm by Wednesday?',
+    receivedAt: at, unread: true, labels: ['INBOX', 'UNREAD'], listId: null, hasUnsub: false, messageId: `<${providerId}@example.com>`,
+  });
+  setMailProviders(() => [{
+    prefix: 'google', provider: 'gmail', label: 'Gmail', resolveAccount: async () => 'google:me@example.com',
+    sync: async (_s, o) => ({ full: true, upserts: [header('c1', 'Saturday schooling', o.now - 60_000), header('c2', 'Old news', o.now - 120_000)], deletes: [], cursor: '1', windowFrom: o.now - 14 * 86_400_000, windowTo: o.now }),
+    fetchBody: async (id) => { if (id === 'c2') throw new MessageGoneError(); return { html: '<p>Hi Robert, <a href="https://x.example/a">see this</a></p>', text: null, from: [{ name: 'Coach Ellen', addr: 'ellen@example.com' }], replyTo: [], to: [{ name: null, addr: 'robert@example.com' }] }; },
+    saveReplyDraft: async () => ({ draftId: 'd-1', to: [{ name: 'Coach Ellen', addr: 'ellen@example.com' }], already: false }),
+  }], { inlineSanitize: true });
+  await syncMail();
+  Object.assign(ids, { mail: mailId('google:me@example.com', 'c1'), mailGone: mailId('google:me@example.com', 'c2') });
   const v1 = createV1(v1Routes(), { authenticate: () => TEST_CALLER, sameOrigin: () => true });
   server = createServer(async (req, res) => { if (!(await v1(req, res))) { res.writeHead(404); res.end(); } });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
-afterAll(() => { server?.close(); setCalendarSyncDeps(null); });
+afterAll(() => { server?.close(); setCalendarSyncDeps(null); setMailProviders(null); });
 
 /** One request per operation (and a few error cases). Slices append theirs. */
 const ids: Record<string, string> = {};
@@ -111,7 +127,19 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'GET /stream', path: '/stream?cursor=abc', status: 400 },
   { op: 'GET /sync', path: '/sync', status: 200 },
   { op: 'GET /sync', path: '/sync?since=1', status: 200 },
-  { op: 'GET /sync', path: '/sync?collections=mail', status: 400 },
+  { op: 'GET /sync', path: '/sync?collections=nope', status: 400 },
+  { op: 'GET /sync', path: '/sync?collections=jobs,mail', status: 200 },
+  // A8: mail, with an in-memory fake provider (no network)
+  { op: 'GET /mail', path: '/mail', status: 200 },
+  { op: 'GET /mail', path: '/mail?limit=1', status: 200 },
+  { op: 'GET /mail', path: '/mail?before=nonsense', status: 400 },
+  { op: 'GET /mail/accounts', path: '/mail/accounts', status: 200 },
+  { op: 'POST /mail/refresh', path: '/mail/refresh', init: post, status: 200 },
+  { op: 'GET /mail/{id}', path: () => `/mail/${ids.mail}`, status: 200 },
+  { op: 'GET /mail/{id}', path: () => `/mail/${ids.mailGone}`, status: 404 },
+  { op: 'GET /mail/{id}', path: '/mail/m_bm9wZQpub3Bl', status: 404 },
+  { op: 'POST /mail/{id}/draft', path: () => `/mail/${ids.mail}/draft`, init: () => ({ ...post(), body: JSON.stringify({ body: 'Yes, count me in.' }) }), status: 201 },
+  { op: 'POST /mail/{id}/draft', path: () => `/mail/${ids.mail}/draft`, init: post, status: 400 },
   { op: 'GET /jobs', path: '/jobs', status: 200 },
   { op: 'GET /jobs', path: '/jobs?state=partly_done', status: 200 },
   { op: 'GET /jobs', path: '/jobs?state=nonsense', status: 400 },

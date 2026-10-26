@@ -64,6 +64,8 @@ import { makeAuthenticate } from './api/auth.js';
 import { setJobRouteDeps } from './api/routes/jobs.js';
 import { setStreamDeps } from './api/routes/stream.js';
 import { startCalendarSync } from './sync/calendar.js';
+import { startMailSync } from './sync/mail.js';
+import { mailSyncOn } from './sync/flags.js';
 import { migrateV2Once, describeReport } from './v2/migrate.js';
 import { reapDeadTries, personAction } from './v2/jobs.js';
 import { runAgent } from './agent.js';
@@ -1646,6 +1648,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   });
   const host = process.env.MWA_SERVE_HOST ?? '127.0.0.1';
   await new Promise<void>((r) => server.listen(port, host, r));
+  // v2 (A8): mail headers for "All email" and triage — every 15 minutes (and on app open via POST /api/v1/mail/refresh).
+  // Headers only, no model calls; nothing happens while no mail account is connected.
+  // It starts once v2 is ready (the jobs migration at server start), like the rest of v2.
+  if (mailSyncOn()) void v2Ready.then(() => startMailSync(), () => startMailSync());
   // Graceful shutdown: stop accepting connections, let in-flight requests drain, then exit
   // (a supervisor / Docker restart policy brings us back). Hard-exit after 10s as a backstop.
   const shutdown = (sig: string) => {
