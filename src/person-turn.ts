@@ -32,7 +32,16 @@ export function composePersonContext(profile: PersonNote[], message: string, nam
   return { text, identity };
 }
 
-export interface PreparedPerson { personId: string; name?: string; personContext?: string; mismatch: boolean; reasons: string[]; notes: number }
+export interface PreparedPerson { personId: string; name?: string; personContext?: string; mismatch: boolean; reasons: string[]; notes: number;
+  /** A5: the names in this person's profile (theirs, their household's) — never evidence that an answer used some other memory */
+  terms?: string[] }
+
+/** The capitalised words of a person's profile notes, and their name. */
+export function profileTerms(notes: { content: string }[], name?: string): string[] {
+  const out = new Set<string>();
+  for (const w of `${name ?? ''} ${notes.map((n) => n.content).join(' ')}`.match(/\p{Lu}[\p{L}'’-]+/gu) ?? []) out.add(w.replace(/['’]s$/, '').toLowerCase());
+  return [...out];
+}
 
 /** Resolve who's talking + build their prompt context. Best-effort — never throws, never blocks a turn.
  *  When `channelVerified` (an authenticated channel like Telegram), records this channel as a VALIDATED
@@ -59,7 +68,7 @@ export async function preparePersonTurn(memory: MwaMemory, ref: PersonRef, messa
       // Suspicion carried over from an earlier turn (no self-claim this turn) — still redact + arm step-up.
       text = [identityGuidance({ level: 'mismatch', reasons: ['Identity is unverified pending step-up from an earlier flag.'] }), stepUpGuidance(profile, 'mismatch')].filter(Boolean).join('\n\n') || undefined;
     }
-    return { personId, name, personContext: text, mismatch: inDoubt, reasons: c.identity.reasons, notes: profile.length };
+    return { personId, name, personContext: text, mismatch: inDoubt, reasons: c.identity.reasons, notes: profile.length, terms: profileTerms(profile, name) };
   } catch { return { personId, name, mismatch: false, reasons: [], notes: 0 }; }
 }
 

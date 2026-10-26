@@ -201,6 +201,11 @@ async function main(): Promise<void> {
     const m = new MwaMemory(String(flags.agent ?? process.env.MWA_AGENT_ID ?? 'mwa-serve'), flags.db ?? dbFile(), loadConfig().awm.workspace);
     try {
       const dryRun = flags['dry-run'] !== undefined;
+      // A5: the conversations kept before Projects, into General's thread. Incremental and idempotent (the log is only
+      // read; the server also picks up, at each start, whatever an older build appends after this).
+      const { importConversations, describeConversationsReport } = await import('./v2/migrate-conversations.js');
+      const { conversationsPath } = await import('./conversations.js');
+      console.log(describeConversationsReport(await importConversations({ file: conversationsPath(), dryRun })));
       // Review M1: once recorded (at the first start, or an earlier run), a real run needs --force; v2 has been
       // recording fires live since, and a re-run only adds what is missing — but it should be a decision.
       const at = migrationRecordedAt();

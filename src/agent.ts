@@ -1307,7 +1307,8 @@ export async function runAgent(opts: {
   }
   await pullSources();
 
-  const render = () => buildKnowledgeBlock(recalled);
+  // A5: what is rendered is what the model was shown — provenance counts only these memories
+  const render = () => { memory.markShown?.(recalled.map((r) => r.id)); return buildKnowledgeBlock(recalled); };
   // MWA_PRIME_LOG=<file>: the PRIOR KNOWLEDGE block each run starts with, one JSON line per run — for a pilot or a
   // replay that asks "what did the model actually see?" (2026-10-27: the run log keeps no prime).
   if (process.env.MWA_PRIME_LOG) { try { appendFileSync(process.env.MWA_PRIME_LOG, JSON.stringify({ ts: now(), session: opts.session, runId, prime: render() }) + '\n'); } catch { /* best effort */ } }
@@ -3056,6 +3057,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     // Same rule as auto-prime: untrusted skills/lessons never volunteer themselves; other untrusted
     // memories arrive flagged (BL-17 review — the planner's recall was unfiltered and unlabeled).
     const known = rankForPrime((await memory.recall(recallQuery(instruction, opts.userMessage), { limit: 30, full: true, workspace: opts.workspace })).filter(primeable)).slice(0, 8);
+    memory.markShown?.(known.map((k) => k.id)); // A5: the planner was shown these
     const planFence = newFenceCode();
     const p = await brain.chat({
       system: (planDomain ? planDomain + '\n\n' : '') + 'You are the PLANNER. Break the user\'s task into the SMALLEST ordered set of concrete sub-tasks (2 to 6) that together fully complete it. Each sub-task must be self-contained — something one agent can do alone in a fresh context (it can read files, search the web, write files, draft email, AND use the domain tools described above). Honor the domain knowledge above — do NOT plan steps to "find the data source" or "inspect the workspace" when a tool/method is already documented; plan to USE it. Prefer FEWER steps; do not pad. Output ONLY JSON {"steps":[{"task":"imperative sub-task","done_when":"one observable success condition"}, ...]}. If the task is simple enough to do in one go (e.g. a single lookup or count), output {"steps":[]}.',

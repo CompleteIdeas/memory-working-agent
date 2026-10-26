@@ -12,6 +12,7 @@ import { jobRoutes } from './routes/jobs.js';
 import { streamRoutes } from './routes/stream.js';
 import { calendarRoutes } from './routes/calendar.js';
 import { mailRoutes } from './routes/mail.js';
+import { projectRoutes, importingNow } from './routes/projects.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 function serverVersion(): string {
@@ -31,7 +32,9 @@ export const metaRoutes: Route[] = [
       body: {
         api: API_VERSION, server: VERSION, minClient: MIN_CLIENT,
         secure: secureContext(req),
-        features: ['jobs', 'calendar', 'mail'] as string[],
+        features: ['jobs', 'calendar', 'mail', 'projects'] as string[],
+        // A5: while older conversations are being imported into General (bytes done of total)
+        importing: importingNow(),
       },
     }),
   },
@@ -39,7 +42,7 @@ export const metaRoutes: Route[] = [
 
 /** Every v1 route. Slices append their own arrays here. */
 export function v1Routes(): Route[] {
-  return [...metaRoutes, ...deviceRoutes, ...jobRoutes, ...streamRoutes, ...calendarRoutes, ...mailRoutes];
+  return [...metaRoutes, ...deviceRoutes, ...jobRoutes, ...streamRoutes, ...calendarRoutes, ...mailRoutes, ...projectRoutes];
 }
 
 export function createV1Handler(deps: RouterDeps) {

@@ -134,6 +134,21 @@ export function appDb(): AppDb {
   return db;
 }
 
+/**
+ * A separate app database at `path`, migrated with every step registered so far. The caller closes it. Only for a
+ * store a caller names explicitly (conversations.ts given its own log path, as its tests do); the app uses appDb().
+ */
+export function openAppDbAt(path: string): AppDb {
+  if (path !== ':memory:') mkdirSync(dirname(resolve(path)), { recursive: true });
+  const d = new Database(path);
+  try {
+    d.pragma('busy_timeout = 5000');
+    d.pragma('foreign_keys = ON');
+    migrate(d, [...BASE_MIGRATIONS, ...extra]);
+  } catch (e) { d.close(); throw e; }
+  return d;
+}
+
 /** Tests: close and forget the handle (optionally point the next open somewhere else). */
 export function resetAppDb(path?: string): void {
   try { db?.close(); } catch { /* already closed */ }

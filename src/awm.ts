@@ -16,6 +16,7 @@
  */
 // AWM's internals come through one file (BL-11): an AWM upgrade that moves them breaks awm-api.ts only.
 import { loadEngines, loadSqliteStore, loadPGliteStore, loadPostgresStore, loadConflictOrder, type AwmEngines } from './awm-api.js';
+import { usedMemoriesIn, type ShownMemory } from './v2/provenance-match.js';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isReservedConcept, unreservedConcept } from './reserved-concept.js';
@@ -180,6 +181,8 @@ export interface Memory {
   saveQuestion(question: string): Promise<string | null>;
   /** AWM 0.20: credits recalled memories whose identifiers appear in `text` (a reply, a write). Optional. */
   noteUse?(text: string, source: string): Promise<number>;
+  /** A5: these recalled memories were put in front of the model (provenance counts only what was shown). Optional. */
+  markShown?(ids: string[]): void;
   close(): void;
 }
 
@@ -466,7 +469,10 @@ export class MwaMemory implements Memory {
       // Nor does the ACTION LOG (BL-54): it is the "what I did" record, read by recentActions. Recalled, each entry
       // is a snapshot of a tool's output — twelve copies of a flight page's old 10:15 outranked the job that saw
       // it move to 8:40 (BL-53 second pass).
-      return kept(rows).slice(0, want).map((r: any) => ({
+      const out = kept(rows).slice(0, want);
+      // A5: what this memory handed out, so the memories an answer used can be named afterwards (usedMemories).
+      if (!(opts.internal ?? false)) this.noteRecalled(out.map((r: any) => r.engram));
+      return out.map((r: any) => ({
         id: r.engram.id,
         concept: r.engram.concept,
         content: opts.full ? r.engram.content : (r.summary ?? r.engram.content),
@@ -1578,8 +1584,39 @@ export class MwaMemory implements Memory {
     } catch (err) { console.error('[awm] listPeople error:', (err as Error).message); return []; }
   }
 
+  // ── A5: which memories a run used, and where they came from ──────────────────────────────────────────────────
+  // What recall returned is kept (id → concept, content, tags; the last 400); what the run actually put in front of
+  // the model is marked `shown` by the agent (the PRIOR KNOWLEDGE block it rendered, the planner's list) — recall
+  // returns far more than is shown (prime 40 → 12). A shown memory counts as used when the answer carries its id or
+  // two of its distinctive content tokens (src/v2/provenance-match.ts — stricter than AWM's implicit-use rule).
+  private recallCache = new Map<string, ShownMemory>();
+  private shown = new Set<string>();
+  private used = new Map<string, string | undefined>();
+  private noteRecalled(engrams: any[]): void {
+    for (const e of engrams) {
+      const id = String(e.id);
+      this.recallCache.delete(id);
+      this.recallCache.set(id, { id, concept: String(e.concept ?? ''), content: String(e.content ?? ''), tags: this.parseTags(e.tags) });
+    }
+    while (this.recallCache.size > 400) this.recallCache.delete(this.recallCache.keys().next().value as string);
+  }
+  /** The agent rendered these memories into the model's context. */
+  markShown(ids: string[]): void { for (const id of ids) if (this.recallCache.has(id)) this.shown.add(id); }
+  /** A new run starts on this handle (the scheduler keeps one handle across runs): forget the last run's. */
+  resetUse(): void { this.shown.clear(); this.used.clear(); }
+  /** The memories shown to this run that `text` shows were used, each with the `session=` its writer had. `exclude`:
+   *  words of the person's own profile (their name, their household's), which never count as evidence. */
+  async usedMemories(text?: string, o: { exclude?: Iterable<string> } = {}): Promise<{ id: string; session?: string }[]> {
+    if (text) {
+      const shown = [...this.shown].map((id) => this.recallCache.get(id)).filter((m): m is ShownMemory => !!m);
+      for (const m of usedMemoriesIn(shown, text, o.exclude ?? [])) this.used.set(m.id, m.tags.find((t) => t.startsWith('session='))?.slice(8));
+    }
+    return [...this.used.entries()].map(([id, session]) => ({ id, ...(session ? { session } : {}) }));
+  }
+
   /** AWM 0.20 implicit feedback (ActivationEngine.noteImplicitUse); a no-op on an older engine. */
   async noteUse(text: string, source: string): Promise<number> {
+    await this.usedMemories(text); // A5: remember which ones, for the answer's provenance (stricter rule, shown only)
     try {
       const a = this.activation as { noteImplicitUse?: (t: string, s: string) => Promise<number> } | undefined;
       return a?.noteImplicitUse ? await a.noteImplicitUse(text, source) : 0;
