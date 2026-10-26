@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.1 (2026-10-26) — background jobs you can watch and stop, and fewer cards for nothing
+
+From the replay of the task-centred workspace on the real runtime:
+
+- **A fired job is a live run.** Its stage streams under `job_<id>` (`/api/chat/live`, `/attach`), it can be
+  stopped and given a note (`/api/chat/stop`, `/steer`), the schedule rows carry `live`, and the job's card shows
+  "Running now · <stage> · Ns" with a Stop button.
+- **File checks go to the file tools.** A shell command that only lists or checks files (PowerShell `Test-Path`,
+  `Get-ChildItem`, python `os.path.exists`, `ls`, `dir`, `cat`…) no longer becomes an approval card, in a chat or
+  a job: the run is pointed at `list_files` and `read_file`, which need none. The resume instructions say so.
+- **The work note names only the goals a message is about** and says it is information, never a request, so an
+  unrelated question no longer gets a background briefing written instead of an answer.
+- **One request, one job** unless the person's words ask for more: a reworded second job is held once; "Thursday
+  at 10 and Friday at 4" still sets both.
+- Docs: the project overview page, this week's review reports and the pending-development list live in `docs/`.
+
 ## 0.8.0 (2026-10-26) — the task-centred workspace, and a browser that reads frames and can look
 
 - **The web app is built around tasks (usability review of 2026-10-24, decisions D1–D6).** The review scored
