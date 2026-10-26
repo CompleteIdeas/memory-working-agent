@@ -350,6 +350,8 @@ export interface BillingSummary {
   days: { day: string; cost: number; calls: number }[];
   byModel: ({ model: string } & Bucket)[];
   bySession: ({ session: string; kind: 'chat' | 'job' | 'other' } & Bucket)[];
+  /** mail triage and other named background work (v2 A9) */
+  byPurpose?: ({ purpose: string; label: string } & Bucket)[];
   budget: { monthlyUsd: number | null; usedUsd: number; pct: number | null; state: 'none' | 'ok' | 'warn' | 'over'; fixed: boolean };
   balance: { provider: string; remainingUsd: number; at: number } | null;
   logPath: string;

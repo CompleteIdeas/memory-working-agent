@@ -18,6 +18,10 @@ import { setCalendarSyncDeps } from '../src/sync/calendar.js';
 import { mailId } from '../src/v2/mail.js';
 import { setMailProviders, syncMail } from '../src/sync/mail.js';
 import { MessageGoneError } from '../src/sync/mail-types.js';
+import { refreshImportant, factItem, setTriageDeps } from '../src/v2/triage.js';
+import { itemId, upsertItem, ruleIdFor } from '../src/v2/important.js';
+import { setImportantRouteDeps } from '../src/api/routes/important.js';
+import { localDate, addDays } from '../src/sync/tz.js';
 import { setProjectRouteDeps } from '../src/api/routes/projects.js';
 import { createProject, setEmbedder } from '../src/v2/projects.js';
 import { appendTurn } from '../src/conversations.js';
@@ -106,12 +110,21 @@ beforeAll(async () => {
   });
   setMailProviders(() => [{
     prefix: 'google', provider: 'gmail', label: 'Gmail', resolveAccount: async () => 'google:me@example.com',
-    sync: async (_s, o) => ({ full: true, upserts: [header('c1', 'Saturday schooling', o.now - 60_000), header('c2', 'Old news', o.now - 120_000)], deletes: [], cursor: '1', windowFrom: o.now - 14 * 86_400_000, windowTo: o.now }),
+    sync: async (_s, o) => ({ full: true, upserts: [header('c1', 'Saturday schooling', o.now - 60_000), header('c2', 'Old news', o.now - 120_000),
+      { ...header('c3', 'This week in AI', o.now - 180_000), fromName: 'The Batch', fromAddr: 'news@thebatch.example', listId: 'thebatch.example', hasUnsub: true }], deletes: [], cursor: '1', windowFrom: o.now - 14 * 86_400_000, windowTo: o.now }),
     fetchBody: async (id) => { if (id === 'c2') throw new MessageGoneError(); return { html: '<p>Hi Robert, <a href="https://x.example/a">see this</a></p>', text: null, from: [{ name: 'Coach Ellen', addr: 'ellen@example.com' }], replyTo: [], to: [{ name: null, addr: 'robert@example.com' }] }; },
     saveReplyDraft: async () => ({ draftId: 'd-1', to: [{ name: 'Coach Ellen', addr: 'ellen@example.com' }], already: false }),
   }], { inlineSanitize: true });
   await syncMail();
   Object.assign(ids, { mail: mailId('google:me@example.com', 'c1'), mailGone: mailId('google:me@example.com', 'c2') });
+  // A9: the Important list (no model under tests: rules and bulk-mail signs only), and one dated fact to add
+  setTriageDeps({ tz: () => 'America/New_York' });
+  setImportantRouteDeps({ remind: async () => 'rem-1' });
+  await refreshImportant();
+  const day = addDays(localDate(Date.now(), 'America/New_York'), 20);
+  const fact = upsertItem(factItem({ kind: 'event', title: 'Book fair', date: day, start: '15:00', end: '18:00', place: 'Oakwood Elementary' },
+    { from_name: 'Oakwood school newsletter', from_addr: 'news@oakwood.example', received_at: Date.now() - 60_000 }, ids.mailGone, Date.now(), 'America/New_York'), 'America/New_York');
+  Object.assign(ids, { item: itemId(`mail:${ids.mail}`), item2: itemId(`mail:${ids.mailGone}`), fact: fact.id, skippedMail: mailId('google:me@example.com', 'c3') });
   // A5: two projects with a turn each; a stub embedder (the routing model is exercised in tests/projects-routing) and a
   // fake chat start (no model)
   setEmbedder(async (t) => [t.length % 7, 1, t.includes('horse') ? 3 : 0]);
@@ -143,7 +156,7 @@ beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
-afterAll(() => { server?.close(); setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setAskRouteDeps(null); });
+afterAll(() => { server?.close(); setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); });
 
 /** One request per operation (and a few error cases). Slices append theirs. */
 const ids: Record<string, string> = {};
@@ -210,6 +223,28 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /calendar/drafts/{id}/remove', path: () => `/calendar/drafts/${ids.spare}/remove`, init: post, status: 200 },
   { op: 'POST /calendar/drafts/{id}/remove', path: () => `/calendar/drafts/${ids.fair}/remove`, init: post, status: 409 },
   { op: 'GET /sync', path: '/sync?collections=jobs,calendar', status: 200 },
+  // A9 Important
+  { op: 'GET /items', path: '/items', status: 200 },
+  { op: 'GET /items', path: '/items?state=handled&group=today', status: 200 },
+  { op: 'GET /items', path: '/items?group=tomorrow', status: 400 },
+  { op: 'GET /items/skipped', path: '/items/skipped', status: 200 },
+  { op: 'GET /items/skipped', path: '/items/skipped?group=today', status: 200 },
+  { op: 'GET /items/skipped', path: '/items/skipped?group=nope', status: 400 },
+  { op: 'POST /items/{id}/handled', path: () => `/items/${ids.item}/handled`, init: post, status: 200 },
+  { op: 'POST /items/{id}/handled', path: '/items/it_nopenopenope/handled', init: post, status: 404 },
+  { op: 'POST /items/{id}/unhandle', path: () => `/items/${ids.item}/unhandle`, init: post, status: 200 },
+  { op: 'POST /items/{id}/action', path: () => `/items/${ids.item}/action`, init: post, status: 200 },
+  { op: 'POST /items/{id}/action', path: () => `/items/${ids.fact}/action`, init: post, status: 201 },
+  { op: 'POST /items/{id}/not-important', path: () => `/items/${ids.item2}/not-important`, init: () => ({ ...post(), body: JSON.stringify({ scope: 'everything' }) }), status: 400 },
+  { op: 'POST /items/{id}/not-important', path: () => `/items/${ids.item2}/not-important`, init: () => ({ ...post(), body: JSON.stringify({ scope: 'sender' }) }), status: 200 },
+  { op: 'POST /mail/{id}/important', path: () => `/mail/${ids.skippedMail}/important`, init: post, status: 200 },
+  { op: 'POST /mail/{id}/important', path: '/mail/m_bm9wZQpub3Bl/important', init: post, status: 404 },
+  { op: 'POST /important/refresh', path: '/important/refresh', init: post, status: 200 },
+  { op: 'GET /sync', path: '/sync?collections=important', status: 200 },
+  { op: 'GET /sync', path: '/sync?since=1&collections=important,mail', status: 200 },
+  { op: 'GET /triage/rules', path: '/triage/rules', status: 200 },
+  { op: 'DELETE /triage/rules/{id}', path: () => `/triage/rules/${ruleIdFor('sender', 'ellen@example.com')}`, init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 200 },
+  { op: 'DELETE /triage/rules/{id}', path: '/triage/rules/tr_nopenopenope', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 404 },
   { op: 'GET /sync', path: '/sync?since=1&collections=calendar', status: 200 },
   // A5 projects and threads
   { op: 'GET /projects', path: '/projects', status: 200 },

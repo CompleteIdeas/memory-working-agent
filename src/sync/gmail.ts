@@ -20,9 +20,11 @@ import { authedClient, googleAccountKey } from '../connectors/google.js';
 import type { HeaderIn, SyncBatch, SyncStateRow } from '../v2/mail.js';
 import { parseAddressList, parseAddress, type Addr } from '../v2/mail-text.js';
 import { buildReplyMime } from './mail-mime.js';
+import { authResult } from '../v2/mail-trust.js';
 import { MessageGoneError, mapLimit, replyRecipients, statusOf, type DraftRequest, type DraftResult, type MailProvider, type RawBody, type SyncOptions } from './mail-types.js';
 
-const META = ['From', 'Subject', 'Date', 'Message-ID', 'List-Unsubscribe', 'List-Id'];
+// Authentication-Results (A9 review): Gmail's own stamp says whether the From domain authenticated (src/v2/mail-trust.ts)
+const META = ['From', 'Subject', 'Date', 'Message-ID', 'List-Unsubscribe', 'List-Id', 'Authentication-Results'];
 const MAX_WINDOW_MESSAGES = 2000;
 const MAX_HISTORY_PAGES = 50;
 const CONCURRENCY = 8;
@@ -78,6 +80,7 @@ export function gmailProvider(o: GmailOptions = {}): MailProvider {
           receivedAt: Number(m.internalDate ?? Date.parse(header(hs, 'Date') ?? '') ?? 0) || 0,
           unread: labels.includes('UNREAD'), labels, listId: listIdOf(header(hs, 'List-Id')), hasUnsub: !!header(hs, 'List-Unsubscribe'),
           messageId: header(hs, 'Message-ID'),
+          auth: authResult(hs.filter((x) => (x.name ?? '').toLowerCase() === 'authentication-results').map((x) => x.value ?? null), from.addr),
         },
       };
     } catch (e) {

@@ -21,6 +21,9 @@
  * Mail (A8): /sync's 'mail' collection carries headers only — bodies are never synced. On the stream a mail change is
  * a notice without data (catch up with /sync?collections=mail).
  *
+ * Important (A9): an item changing is sent as entity 'item' with the item as it is now (or a deletion once it is gone,
+ * someone else's, or aged out); /sync has an 'important' collection. Ownership as for jobs: the owner's items only —
+ * in a single-owner app that is all of them.
  * Projects (A5): a project or a thread's turn changing is sent with its current shape; /sync has 'projects' (all of
  * them, archived included, so an archive reaches the phone) and 'turns' (a snapshot holds each active project's latest
  * 50; a delta holds every turn changed since the cursor, a moved one included with its new project).
@@ -37,6 +40,8 @@ import { liveRuns, type LiveEvent } from '../../live-runs.js';
 import type { Caller } from '../auth.js';
 import { calendarItemById, calendarItems } from '../../v2/calendar.js';
 import { mailSnapshot, mailDelta } from '../../v2/mail.js';
+import { importantSnapshot, itemForStream } from '../../v2/important.js';
+import { triageNow, triageTz } from '../../v2/triage.js';
 import { apiProject, apiTurn, getProject, getTurn, listProjects, recentTurns } from '../../v2/projects.js';
 import { apiAsk, getAsk } from '../../v2/ask.js';
 
@@ -94,10 +99,19 @@ function present(rows: EventRow[], who: Caller | null) {
   // calendar (A7): an event or a draft changing sends the item as it is now (or its deletion), once per batch
   const lastForCal = new Map<string, number>();
   rows.forEach((e, i) => { if (CAL_ENTITIES.has(e.entity)) lastForCal.set(e.entity_id, i); });
+  const lastForItem = new Map<string, number>();
+  rows.forEach((e, i) => { if (e.entity === 'item') lastForItem.set(e.entity_id, i); });
   const lastForProject = new Map<string, number>(), lastForTurn = new Map<string, number>();
   rows.forEach((e, i) => { if (e.entity === 'project') lastForProject.set(e.entity_id, i); else if (e.entity === 'turn') lastForTurn.set(e.entity_id, i); });
   rows.forEach((e, i) => {
     if (e.entity === 'device' && !who?.scopes.has('admin')) return;
+    if (e.entity === 'item') {
+      if (lastForItem.get(e.entity_id) !== i) return;
+      const data = itemForStream(e.entity_id, triageNow(), triageTz());
+      if (data === undefined) return; // not the owner's: never sent
+      out.push({ seq: e.seq, entity: 'item', id: e.entity_id, op: data ? 'upsert' : 'delete', ...(data ? { data } : {}) });
+      return;
+    }
     if (CAL_ENTITIES.has(e.entity)) {
       if (lastForCal.get(e.entity_id) !== i) return;
       const data = e.op === 'delete' ? null : calendarItemById(e.entity_id);
@@ -136,7 +150,7 @@ function present(rows: EventRow[], who: Caller | null) {
 const CAL_ENTITIES = new Set(['cal_event', 'cal_draft']);
 /** The calendar collection's full snapshot: every cached event and every draft not removed. */
 const calendarSnapshot = () => calendarItems('0000-01-01T00:00:00.000Z', '9999-12-31T23:59:59.999Z');
-const COLLECTIONS = ['jobs', 'calendar', 'mail', 'projects', 'turns'];
+const COLLECTIONS = ['jobs', 'calendar', 'mail', 'projects', 'turns', 'important'];
 /** A /sync delta answers at most this many events, and stops early near this many bytes (`more: true`). */
 export const SYNC_PAGE = 500;
 export const SYNC_MAX_BYTES = 5 * 1024 * 1024;
@@ -210,6 +224,7 @@ export const streamRoutes: Route[] = [
         if (want.has('mail')) { upserts.mail = mailSnapshot(); deletes.mail = []; }
         if (want.has('projects')) { upserts.projects = listProjects({ archived: true }).map(apiProject); deletes.projects = []; }
         if (want.has('turns')) { upserts.turns = recentTurns(50).map((t) => apiTurn(t, undefined, { summary: true })); deletes.turns = []; }
+        if (want.has('important')) { upserts.important = importantSnapshot(triageNow(), triageTz()); deletes.important = []; }
         return { body: { cursor: head, reset: true, more: false, upserts, deletes } };
       }
       // A page of at most SYNC_PAGE events and about SYNC_MAX_BYTES of answer (review of A5: a delta across the
@@ -228,8 +243,8 @@ export const streamRoutes: Route[] = [
         if (bytes >= SYNC_MAX_BYTES && i + 100 < fetched.length) { more = true; break; }
       }
       const cursor = more && rows.length ? rows[rows.length - 1].seq : head;
-      const KEYS = ['jobs', 'calendar', 'projects', 'turns'] as const;
-      const COLL: Record<string, (typeof KEYS)[number]> = { job: 'jobs', calendar: 'calendar', project: 'projects', turn: 'turns' };
+      const KEYS = ['jobs', 'calendar', 'projects', 'turns', 'important'] as const;
+      const COLL: Record<string, (typeof KEYS)[number]> = { job: 'jobs', calendar: 'calendar', project: 'projects', turn: 'turns', item: 'important' };
       const ups = Object.fromEntries(KEYS.map((k) => [k, new Map<string, unknown>()])) as Record<(typeof KEYS)[number], Map<string, unknown>>;
       const dels = Object.fromEntries(KEYS.map((k) => [k, new Set<string>()])) as Record<(typeof KEYS)[number], Set<string>>;
       for (const m of presented) {

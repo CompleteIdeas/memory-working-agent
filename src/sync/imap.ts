@@ -16,6 +16,7 @@
 import { simpleParser, type AddressObject } from 'mailparser';
 import type { FetchMessageObject, FetchQueryObject, ImapFlow, MailboxObject, MessageAddressObject } from 'imapflow';
 import { appendDraft, imapClient } from '../connectors/gmail-imap.js';
+import { authResult } from '../v2/mail-trust.js';
 import type { HeaderIn, HeaderPatch, SyncBatch, SyncStateRow } from '../v2/mail.js';
 import { isAddrSpec, type Addr } from '../v2/mail-text.js';
 import { listIdOf } from './gmail.js';
@@ -27,7 +28,7 @@ export type ImapLike = Pick<ImapFlow, 'getMailboxLock' | 'search' | 'fetch' | 'f
 
 const MAX_WINDOW_MESSAGES = 2000;
 const SOURCE_MAX = 5_000_000;
-const HEADER_FIELDS = ['message-id', 'list-id', 'list-unsubscribe', 'references', 'reply-to'];
+const HEADER_FIELDS = ['message-id', 'list-id', 'list-unsubscribe', 'references', 'reply-to', 'authentication-results'];
 
 export interface ImapOptions {
   /** a connected client (tests: a fake); default: the stored app password */
@@ -87,6 +88,8 @@ export function imapProvider(o: ImapOptions = {}): MailProvider {
       fromName: from?.name || null, fromAddr: from?.address ?? null, subject: env.subject ?? null, snippet: null,
       receivedAt: received, unread: !flags.has('\\Seen'), labels: [...(m.labels ?? [])].map(String),
       listId: listIdOf(hs['list-id']), hasUnsub: !!hs['list-unsubscribe'], messageId: env.messageId ?? hs['message-id'] ?? null,
+      // the topmost Authentication-Results (parseHeaderBlock keeps the first): Gmail's own stamp (A9 review)
+      auth: authResult([hs['authentication-results'] ?? null], from?.address ?? null),
     };
   };
   const HEAD_QUERY: FetchQueryObject = { uid: true, envelope: true, flags: true, internalDate: true, labels: true, threadId: true, headers: HEADER_FIELDS };

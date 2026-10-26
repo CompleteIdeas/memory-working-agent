@@ -49,6 +49,7 @@ function Billing() {
         {b.byModel.length > 0 && (
           <dl className="kv">
             <dt>By model</dt><dd>{b.byModel.slice(0, 6).map((m) => `${m.model} ${usd(m.cost)} (${m.calls})`).join(' · ')}</dd>
+            {(b.byPurpose ?? []).length > 0 && <><dt>Background</dt><dd>{(b.byPurpose ?? []).map((p) => `${p.label} ${usd(p.cost)} (${p.calls})`).join(' · ')}</dd></>}
             {b.bySession.length > 0 && <><dt>Costliest</dt><dd>{b.bySession.slice(0, 5).map((s) => `${s.kind === 'job' ? 'job' : 'chat'} ${s.session.replace(/^job_/, '').slice(0, 14)} ${usd(s.cost)}`).join(' · ')}</dd></>}
           </dl>
         )}

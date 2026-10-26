@@ -781,6 +781,188 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The Important list ("Worth a look"): what matters from every source, grouped Today / This week / Earlier, with what was skipped per group. */
+        get: operations["listImportant"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/items/skipped": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The mail left out ("Show them"): headers only, newest first, each with why it was skipped. */
+        get: operations["listSkipped"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/items/{id}/handled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Handled: the item leaves the list (it is kept under "Handled", with Undo). */
+        post: operations["markItemHandled"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/items/{id}/unhandle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** The Undo of Handled: the item is back on the list. */
+        post: operations["unhandleItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/items/{id}/not-important": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Not important: the item leaves, and (for mail) the filter learns — messages like it from that sender, domain or kind are skipped from now on, with no model call. */
+        post: operations["markItemNotImportant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mail/{id}/important": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** "This was important" on a skipped message: it joins the list, and messages from that sender are shown from now on. */
+        post: operations["markMailImportant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/items/{id}/action": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** The item's one action, on the person's tap: Add to calendar makes an MWA-held DRAFT (helper-after-reading, confirmed separately); Remind me sets a reminder delivered as written; the rest say where to go (reader, job, Settings, approval, Ask). */
+        post: operations["runItemAction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/important/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sort new mail and rebuild the list now. 200 when done within 20 s, else 202 and changes arrive on /stream. */
+        post: operations["refreshImportant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/triage/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The rules the person taught, each with what it decides in the cached mail now. */
+        get: operations["listTriageRules"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/triage/rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Undo a rule: the mail it decided is sorted as usual again. */
+        delete: operations["deleteTriageRule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ask": {
         parameters: {
             query?: never;
@@ -860,7 +1042,7 @@ export interface components {
     schemas: {
         Error: {
             error: {
-                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
+                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer; important: bad_group, bad_state, bad_scope, not_handled, not_open, no_action, freemail_domain, kind_not_available, unavailable. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
                 code: string;
                 /** @description Plain words for a person. */
                 message: string;
@@ -1302,6 +1484,168 @@ export interface components {
                 name: string;
                 score: number;
             }[];
+        };
+        /** @description One thing worth a look, from any source: an important email, a dated fact found in a newsletter, a calendar
+         *     double-booking, an email that may change an event, a job result, an approval waiting, an account to reconnect.
+         *     Text that came from outside (a message, an invite, a model reading them) is `trust: untrusted`: render title, why
+         *     and from as plain text with auto-linking off. `why` never holds links, addresses or phone numbers.
+         *      */
+        ImportantItem: {
+            /** @description Stable: the same source thing always has the same id. */
+            id: string;
+            /** @enum {string} */
+            source: "mail" | "newsletter" | "pdf" | "calendar-conflict" | "calendar-change" | "deadline" | "waiting-reply" | "job-result" | "approval" | "connection";
+            /** @description The message, conflict, job, approval or account it came from. */
+            sourceRef: string | null;
+            /** @enum {string} */
+            group: "today" | "week" | "earlier";
+            /** @description The local date it appeared (YYYY-MM-DD). */
+            day: string;
+            /** @description When it appeared (ms): a message when it arrived, anything else when first found. */
+            ts: number;
+            /** @description "Coach Ellen", "Calendar", "Your helper". */
+            from: string | null;
+            /** @description The sender's address, shown beside the display name on anything from outside. */
+            fromAddress: string | null;
+            /**
+             * @description phishing: the header signal fired (a brand the address does not belong to, a look-alike domain, urgent account language from a new or free address) — show a warning, offer only Open. unverified: urgent language from a bulk or no-reply sender.
+             * @enum {string|null}
+             */
+            caution: "phishing" | "unverified" | null;
+            title: string;
+            /** @description One plain line on why it matters. */
+            why: string | null;
+            /** @enum {string} */
+            trust: "trusted" | "untrusted";
+            /** @description For mail: newsletter, promotion, receipt, notification, personal, work, social, other. */
+            kind: string | null;
+            /** @description At most one action. It runs only when the person taps it (POST /items/{id}/action). */
+            action: {
+                /** @enum {string} */
+                kind: "review-reply" | "add-to-calendar" | "draft-note" | "remind" | "open-job" | "reconnect" | "review-approval";
+                /** @description "Add to calendar", "Remind me Friday", "Reconnect"… */
+                label: string;
+                /** @description add-to-calendar and remind: the date as parsed, shown to the person before any draft is made. */
+                preview?: {
+                    date?: string;
+                    start?: string | null;
+                    end?: string | null;
+                    place?: string | null;
+                    tz?: string;
+                    /** @description "Sat Nov 14, 3–6pm". */
+                    when?: string;
+                };
+            } | null;
+            /** @enum {string} */
+            state: "open" | "handled" | "not-important" | "snoozed";
+            handledAt: number | null;
+            projectId: string | null;
+            /** @description The message to open in the reader, when it came from one. */
+            mailId: string | null;
+            /** @description "Ask about this" answers kept under the item (written by Ask). */
+            qa: {
+                id: string;
+                q: string;
+                a: string | null;
+                ts: number;
+                tainted: boolean;
+            }[];
+            updatedSeq: number;
+        };
+        SkippedGroup: {
+            count: number;
+            /** @description How many of each kind ("I skipped 5 others today: newsletters, receipts, promotions"). */
+            kinds: {
+                [key: string]: number;
+            };
+            /** @description How many were skipped by what the person marked not important. */
+            byYou: number;
+        };
+        Sorting: {
+            /**
+             * @description held: the monthly budget is used up. retrying: the model did not answer; it is tried again after a pause.
+             * @enum {string}
+             */
+            mode: "full" | "rules-only" | "no-model" | "held" | "retrying";
+            /** @description Recent messages not sorted yet (they wait for the budget or the model, and are not listed meanwhile). */
+            waiting: number;
+            /** @description Messages more than 2 days old not sorted yet (a first sync's backlog, sorted while the day's spend is low). */
+            olderUnsorted: number;
+            /** @description "I'm only sorting by your rules today (daily triage budget reached)." */
+            note: string | null;
+            spentTodayUsd: number;
+            capUsd: number;
+            lastRunAt: number | null;
+        };
+        ImportantList: {
+            /** @enum {string} */
+            state: "open" | "handled" | "not-important";
+            groups: {
+                /** @enum {string} */
+                group: "today" | "week" | "earlier";
+                /** @description Today, This week, Earlier. */
+                label: string;
+                items: components["schemas"]["ImportantItem"][];
+            }[];
+            /** @description For "Handled · N". */
+            handledCount: number;
+            skipped: {
+                today: components["schemas"]["SkippedGroup"];
+                week: components["schemas"]["SkippedGroup"];
+                earlier: components["schemas"]["SkippedGroup"];
+            };
+            sorting: components["schemas"]["Sorting"];
+        };
+        ItemChange: {
+            item: components["schemas"]["ImportantItem"] | null;
+            /** @description The receipt, in plain words: "Marked handled: …", "Got it. I'll skip messages like this from Hillside Hardware." */
+            message: string;
+            already?: boolean;
+            /** @description What the new rule decides in the cached mail now ("This will hide mail from 14 senders"). */
+            effect?: {
+                messages: number;
+                senders: number;
+            };
+            /** @description The rule the person's tap wrote, if any. */
+            rule?: {
+                id: string;
+                /** @enum {string} */
+                match: "sender" | "domain" | "list-id" | "kind";
+                value: string;
+            } | null;
+        };
+        ItemActionResult: {
+            /** @enum {string} */
+            kind: "review-reply" | "add-to-calendar" | "draft-note" | "remind" | "open-job" | "reconnect" | "review-approval";
+            /** @description true: something was made (a calendar DRAFT, a reminder). false: go to `route`. */
+            done: boolean;
+            message: string;
+            item: components["schemas"]["ImportantItem"];
+            draft?: components["schemas"]["CalendarItem"];
+            /** @description Where the app goes next: the reader, a job, Settings, an approval, or Ask (prefilled, sent only when the person sends it). */
+            route?: {
+                /** @enum {string} */
+                view: "mail" | "job" | "settings" | "approval" | "ask";
+            };
+        };
+        ImportantRefresh: {
+            done: boolean;
+            sorting: components["schemas"]["Sorting"];
+            message: string;
+        };
+        /** @description One rule the person taught by a tap (Not important, This was important). Rules never come from mail content. */
+        TriageRule: {
+            id: string;
+            /** @enum {string} */
+            match: "sender" | "domain" | "list-id" | "kind";
+            value: string;
+            /** @enum {string} */
+            verdict: "important" | "skip";
+            createdAt: number;
+            effect: {
+                messages: number;
+                senders: number;
+            };
         };
         /** @description Where an ask went: "To: Family & school · suggested". given = the project the person chose; about = the project of the thing it is about; suggested / not sure = the routing suggestion (not sure goes to General). */
         AskRoute: {
@@ -1916,7 +2260,7 @@ export interface operations {
         parameters: {
             query?: {
                 since?: string;
-                /** @description Comma-separated: jobs, calendar, mail (mail is headers only), projects (archived included), turns (a snapshot holds each active project's latest 50). */
+                /** @description Comma-separated: jobs, calendar, mail (mail is headers only), projects (archived included), turns (a snapshot holds each active project's latest 50), important (the Important list; handled items for 30 days). */
                 collections?: string;
             };
             header?: never;
@@ -1942,6 +2286,7 @@ export interface operations {
                             mail?: components["schemas"]["MailHeader"][];
                             projects?: components["schemas"]["Project"][];
                             turns?: components["schemas"]["Turn"][];
+                            important?: components["schemas"]["ImportantItem"][];
                         };
                         deletes: {
                             jobs?: string[];
@@ -1949,6 +2294,7 @@ export interface operations {
                             mail?: string[];
                             projects?: string[];
                             turns?: string[];
+                            important?: string[];
                         };
                     };
                 };
@@ -2716,6 +3062,300 @@ export interface operations {
                 content: {
                     "application/json": {
                         goal: string;
+                        message: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listImportant: {
+        parameters: {
+            query?: {
+                state?: "open" | "handled" | "not-important";
+                group?: "today" | "week" | "earlier";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The list. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportantList"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listSkipped: {
+        parameters: {
+            query?: {
+                group?: "today" | "week" | "earlier";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The skipped messages. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string|null} */
+                        group: "today" | "week" | "earlier" | null;
+                        count: number;
+                        skipped: {
+                            mail: components["schemas"]["MailHeader"];
+                            /** @enum {string} */
+                            group: "today" | "week" | "earlier";
+                            kind: string;
+                            /** @description Plain words: "A mailing list.", "You marked messages like this not important." */
+                            reason: string;
+                            byYou: boolean;
+                        }[];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    markItemHandled: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Handled ("Marked handled: …"). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    unhandleItem: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Back on the list. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    markItemNotImportant: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /**
+                     * @default sender
+                     * @enum {string}
+                     */
+                    scope?: "sender" | "domain" | "kind";
+                };
+            };
+        };
+        responses: {
+            /** @description Learned. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    markMailImportant: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Learned ("Thanks — I'll show messages like this from The Batch."). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    runItemAction: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done, or where to go. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemActionResult"];
+                };
+            };
+            /** @description A calendar draft was made. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemActionResult"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    refreshImportant: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sorted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportantRefresh"];
+                };
+            };
+            /** @description Still sorting. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportantRefresh"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listTriageRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The rules. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        rules: components["schemas"]["TriageRule"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteTriageRule: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        removed: {
+                            id: string;
+                            /** @enum {string} */
+                            match: "sender" | "domain" | "list-id" | "kind";
+                            value: string;
+                            /** @enum {string} */
+                            verdict: "important" | "skip";
+                        };
                         message: string;
                     };
                 };

@@ -32,6 +32,12 @@ registerMigrations([{
       PRIMARY KEY (account, provider_id));
     CREATE INDEX IF NOT EXISTS mail_headers_received ON mail_headers(received_at);
     CREATE INDEX IF NOT EXISTS mail_headers_key ON mail_headers(msg_key);`,
+}, {
+  // A9 review: the receiving server's authentication verdict for the From address ('pass' / 'fail' / NULL unknown),
+  // read from Authentication-Results at sync time (src/v2/mail-trust.ts authResult). Triage trusts a known contact
+  // only with it.
+  name: '009-mail-auth',
+  sql: `ALTER TABLE mail_headers ADD COLUMN auth TEXT CHECK (auth IS NULL OR auth IN ('pass','fail'));`,
 }]);
 
 export const SNIPPET_MAX = 200;
@@ -54,6 +60,8 @@ export interface HeaderIn {
   hasUnsub: boolean;
   /** RFC 822 Message-ID (dedupe across accounts, with the sender, subject and time) */
   messageId: string | null;
+  /** the receiving server's authentication verdict for the From address (Authentication-Results), when it gives one */
+  auth?: 'pass' | 'fail' | null;
 }
 /** A change to a header already cached (IMAP flags, a Graph delta that only carries isRead/categories). */
 export interface HeaderPatch { providerId: string; unread?: boolean; labels?: string[] }
@@ -73,7 +81,7 @@ export interface MailRow {
   account: string; provider: MailProviderKind; provider_id: string; thread_id: string | null;
   from_name: string | null; from_addr: string | null; subject: string | null; snippet: string | null;
   received_at: number; unread: number; labels: string; list_id: string | null; has_unsub: number; msg_key: string;
-  updated_seq: number | null;
+  updated_seq: number | null; auth?: 'pass' | 'fail' | null;
 }
 export type { SyncStateRow } from './sync-state.js';
 
@@ -122,9 +130,10 @@ function rowFrom(account: string, provider: MailProviderKind, h: HeaderIn): Omit
     received_at: Math.round(h.receivedAt), unread: h.unread ? 1 : 0,
     labels: JSON.stringify([...new Set(h.labels.map((l) => cleanLine(String(l), 100)).filter(Boolean))].slice(0, 50)),
     list_id: h.listId ? cleanLine(h.listId, 200) || null : null, has_unsub: h.hasUnsub ? 1 : 0, msg_key: messageKey(account, h),
+    auth: h.auth === 'pass' || h.auth === 'fail' ? h.auth : null,
   };
 }
-const SAME_FIELDS = ['provider', 'thread_id', 'from_name', 'from_addr', 'subject', 'snippet', 'received_at', 'unread', 'labels', 'list_id', 'has_unsub', 'msg_key'] as const;
+const SAME_FIELDS = ['provider', 'thread_id', 'from_name', 'from_addr', 'subject', 'snippet', 'received_at', 'unread', 'labels', 'list_id', 'has_unsub', 'msg_key', 'auth'] as const;
 const same = (a: Omit<MailRow, 'updated_seq'>, b: MailRow) => SAME_FIELDS.every((k) => a[k] === b[k]);
 
 function getRow(d: AppDb, account: string, providerId: string): MailRow | undefined {
@@ -132,12 +141,12 @@ function getRow(d: AppDb, account: string, providerId: string): MailRow | undefi
 }
 function put(d: AppDb, r: Omit<MailRow, 'updated_seq'>, prevKey?: string): void {
   const seq = recordEvent({ entity: 'mail', id: mailId(r.account, r.provider_id), payload: { key: r.msg_key, ...(prevKey && prevKey !== r.msg_key ? { prevKey } : {}) } }, d);
-  d.prepare(`INSERT INTO mail_headers (account, provider, provider_id, thread_id, from_name, from_addr, subject, snippet, received_at, unread, labels, list_id, has_unsub, msg_key, updated_seq)
-             VALUES (@account, @provider, @provider_id, @thread_id, @from_name, @from_addr, @subject, @snippet, @received_at, @unread, @labels, @list_id, @has_unsub, @msg_key, @seq)
+  d.prepare(`INSERT INTO mail_headers (account, provider, provider_id, thread_id, from_name, from_addr, subject, snippet, received_at, unread, labels, list_id, has_unsub, msg_key, auth, updated_seq)
+             VALUES (@account, @provider, @provider_id, @thread_id, @from_name, @from_addr, @subject, @snippet, @received_at, @unread, @labels, @list_id, @has_unsub, @msg_key, @auth, @seq)
              ON CONFLICT (account, provider_id) DO UPDATE SET provider = excluded.provider, thread_id = excluded.thread_id, from_name = excluded.from_name,
                from_addr = excluded.from_addr, subject = excluded.subject, snippet = excluded.snippet, received_at = excluded.received_at,
                unread = excluded.unread, labels = excluded.labels, list_id = excluded.list_id, has_unsub = excluded.has_unsub,
-               msg_key = excluded.msg_key, updated_seq = excluded.updated_seq`).run({ ...r, seq });
+               msg_key = excluded.msg_key, auth = excluded.auth, updated_seq = excluded.updated_seq`).run({ ...r, auth: r.auth ?? null, seq });
 }
 function drop(d: AppDb, row: MailRow): void {
   recordEvent({ entity: 'mail', id: mailId(row.account, row.provider_id), op: 'delete', payload: { key: row.msg_key } }, d);
