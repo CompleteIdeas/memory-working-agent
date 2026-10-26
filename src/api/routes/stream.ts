@@ -13,6 +13,13 @@
  *
  * Visibility: device changes (names, revocations) go to admin callers only (A2 review note). Jobs: the owner's only,
  * as in /jobs (A3a review M10) — another person's job is never sent, not even as an id.
+ *
+ * Calendar (A7): a cached event or a draft changing is sent as entity 'calendar' with the item as it is now (or a
+ * deletion — a removed draft, a cancelled event, or a confirmed draft once its event is in the cache); /sync has a
+ * 'calendar' collection.
+ *
+ * Mail (A8): /sync's 'mail' collection carries headers only — bodies are never synced. On the stream a mail change is
+ * a notice without data (catch up with /sync?collections=mail).
  */
 import type { ServerResponse, IncomingMessage } from 'node:http';
 import { ApiError, type Route } from '../router.js';
@@ -21,6 +28,8 @@ import { getJob, listJobs, viewJob, viewJobs } from '../../v2/jobs.js';
 import { apiJob, visibleJob } from './jobs.js';
 import { liveRuns, type LiveEvent } from '../../live-runs.js';
 import type { Caller } from '../auth.js';
+import { calendarItemById, calendarItems } from '../../v2/calendar.js';
+import { mailSnapshot, mailDelta } from '../../v2/mail.js';
 
 export const EVENT_RETENTION_MS = 7 * 24 * 3_600_000;
 const POLL_MS = 1_000, KEEPALIVE_MS = 15_000, BATCH = 500, STEP_EVERY_MS = 1_000;
@@ -73,8 +82,17 @@ function present(rows: EventRow[], who: Caller | null) {
   const out: { seq: number; entity: string; id: string; op: 'upsert' | 'delete'; data?: unknown }[] = [];
   const lastForJob = new Map<string, number>();
   rows.forEach((e, i) => { const j = jobIdOf(e); if (j) lastForJob.set(j, i); });
+  // calendar (A7): an event or a draft changing sends the item as it is now (or its deletion), once per batch
+  const lastForCal = new Map<string, number>();
+  rows.forEach((e, i) => { if (CAL_ENTITIES.has(e.entity)) lastForCal.set(e.entity_id, i); });
   rows.forEach((e, i) => {
     if (e.entity === 'device' && !who?.scopes.has('admin')) return;
+    if (CAL_ENTITIES.has(e.entity)) {
+      if (lastForCal.get(e.entity_id) !== i) return;
+      const data = e.op === 'delete' ? null : calendarItemById(e.entity_id);
+      out.push({ seq: e.seq, entity: 'calendar', id: e.entity_id, op: data ? 'upsert' : 'delete', ...(data ? { data } : {}) });
+      return;
+    }
     const j = jobIdOf(e);
     if (j) {
       if (lastForJob.get(j) !== i) return; // one message per job per batch: its latest state
@@ -88,6 +106,11 @@ function present(rows: EventRow[], who: Caller | null) {
   });
   return out;
 }
+
+const CAL_ENTITIES = new Set(['cal_event', 'cal_draft']);
+/** The calendar collection's full snapshot: every cached event and every draft not removed. */
+const calendarSnapshot = () => calendarItems('0000-01-01T00:00:00.000Z', '9999-12-31T23:59:59.999Z');
+const COLLECTIONS = ['jobs', 'calendar', 'mail'];
 
 function parseCursor(v: string | null | undefined): number {
   if (v === null || v === undefined || v === '') return 0;
@@ -146,21 +169,29 @@ export const streamRoutes: Route[] = [
       trimEvents();
       const since = parseCursor(url.searchParams.get('since'));
       const wanted = (url.searchParams.get('collections') ?? 'jobs').split(',').map((s) => s.trim()).filter(Boolean);
-      const unknown = wanted.filter((w) => w !== 'jobs');
-      if (unknown.length) throw new ApiError(400, 'unknown_collection', `Unknown collection: ${unknown.join(', ')}. Available: jobs.`);
+      const unknown = wanted.filter((w) => !COLLECTIONS.includes(w));
+      if (unknown.length) throw new ApiError(400, 'unknown_collection', `Unknown collection: ${unknown.join(', ')}. Available: ${COLLECTIONS.join(', ')}.`);
+      const want = new Set(wanted);
       const cursor = headSeq();
       const c = ctx();
+      const upserts: Record<string, unknown[]> = {}, deletes: Record<string, string[]> = {};
       if (since === 0 || cursorTooOld(since)) {
-        const jobs = viewJobs(listJobs({}).filter(visibleJob), c).map(apiJob);
-        return { body: { cursor, reset: true, upserts: { jobs }, deletes: { jobs: [] } } };
+        if (want.has('jobs')) { upserts.jobs = viewJobs(listJobs({}).filter(visibleJob), c).map(apiJob); deletes.jobs = []; }
+        if (want.has('calendar')) { upserts.calendar = calendarSnapshot(); deletes.calendar = []; }
+        if (want.has('mail')) { upserts.mail = mailSnapshot(); deletes.mail = []; }
+        return { body: { cursor, reset: true, upserts, deletes } };
       }
       const rows = appDb().prepare('SELECT seq, ts, entity, entity_id, op, payload FROM events WHERE seq > ? AND seq <= ? ORDER BY seq').all(since, cursor) as EventRow[];
-      const ups = new Map<string, unknown>(), dels = new Set<string>();
+      const ups = { jobs: new Map<string, unknown>(), calendar: new Map<string, unknown>() };
+      const dels = { jobs: new Set<string>(), calendar: new Set<string>() };
       for (const m of present(rows, who)) {
-        if (m.entity !== 'job') continue;
-        if (m.op === 'delete') { dels.add(m.id); ups.delete(m.id); } else { ups.set(m.id, m.data); dels.delete(m.id); }
+        const k = m.entity === 'job' ? 'jobs' : m.entity === 'calendar' ? 'calendar' : null;
+        if (!k || !want.has(k)) continue;
+        if (m.op === 'delete') { dels[k].add(m.id); ups[k].delete(m.id); } else { ups[k].set(m.id, m.data); dels[k].delete(m.id); }
       }
-      return { body: { cursor, reset: false, upserts: { jobs: [...ups.values()] }, deletes: { jobs: [...dels] } } };
+      for (const k of ['jobs', 'calendar'] as const) if (want.has(k)) { upserts[k] = [...ups[k].values()]; deletes[k] = [...dels[k]]; }
+      if (want.has('mail')) { const d = mailDelta(rows); upserts.mail = d.upserts; deletes.mail = d.deletes; }
+      return { body: { cursor, reset: false, upserts, deletes } };
     },
   },
 ];

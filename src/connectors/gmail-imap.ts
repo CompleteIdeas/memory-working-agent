@@ -23,8 +23,8 @@ export function gmailImapConfigured(): boolean {
   return !!process.env.MWA_GMAIL_USER && !!process.env.MWA_GMAIL_APP_PASSWORD;
 }
 
-/** A connected IMAP client. Caller MUST `logout()` when done. */
-async function imapClient(user?: string, pass?: string): Promise<ImapFlow> {
+/** A connected IMAP client. Caller MUST `logout()` when done. (v2: the mail sync uses it.) */
+export async function imapClient(user?: string, pass?: string): Promise<ImapFlow> {
   const u = user ?? process.env.MWA_GMAIL_USER;
   const p = pass ?? process.env.MWA_GMAIL_APP_PASSWORD;
   if (!u || !p) throw new Error('Gmail not connected — add your address + app password first.');
@@ -132,9 +132,24 @@ async function extractDoc(filename: string, buf: Buffer): Promise<string> {
   } catch { return ''; }
 }
 
-function fromAddr(env: any): string {
+export function fromAddr(env: any): string {
   const a = env?.from?.[0];
   return a ? (a.name ? `${a.name} <${a.address}>` : a.address) : '(unknown)';
+}
+
+/**
+ * Save a message as a DRAFT: IMAP APPEND to the Drafts mailbox (found by its special-use flag, locale-independent,
+ * else Gmail's default), flagged \Draft. Never sends — IMAP cannot. Shared by draft_email and the v2 reply draft.
+ */
+export async function appendDraft(client: Pick<ImapFlow, 'list' | 'append'>, raw: string | Buffer): Promise<{ mailbox: string; uid: number | null }> {
+  let drafts = '[Gmail]/Drafts';
+  try {
+    const boxes = await client.list();
+    const d = boxes.find((b: any) => b.specialUse === '\\Drafts');
+    if (d?.path) drafts = d.path;
+  } catch { /* use default */ }
+  const r = await client.append(drafts, Buffer.isBuffer(raw) ? raw : Buffer.from(raw), ['\\Draft']);
+  return { mailbox: drafts, uid: r && typeof r === 'object' && r.uid ? r.uid : null };
 }
 
 export function gmailImapTools(): RegisteredTool[] {
@@ -208,14 +223,7 @@ export function gmailImapTools(): RegisteredTool[] {
           `${args.body}`;
         const client = await imapClient();
         try {
-          // Find the Drafts mailbox by its special-use flag (locale-independent), else Gmail's default.
-          let drafts = '[Gmail]/Drafts';
-          try {
-            const boxes = await client.list();
-            const d = boxes.find((b: any) => b.specialUse === '\\Drafts');
-            if (d?.path) drafts = d.path;
-          } catch { /* use default */ }
-          await client.append(drafts, Buffer.from(raw), ['\\Draft']);
+          await appendDraft(client, raw);
           return '✏️ draft created in Gmail — review and send it from your Drafts folder.';
         } catch (e) { return `(could not create draft: ${(e as Error).message.slice(0, 100)})`; }
         finally { try { await client.logout(); } catch { /* */ } }

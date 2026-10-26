@@ -22,6 +22,7 @@ import { checkTools } from './checks.js';
 import { googleConfigured, googleTools } from '../connectors/google.js';
 import { gmailImapConfigured, gmailImapTools } from '../connectors/gmail-imap.js';
 import { microsoftConfigured, microsoftTools } from '../connectors/microsoft.js';
+import { calendarTools } from '../sync/calendar-tool.js';
 import { imageGenConfigured, imageGenTools } from '../connectors/imagegen.js';
 import type { MwaConfig } from '../config.js';
 
@@ -76,6 +77,8 @@ export async function buildRegistry(
   if (googleConfigured()) registry.registerAll(googleTools());
   else if (gmailImapConfigured()) registry.registerAll(gmailImapTools());
   if (microsoftConfigured()) registry.registerAll(microsoftTools());
+  // v2 (A7): the synced calendar (both providers, plus MWA's drafts), read from the cache.
+  if (googleConfigured() || microsoftConfigured()) registry.registerAll(calendarTools());
   // Image generation: a generate_image tool appears once an image model is chosen (Settings).
   if (imageGenConfigured()) registry.registerAll(imageGenTools());
   const mcp = await loadMcpServers(config.tools.mcpServers ?? {});

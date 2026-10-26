@@ -63,6 +63,9 @@ import { createV1Handler } from './api/v1.js';
 import { makeAuthenticate } from './api/auth.js';
 import { setJobRouteDeps } from './api/routes/jobs.js';
 import { setStreamDeps } from './api/routes/stream.js';
+import { startCalendarSync } from './sync/calendar.js';
+import { startMailSync } from './sync/mail.js';
+import { mailSyncOn } from './sync/flags.js';
 import { migrateV2Once, describeReport } from './v2/migrate.js';
 import { reapDeadTries, personAction } from './v2/jobs.js';
 import { runAgent } from './agent.js';
@@ -645,6 +648,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   });
   // v2 (A4): the live stream and /sync compute job views with the same running runs and waiting approvals.
   setStreamDeps({ running: () => new Set(liveRuns.all().map((r) => r.session)), pending: () => new Set(listPendingActions().map((a) => a.id)) });
+  // v2 (A7): keep the calendar cache fresh — shortly after start, then every 30 minutes (no model calls). The app
+  // also asks for a refresh when it opens (POST /api/v1/calendar/refresh). MWA_CALENDAR_SYNC=0 turns it off.
+  startCalendarSync();
   // v1 answers for itself: the password session, this machine (no password), or a paired device (src/api/auth.ts).
   // v2 (A3a review): existing goals, scheduled tasks and results become Jobs and Tries once, at server start, with or
   // without a model (the scheduler starts only with one), and Tries a crashed process left running are reaped. The
@@ -1645,6 +1651,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   });
   const host = process.env.MWA_SERVE_HOST ?? '127.0.0.1';
   await new Promise<void>((r) => server.listen(port, host, r));
+  // v2 (A8): mail headers for "All email" and triage — every 15 minutes (and on app open via POST /api/v1/mail/refresh).
+  // Headers only, no model calls; nothing happens while no mail account is connected.
+  // It starts once v2 is ready (the jobs migration at server start), like the rest of v2.
+  if (mailSyncOn()) void v2Ready.then(() => startMailSync(), () => startMailSync());
   // Graceful shutdown: stop accepting connections, let in-flight requests drain, then exit
   // (a supervisor / Docker restart policy brings us back). Hard-exit after 10s as a backstop.
   const shutdown = (sig: string) => {

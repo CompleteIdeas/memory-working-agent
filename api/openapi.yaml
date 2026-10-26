@@ -48,7 +48,7 @@ components:
           required: [code, message]
           additionalProperties: false
           properties:
-            code: { type: string, description: 'Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal' }
+            code: { type: string, description: 'Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again.' }
             message: { type: string, description: Plain words for a person. }
     Scope:
       type: string
@@ -243,6 +243,165 @@ components:
         job: { $ref: '#/components/schemas/Job' }
         tries: { type: array, items: { $ref: '#/components/schemas/Try' } }
         message: { type: string, description: 'What happened, in plain words (after an action).' }
+    CalendarItem:
+      type: object
+      description: |
+        One thing on the calendar: an event from a connected calendar (kind `event`, from MWA's synced cache) or a draft
+        MWA holds (kind `draft`, shown dashed until the person confirms it). Timed: `start`/`end` are UTC instants.
+        All day: `start`/`end` are local dates (YYYY-MM-DD), end exclusive.
+      required: [id, kind, title, start, end, allDay, location, provider]
+      additionalProperties: false
+      properties:
+        id: { type: string, description: 'An event: "<account>:<provider id>". A draft: "cd_…".' }
+        kind: { type: string, enum: [event, draft] }
+        title: { type: string }
+        start: { type: string }
+        end: { type: string }
+        allDay: { type: boolean }
+        location: { type: [string, 'null'] }
+        provider: { type: [string, 'null'], enum: [google, outlook, null], description: 'Which calendar; a draft not yet tied to one is null.' }
+        state: { type: string, enum: [draft, confirmed, removed], description: 'Drafts only.' }
+        confirmedAt: { type: [integer, 'null'], description: 'Drafts only: when the person confirmed it (ms).' }
+        addedByHelper: { type: boolean, description: 'Events only: a draft the person confirmed through MWA.' }
+        origin: { type: string, enum: [you, helper, helper-after-reading], description: 'Drafts only: who proposed it. helper-after-reading = the helper had read outside content (an email, a web page) first; check it before confirming.' }
+        originNote: { type: string, description: 'Drafts only: a plain line about where it came from, when there is one.' }
+    CalendarConflict:
+      type: object
+      description: Two timed things that overlap (all-day, declined and cancelled events are not counted).
+      required: [id, between, titles, start, end]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        between: { type: array, items: { type: string }, minItems: 2, maxItems: 2, description: CalendarItem ids. }
+        titles: { type: array, items: { type: string }, minItems: 2, maxItems: 2 }
+        start: { type: string, description: The overlap's start (UTC). }
+        end: { type: string, description: The overlap's end (UTC). }
+    CalendarView:
+      type: object
+      required: [from, to, items, conflicts]
+      additionalProperties: false
+      properties:
+        from: { type: string }
+        to: { type: string }
+        items: { type: array, items: { $ref: '#/components/schemas/CalendarItem' } }
+        conflicts: { type: array, items: { $ref: '#/components/schemas/CalendarConflict' } }
+    CalendarAccount:
+      type: object
+      required: [account, provider, label, connected, needsReconnect, lastOk, lastError]
+      additionalProperties: false
+      properties:
+        account: { type: string }
+        provider: { type: string, enum: [google, outlook] }
+        label: { type: string, description: '"Google Calendar", "Outlook".' }
+        connected: { type: boolean }
+        needsReconnect: { type: boolean, description: 'The sign-in was revoked or expired: ask the person to connect it again.' }
+        lastOk: { type: [integer, 'null'], description: Last successful sync (ms). }
+        lastError: { type: [string, 'null'] }
+    CalendarAccounts:
+      type: object
+      required: [accounts]
+      additionalProperties: false
+      properties:
+        accounts: { type: array, items: { $ref: '#/components/schemas/CalendarAccount' } }
+        results:
+          type: array
+          items:
+            type: object
+            required: [account, ok]
+            additionalProperties: false
+            properties:
+              account: { type: string }
+              ok: { type: boolean }
+              skipped: { type: string, enum: [not_connected] }
+              error: { type: string }
+    DraftResult:
+      type: object
+      required: [draft, message]
+      additionalProperties: false
+      properties:
+        draft: { $ref: '#/components/schemas/CalendarItem' }
+        message: { type: string, description: 'The receipt, in plain words: "Added by your helper just now. No invites were sent."' }
+        already: { type: boolean, description: 'Confirm only: it was already on the calendar; nothing new was added.' }
+    MailHeader:
+      type: object
+      description: 'One message in the inbox, headers only (bodies are never synced or stored). The same email in two accounts is one MailHeader (the newest copy), with the others in alsoIn.'
+      required: [id, account, provider, threadId, from, subject, snippet, receivedAt, unread, labels, listId, hasUnsub, alsoIn, updatedSeq]
+      additionalProperties: false
+      properties:
+        id: { type: string, pattern: '^m_[A-Za-z0-9_-]+$', description: Opaque. }
+        account: { type: string, description: 'The connected account: gmail, imap or outlook.' }
+        provider: { type: string, enum: [gmail, imap, outlook] }
+        threadId: { type: ['string', 'null'] }
+        from: { $ref: '#/components/schemas/MailFrom' }
+        subject: { type: string }
+        snippet: { type: string, maxLength: 200, description: 'One line of plain text (links shown as hosts). Empty for IMAP.' }
+        receivedAt: { type: integer }
+        unread: { type: boolean }
+        labels: { type: array, items: { type: string }, description: 'Gmail labels incl. categories (CATEGORY_PROMOTIONS and so on); Outlook categories and inference:focused or inference:other.' }
+        listId: { type: ['string', 'null'], description: 'The List-Id (mailing lists, newsletters).' }
+        hasUnsub: { type: boolean, description: 'It carries an unsubscribe option (List-Unsubscribe).' }
+        alsoIn: { type: array, items: { type: string }, description: 'Other accounts holding a copy of the same email.' }
+        updatedSeq: { type: integer }
+    MailFrom:
+      type: object
+      required: [name, addr]
+      additionalProperties: false
+      properties:
+        name: { type: ['string', 'null'] }
+        addr: { type: ['string', 'null'] }
+    MailMessage:
+      type: object
+      description: 'A message opened in the reader. The body is fetched from the provider now, sanitised to plain text and kept only briefly in the server memory. It is UNTRUSTED content: show it as text, never as HTML, and fence it before a model reads it.'
+      required: [id, account, provider, threadId, from, subject, snippet, receivedAt, unread, labels, listId, hasUnsub, alsoIn, updatedSeq, to, replyTo, replyGoesElsewhere, replyNote, bodyText, truncated, tooComplex, quotedLinesHidden, imagesHidden, trackersRemoved, trust, fetchedAt]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        account: { type: string }
+        provider: { type: string, enum: [gmail, imap, outlook] }
+        threadId: { type: ['string', 'null'] }
+        from: { $ref: '#/components/schemas/MailFrom' }
+        subject: { type: string }
+        snippet: { type: string }
+        receivedAt: { type: integer }
+        unread: { type: boolean }
+        labels: { type: array, items: { type: string } }
+        listId: { type: ['string', 'null'] }
+        hasUnsub: { type: boolean }
+        alsoIn: { type: array, items: { type: string } }
+        updatedSeq: { type: integer }
+        to: { type: string, description: 'The recipients line, cleaned; anything that is not a plain address shows as (unreadable address).' }
+        replyTo: { type: array, items: { $ref: '#/components/schemas/MailFrom' }, description: 'Where a reply goes: the Reply-To, else the sender.' }
+        replyGoesElsewhere: { type: boolean, description: 'A reply would go somewhere other than the sender (the Reply-To names another address).' }
+        replyNote: { type: ['string', 'null'], description: '"Your reply will go to … (not the sender)." when replyGoesElsewhere.' }
+        tooComplex: { type: boolean, description: 'The HTML could not be converted within the time budget: bodyText is the plain-text part, or a note to open it in the mail app.' }
+        bodyText: { type: string, description: 'Plain text, at most 100 KB: no remote images or tracking pixels, hidden text removed, links as "words (host)" and raw URLs as their host, long quoted history collapsed to one line. Clients MUST render it as plain text with auto-linking OFF (no HTML, no linkify).' }
+        truncated: { type: boolean }
+        quotedLinesHidden: { type: integer }
+        imagesHidden: { type: integer, description: 'Pictures not shown (their alt text appears as [picture: alt]).' }
+        trackersRemoved: { type: integer, description: 'Tracking pixels removed.' }
+        trust: { type: string, const: untrusted }
+        fetchedAt: { type: integer }
+    MailAccount:
+      type: object
+      required: [account, provider, label, needsReconnect, lastOk, lastError, windowFrom, syncing]
+      additionalProperties: false
+      properties:
+        account: { type: string }
+        provider: { type: string, enum: [gmail, imap, outlook] }
+        label: { type: string, description: 'Gmail, Gmail (app password), Outlook.' }
+        needsReconnect: { type: boolean, description: 'The sign-in is no longer valid (revoked or expired): reconnect in Settings.' }
+        lastOk: { type: ['integer', 'null'] }
+        lastError: { type: ['string', 'null'] }
+        windowFrom: { type: ['integer', 'null'], description: 'Mail is kept from this time on (14 days).' }
+        syncing: { type: boolean }
+    MailRefresh:
+      type: object
+      required: [done, accounts, message]
+      additionalProperties: false
+      properties:
+        done: { type: boolean }
+        accounts: { type: array, items: { $ref: '#/components/schemas/MailAccount' } }
+        message: { type: string }
   responses:
     Error:
       description: An error.
@@ -529,7 +688,7 @@ paths:
       summary: What changed since a cursor, as current objects and deletions (the phone's offline catch-up).
       parameters:
         - { name: since, in: query, required: false, schema: { type: string, pattern: '^[0-9]{1,15}$' } }
-        - { name: collections, in: query, required: false, schema: { type: string, default: jobs } }
+        - { name: collections, in: query, required: false, description: 'Comma-separated: jobs, calendar, mail (mail is headers only).', schema: { type: string, default: jobs } }
       responses:
         '200':
           description: Changes. `reset` true means a full snapshot (no since, or too old).
@@ -546,8 +705,216 @@ paths:
                     type: object
                     properties:
                       jobs: { type: array, items: { $ref: '#/components/schemas/Job' } }
+                      calendar: { type: array, items: { $ref: '#/components/schemas/CalendarItem' } }
+                      mail: { type: array, items: { $ref: '#/components/schemas/MailHeader' } }
                   deletes:
                     type: object
                     properties:
                       jobs: { type: array, items: { type: string } }
+                      calendar: { type: array, items: { type: string } }
+                      mail: { type: array, items: { type: string } }
+        default: { $ref: '#/components/responses/Error' }
+  /calendar:
+    get:
+      operationId: getCalendar
+      summary: Events and drafts in a window, merged and sorted by start, with the double-bookings in it.
+      parameters:
+        - { name: from, in: query, required: false, description: 'A date (local midnight) or an ISO 8601 time. Default: yesterday.', schema: { type: string } }
+        - { name: to, in: query, required: false, description: 'A date (that whole day included) or an ISO 8601 time. Default: 14 days ahead. At most 62 days after from.', schema: { type: string } }
+      responses:
+        '200':
+          description: The calendar.
+          content: { application/json: { schema: { $ref: '#/components/schemas/CalendarView' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /calendar/accounts:
+    get:
+      operationId: getCalendarAccounts
+      summary: Which calendars are connected, when they last synced, and whether one needs signing in again.
+      responses:
+        '200':
+          description: The calendar accounts.
+          content: { application/json: { schema: { $ref: '#/components/schemas/CalendarAccounts' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /calendar/refresh:
+    post:
+      operationId: refreshCalendar
+      summary: Sync the connected calendars now (the app calls this when it opens; MWA also syncs every 30 minutes).
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: The accounts after the sync, and how each went.
+          content: { application/json: { schema: { $ref: '#/components/schemas/CalendarAccounts' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /calendar/drafts:
+    post:
+      operationId: createCalendarDraft
+      summary: Add a draft from the person's own input. Nothing goes on a calendar until it is confirmed.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, start]
+              additionalProperties: false
+              properties:
+                title: { type: string, maxLength: 300 }
+                start: { type: string, description: 'ISO 8601; no offset = local time; a bare date = all day.' }
+                end: { type: string, description: 'Default: an hour after start (one day when all day).' }
+                allDay: { type: boolean }
+                location: { type: string, maxLength: 300 }
+                notes: { type: string, maxLength: 4000 }
+                provider: { type: string, enum: [google, outlook], description: 'Which calendar Confirm adds it to. Default: the connected one.' }
+                projectId: { type: string }
+      responses:
+        '201':
+          description: The new draft.
+          content: { application/json: { schema: { $ref: '#/components/schemas/DraftResult' } } }
+        '200':
+          description: The same draft (same title and times) was already open; no second one was made.
+          content: { application/json: { schema: { $ref: '#/components/schemas/DraftResult' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /calendar/drafts/{id}/confirm:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: confirmCalendarDraft
+      summary: 'Put the draft on the calendar with no invites (Google sendUpdates none; Outlook with no attendees). Adds it once, however often it is sent.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                provider: { type: string, enum: [google, outlook] }
+      responses:
+        '200':
+          description: Added (or it already was, `already` true).
+          content: { application/json: { schema: { $ref: '#/components/schemas/DraftResult' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /calendar/drafts/{id}/remove:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: removeCalendarDraft
+      summary: Remove the draft. Nothing was on the calendar, so nothing changes there.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Removed.
+          content: { application/json: { schema: { $ref: '#/components/schemas/DraftResult' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /calendar/drafts/{id}.ics:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getCalendarDraftIcs
+      summary: The draft as an iCalendar file ("Just give me a file").
+      responses:
+        '200':
+          description: 'A VCALENDAR with one VEVENT (UTC times, CRLF, folded at 75 octets); Content-Disposition names the file.'
+          content: { text/calendar: { schema: { type: string } } }
+        default: { $ref: '#/components/responses/Error' }
+  /mail:
+    get:
+      operationId: listMail
+      summary: 'The plain mailbox ("All email"): headers, newest first, one row per message across accounts.'
+      parameters:
+        - { name: before, in: query, required: false, schema: { type: string }, description: 'nextBefore from the previous page.' }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200':
+          description: A page of headers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mail, nextBefore, note, connected]
+                additionalProperties: false
+                properties:
+                  mail: { type: array, items: { $ref: '#/components/schemas/MailHeader' } }
+                  nextBefore: { type: ['string', 'null'] }
+                  note: { type: string, description: '"Your helper reads and writes drafts. It never sends."' }
+                  connected: { type: boolean, description: 'Some mail account is connected.' }
+        default: { $ref: '#/components/responses/Error' }
+  /mail/accounts:
+    get:
+      operationId: listMailAccounts
+      summary: The connected mail accounts, and whether one needs reconnecting.
+      responses:
+        '200':
+          description: The accounts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts, note]
+                additionalProperties: false
+                properties:
+                  accounts: { type: array, items: { $ref: '#/components/schemas/MailAccount' } }
+                  note: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /mail/refresh:
+    post:
+      operationId: refreshMail
+      summary: 'Check the mail now (the app calls it when it opens). 200 when done within 20 s, else 202 and changes arrive on /stream.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Checked.
+          content: { application/json: { schema: { $ref: '#/components/schemas/MailRefresh' } } }
+        '202':
+          description: Still checking.
+          content: { application/json: { schema: { $ref: '#/components/schemas/MailRefresh' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /mail/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: readMail
+      summary: 'Open a message: its body as sanitised plain text, marked untrusted. 404 gone when it left the mailbox; 409 needs_reconnect; 502 provider_unavailable.'
+      responses:
+        '200':
+          description: The message.
+          content: { application/json: { schema: { $ref: '#/components/schemas/MailMessage' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /mail/{id}/draft:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: saveMailDraft
+      summary: 'Save a reply as a DRAFT in that account (threaded under the message). It is never sent: the person sends it from their mail app. 409 read_only when the account was connected without drafting.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: { type: string, minLength: 1, maxLength: 20000, description: Plain text. }
+      responses:
+        '201':
+          description: 'Saved to your drafts. Nothing was sent.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [saved, sent, account, draftId, alreadySaved, message, to, replyGoesElsewhere, replyNote]
+                additionalProperties: false
+                properties:
+                  saved: { type: boolean, const: true }
+                  sent: { type: boolean, const: false }
+                  account: { type: string }
+                  draftId: { type: ['string', 'null'] }
+                  alreadySaved: { type: boolean, description: 'A retry found the draft an earlier try of this request saved; none was added.' }
+                  message: { type: string }
+                  to: { type: array, items: { $ref: '#/components/schemas/MailFrom' }, description: 'Who the draft is addressed to.' }
+                  replyGoesElsewhere: { type: boolean }
+                  replyNote: { type: ['string', 'null'] }
         default: { $ref: '#/components/responses/Error' }

@@ -15,23 +15,30 @@ import { createServer } from 'node:http';
 import { randomBytes, createHash } from 'node:crypto';
 import type { RegisteredTool } from '../tools/registry.js';
 import { connectorTokenPath } from '../paths.js';
+import { proposeDraft } from '../sync/drafts.js';
+import { v2DraftsOn } from '../sync/flags.js';
+import { resetCalendarProvider } from '../v2/calendar.js';
 
 const tokenPath = (): string => connectorTokenPath('microsoft-token.json', 'MWA_MS_TOKEN');
 const TENANT = process.env.MICROSOFT_TENANT ?? 'common'; // common = personal + work/school
 const REDIRECT_PORT = Number(process.env.MWA_MS_OAUTH_PORT ?? 7798);
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/oauth`;
-const AUTH_BASE = `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0`;
-const GRAPH = 'https://graph.microsoft.com/v1.0';
+const AUTH_BASE_DEFAULT = `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0`;
+const GRAPH_DEFAULT = 'https://graph.microsoft.com/v1.0';
+// Tests only (v2 A7): a fake Graph / token server stands in for Microsoft. Read per call so a test can set them.
+const authBase = (): string => process.env.MWA_MS_AUTH_BASE || AUTH_BASE_DEFAULT;
+/** Microsoft Graph's base URL (MWA_GRAPH_BASE for a fake in tests). The one place it is decided; mail sync (A8) uses it too. */
+export const graphBase = (): string => (process.env.MWA_GRAPH_BASE || GRAPH_DEFAULT).replace(/\/+$/, '');
 
 const SCOPES_RW = ['offline_access', 'User.Read', 'Mail.ReadWrite', 'Calendars.ReadWrite'];
-const SCOPES_RO = ['offline_access', 'User.Read', 'Mail.Read'];
+const SCOPES_RO = ['offline_access', 'User.Read', 'Mail.Read', 'Calendars.Read']; // v2 A7: the calendar view reads events
 
 // MWA ships its own registered Azure app (public client, "Allow public client flows" = Yes,
 // supports personal + work/school accounts) so the EASY device-code path needs zero setup
 // from the user. Override with MICROSOFT_CLIENT_ID to bring your own app registration.
 const DEFAULT_MS_CLIENT_ID = process.env.MWA_DEFAULT_MS_CLIENT_ID ?? '';
 
-interface StoredToken { access_token: string; refresh_token?: string; expires_at: number; scope: string }
+interface StoredToken { access_token: string; refresh_token?: string; expires_at: number; scope: string; /** the signed-in address (v2 A7) */ account?: string }
 
 function clientId(): string {
   const id = process.env.MICROSOFT_CLIENT_ID || DEFAULT_MS_CLIENT_ID;
@@ -59,6 +66,26 @@ export function microsoftConfigured(): boolean {
 /** Forget the stored Outlook token (the local sign-in). Env keys are cleared separately. */
 export function disconnectMicrosoft(): void {
   try { rmSync(tokenPath(), { force: true }); } catch { /* */ }
+  forgetCalendar();
+}
+
+/** v2 (A7): what MWA cached from the Outlook calendar belongs to a sign-in that is gone or replaced. */
+function forgetCalendar(): void {
+  try { resetCalendarProvider('outlook'); } catch { /* app.db unavailable: the next refresh clears a foreign account */ }
+}
+
+/** v2 (A7): a sign-in finished — keep the address beside the token (the calendar cache is keyed by it) and start the
+ *  calendar afresh for it. */
+export function recordMicrosoftSignIn(address: string | null): void {
+  const t = loadToken();
+  if (t && address) saveToken({ ...t, account: address });
+  forgetCalendar();
+}
+
+/** The calendar cache's account key: 'outlook:<address>' once the signed-in address is known, else 'outlook'. */
+export function outlookAccountKey(): string {
+  const a = loadToken()?.account;
+  return typeof a === 'string' && a.includes('@') ? `outlook:${a.toLowerCase()}` : 'outlook';
 }
 
 /** Valid access token, refreshing with the stored refresh_token when near expiry. */
@@ -69,18 +96,28 @@ async function accessToken(): Promise<string> {
   if (!t.refresh_token) return t.access_token; // best effort; will 401 → user reconnects
   // No redirect_uri: public-client refresh (both the loopback and device-code flows) doesn't need it.
   const body = new URLSearchParams({ client_id: clientId(), grant_type: 'refresh_token', refresh_token: t.refresh_token, scope: t.scope });
-  const res = await fetch(`${AUTH_BASE}/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body });
-  if (!res.ok) throw new Error(`token refresh failed: ${res.status}`);
+  const res = await fetch(`${authBase()}/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body });
+  if (!res.ok) {
+    // invalid_grant = the sign-in was revoked or expired: the person must reconnect (v2 A7 marks needs_reconnect)
+    let code = '';
+    try { code = String(((await res.json()) as { error?: unknown }).error ?? ''); } catch { /* not JSON */ }
+    throw Object.assign(new Error(`token refresh failed: ${res.status}${code ? ` ${code}` : ''}`), { status: res.status, code: code || undefined });
+  }
   const j: any = await res.json();
-  const next: StoredToken = { access_token: j.access_token, refresh_token: j.refresh_token ?? t.refresh_token, expires_at: Date.now() + (Number(j.expires_in ?? 3600) * 1000), scope: t.scope };
+  const next: StoredToken = { access_token: j.access_token, refresh_token: j.refresh_token ?? t.refresh_token, expires_at: Date.now() + (Number(j.expires_in ?? 3600) * 1000), scope: t.scope, ...(t.account ? { account: t.account } : {}) };
   saveToken(next);
   return next.access_token;
 }
 
 /** A Microsoft Graph call with the signed-in token (v2: the calendar and mail sync use it). */
 export async function graph(path: string, init: RequestInit = {}): Promise<any> {
-  const res = await fetch(`${GRAPH}${path}`, { ...init, headers: { authorization: `Bearer ${await accessToken()}`, 'content-type': 'application/json', ...(init.headers ?? {}) } });
-  if (!res.ok) throw new Error(`Graph ${res.status}: ${(await res.text()).slice(0, 160)}`);
+  // An absolute link (a nextLink / deltaLink Graph handed back) is followed only on Graph's own origin: the token
+  // must never go anywhere else.
+  const base = graphBase();
+  const url = /^https?:\/\//i.test(path) ? path : `${base}${path}`;
+  if (new URL(url).origin !== new URL(base).origin) throw new Error('Graph link points outside Microsoft Graph.');
+  const res = await fetch(url, { ...init, headers: { authorization: `Bearer ${await accessToken()}`, 'content-type': 'application/json', ...(init.headers ?? {}) } });
+  if (!res.ok) throw Object.assign(new Error(`Graph ${res.status}: ${(await res.text()).slice(0, 160)}`), { status: res.status });
   return res.status === 204 ? {} : res.json();
 }
 
@@ -91,7 +128,7 @@ function beginConsent(readOnly = false): { url: string; done: Promise<string> } 
   const scope = (readOnly ? SCOPES_RO : SCOPES_RW).join(' ');
   const verifier = randomBytes(32).toString('base64url');
   const challenge = createHash('sha256').update(verifier).digest('base64url');
-  const url = `${AUTH_BASE}/authorize?` + new URLSearchParams({
+  const url = `${authBase()}/authorize?` + new URLSearchParams({
     client_id: id, response_type: 'code', redirect_uri: REDIRECT_URI, response_mode: 'query',
     scope, code_challenge: challenge, code_challenge_method: 'S256', prompt: 'consent',
   }).toString();
@@ -111,11 +148,12 @@ function beginConsent(readOnly = false): { url: string; done: Promise<string> } 
       srv.listen(REDIRECT_PORT, '127.0.0.1');
     });
     const body = new URLSearchParams({ client_id: id, grant_type: 'authorization_code', code, redirect_uri: REDIRECT_URI, code_verifier: verifier, scope });
-    const res = await fetch(`${AUTH_BASE}/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body });
+    const res = await fetch(`${authBase()}/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body });
     if (!res.ok) throw new Error(`token exchange failed: ${res.status} ${(await res.text()).slice(0, 160)}`);
     const j: any = await res.json();
     saveToken({ access_token: j.access_token, refresh_token: j.refresh_token, expires_at: Date.now() + (Number(j.expires_in ?? 3600) * 1000), scope });
     const me = await graph('/me');
+    recordMicrosoftSignIn(me.userPrincipalName || me.mail || null);
     return me.userPrincipalName || me.mail || 'your account';
   })();
   return { url, done };
@@ -147,7 +185,7 @@ export interface DeviceCode { user_code: string; verification_uri: string; expir
 export async function startMicrosoftDeviceCode(readOnly = false): Promise<DeviceCode> {
   const id = clientId();
   const scope = (readOnly ? SCOPES_RO : SCOPES_RW).join(' ');
-  const res = await fetch(`${AUTH_BASE}/devicecode`, {
+  const res = await fetch(`${authBase()}/devicecode`, {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ client_id: id, scope }),
   });
@@ -170,14 +208,16 @@ async function pollDeviceToken(clientIdValue: string, scope: string, deviceCode:
     await new Promise((r) => setTimeout(r, interval * 1000));
     let j: any;
     try {
-      const res = await fetch(`${AUTH_BASE}/token`, {
+      const res = await fetch(`${authBase()}/token`, {
         method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:device_code', client_id: clientIdValue, device_code: deviceCode }),
       });
       j = await res.json();
       if (res.ok && j.access_token) {
         saveToken({ access_token: j.access_token, refresh_token: j.refresh_token, expires_at: Date.now() + (Number(j.expires_in ?? 3600) * 1000), scope });
-        try { const me = await graph('/me'); console.log(`  ✅ Outlook connected as ${me.userPrincipalName || me.mail || 'your account'}`); } catch { /* */ }
+        let who: string | null = null;
+        try { const me = await graph('/me'); who = me.userPrincipalName || me.mail || null; console.log(`  ✅ Outlook connected as ${who ?? 'your account'}`); } catch { /* */ }
+        recordMicrosoftSignIn(who);
         return;
       }
     } catch { continue; /* transient — keep polling */ }
@@ -337,8 +377,10 @@ export function microsoftTools(): RegisteredTool[] {
       },
     },
     {
-      def: { name: 'propose_outlook_event', description: 'Create a DRAFT/proposed Outlook calendar event (subject prefixed [Proposed], no invites sent — the human reviews/confirms). Times in ISO 8601 (UTC).', parameters: { type: 'object', properties: { summary: { type: 'string' }, start: { type: 'string' }, end: { type: 'string' }, description: { type: 'string' } }, required: ['summary', 'start', 'end'] } },
-      handler: async (args) => {
+      def: { name: 'propose_outlook_event', description: 'Propose an Outlook calendar event. It is held in MWA as a DRAFT the person confirms (nothing is added to Outlook and no invites are sent until they do). Times in ISO 8601; a time with no offset is the person’s local time; a bare date (YYYY-MM-DD) makes an all-day event.', parameters: { type: 'object', properties: { summary: { type: 'string' }, start: { type: 'string' }, end: { type: 'string' }, location: { type: 'string' }, description: { type: 'string' } }, required: ['summary', 'start', 'end'] } },
+      handler: async (args, ctx) => {
+        // v2 (A7): an MWA-held draft. MWA_V2_DRAFTS=0 restores the old behaviour (a real "[Proposed]" event).
+        if (v2DraftsOn()) return proposeDraft('outlook', args, ctx);
         const e = await graph('/me/events', { method: 'POST', body: JSON.stringify({
           subject: `[Proposed] ${args.summary}`,
           body: { contentType: 'Text', content: String(args.description ?? '') },

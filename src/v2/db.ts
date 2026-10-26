@@ -37,6 +37,34 @@ export const BASE_MIGRATIONS: Migration[] = [
         headers TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (key, device));
       CREATE INDEX IF NOT EXISTS idempotency_created ON idempotency(created_at);`,
   },
+  {
+    // Shared by the calendar (A7, resource 'calendar') and mail (A8, resource 'mail') syncs; read and written only
+    // through src/v2/sync-state.ts. A base step, so it exists before either slice's own migration runs. Windows and
+    // times are INTEGER epoch milliseconds. The rebuild converts a table an earlier build created with TEXT windows:
+    // whole-number text becomes an integer, anything else (an ISO date) becomes NULL — a window is recomputed on
+    // the next sync anyway; cursors are kept.
+    name: '001b-sync-state',
+    sql: `
+      CREATE TABLE IF NOT EXISTS sync_state (
+        account TEXT NOT NULL, resource TEXT NOT NULL, cursor TEXT, window_from INTEGER, window_to INTEGER,
+        last_ok INTEGER, last_error TEXT, needs_reconnect INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (account, resource));
+      CREATE TABLE sync_state_rebuild (
+        account TEXT NOT NULL, resource TEXT NOT NULL, cursor TEXT, window_from INTEGER, window_to INTEGER,
+        last_ok INTEGER, last_error TEXT, needs_reconnect INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (account, resource));
+      INSERT INTO sync_state_rebuild (account, resource, cursor, window_from, window_to, last_ok, last_error, needs_reconnect)
+        SELECT account, resource, cursor,
+          CASE WHEN typeof(window_from) IN ('integer', 'real') THEN CAST(window_from AS INTEGER)
+               WHEN typeof(window_from) = 'text' AND window_from <> '' AND window_from NOT GLOB '*[^0-9]*' THEN CAST(window_from AS INTEGER) END,
+          CASE WHEN typeof(window_to) IN ('integer', 'real') THEN CAST(window_to AS INTEGER)
+               WHEN typeof(window_to) = 'text' AND window_to <> '' AND window_to NOT GLOB '*[^0-9]*' THEN CAST(window_to AS INTEGER) END,
+          CASE WHEN typeof(last_ok) IN ('integer', 'real') THEN CAST(last_ok AS INTEGER) END,
+          last_error, COALESCE(needs_reconnect, 0)
+        FROM sync_state;
+      DROP TABLE sync_state;
+      ALTER TABLE sync_state_rebuild RENAME TO sync_state;`,
+  },
 ];
 
 let db: AppDb | null = null;
