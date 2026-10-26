@@ -14,7 +14,8 @@
  * `.env` and `mwa.config.json` are configuration, not runtime data, and keep their own rules (MWA_ENV_PATH,
  * MWA_CONFIG_PATH).
  */
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
+import { existsSync } from 'node:fs';
 
 type Env = Record<string, string | undefined>;
 
@@ -39,3 +40,20 @@ export const installLogPath = (env: Env = process.env): string => env.MWA_INSTAL
 export const vaultPath = (env: Env = process.env): string => env.MWA_VAULT_PATH ?? join(dataDir(env), 'vault.json');
 /** Browser profiles, one folder per person under it. */
 export const browserDir = (env: Env = process.env): string => env.MWA_BROWSER_DIR ?? join(dataDir(env), 'browser');
+
+/**
+ * A connector's sign-in token file (v2 build, A0). It was `resolve('data/<name>')` against the CURRENT directory, so
+ * a server started from another folder lost its Google/Outlook sign-in, MWA_DATA_DIR did not move it, and in Docker
+ * (WORKDIR /app) it sat in the image layer and was lost on every rebuild. Now: the env var when set; else beside
+ * agent.db; but an existing token in the old place keeps being used (nobody is signed out by an upgrade).
+ */
+export function connectorTokenPath(name: string, envVar: string, env: Env = process.env): string {
+  if (env[envVar]) return resolve(String(env[envVar]));
+  // beside agent.db: in Docker that is the /data volume (MWA_DB=/data/agent.db), so a sign-in survives a rebuild;
+  // elsewhere dirname(dbFile()) is the data folder.
+  const inData = join(dirname(dbFile(env)), name);
+  if (existsSync(inData)) return inData;
+  const legacy = resolve('data', name);
+  if (existsSync(legacy)) return legacy;
+  return inData;
+}

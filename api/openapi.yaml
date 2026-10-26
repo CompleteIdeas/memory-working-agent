@@ -1,0 +1,74 @@
+openapi: 3.1.0
+info:
+  title: MWA client API
+  version: 1.0.0
+  description: |
+    The API the MWA v2 web app (installed as a PWA) and a future phone app drive. Hand-written on purpose: this file
+    is the contract a second client is built against, so internal shapes stay out of it.
+
+    Conventions:
+    - JSON in and out; every error is `{"error": {"code", "message"}}`.
+    - Every write (POST/PUT/PATCH/DELETE) needs an `Idempotency-Key` header (8–128 of `A-Z a-z 0-9 . _ : -`). A retry
+      with the same key gets the first answer back (`Idempotent-Replay: true`) and does not act twice.
+    - Send `X-MWA-Client: web/<version>` (or `android/<version>`). A client older than `minClient` (see /meta) gets
+      `426 client_too_old` and must reload.
+    - Additive changes only within v1 (clients ignore fields they do not know); a breaking change is /api/v2.
+servers:
+  - url: /api/v1
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: mwa_session
+      description: The password session (MWA_ACCESS_PASSWORD). With no password configured, the local server is open.
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, pattern: '^[A-Za-z0-9._:-]{8,128}$' }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          additionalProperties: false
+          properties:
+            code: { type: string, description: 'Stable, machine-readable: locked, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, client_too_old, bad_json, too_large, internal' }
+            message: { type: string, description: Plain words for a person. }
+    Meta:
+      type: object
+      required: [api, server, minClient, secure, features]
+      additionalProperties: false
+      properties:
+        api: { type: string, const: v1 }
+        server: { type: string, description: The server version (package.json). }
+        minClient: { type: string, description: The oldest client version still accepted. }
+        secure: { type: boolean, description: 'True when this request came over HTTPS or from this machine. Installing the app, offline storage and notifications need it.' }
+        features: { type: array, items: { type: string } }
+  responses:
+    Error:
+      description: An error.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+security:
+  - session: []
+paths:
+  /meta:
+    get:
+      operationId: getMeta
+      summary: What server this is, and whether this connection can install the app.
+      security: []
+      responses:
+        '200':
+          description: Server facts.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Meta' }
+        default: { $ref: '#/components/responses/Error' }

@@ -59,6 +59,7 @@ import { AGENT_BROWSER_HEADER } from './tools/browser.js';
 import { goalsMentioned, WORK_NOTE_HEAD } from './work-note.js';
 import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, runApproved, recentApprovalOutcomes, recentAutoApproved } from './tools/approval.js';
 import { logger, readLogs, type LogLevel } from './logger.js';
+import { createV1Handler } from './api/v1.js';
 import { runAgent } from './agent.js';
 import { preparePersonTurn, learnFromTurn } from './person-turn.js';
 import { INTAKE_FIELDS } from './person-intake.js';
@@ -619,6 +620,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
     } catch (e) { logger.error('inbox', 'not started', { error: (e as Error).message.slice(0, 100) }); }
   }
   const ui = uiDir();
+  const v1 = createV1Handler({ authed, sameOrigin: sameOriginOk });
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');
@@ -647,12 +649,16 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         // detail (counts, sessions) from an unauthenticated caller; only ok/db go out.
         // BL-70: a share link opens one file for whoever holds it: its page, the app's built assets
         // and the share API answer without the password. The token is the whole permission.
-        const shared = p.startsWith('/s/') || p.startsWith('/api/share/') || p.startsWith('/assets/');
+        // v2: /api/v1/meta is public (a phone checks the server and its HTTPS before signing in).
+        const shared = p.startsWith('/s/') || p.startsWith('/api/share/') || p.startsWith('/assets/') || p === '/api/v1/meta';
         if (!authed(req) && p !== '/api/health' && !shared) {
           if (p.startsWith('/api/')) { res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'locked', message: 'Sign in to continue.' })); return; }
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(LOGIN_HTML); return;
         }
       }
+
+      // v2 client API: its own route table (src/api/v1.ts); everything under /api/v1 is answered there.
+      if ((p === '/api/v1' || p.startsWith('/api/v1/')) && await v1(req, res)) return;
 
       if (p === '/api/status') {
         res.writeHead(200, { 'content-type': 'application/json' });

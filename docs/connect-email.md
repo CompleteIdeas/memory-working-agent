@@ -3,8 +3,8 @@
 ## The model: device-local bring-your-own. No managed broker.
 
 MWA connects each user's email with **their own** Google/Microsoft OAuth app, and the
-token stays **on their machine** (`data/google-token.json` / `data/microsoft-token.json`,
-mode 0600). It is never sent to us or a third party.
+token stays **on their machine** (`google-token.json` / `microsoft-token.json` beside `agent.db` in the data
+folder, mode 0600; `MWA_GOOGLE_TOKEN` / `MWA_MS_TOKEN` override; an older `./data/…` token keeps working). It is never sent to us or a third party.
 
 **Why not a managed broker (Arcade, Composio, Nango, …):** MWA is an open, self-hosted
 project — *not a single organization*. A broker would mean either:
@@ -78,8 +78,8 @@ script falls back to the fully-manual guided steps (the current UI cards).
 ### Remote / NAS installs (no localhost browser)
 
 1. **Connect-then-copy (document now, works today):** run the one-time connect on a laptop
-   (loopback works), then copy `data/google-token.json` / `data/microsoft-token.json` onto
-   the server's `/data` volume. Reliable for both providers, zero new code.
+   (loopback works), then copy `google-token.json` / `microsoft-token.json` onto
+   the server's `/data` volume, beside `agent.db`. Reliable for both providers, zero new code.
 2. **Device-code flow (build later):** user enters a short code at a URL on any device — no
    redirect needed. Works well for **Microsoft Graph**; Google's device flow has scope
    limits that may exclude Gmail, so it's provider-dependent.

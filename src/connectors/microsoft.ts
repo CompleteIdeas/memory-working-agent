@@ -14,8 +14,9 @@ import { resolve, dirname } from 'node:path';
 import { createServer } from 'node:http';
 import { randomBytes, createHash } from 'node:crypto';
 import type { RegisteredTool } from '../tools/registry.js';
+import { connectorTokenPath } from '../paths.js';
 
-const TOKEN_PATH = process.env.MWA_MS_TOKEN ?? resolve('data/microsoft-token.json');
+const tokenPath = (): string => connectorTokenPath('microsoft-token.json', 'MWA_MS_TOKEN');
 const TENANT = process.env.MICROSOFT_TENANT ?? 'common'; // common = personal + work/school
 const REDIRECT_PORT = Number(process.env.MWA_MS_OAUTH_PORT ?? 7798);
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/oauth`;
@@ -43,21 +44,21 @@ export function microsoftClientReady(): boolean {
   return !!(process.env.MICROSOFT_CLIENT_ID || DEFAULT_MS_CLIENT_ID);
 }
 function loadToken(): StoredToken | null {
-  if (!existsSync(TOKEN_PATH)) return null;
-  try { return JSON.parse(readFileSync(TOKEN_PATH, 'utf8')); } catch { return null; }
+  if (!existsSync(tokenPath())) return null;
+  try { return JSON.parse(readFileSync(tokenPath(), 'utf8')); } catch { return null; }
 }
 function saveToken(t: StoredToken): void {
-  mkdirSync(dirname(TOKEN_PATH), { recursive: true });
-  writeFileSync(TOKEN_PATH, JSON.stringify(t, null, 2), { mode: 0o600 });
+  mkdirSync(dirname(tokenPath()), { recursive: true });
+  writeFileSync(tokenPath(), JSON.stringify(t, null, 2), { mode: 0o600 });
 }
 
 export function microsoftConfigured(): boolean {
-  return microsoftClientReady() && existsSync(TOKEN_PATH);
+  return microsoftClientReady() && existsSync(tokenPath());
 }
 
 /** Forget the stored Outlook token (the local sign-in). Env keys are cleared separately. */
 export function disconnectMicrosoft(): void {
-  try { rmSync(TOKEN_PATH, { force: true }); } catch { /* */ }
+  try { rmSync(tokenPath(), { force: true }); } catch { /* */ }
 }
 
 /** Valid access token, refreshing with the stored refresh_token when near expiry. */
@@ -76,7 +77,8 @@ async function accessToken(): Promise<string> {
   return next.access_token;
 }
 
-async function graph(path: string, init: RequestInit = {}): Promise<any> {
+/** A Microsoft Graph call with the signed-in token (v2: the calendar and mail sync use it). */
+export async function graph(path: string, init: RequestInit = {}): Promise<any> {
   const res = await fetch(`${GRAPH}${path}`, { ...init, headers: { authorization: `Bearer ${await accessToken()}`, 'content-type': 'application/json', ...(init.headers ?? {}) } });
   if (!res.ok) throw new Error(`Graph ${res.status}: ${(await res.text()).slice(0, 160)}`);
   return res.status === 204 ? {} : res.json();
@@ -124,7 +126,7 @@ export async function connectMicrosoft(onLog: (m: string) => void = (m) => conso
   const { url, done } = beginConsent(readOnly);
   onLog(`\nAuthorize MWA — open this URL and sign in to the Outlook/Microsoft account you want it to manage:\n\n${url}\n`);
   const email = await done;
-  onLog(`✅ Connected as ${email} — token saved locally (${TOKEN_PATH}). ${readOnly ? 'Read only.' : 'Read + draft only; never sends.'}`);
+  onLog(`✅ Connected as ${email} — token saved locally (${tokenPath()}). ${readOnly ? 'Read only.' : 'Read + draft only; never sends.'}`);
 }
 
 /** Web: return the consent URL for the browser; finishes in the background (UI polls status). */

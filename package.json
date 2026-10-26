@@ -59,7 +59,8 @@
     "contextswitch": "tsx src/contextswitch.ts",
     "test": "vitest run",
     "eval:design": "vitest run tests/design-conformance.test.ts",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "api:types": "openapi-typescript api/openapi.yaml -o src/api/types.gen.ts && openapi-typescript api/openapi.yaml -o web/src/v2/api/types.gen.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",
@@ -81,9 +82,13 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/mailparser": "^3.4.6",
     "@types/node": "^22.0.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "openapi-typescript": "^7.4.4",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.0"
+    "vitest": "^4.0.0",
+    "yaml": "^2.6.1"
   },
   "engines": {
     "node": ">=22.0.0"

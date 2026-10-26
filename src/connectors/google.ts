@@ -13,8 +13,9 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node
 import { resolve, dirname } from 'node:path';
 import { createServer } from 'node:http';
 import type { RegisteredTool } from '../tools/registry.js';
+import { connectorTokenPath } from '../paths.js';
 
-const TOKEN_PATH = process.env.MWA_GOOGLE_TOKEN ?? resolve('data/google-token.json');
+const tokenPath = (): string => connectorTokenPath('google-token.json', 'MWA_GOOGLE_TOKEN');
 const SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.compose', // create drafts, NOT send
@@ -30,25 +31,26 @@ function oauthClient() {
 }
 
 function loadToken(): Record<string, unknown> | null {
-  if (!existsSync(TOKEN_PATH)) return null;
-  try { return JSON.parse(readFileSync(TOKEN_PATH, 'utf8')); } catch { return null; }
+  if (!existsSync(tokenPath())) return null;
+  try { return JSON.parse(readFileSync(tokenPath(), 'utf8')); } catch { return null; }
 }
 
 export function googleConfigured(): boolean {
-  return !!process.env.GOOGLE_CLIENT_ID && existsSync(TOKEN_PATH);
+  return !!process.env.GOOGLE_CLIENT_ID && existsSync(tokenPath());
 }
 
 /** Forget the stored Gmail OAuth token (the local sign-in). Env keys are cleared separately. */
 export function disconnectGoogle(): void {
-  try { rmSync(TOKEN_PATH, { force: true }); } catch { /* */ }
+  try { rmSync(tokenPath(), { force: true }); } catch { /* */ }
 }
 
-async function authedClient() {
+/** The signed-in Google client (v2: the calendar and mail sync use it). */
+export async function authedClient() {
   const o = oauthClient();
   const t = loadToken();
   if (!t) throw new Error('Gmail not connected — run `mwa connect gmail`.');
   o.setCredentials(t);
-  o.on('tokens', (nt) => { try { writeFileSync(TOKEN_PATH, JSON.stringify({ ...t, ...nt }, null, 2), { mode: 0o600 }); } catch { /* */ } });
+  o.on('tokens', (nt) => { try { writeFileSync(tokenPath(), JSON.stringify({ ...t, ...nt }, null, 2), { mode: 0o600 }); } catch { /* */ } });
   return o;
 }
 
@@ -80,8 +82,8 @@ function beginConsent(readOnly = false): { url: string; done: Promise<string> } 
       srv.listen(REDIRECT_PORT, '127.0.0.1');
     });
     const { tokens } = await o.getToken(code);
-    mkdirSync(dirname(TOKEN_PATH), { recursive: true });
-    writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2), { mode: 0o600 });
+    mkdirSync(dirname(tokenPath()), { recursive: true });
+    writeFileSync(tokenPath(), JSON.stringify(tokens, null, 2), { mode: 0o600 });
     o.setCredentials(tokens);
     const prof = await google.gmail({ version: 'v1', auth: o }).users.getProfile({ userId: 'me' });
     return prof.data.emailAddress ?? 'your account';
@@ -94,7 +96,7 @@ export async function connectGmail(onLog: (m: string) => void = (m) => console.l
   const { url, done } = beginConsent(readOnly);
   onLog(`\nAuthorize MWA — open this URL in your browser (sign in as the account you want it to manage):\n\n${url}\n`);
   const email = await done;
-  onLog(`✅ Connected as ${email} — token saved locally (${TOKEN_PATH}). ${readOnly ? 'Read only.' : 'Read + draft only; never sends.'}`);
+  onLog(`✅ Connected as ${email} — token saved locally (${tokenPath()}). ${readOnly ? 'Read only.' : 'Read + draft only; never sends.'}`);
 }
 
 /** Web flow: returns the consent URL for the browser to open; finishes in the background
