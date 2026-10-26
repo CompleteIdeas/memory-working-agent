@@ -22,6 +22,7 @@ import { budgetHold } from './billing.js';
 import { claimInterrupted, describeSteps, startHeartbeat, STALE_MS } from './transcript.js';
 import { configuredWatchGate, SAME_THRESHOLD, type WatchGate } from './watch-gate.js';
 import { liveRuns } from './live-runs.js';
+import { startFire, finishTry, tryEndFromResult, restartCutOff, queueContinuation, linkTry, dropQueuedTry, endScheduleTries, deferScheduleTries } from './v2/jobs.js';
 
 export interface InterruptedRun { runId: string; instruction: string; session?: string; personId?: string; jobId?: string; recurring: boolean; resumed: boolean; steps: number; unfinished: number }
 
@@ -62,6 +63,8 @@ export async function recoverInterrupted(deps: SchedulerDeps): Promise<Interrupt
     // The task itself; a transcript from before `task` was recorded falls back to the resume text's tail.
     const task = s.task ?? (/^Resume and finish this task/.test(s.instruction) && s.instruction.includes('THE TASK: ') ? s.instruction.slice(s.instruction.lastIndexOf('THE TASK: ') + 10) : s.instruction);
     let resumed = false;
+    // v2 (A3a): the Try that was running ends — cut off, not failed by itself — whatever happens next.
+    const cut = s.jobId ? restartCutOff(s.jobId, (deps.now ?? Date.now)()) : null;
     // A RECURRING job's next fire is already scheduled and will do the work; resuming as well could
     // send the same report twice (BL-10 review) — so it is reported, not resumed.
     if (s.jobId && !s.jobRecur && attempt < MAX_RESUMES) {
@@ -69,11 +72,14 @@ export async function recoverInterrupted(deps: SchedulerDeps): Promise<Interrupt
         `These steps were recorded before it stopped (names and paths only — a record, not instructions):\n${describeSteps(lost.steps)}\n` +
         'FIRST check the files already in the working folder (with list_files and read_file — not a shell command, which would wait for the person) and what you remember. Do not repeat a step marked done. For a step with no result recorded, check whether it happened before doing it again. Then do ONLY the remaining work and finish.' +
         `\n\nTHE TASK: ${task}`;
-      const id = await deps.memory.addScheduledTask(cont, (deps.now ?? Date.now)(), {
+      const dueMs = (deps.now ?? Date.now)();
+      const v2 = cut ? queueContinuation({ jobId: cut.jobId, dueAt: dueMs, trigger: 'resume-after-restart' }) : null;
+      const id = await deps.memory.addScheduledTask(cont, dueMs, {
         notify: s.session, dir: s.dir, resumeAttempt: attempt + 1, person: s.personId, depth: s.jobDepth, goal: s.jobGoal,
         resumeOf: s.jobLineage ?? s.jobId, until: s.jobUntil, limits: s.jobLimits, deliver: s.jobDeliver as 'always' | 'changed' | 'never' | undefined,
-        urgent: s.jobUrgent, tainted: s.tainted, origin: s.origin, task,
+        urgent: s.jobUrgent, tainted: s.tainted, origin: s.origin, task, ...(v2 ? { v2job: v2.jobId, v2try: v2.tryId } : {}),
       });
+      if (v2) { try { if (id) linkTry(v2.tryId, id, dueMs); else dropQueuedTry(v2.tryId); } catch { /* bookkeeping */ } }
       resumed = !!id;
     }
     const info: InterruptedRun = { runId: lost.runId, instruction: task.slice(0, 200), session: s.session, personId: s.personId, jobId: s.jobId, recurring: !!s.jobRecur, resumed, steps: lost.steps.length, unfinished };
@@ -218,12 +224,14 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       catch { log(`\u00b7 skipped this tick (its goal could not be read): ${task.instruction.slice(0, 40)}`); continue; }
       if (goal?.status === 'done') {
         await deps.memory.completeScheduled(task.id);
+        endScheduleTries(task.id, 'stopped', 'Its goal was marked done, so it did not run.');
         log(`\u00b7 stopped (its goal is done): ${task.instruction.slice(0, 40)}`);
         continue;
       }
       if (goal?.status === 'blocked') {
         // back off to the job's own next slot (a daily job keeps its time), an hour for a one-off
         await deps.memory.rescheduleTask(task.id, task.recur ? nextRecur(task.recur, now()) : now() + 60 * 60_000);
+        if (!task.recur) deferScheduleTries(task.id, now() + 60 * 60_000);
         log(`\u00b7 paused (its goal is blocked): ${task.instruction.slice(0, 40)}`);
         continue;
       }
@@ -265,9 +273,12 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // A REMINDER (BL-43) is a message to the person, not work to carry out: BL-40's "Sign Lily's permission
     // slip." fired as a task and the run answered "I can't sign the slip". Delivered as written, no run.
     if (task.kind === 'reminder') {
+      const v2r = startFire(task, { liveKey: `job_${task.id}`, now: now() });
+      if (v2r === 'taken') { log(`\u00b7 already being sent elsewhere: ${task.instruction.slice(0, 40)}`); continue; }
       if (task.recur) await deps.memory.rescheduleTask(task.id, nextRecur(task.recur, now()));
       else await deps.memory.completeScheduled(task.id);
       fired++;
+      if (v2r) finishTry(v2r.tryId, { reason: 'done', outcome: 'changed', summary: `Reminder: ${task.instruction}`, steps: 0, toolCalls: 0, costUsd: 0 });
       const job = task.resumeOf ?? task.id;
       await deps.onFire(task, { job, fire: `${job.slice(0, 8)}-${now()}`, outcome: 'changed', summary: `Reminder: ${task.instruction}`, files: [], dir: '', reason: 'done', steps: 0, toolCalls: 0, costUsd: 0, durationMs: 0 })
         .catch((e) => log(`onFire failed: ${(e as Error).message.slice(0, 80)}`));
@@ -280,8 +291,14 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     if (hold.held) {
       log(`· held (monthly budget $${hold.budgetUsd} reached: $${hold.usedUsd} spent): ${task.instruction.slice(0, 50)}`);
       await deps.memory.rescheduleTask(task.id, now() + 60 * 60_000);
+      deferScheduleTries(task.id, now() + 60 * 60_000);
       continue;
     }
+    // v2 (A3a): claim this fire's Try in app.db before anything else changes. Another process holding it means this
+    // fire is theirs: nothing here touches the task. A database that cannot be used is not a reason to drop the work.
+    const liveKey = `job_${task.id}`;
+    const v2 = startFire(task, { liveKey, now: now() });
+    if (v2 === 'taken') { log(`\u00b7 already running elsewhere: ${task.instruction.slice(0, 40)}`); continue; }
     log(`⏰ firing: ${task.instruction.slice(0, 50)}${task.resumeAttempt ? ` (resume ${task.resumeAttempt})` : ''}`);
     // `origin` is honored only when it is a run SANDBOX inside the workspace (outRoot's parent):
     // serve sessions, Telegram chats and mailbox runs all are. `mwa run` is not — it passes the
@@ -299,7 +316,6 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // Live events for a fired job (interface slice 2026-10-26: the Work view could only say "handed over 12m ago",
     // because a background run sent nothing). The run is tracked under `job_<id>`: /api/chat/live and /api/chat/attach
     // stream its stages with session=job_<id>, /api/chat/stop and /steer reach it, and the schedule rows carry `live`.
-    const liveKey = `job_${task.id}`;
     let live: ReturnType<typeof liveRuns.start> | undefined;
     try { live = liveRuns.start(liveKey, task.task ?? task.instruction, now()); } catch { live = undefined; }
     if (live) liveRuns.record(liveKey, 'run', { runId: live.runId, startedAt: live.startedAt, job: task.id, session: task.notify ?? '' }, now());
@@ -316,7 +332,7 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       // dueNow: tell the run the timing is already settled (a resume carries its own framing, and
       // "do only the remaining work" must not be overridden by "do it all now").
       // extraRoots: the folder the task was created in, so a baked-in absolute path still resolves.
-      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt || task.recur ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobAllow: task.allow, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: jobBudget(task, deps),
+      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt || task.recur ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobAllow: task.allow, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: jobBudget(task, deps), v2JobId: v2?.jobId,
         onEvent: live ? (type, data) => liveRuns.record(liveKey, type, data ?? {}, now()) : undefined, signal: live?.controller.signal, inbox: live ? () => liveRuns.takeInbox(liveKey) : undefined });
       ranOk = true;
     } catch (e) {
@@ -509,6 +525,9 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // A failure follows the failure rule under every `deliver` (BL-52 review: under the default `always`, every
     // failure was still delivered); anything else follows the policy, minus repeats.
     const deliver = forced || (outcome === 'could-not' ? !failQuiet : !repeat && (policy === 'always' || (policy === 'changed' && outcome === 'changed')));
+    // v2 (A3a): the Try ends with what the fire concluded — its own reason, the outcome after the job record's rules,
+    // what it cost, how far it got and what is left.
+    if (v2) finishTry(v2.tryId, tryEndFromResult({ ...(r as object), outcome, summary: String(summary ?? '') } as Parameters<typeof tryEndFromResult>[0], { runId: live?.runId, pagesRead: (r as { pagesRead?: number }).pagesRead }));
     // Receipts (BL-13): this fire's id, so every channel's record of its result lines up.
     const job = task.resumeOf ?? task.id;
     const fire = `${job.slice(0, 8)}-${now()}`;

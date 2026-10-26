@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createV1, API_VERSION, MIN_CLIENT, type Route, type RouterDeps } from './router.js';
+import { jobRoutes } from './routes/jobs.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 function serverVersion(): string {
@@ -33,7 +34,7 @@ export const metaRoutes: Route[] = [
       body: {
         api: API_VERSION, server: VERSION, minClient: MIN_CLIENT,
         secure: secureContext(req),
-        features: [] as string[],
+        features: ['jobs'] as string[],
       },
     }),
   },
@@ -41,7 +42,7 @@ export const metaRoutes: Route[] = [
 
 /** Every v1 route. Slices append their own arrays here. */
 export function v1Routes(): Route[] {
-  return [...metaRoutes];
+  return [...metaRoutes, ...jobRoutes];
 }
 
 export function createV1Handler(deps: RouterDeps) {

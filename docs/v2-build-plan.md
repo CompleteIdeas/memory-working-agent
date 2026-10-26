@@ -32,7 +32,7 @@ from a code-grounded plan (2026-10-26); file:line references there were checked 
 | A0 | Foundations: app.db, router, /api/v1/meta, createHandler export, connector helper exports, token paths under dataDir | M | – | in progress |
 | A1 | OpenAPI contract scaffold + generated types + contract tests | M | A0 | |
 | A2 | Device auth and pairing, scopes, open-tailnet gap closed | M | A0 | |
-| A3a | Jobs and Tries: data, status function, agent/scheduler/serve wiring, migration (mwa migrate-v2) | L | A0 | |
+| A3a | Jobs and Tries: data, status function, agent/scheduler/serve wiring, migration (mwa migrate-v2) | L | A0 | done (branch v2-a3a) |
 | A3b | Dollar cap (AgentBudget.maxUsd), estimates, job actions | M | A3a | |
 | A4 | Event log, /stream SSE with cursor, /sync | M | A0 | |
 | A5 | Projects and threads, routing suggestion, provenance | M | A3a | |

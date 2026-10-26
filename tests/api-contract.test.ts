@@ -9,6 +9,8 @@ import addFormats from 'ajv-formats';
 import { v1Routes } from '../src/api/v1.js';
 import { createV1 } from '../src/api/router.js';
 import { resetAppDb } from '../src/v2/db.js';
+import { setJobRouteDeps } from '../src/api/routes/jobs.js';
+import { createJob, addTry, claimTry, endTry } from '../src/v2/jobs.js';
 
 const spec = parse(readFileSync(new URL('../api/openapi.yaml', import.meta.url), 'utf8'));
 const METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
@@ -58,6 +60,23 @@ describe('the contract and the route table agree', () => {
 let server: Server, base = '';
 beforeAll(async () => {
   resetAppDb(':memory:');
+  // A3a: jobs in each state an action needs, and fake server parts (no model, no memory store).
+  let n = 0;
+  setJobRouteDeps({
+    memory: () => ({ addScheduledTask: async () => `sched-${++n}-xxxxxxxx`, cancelScheduled: async () => {}, getGoal: async () => null, setGoalStatus: async () => {} }) as never,
+    running: () => new Set(['live-running']), stopLive: (k) => k === 'live-running', pendingApprovals: () => new Set(),
+    scheduleControl: async () => ({ ok: true, message: 'Done.' }),
+  });
+  const partly = createJob({ kind: 'background', title: 'Read the rules', request: 'Read the rules' }, { trigger: 'first' });
+  claimTry(partly.try!.id, {}); endTry(partly.try!.id, { reason: 'done', outcome: 'changed', summary: 'Read 63 pages.', progress: { done: 63, total: 73, unit: 'pages' }, remaining: 'pages 64-73', costUsd: 0.15 });
+  const done = createJob({ kind: 'background', title: 'Done thing' }, { trigger: 'first' });
+  claimTry(done.try!.id, {}); endTry(done.try!.id, { reason: 'done', outcome: 'changed', summary: 'All done.' });
+  const running = createJob({ kind: 'live', title: 'Running thing' }, { trigger: 'first', state: 'running', liveKey: 'live-running' });
+  const failed = createJob({ kind: 'background', title: 'Failed thing' }, { trigger: 'first' });
+  claimTry(failed.try!.id, {}); endTry(failed.try!.id, { reason: 'done', outcome: 'could-not', summary: 'The site was down.' });
+  const watch = createJob({ kind: 'recurring', title: 'Watch the price', scheduleId: 'watch-task-1' });
+  addTry(watch.job.id, { trigger: 'fire' });
+  Object.assign(ids, { partly: partly.job.id, done: done.job.id, running: running.job.id, failed: failed.job.id, watch: watch.job.id });
   const v1 = createV1(v1Routes(), { authed: () => true, sameOrigin: () => true });
   server = createServer(async (req, res) => { if (!(await v1(req, res))) { res.writeHead(404); res.end(); } });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -66,9 +85,27 @@ beforeAll(async () => {
 afterAll(() => server?.close());
 
 /** One request per operation (and a few error cases). Slices append theirs. */
-const CASES: { op: string; path: string; init?: RequestInit; status: number }[] = [
+const ids: Record<string, string> = {};
+let keyN = 0;
+const post = (): RequestInit => ({ method: 'POST', headers: { 'idempotency-key': `contract-key-${++keyN}`, 'content-type': 'application/json' }, body: '{}' });
+const CASES: { op: string; path: string | (() => string); init?: RequestInit | (() => RequestInit); status: number }[] = [
   { op: 'GET /meta', path: '/meta', status: 200 },
   { op: 'GET /meta', path: '/meta', init: { method: 'POST' }, status: 405 },
+  { op: 'GET /jobs', path: '/jobs', status: 200 },
+  { op: 'GET /jobs', path: '/jobs?state=partly_done', status: 200 },
+  { op: 'GET /jobs', path: '/jobs?state=nonsense', status: 400 },
+  { op: 'GET /jobs/{id}', path: () => `/jobs/${ids.partly}`, status: 200 },
+  { op: 'GET /jobs/{id}', path: '/jobs/j_nope', status: 404 },
+  { op: 'POST /jobs/{id}/stop', path: () => `/jobs/${ids.running}/stop`, init: post, status: 200 },
+  { op: 'POST /jobs/{id}/stop', path: () => `/jobs/${ids.done}/stop`, init: post, status: 409 },
+  { op: 'POST /jobs/{id}/continue', path: () => `/jobs/${ids.done}/continue`, init: post, status: 409 },
+  { op: 'POST /jobs/{id}/continue', path: () => `/jobs/${ids.partly}/continue`, init: post, status: 202 },
+  { op: 'POST /jobs/{id}/start-over', path: () => `/jobs/${ids.failed}/start-over`, init: post, status: 202 },
+  { op: 'POST /jobs/{id}/open', path: () => `/jobs/${ids.done}/open`, init: post, status: 200 },
+  { op: 'POST /jobs/{id}/pause', path: () => `/jobs/${ids.watch}/pause`, init: post, status: 200 },
+  { op: 'POST /jobs/{id}/pause', path: () => `/jobs/${ids.done}/pause`, init: post, status: 409 },
+  { op: 'POST /jobs/{id}/resume', path: () => `/jobs/${ids.watch}/resume`, init: post, status: 200 },
+  { op: 'POST /jobs/{id}/cancel', path: () => `/jobs/${ids.watch}/cancel`, init: post, status: 200 },
 ];
 
 describe('responses match the contract', () => {
@@ -81,8 +118,8 @@ describe('responses match the contract', () => {
     for (const o of ops) expect(CASES.some((c) => c.op === o.key), o.key).toBe(true);
   });
   for (const c of CASES) {
-    it(`${c.init?.method ?? 'GET'} ${c.path} → ${c.status}`, async () => {
-      const r = await fetch(base + c.path, c.init);
+    it(`${c.op} (${typeof c.path === 'string' ? c.path : 'job'}) → ${c.status}`, async () => {
+      const r = await fetch(base + (typeof c.path === 'function' ? c.path() : c.path), typeof c.init === 'function' ? c.init() : c.init);
       expect(r.status).toBe(c.status);
       const op = ops.find((o) => o.key === c.op)!.op;
       const schema = r.status === 405 ? spec.components.schemas.Error : responseSchema(op, r.status);
