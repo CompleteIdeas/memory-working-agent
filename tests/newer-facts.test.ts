@@ -31,9 +31,28 @@ describe('prior knowledge carries its date', () => {
       { id: 'b', concept: 'Flight change', content: 'now departs 8:40 AM', conflicts: [{ id: 'a', newer: true, slot: 'time' }] },
       { id: 'c', concept: 'Gate', content: 'gate B7', conflicts: [{ id: 'not-shown', newer: true, slot: 'status' }] },
     ]);
-    expect(block).toContain('1. [Flight departure] ⚠ DIFFERS from #2 on a time — this one is OLDER departs 10:15 AM');
-    expect(block).toContain('2. [Flight change] ⚠ DIFFERS from #1 on a time — this one is NEWER now departs 8:40 AM');
+    // pending list 2026-10-26, 2c: the older value is said to be history, not the answer (pilot G1P/C2 gave both)
+    expect(block).toContain('1. [Flight departure] ⚠ DIFFERS on a time — OLDER than #2 (it has the current value; this one is history only — not the answer to what the time is now) departs 10:15 AM');
+    expect(block).toContain('2. [Flight change] ⚠ DIFFERS on a time — this one is the current value; NEWER than #1 (that one is history) now departs 8:40 AM');
     expect(block).toContain('3. [Gate] gate B7'); // a mark on a memory not shown is not said
+  });
+
+  it('the dates in the memories\' own words decide which is newer, over the write-time flag (pilot G1P/C2)', () => {
+    // a studied, reconsolidated store wrote the old cap AFTER the new one, so AWM's flag called the old cap newer
+    const block = buildKnowledgeBlock([
+      { id: 'old', concept: 'Build-loop spend', content: 'as of 2026-10-15: model spend was about $6 of the $10 cap', conflicts: [{ id: 'new', newer: true, slot: 'money' }] },
+      { id: 'new', concept: 'MWA build-loop cost cap', content: 'Robert raised the cap from $10 to $20 on 2026-10-15, then to $40 on 2026-10-18.', conflicts: [{ id: 'old', newer: false, slot: 'money' }] },
+      { id: 'u1', concept: 'Undated a', content: 'the fee is $45', conflicts: [{ id: 'u2', newer: true, slot: 'money' }] },
+      { id: 'u2', concept: 'Undated b', content: 'the fee is $50', conflicts: [{ id: 'u1', newer: false, slot: 'money' }] },
+      // a dated statement beats an undated summary, whatever the flag; and each pair is named, not "between them"
+      { id: 'sum', concept: 'Spending summary', content: 'caps are per workstream; the build loop has its own cap', conflicts: [{ id: 'new', newer: true, slot: 'money' }] },
+    ]);
+    expect(block).toContain('1. [Build-loop spend] ⚠ DIFFERS on a money — OLDER than #2 (it has the current value; this one is history only — not the answer to what the money is now)');
+    expect(block).toContain('2. [MWA build-loop cost cap] ⚠ DIFFERS on a money — this one is the current value; NEWER than #1 (that one is history)');
+    // with no dates in the words, the flag stands
+    expect(block).toContain('3. [Undated a] ⚠ DIFFERS on a money — this one is the current value; NEWER than #4');
+    expect(block).toContain('4. [Undated b] ⚠ DIFFERS on a money — OLDER than #3');
+    expect(block).toContain('5. [Spending summary] ⚠ DIFFERS on a money — OLDER than #2 (it has the current value');
   });
 });
 

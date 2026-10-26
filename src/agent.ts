@@ -97,9 +97,32 @@ export function buildKnowledgeBlock(recalled: { id?: string; concept: string; co
   // memories about the same thing with a different value — said here by number, with which is newer, because under
   // 0.18's default rerank the order no longer says it (a test of "the newest of three ranks first" stopped holding).
   const at = new Map(recalled.map((m, i) => [m.id, i + 1] as const));
-  const conflictNote = (m: { conflicts?: { id: string; newer: boolean; slot: string }[] }) => {
-    const shown = (m.conflicts ?? []).filter((c) => at.has(c.id));
-    return shown.length ? ` ⚠ DIFFERS from #${shown.map((c) => at.get(c.id)).join(', #')} on a ${shown[0].slot} — this one is ${shown.every((c) => c.newer) ? 'NEWER' : shown.every((c) => !c.newer) ? 'OLDER' : 'between them'}` : '';
+  const byId = new Map(recalled.map((m) => [m.id, m] as const));
+  // Which of two disagreeing memories is newer: by the latest DATE each one's words carry ("as of 2026-10-15",
+  // "raised … on 2026-10-18") when both carry one, else by AWM's flag (the engram's write time). Pilot G1P/C2
+  // (2026-10-25): a studied, reconsolidated store had the $10 cap written after the $40 fact, so the flag called the
+  // old cap NEWER and Sol answered it; the words say which is which.
+  const datedAt = (m: { content: string }): number => Math.max(0, ...[...m.content.matchAll(/\b(20\d\d)-(\d\d)-(\d\d)\b/g)].map((x) => Date.UTC(Number(x[1]), Number(x[2]) - 1, Number(x[3]))));
+  // A statement that carries a date beats one that does not: "raised to $40 on 2026-10-18" over an undated summary.
+  const newerThan = (m: { content: string }, c: { id: string; newer: boolean }): boolean => {
+    const other = byId.get(c.id); const a = datedAt(m), b = other ? datedAt(other) : 0;
+    if (a && b) return a === b ? c.newer : a > b;
+    if (a || b) return a > 0;
+    return c.newer;
+  };
+  const conflictNote = (m: { content: string; conflicts?: { id: string; newer: boolean; slot: string }[] }) => {
+    const shown = (m.conflicts ?? []).filter((c) => at.has(c.id)).map((c) => ({ ...c, newer: newerThan(m, c) }));
+    if (!shown.length) return '';
+    // "this one is OLDER" alone still had Sol answer the old cap beside the current one: said as what to do with it,
+    // and per pair, so a memory newer than one and older than another is not "between them" (pilot G1P/C2).
+    const slot = shown[0].slot;
+    const newerThanRefs = shown.filter((c) => c.newer).map((c) => `#${at.get(c.id)}`);
+    const olderThanRefs = shown.filter((c) => !c.newer).map((c) => `#${at.get(c.id)}`);
+    const parts = [
+      newerThanRefs.length ? `NEWER than ${newerThanRefs.join(', ')} (${newerThanRefs.length > 1 ? 'those are' : 'that one is'} history)` : '',
+      olderThanRefs.length ? `OLDER than ${olderThanRefs.join(', ')} (${olderThanRefs.length > 1 ? 'they have' : 'it has'} the current value; this one is history only — not the answer to what the ${slot} is now)` : '',
+    ].filter(Boolean);
+    return ` ⚠ DIFFERS on a ${slot} — ${!olderThanRefs.length ? `this one is the current value; ${parts[0]}` : parts.join('; ')}`;
   };
   const lines = recalled
     .map((m, i) => `${i + 1}.${m.trust === 'untrusted' ? ' ⚠UNTRUSTED' : ''} [${m.concept}]${m.at ? ` (noted ${notedDay(m.at)})` : ''}${conflictNote(m)} ${m.content}`)
@@ -935,6 +958,7 @@ export async function runAgent(opts: {
   }
 
   const PRIME_K = opts.primeCap ?? 10; // cap on primed memories kept in the prompt (anti-context-rot)
+  const BRIDGE_SLOTS = Math.max(0, Math.min(PRIME_K - 1, Number(process.env.MWA_BRIDGE_SLOTS ?? 2) || 0)); // of them, at most this many bridged second hops
   // Ranking weight per primed memory: its score, faded once per step when PRIME_DECAY < 1. Kept
   // apart from `score`, which still feeds answer confidence. Off, the map stays empty and the
   // pool ranks by score exactly as before.
@@ -1173,20 +1197,37 @@ export async function runAgent(opts: {
     const STOP = new Set(['the', 'a', 'an', 'my', 'our', 'your', 'their', 'this', 'that', 'what', 'when', 'where', 'who', 'why', 'how', 'is', 'are', 'was', 'were', 'project', 'account', 'team', 'main', 'internal', 'codename', 'name', 'regards']);
     const instrLc = instruction.toLowerCase();
     const bridged = new Set<string>(); // entities already followed (dedupe across rounds)
+    // Pilot G1P/C2 (2026-10-27, prime log): the question's own results held the answer, and the bridge — recalling
+    // for "Robert", "Memory", "Gauntlet" found in them — merged memories that OUTSCORED them and pushed the answer out
+    // of the ten. A bridged memory is a guess at a second hop: at most BRIDGE_SLOTS of them join the pool, in the
+    // last slots, scored under the question's own results; the rest of the pool is the question's.
+    const originals = recalled.slice(0, PRIME_K);
+    const floor = Math.min(...originals.map((r) => weightOf(r)));
+    const picked: RecalledMemory[] = [];
+    const seen = new Set(originals.map((r) => r.id));
     // Up to 2 rounds so 3-hop chains resolve (round 1: scheduler→Sarah; round 2: Sarah→Cygnus→…).
-    for (let round = 0; round < 2; round++) {
+    for (let round = 0; round < 2 && picked.length < BRIDGE_SLOTS; round++) {
       const fresh: string[] = [];
-      for (const r of recalled.slice(0, 6)) {
+      for (const r of round === 0 ? originals.slice(0, 6) : picked) {
         for (const m of `${r.concept} ${r.content}`.matchAll(/\b[A-Z][A-Za-z]{2,}\b/g)) {
           const w = m[0]; const lw = w.toLowerCase();
           if (!STOP.has(lw) && !instrLc.includes(lw) && !bridged.has(lw)) { bridged.add(lw); fresh.push(w); }
         }
       }
       if (fresh.length === 0) break;
-      let added = 0;
-      for (const ent of fresh.slice(0, 4)) added += await prime(ent);
-      if (added === 0) break;
+      const candidates: RecalledMemory[] = [];
+      for (const ent of fresh.slice(0, 4)) {
+        const more = (await memory.recall(ent, { limit: 3, full: true, rerank: true, expand: false, workspace: opts.workspace })).filter(primeable);
+        for (const m of more) if (!seen.has(m.id)) { seen.add(m.id); candidates.push(m); }
+      }
+      candidates.sort((a, b) => b.score - a.score);
+      const before = picked.length;
+      for (const c of candidates) { if (picked.length >= BRIDGE_SLOTS) break; picked.push(c); }
+      if (picked.length === before) break;
     }
+    if (!picked.length) return;
+    recalled.length = 0; recalled.push(...originals.slice(0, PRIME_K - picked.length));
+    mergeIntoPool(picked.map((m, i) => ({ ...m, score: floor * (1 - 0.001 * (i + 1)) })), 'fresh', false);
   }
   await bridgeEntities();
 
@@ -1204,6 +1245,9 @@ export async function runAgent(opts: {
   await pullSources();
 
   const render = () => buildKnowledgeBlock(recalled);
+  // MWA_PRIME_LOG=<file>: the PRIOR KNOWLEDGE block each run starts with, one JSON line per run — for a pilot or a
+  // replay that asks "what did the model actually see?" (2026-10-27: the run log keeps no prime).
+  if (process.env.MWA_PRIME_LOG) { try { appendFileSync(process.env.MWA_PRIME_LOG, JSON.stringify({ ts: now(), session: opts.session, runId, prime: render() }) + '\n'); } catch { /* best effort */ } }
 
   let reason: AgentResult['reason'] = 'budget';
   let finalSummary = '';

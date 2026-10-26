@@ -253,6 +253,13 @@ with their values rather than add memories beside them.
 
 ## Open items
 
+- *2026-10-27, C2 on Sol (G1P) explained and fixed.* A new prime log (`MWA_PRIME_LOG`) showed the run was primed
+  with ten memories about Robert's decisions, the Memory Gauntlet and releases, none about the cap, while the same
+  question against the same store recalls the $40 fact at #4. The entity bridge had recalled for capitalised words in
+  the question's own results and let those memories outrank them. The bridge now fills at most two of the ten, in
+  the last slots; the conflict mark decides newer by the dates in the memories' own words and says the older value
+  is history. C2 replayed on Sol: $10 in six of six before, $40 citing the cost-cap note after.
+
 - Luna's plan-and-execute path on judgment questions over files: ten sub-runs that each re-list the folder.
   *Resolved for questions (2026-10-25): a question is no longer planned (`wantsPlan`).* *Resolved for planned
   tasks (2026-10-26): each step now receives the folder listing the earlier steps saw and the files they read,
