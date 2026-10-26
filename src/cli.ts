@@ -190,7 +190,22 @@ async function main(): Promise<void> {
     }
     return;
   }
-  console.error(`unknown command: ${cmd}\nusage: mwa serve | mwa run "<instruction>" | mwa watch [--once] | mwa connect <gmail|outlook|telegram> | mwa consolidate | mwa setup`);
+  if (cmd === 'migrate-v2') {
+    // v2 (A3a): goals, scheduled tasks and job results become Jobs and Tries in app.db. Lossless and idempotent;
+    // --dry-run does it in a transaction that is rolled back and prints the counts and orphans.
+    loadEnv();
+    const { flags } = parseFlags(rest);
+    if (flags.data) process.env.MWA_DATA_DIR = resolve(String(flags.data));
+    const { migrateV2, describeReport } = await import('./v2/migrate.js');
+    const { runLogPath, notifyPath } = await import('./paths.js');
+    const m = new MwaMemory(String(flags.agent ?? process.env.MWA_AGENT_ID ?? 'mwa-serve'), flags.db ?? dbFile(), loadConfig().awm.workspace);
+    try {
+      const report = await migrateV2(m, { notifyFile: notifyPath(), runsFile: runLogPath(), dryRun: flags['dry-run'] !== undefined });
+      console.log(describeReport(report));
+    } finally { m.close(); }
+    return;
+  }
+  console.error(`unknown command: ${cmd}\nusage: mwa serve | mwa run "<instruction>" | mwa watch [--once] | mwa connect <gmail|outlook|telegram> | mwa consolidate | mwa migrate-v2 [--dry-run] | mwa setup`);
   process.exit(1);
 }
 

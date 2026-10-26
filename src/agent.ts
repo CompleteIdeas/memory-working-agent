@@ -84,6 +84,7 @@ export { primeable } from './prime.js';
 import { primeable } from './prime.js';
 import { openTranscript, type Transcript } from './transcript.js';
 import { runLogPath } from './paths.js';
+import { queueContinuation, dropQueuedTry, linkTry, finishTry, tryEndFromResult } from './v2/jobs.js';
 
 /** A per-step fade factor in (0, 1]; anything else (unset, 0, negative, > 1, not a number) is off. */
 export function primeDecayFrom(opt?: number, env?: string): number {
@@ -186,6 +187,14 @@ export interface AgentResult {
   outcomeDeclared?: boolean;
   /** BL-71b: the run ran out of room and queued a resume that continues it in the background. */
   resumeQueued?: boolean;
+  /** v2 (A3a): how far the run got through the task, as `done` reported it ("63 of 73 pages"), or a plan's steps. */
+  progress?: { done: number; total: number; unit: string };
+  /** v2 (A3a): what is left, in a short plain sentence, as `done` reported it (or a plan's steps not run). */
+  remaining?: string;
+  /** v2 (A3a): which hard limit ended the run, when one did (the dollar cap is slice A3b). */
+  capHit?: 'steps' | 'wall' | 'tokens';
+  /** v2 (A3a): the Job this run's continuation belongs to (app.db), when it queued one. */
+  v2JobId?: string;
   /** what the run found in the files: its last folder listing (list_files, as the model saw it) and the files it
    *  read — handed to the next step of a plan so it does not list the folder again (pending list 2026-10-26, 3c). */
   filesFound?: { listing?: string; read: string[] };
@@ -229,6 +238,7 @@ const AGENT_SYSTEM = [
   'Tools: dispatch (hand a coder ONE concrete step), recall (re-query your memory for the current sub-problem),',
   'read (read a file for ground truth), remember (persist a durable understanding to memory for future sessions),',
   'supersede (correct a recalled fact a result disproved), done (instruction satisfied AND verified), plus any extra tools.',
+  'When you call done without having covered the whole task, report how far you got (progress) and what is left (remaining), so the person can finish it.',
   'For a LEARN/UNDERSTAND instruction follow this loop: read ONE file you have NOT read yet, then IMMEDIATELY call remember with 1-2 specific facts about it (its role, key exports, how it connects). Repeat file by file. Do NOT re-list files you already listed, and do NOT recall facts you have not written yet. Calling remember is the deliverable. Finish once you have remembered the purpose plus each key module.',
   'Call exactly ONE tool per turn. Decompose big instructions into concrete steps; do one at a time.',
   ONBOARD_PROTOCOL,
@@ -391,11 +401,14 @@ export const SCHEDULE_TOOL: ToolDef = {
 // running a scheduled check. `outcome` is what the run achieved; runtime evidence can override it.
 export const AGENT_DONE_TOOL: ToolDef = {
   name: 'done',
-  description: 'Finish and give the person your answer. Call it when the request is handled, or when you have established you cannot do it. Set outcome to what actually happened: "changed" — you did, produced or reported something (a file, a draft, an answer, a report the job exists to give); "no-change" — you checked and there was genuinely nothing new or nothing to do; "could-not" — you could not complete it (say why in the summary); "complete" — this scheduled job\'s completion condition is now met, so it can stop repeating. Never claim an action you did not take.',
+  description: 'Finish and give the person your answer. Call it when the request is handled, or when you have established you cannot do it. Set outcome to what actually happened: "changed" — you did, produced or reported something (a file, a draft, an answer, a report the job exists to give); "no-change" — you checked and there was genuinely nothing new or nothing to do; "could-not" — you could not complete it (say why in the summary); "complete" — this scheduled job\'s completion condition is now met, so it can stop repeating. Never claim an action you did not take. If you did not cover the whole task (some pages, items or steps are left), say so: give progress (how far you got) and remaining (what is left).',
   parameters: { type: 'object', properties: {
     summary: { type: 'string', description: 'your answer to the person, in plain words' },
     outcome: { type: 'string', enum: ['changed', 'no-change', 'could-not', 'complete'], description: 'what this run achieved' },
     value: { type: 'string', description: 'ONLY for a scheduled job that watches something (a price, a status, a time): the current value exactly as you read it from the source in THIS run ("$1.45 per stem", "departs 8:40 AM"), no commentary. Leave it out if you did not read the source this run.' },
+    progress: { type: 'object', description: 'ONLY when the task has countable parts (pages, items, stories, steps): how far you got. E.g. {"done": 63, "total": 73, "unit": "pages"}.', properties: {
+      done: { type: 'number' }, total: { type: 'number' }, unit: { type: 'string', description: 'plural noun: pages, items, stories, steps' } }, required: ['done', 'total'] },
+    remaining: { type: 'string', description: 'ONLY when you did not cover the whole task: what is left, in one short plain sentence ("pages 64-73 of the rules"). Leave it out when everything is done.' },
   }, required: ['summary'] },
 };
 
@@ -714,6 +727,9 @@ export async function runAgent(opts: {
   jobGoal?: string;
   /** BL-71: the goal a chat run works on (a hand-off, or a Continue) — its record is updated at the end. */
   goalId?: string;
+  /** v2 (A3a): the Job (app.db) this run is a Try of — the scheduler passes it; a continuation this run queues is a
+   *  Try of the same Job. Absent on a chat run: if its work outlives the request, a Job is made for it here. */
+  v2JobId?: string;
   /** the job this run continues: a scheduled fire's own id, or for a resume the original job's. */
   jobLineage?: string;
   /** the job skips quiet hours (BL-07) — carried into its resumes. */
@@ -1025,6 +1041,9 @@ export async function runAgent(opts: {
   let budgetRefusal: string | undefined; // BL-05: a follow-up job the fan-out budget refused
   let pagesRead = 0; // cost: pages this run fetched (page budget, src/trim.ts)
   let resumeQueued = false; // BL-71b
+  let progress: AgentResult['progress']; // v2 A3a: from done
+  let remaining: string | undefined; // v2 A3a: from done
+  let capHit: AgentResult['capHit']; // v2 A3a: the hard limit that ended the run
   // What the model said it achieved, and how many calls the REGISTRY itself failed (BL-02).
   let declaredOutcome: RunOutcome | undefined;
   let doneOutcome: RunOutcome | undefined; // what `done` itself said (BL-08)
@@ -1334,9 +1353,9 @@ export async function runAgent(opts: {
       nudge = `${nudge ? `${nudge}\n\n` : ''}THE PERSON ADDS (their own words, sent while you were working — take them into account from here on): ${added.map((m) => `"${m.slice(0, 1500)}"`).join(' ')}`;
       history.push(`(the person added: ${added.join(' | ').slice(0, 120)})`); emit('steered', { n: added.length });
     }
-    if (now() - start > maxWallMs) { reason = 'budget'; finalSummary = 'wall-clock budget reached'; break; }
+    if (now() - start > maxWallMs) { reason = 'budget'; capHit = 'wall'; finalSummary = 'wall-clock budget reached'; break; }
     if (maxTokens && usage.brainIn + usage.brainOut + usage.workerIn + usage.workerOut >= maxTokens) {
-      reason = 'budget'; finalSummary = 'token budget reached'; break;
+      reason = 'budget'; capHit = 'tokens'; finalSummary = 'token budget reached'; break;
     }
 
     // Escalate the BRAIN when it's struggling (looping / no progress) — the stronger
@@ -1746,6 +1765,8 @@ export async function runAgent(opts: {
       if (RUN_OUTCOMES.includes(action.outcome as RunOutcome)) { declaredOutcome = action.outcome as RunOutcome; doneOutcome = declaredOutcome; }
       // BL-44: a watch's reading, only from a run that read something — a value from no read is a guess.
       if (opts.jobId && typeof action.value === 'string' && action.value.trim() && toolCalls > 0) watchValue = action.value.trim().slice(0, 200);
+      progress = readProgress(action.progress) ?? progress;
+      if (typeof action.remaining === 'string' && action.remaining.trim()) remaining = action.remaining.replace(/\s+/g, ' ').trim().slice(0, 300);
       finalSummary = summ || 'instruction satisfied';
       modelAnswered = Boolean(summ.trim());
       history.push(`done: ${finalSummary}`);
@@ -2365,7 +2386,7 @@ export async function runAgent(opts: {
     if (consecNoProgress >= 4) { reason = 'stuck'; finalSummary = 'no progress'; break; }
   }
 
-  if (steps >= maxSteps) { reason = 'budget'; finalSummary ||= 'step budget reached'; }
+  if (steps >= maxSteps) { reason = 'budget'; capHit = 'steps'; finalSummary ||= 'step budget reached'; }
 
   // BL-43: what this run scheduled, read back in the person's own clock with the weekday, whatever the model
   // said — "2026-11-05 07:00" read as fine to everyone when the person had asked for 7 PM (BL-40).
@@ -2758,6 +2779,7 @@ export async function runAgent(opts: {
   // stuck task can't re-queue forever. Run-end only — no change to the live loop's dynamics.
   const MAX_RESUMES = 2;
   const RESUME_DELAY_MS = 60_000; // next scheduler tick
+  let v2: ReturnType<typeof continuationTry> = null;
   const attempt = opts.resumeAttempt ?? 0;
   // Not a recurring job's fire (BL-46): its next fire does the same work, and in BL-40 a broken price watch's
   // resumes cost as much as its fires — like an interrupted recurring job (BL-10), it is left to the next fire.
@@ -2768,7 +2790,11 @@ export async function runAgent(opts: {
     // the shared `unknown` profile, and anything IT schedules becomes visible to every
     // shared-profile session — the leak the person tag exists to close.
     // The resume reuses this run's folder: whatever a tainted run saved there must not come back clean.
-    const id = await memory.addScheduledTask(cont, dueMs, { notify: opts.session, dir, resumeAttempt: attempt + 1, person: opts.personId, depth: opts.jobDepth, goal: opts.jobGoal, resumeOf: opts.jobLineage ?? opts.jobId, byRun: runId, urgent: opts.jobUrgent, limits: opts.jobLimits, until: opts.jobUntil, deliver: opts.jobDeliver, allow: opts.jobAllow, tainted: sawUntrustedRead || sawLocalRead, task: opts.jobTask ?? instruction, request: opts.jobRequest });
+    // v2 (A3a): the resume is a queued Try of this run's Job — made before its task, so the scheduler finds it.
+    v2 = continuationTry(opts, { dueMs, runId, startedAt: start, planned: false });
+    const id = await memory.addScheduledTask(cont, dueMs, { notify: opts.session, dir, resumeAttempt: attempt + 1, person: opts.personId, depth: opts.jobDepth, goal: opts.jobGoal, resumeOf: opts.jobLineage ?? opts.jobId, byRun: runId, urgent: opts.jobUrgent, limits: opts.jobLimits, until: opts.jobUntil, deliver: opts.jobDeliver, allow: opts.jobAllow, tainted: sawUntrustedRead || sawLocalRead, task: opts.jobTask ?? instruction, request: opts.jobRequest,
+      ...(v2 ? { v2job: v2.jobId, v2try: v2.tryId } : {}) });
+    v2 = settleContinuation(v2, id, dueMs);
     if (id) {
       resumeQueued = true;
       history.push(`(unfinished — queued a resume for ~1 min from now, attempt ${attempt + 1}/${MAX_RESUMES})`);
@@ -2873,9 +2899,13 @@ export async function runAgent(opts: {
   // AWM 0.20 implicit feedback: credit the memories this run's answer actually used. MWA's store had 12 feedback
   // rows against 23,653 recalls, so recall could not learn what helped (AWM session, 2026-10-21). Best-effort.
   if (reason === 'done' && finalSummary) { try { await memory.noteUse?.(finalSummary, 'reply'); } catch { /* */ } }
-  return {
+  const result: AgentResult = {
     tainted: sawUntrustedRead,
     outcome,
+    ...(progress ? { progress } : {}),
+    ...(remaining ? { remaining } : {}),
+    ...(capHit ? { capHit } : {}),
+    ...(v2 ? { v2JobId: v2.jobId } : {}),
     ...(doneOutcome !== undefined && doneOutcome === outcome ? { outcomeDeclared: true } : {}),
     ...(staged.length ? { staged } : {}),
     ...(budgetRefusal ? { budgetRefusal } : {}),
@@ -2889,6 +2919,9 @@ export async function runAgent(opts: {
     reason, summary: finalSummary, steps, dispatches, toolCalls, reRecalls, supersedes, consolidations,
     durationMs: now() - start, usage, costUsd: Number((brainCost + workerCost).toFixed(6)), history,
   };
+  // A chat run whose work outlived it is the first Try of the Job made for its continuation: it ends here.
+  if (v2?.created) finishTry(v2.created.tryId, tryEndFromResult(result, { startedAt: start, runId }));
+  return result;
 }
 
 /**
@@ -3065,12 +3098,17 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   // nothing picked it up — the person got research notes and "the newsletter isn't finished". The resume runs
   // unplanned (the scheduler turns planning off for resumes) with the plan and how far it got.
   let planResumeQueued = false;
+  let v2: ReturnType<typeof continuationTry> = null;
   const planAttempt = opts.resumeAttempt ?? 0;
   if (!allDone && !stoppedByPerson && opts.memory.enabled && !opts.subRun && !opts.jobRecur && aggToolCalls > 0 && planAttempt < 2) {
     const plan = steps.map((s, i) => `${i + 1}. ${s.task}${i < stepOutcomes.length ? ' (ran)' : ' (not started)'}`).join('\n');
     const cont = `Resume and finish this task — an earlier attempt ran out of room before completing it (resume ${planAttempt + 1} of 2). It was planned as:\n${plan}\nFIRST recall what you already did and check the files already in the working folder (with list_files and read_file, not a shell command); then do ONLY the remaining steps and finish. Do not start over.\n\nTHE TASK: ${instruction}`;
-    const id = await opts.memory.addScheduledTask(cont, now() + 60_000, { notify: opts.session, dir: opts.dir, resumeAttempt: planAttempt + 1, person: opts.personId, depth: opts.jobDepth, goal: opts.jobGoal,
-      resumeOf: opts.jobLineage ?? opts.jobId, byRun: opts.rootRunId, urgent: opts.jobUrgent, limits: opts.jobLimits, until: opts.jobUntil, deliver: opts.jobDeliver, allow: opts.jobAllow, tainted: chainTainted, task: opts.jobTask ?? instruction, request: opts.jobRequest });
+    const dueMs = now() + 60_000;
+    v2 = continuationTry(opts, { dueMs, runId: planRunId, startedAt: start, planned: true });
+    const id = await opts.memory.addScheduledTask(cont, dueMs, { notify: opts.session, dir: opts.dir, resumeAttempt: planAttempt + 1, person: opts.personId, depth: opts.jobDepth, goal: opts.jobGoal,
+      resumeOf: opts.jobLineage ?? opts.jobId, byRun: opts.rootRunId, urgent: opts.jobUrgent, limits: opts.jobLimits, until: opts.jobUntil, deliver: opts.jobDeliver, allow: opts.jobAllow, tainted: chainTainted, task: opts.jobTask ?? instruction, request: opts.jobRequest,
+      ...(v2 ? { v2job: v2.jobId, v2try: v2.tryId } : {}) });
+    v2 = settleContinuation(v2, id, dueMs);
     if (id) {
       planResumeQueued = true;
       history.push(`(unfinished — queued a resume for ~1 min from now, attempt ${planAttempt + 1}/2)`);
@@ -3090,8 +3128,15 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     : stepOutcomes.includes('could-not') ? 'could-not'
     : stepOutcomes[stepOutcomes.length - 1] === 'complete' ? 'complete'
     : stepOutcomes.some((o) => o === 'changed' || o === undefined) ? 'changed' : 'no-change';
-  return {
+  // v2 (A3a): a plan's progress is its steps — how many finished, and the ones left.
+  const stepsDone = stepResults.filter((x) => / \[done\]: /.test(x)).length;
+  const left = steps.map((s, i) => ({ s, i })).filter(({ i }) => !(stepResults[i] && / \[done\]: /.test(stepResults[i])));
+  const planResult: AgentResult = {
     outcome: planOutcome,
+    ...(steps.length > 1 ? { progress: { done: stepsDone, total: steps.length, unit: 'steps' } } : {}),
+    ...(!allDone && left.length ? { remaining: left.map(({ s, i }) => `step ${i + 1} (${s.task.replace(/\s+/g, ' ').slice(0, 60)})`).join('; ').slice(0, 300) } : {}),
+    ...(!allDone && !stoppedByPerson && now() - start > maxWallMs ? { capHit: 'wall' as const } : {}),
+    ...(v2 ? { v2JobId: v2.jobId } : {}),
     ...(allDone && allStepsDeclared && stepOutcomes.length > 0 ? { outcomeDeclared: true } : {}),
     tainted: chainTainted,
     ...(stagedAll.length ? { staged: [...new Set(stagedAll)] } : {}),
@@ -3102,4 +3147,38 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     reason, summary: finalSummary, steps: aggSteps, dispatches: aggDispatches, toolCalls: aggToolCalls,
     reRecalls: 0, supersedes: 0, consolidations: 0, durationMs: now() - start, usage, costUsd: Number(costUsd.toFixed(6)), history,
   };
+  if (v2?.created) finishTry(v2.created.tryId, tryEndFromResult(planResult, { startedAt: start, runId: planRunId }));
+  return planResult;
+}
+
+/** `done`'s progress, checked: two finite numbers, a total above zero, done within it. */
+function readProgress(v: unknown): AgentResult['progress'] {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const done = Number(o.done), total = Number(o.total);
+  if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0 || done < 0) return undefined;
+  const unit = typeof o.unit === 'string' && o.unit.trim() ? o.unit.replace(/\s+/g, ' ').trim().slice(0, 30) : 'parts';
+  return { done: Math.min(done, total), total, unit };
+}
+
+/**
+ * v2 (A3a): the queued Try for a continuation this run is about to schedule. A scheduled fire knows its Job
+ * (v2JobId). A chat run has none: its work now outlives the request, so a Job is made with this run as its first Try
+ * (ended when the run returns). A job's run without a known Job (older callers) is left to the store hook, which
+ * maps the resume by its `resumeof=` lineage.
+ */
+function continuationTry(opts: Parameters<typeof runAgent>[0], o: { dueMs: number; runId: string; startedAt: number; planned: boolean }): ReturnType<typeof queueContinuation> {
+  if (opts.v2JobId) return queueContinuation({ jobId: opts.v2JobId, dueAt: o.dueMs });
+  if (opts.jobId !== undefined || opts.subRun) return null;
+  const words = opts.userMessage ?? opts.instruction;
+  return queueContinuation({ dueAt: o.dueMs, chat: { kind: o.planned ? 'plan' : 'live', title: words, request: words, person: opts.personId, session: opts.session, dir: opts.dir, runId: o.runId, startedAt: o.startedAt } });
+}
+/** Link the queued Try to the task that was written, or drop it when none was. */
+function settleContinuation(v2: ReturnType<typeof queueContinuation>, scheduleId: string | null, dueMs: number): ReturnType<typeof queueContinuation> {
+  if (!v2) return null;
+  try {
+    if (scheduleId) linkTry(v2.tryId, scheduleId, Math.round(dueMs));
+    else dropQueuedTry(v2.tryId);
+  } catch { /* bookkeeping never fails the run */ }
+  return v2;
 }

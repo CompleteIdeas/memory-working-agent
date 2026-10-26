@@ -12,6 +12,7 @@ import { resolve, join } from 'node:path';
 import { asksForLater } from './claim-check.js';
 import { sessionFolder } from './files.js';
 import type { MwaMemory } from './awm.js';
+import { createJob, jobByGoal, addTry, linkTry, dropQueuedTry, triesOf, titleOf } from './v2/jobs.js';
 
 // Research, then a written-up DELIVERABLE: "research X and write me a report" is the case this exists for. Not
 // "find the email and draft a reply" or "look up the weather and write it in a file" (BL-71 review: the first
@@ -105,7 +106,7 @@ export function resumeInstruction(turns: { ts?: number; kind?: string; reason?: 
 /** BL-71d: "Continue" on a goal — a job due now that picks up from where the goal's record says it stands,
  *  in the folder of the conversation it came from (so its files are there), reporting back to that
  *  conversation. A record written after outside content makes the job start tainted: its words are data. */
-export async function continueGoal(memory: MwaMemory, o: { goalId: string; personId: string; workspace: string }): Promise<{ jobId: string; session: string; already?: boolean } | null> {
+export async function continueGoal(memory: MwaMemory, o: { goalId: string; personId: string; workspace: string }): Promise<{ jobId: string; session: string; already?: boolean; v2JobId?: string; v2TryId?: string } | null> {
   const goal = await memory.getGoal(o.goalId);
   if (!goal || (goal.person && goal.person !== o.personId) || goal.status === 'done') return null;
   const rec = await memory.getGoalRecord(goal.id);
@@ -122,15 +123,27 @@ export async function continueGoal(memory: MwaMemory, o: { goalId: string; perso
     `When you finish, or if you have to stop partway, call goal_note for goal ${goal.id.slice(0, 8)}.`,
   ].filter(Boolean).join('\n');
   if (goal.status !== 'in_progress') await memory.setGoalStatus(goal.id, 'in_progress');
-  const jobId = await memory.addScheduledTask(instruction, Date.now(), {
-    notify: session, dir: resolve(join(o.workspace, sessionFolder(session))), person: o.personId, goal: goal.id,
+  // v2 (A3a): a Continue is a Try of the goal's Job, not a new job. A goal from before v2 gets its Job now.
+  const dir = resolve(join(o.workspace, sessionFolder(session)));
+  const now = Date.now();
+  let v2: { jobId: string; tryId: string } | null = null;
+  try {
+    const job = jobByGoal(goal.id) ?? createJob({ kind: 'background', title: titleOf(goal.title), request: goal.detail || goal.title, person: goal.person ?? o.personId,
+      legacyGoalId: goal.id, session, dir, legacyKey: `goal:${goal.id}` }).job;
+    const t = addTry(job.id, { trigger: triesOf(job.id).length ? 'continue' : 'first', dueAt: now });
+    v2 = { jobId: job.id, tryId: t.id };
+  } catch { v2 = null; }
+  const jobId = await memory.addScheduledTask(instruction, now, {
+    notify: session, dir, person: o.personId, goal: goal.id,
     task: `Continue: ${goal.title}`, request: goal.detail || goal.title, depth: 0, ...(untrusted ? { tainted: true } : {}),
+    ...(v2 ? { v2job: v2.jobId, v2try: v2.tryId } : {}),
   });
-  return jobId ? { jobId, session } : null;
+  if (v2) { try { if (jobId) linkTry(v2.tryId, jobId, now); else dropQueuedTry(v2.tryId); } catch { /* bookkeeping */ } }
+  return jobId ? { jobId, session, ...(v2 ? { v2JobId: v2.jobId, v2TryId: v2.tryId } : {}) } : null;
 }
 
 /** Start the background work: a goal, and a one-shot job due now in the chat's folder. */
-export async function startBackgroundWork(memory: MwaMemory, o: { message: string; session: string; personId: string; workspace: string; context?: { text: string; tainted: boolean } }): Promise<{ goalId: string; jobId: string } | null> {
+export async function startBackgroundWork(memory: MwaMemory, o: { message: string; session: string; personId: string; workspace: string; context?: { text: string; tainted: boolean } }): Promise<{ goalId: string; jobId: string; v2JobId?: string } | null> {
   const message = o.message.trim();
   if (!message) return null;
   const goalId = await memory.addGoal(goalTitle(ownText(message) || message), ownText(message).slice(0, 600) || message.slice(0, 600), 'medium', o.personId);
@@ -142,8 +155,18 @@ export async function startBackgroundWork(memory: MwaMemory, o: { message: strin
   const tainted = hasPasted(message) || o.context?.tainted === true;
   // `task` is the framed instruction too: a restart resumes a job from its task, and the bare message lost the
   // framing (BL-71 review). The card shows the goal's title instead (serve's onFire).
-  const jobId = await memory.addScheduledTask(instruction, Date.now(), {
+  // v2 (A3a): the hand-off is a Job of kind background, with its first Try queued before the task that runs it.
+  const now = Date.now();
+  let v2: { jobId: string; tryId: string } | null = null;
+  try {
+    const made = createJob({ kind: 'background', title: goalTitle(ownText(message) || message), request: message, person: o.personId, legacyGoalId: goalId,
+      session: o.session, dir, legacyKey: `goal:${goalId}` }, { trigger: 'first', dueAt: now });
+    v2 = made.try ? { jobId: made.job.id, tryId: made.try.id } : null;
+  } catch { v2 = null; }
+  const jobId = await memory.addScheduledTask(instruction, now, {
     notify: o.session, dir, person: o.personId, goal: goalId, task: instruction, request: message, depth: 0, ...(tainted ? { tainted: true } : {}),
+    ...(v2 ? { v2job: v2.jobId, v2try: v2.tryId } : {}),
   });
-  return jobId ? { goalId, jobId } : null;
+  if (v2) { try { if (jobId) linkTry(v2.tryId, jobId, now); else dropQueuedTry(v2.tryId); } catch { /* bookkeeping */ } }
+  return jobId ? { goalId, jobId, ...(v2 ? { v2JobId: v2.jobId } : {}) } : null;
 }

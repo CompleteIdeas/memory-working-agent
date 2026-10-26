@@ -106,6 +106,175 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What the helper is working on, has done or is waiting on, each with the server's status. */
+        get: operations["listJobs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/jobs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** One job with all its tries. */
+        get: operations["getJob"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/jobs/{id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop it. A running step finishes; nothing new starts; what it did is kept. A queued try will not start. */
+        post: operations["stopJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/jobs/{id}/continue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Finish it from where it stopped (a new try of the same job). 409 when it is already working or continuing, finished, or repeating. */
+        post: operations["continueJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/jobs/{id}/start-over": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Do it again from the beginning (a new try of the same job). */
+        post: operations["startJobOver"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/jobs/{id}/open": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** The person opened the result, so it is no longer "ready". */
+        post: operations["openJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/jobs/{id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pause a repeating job or a reminder (the existing schedule control). */
+        post: operations["pauseJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/jobs/{id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume a paused repeating job or reminder. */
+        post: operations["resumeJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/jobs/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel a repeating job or a reminder (undo within ten minutes from the schedule controls). */
+        post: operations["cancelJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -156,6 +325,104 @@ export interface components {
             /** @description True when this request came over HTTPS or from this machine. Installing the app, offline storage and notifications need it. */
             secure: boolean;
             features: string[];
+        };
+        Progress: {
+            done: number;
+            total: number;
+            /** @description Plural noun: pages, items, stories, steps. */
+            unit: string;
+        } | null;
+        /** @description The server's word on a job, from its tries (first match wins): working › waiting (for you: an approval, or the
+         *     dollar limit) › continuing (an automatic continuation is queued; never "failed") › stopped_by_you › partly_done
+         *     (something is left) › stopped (could not, no progress) › scheduled (nothing has run yet) › done.
+         *      */
+        JobStatus: {
+            /** @enum {string} */
+            state: "working" | "waiting" | "continuing" | "stopped_by_you" | "partly_done" | "stopped" | "scheduled" | "done";
+            /** @description The heading a person reads: "Partly done", "Result ready". */
+            label: string;
+            /** @description One plain sentence: why, and what is left. */
+            detail: string;
+            /** @description Done, and not opened since the last try ended. */
+            resultReady?: boolean;
+            primaryAction?: {
+                /** @enum {string} */
+                action: "stop" | "continue" | "start-over" | "open" | "review" | "resume";
+                /** @description The button: "Finish the last 10 pages", "Continue", "Open". */
+                label: string;
+            };
+        };
+        Job: {
+            id: string;
+            /** @enum {string} */
+            kind: "background" | "recurring" | "reminder" | "plan" | "live";
+            title: string;
+            /** @description The person's own words. */
+            request: string | null;
+            projectId: string | null;
+            createdAt: number;
+            /** @description The event sequence of its last change (the sync cursor). */
+            updatedSeq: number;
+            status: components["schemas"]["JobStatus"];
+            /** @enum {string} */
+            lifecycle: "active" | "paused" | "cancelled";
+            progress: components["schemas"]["Progress"];
+            /** @description What is left, as the last try said it. */
+            remaining: string | null;
+            whereItStands: {
+                text: string;
+                /** @enum {string} */
+                trust: "high" | "medium" | "untrusted";
+            } | null;
+            seenAt: number | null;
+            capUsd: number | null;
+            /** @description Spent over all its tries. */
+            costUsd: number;
+            /** @description How many tries it has. */
+            tries: number;
+            archived: boolean;
+            scheduleId: string | null;
+            goalId: string | null;
+            /** @description The conversation it reports to. */
+            session: string | null;
+        };
+        Try: {
+            id: string;
+            n: number;
+            /** @enum {string} */
+            trigger: "first" | "auto-continue" | "continue" | "start-over" | "fire" | "resume-after-restart";
+            /** @enum {string} */
+            state: "queued" | "running" | "ended";
+            dueAt: number | null;
+            startedAt: number | null;
+            endedAt: number | null;
+            /** @description Why its run ended: done, budget, stuck, error, paused, stopped. */
+            reason: string | null;
+            /** @description What it achieved: changed, no-change, could-not, blocked, complete. */
+            outcome: string | null;
+            progress: components["schemas"]["Progress"];
+            remaining: string | null;
+            costUsd: number | null;
+            steps: number | null;
+            toolCalls: number | null;
+            /** @description The hard limit that ended it: steps, wall, tokens (usd from A3b). */
+            capHit: string | null;
+            summary: string | null;
+            tainted: boolean;
+            /** @description Approvals it staged. */
+            staged: string[];
+            estUsd: number | null;
+            estMs: number | null;
+            pagesRead: number | null;
+        };
+        JobList: {
+            jobs: components["schemas"]["Job"][];
+        };
+        JobDetail: {
+            job: components["schemas"]["Job"];
+            tries: components["schemas"]["Try"][];
+            /** @description What happened, in plain words (after an action). */
+            message?: string;
         };
     };
     responses: {
@@ -322,6 +589,228 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Revoked"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listJobs: {
+        parameters: {
+            query?: {
+                state?: "working" | "waiting" | "continuing" | "stopped_by_you" | "partly_done" | "stopped" | "scheduled" | "done";
+                archived?: "0" | "1";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The jobs, most recently changed first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobList"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getJob: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job and its tries, oldest try first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobDetail"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    stopJob: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job after the action, and what happened. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobDetail"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    continueJob: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job after the action, and what happened. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobDetail"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    startJobOver: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job after the action, and what happened. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobDetail"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    openJob: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job after the action, and what happened. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobDetail"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    pauseJob: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job after the action, and what happened. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobDetail"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    resumeJob: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job after the action, and what happened. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobDetail"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    cancelJob: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job after the action, and what happened. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobDetail"];
                 };
             };
             default: components["responses"]["Error"];

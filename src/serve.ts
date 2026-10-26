@@ -61,6 +61,8 @@ import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, ru
 import { logger, readLogs, type LogLevel } from './logger.js';
 import { createV1Handler } from './api/v1.js';
 import { makeAuthenticate } from './api/auth.js';
+import { setJobRouteDeps } from './api/routes/jobs.js';
+import { migrateV2Once, describeReport } from './v2/migrate.js';
 import { runAgent } from './agent.js';
 import { preparePersonTurn, learnFromTurn } from './person-turn.js';
 import { INTAKE_FIELDS } from './person-intake.js';
@@ -532,7 +534,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     // page hears it too; it is quick and runs on the reply, not the person's wait.
     const learned = r.tainted || MEMORY_OFF ? 0 : await learnFromTurn(brain, memory, prepared, message, r.summary);
     if (learned) emitLive('learned', { about: prepared.personId, count: learned });
-    emitLive('result', { reason: r.reason, summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)), runId: run.runId, turnId: turnTs, elapsedMs: turnTs - run.startedAt, ...(r.staged?.length ? { staged: r.staged } : {}) });
+    emitLive('result', { reason: r.reason, summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)), runId: run.runId, turnId: turnTs, elapsedMs: turnTs - run.startedAt, ...(r.staged?.length ? { staged: r.staged } : {}), ...(r.v2JobId ? { job: r.v2JobId } : {}) });
   } catch (e) {
     logger.error('chat', 'agent run failed', { session: sessionId, error: (e as Error).message.slice(0, 200) });
     emitLive('error', { message: (e as Error).message, runId: run.runId });
@@ -621,6 +623,22 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
     } catch (e) { logger.error('inbox', 'not started', { error: (e as Error).message.slice(0, 100) }); }
   }
   const ui = uiDir();
+  // v2 (A3a): what /api/v1/jobs needs from this server — a memory store per request, the live runs, the approvals
+  // waiting, and the existing schedule and goal controls.
+  setJobRouteDeps({
+    memory: () => new MwaMemory(SERVE_AGENT, dbFile(), loadConfig().awm.workspace),
+    running: () => new Set(liveRuns.all().map((r) => r.session)),
+    stopLive: (key) => liveRuns.stop(key),
+    pendingApprovals: () => new Set(listPendingActions().map((a) => a.id)),
+    scheduleControl: async (person, action, id) => {
+      const m = new MwaMemory(SERVE_AGENT, dbFile(), loadConfig().awm.workspace);
+      try { return await scheduleControl(m, person, action, { id }); } finally { m.close(); }
+    },
+    continueGoal: async (goalId, personId) => {
+      const m = new MwaMemory(SERVE_AGENT, dbFile(), loadConfig().awm.workspace);
+      try { return await continueGoal(m, { goalId, personId, workspace: loadConfig().workspace ?? './mwa-workspace' }); } finally { m.close(); }
+    },
+  });
   // v1 answers for itself: the password session, this machine (no password), or a paired device (src/api/auth.ts).
   const v1 = createV1Handler({ authenticate: makeAuthenticate({ passwordSet: !!ACCESS_PW, sessionValid: authed }), sameOrigin: sameOriginOk });
   const server = createServer(async (req, res) => {
@@ -958,7 +976,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         let memoryCount = -1, db = false;
         try { const m = new MwaMemory(SERVE_AGENT, dbPath); memoryCount = await m.memoryCount(); m.close(); db = true; } catch { /* db down */ }
         const schedulerLastTickAgoSec = lastSchedulerTick ? Math.round((Date.now() - lastSchedulerTick) / 1000) : -1;
-        const full = { ok: db, uptimeSec: Math.round((Date.now() - SERVER_START) / 1000), db, memoryCount, activeRuns, sessions: sessions.size, schedulerLastTickAgoSec };
+        // v2 (A3a): scheduler runs count too (they run under job_<id>); before, a background job ran while this said 0.
+        const schedulerRuns = liveRuns.all().filter((r) => r.session.startsWith('job_')).length;
+        const full = { ok: db, uptimeSec: Math.round((Date.now() - SERVER_START) / 1000), db, memoryCount, activeRuns: activeRuns + schedulerRuns, chatRuns: activeRuns, schedulerRuns, sessions: sessions.size, schedulerLastTickAgoSec };
         // Locked + not signed in: the probe still gets its verdict (and the 503 when the DB is
         // down, which is the whole point of the check), but not the operational detail.
         const body = (ACCESS_PW && !authed(req)) ? { ok: db, db } : full;
@@ -1645,6 +1665,13 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       // memory_store_map, memory_learn_person or memory_feedback. Measured 2026-10-14: a scheduled
       // task asked to call schedule_list replied "TOOL NOT AVAILABLE". A recurring task could not
       // see or cancel itself, which is the headline reason schedule_cancel exists.
+      // v2 (A3a): existing goals, scheduled tasks and results become Jobs and Tries — once, before the first tick.
+      if (!MEMORY_OFF) {
+        try {
+          const report = await migrateV2Once(memory, { notifyFile: notifyPath(), runsFile: runLogPath() });
+          if (report) logger.info('v2', `jobs migration: ${describeReport(report).replace(/\n/g, ' | ')}`);
+        } catch (e) { logger.error('v2', 'jobs migration failed', { error: (e as Error).message.slice(0, 200) }); }
+      }
       const { registry } = await buildRegistry(cfg, memory);
       console.log('  ⏰ scheduler on — say e.g. "every day at 8am, summarize my inbox"');
       await runScheduler({

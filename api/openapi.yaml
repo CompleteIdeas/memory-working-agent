@@ -98,6 +98,105 @@ components:
         minClient: { type: string, description: The oldest client version still accepted. }
         secure: { type: boolean, description: 'True when this request came over HTTPS or from this machine. Installing the app, offline storage and notifications need it.' }
         features: { type: array, items: { type: string } }
+    Progress:
+      type: [object, 'null']
+      required: [done, total, unit]
+      additionalProperties: false
+      properties:
+        done: { type: number }
+        total: { type: number }
+        unit: { type: string, description: 'Plural noun: pages, items, stories, steps.' }
+    JobStatus:
+      type: object
+      description: |
+        The server's word on a job, from its tries (first match wins): working › waiting (for you: an approval, or the
+        dollar limit) › continuing (an automatic continuation is queued; never "failed") › stopped_by_you › partly_done
+        (something is left) › stopped (could not, no progress) › scheduled (nothing has run yet) › done.
+      required: [state, label, detail]
+      additionalProperties: false
+      properties:
+        state: { type: string, enum: [working, waiting, continuing, stopped_by_you, partly_done, stopped, scheduled, done] }
+        label: { type: string, description: 'The heading a person reads: "Partly done", "Result ready".' }
+        detail: { type: string, description: 'One plain sentence: why, and what is left.' }
+        resultReady: { type: boolean, description: 'Done, and not opened since the last try ended.' }
+        primaryAction:
+          type: object
+          required: [action, label]
+          additionalProperties: false
+          properties:
+            action: { type: string, enum: [stop, continue, start-over, open, review, resume] }
+            label: { type: string, description: 'The button: "Finish the last 10 pages", "Continue", "Open".' }
+    Job:
+      type: object
+      required: [id, kind, title, request, projectId, createdAt, updatedSeq, status, lifecycle, progress, remaining, whereItStands, seenAt, capUsd, costUsd, tries, archived, scheduleId, goalId, session]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [background, recurring, reminder, plan, live] }
+        title: { type: string }
+        request: { type: [string, 'null'], description: "The person's own words." }
+        projectId: { type: [string, 'null'] }
+        createdAt: { type: integer }
+        updatedSeq: { type: integer, description: 'The event sequence of its last change (the sync cursor).' }
+        status: { $ref: '#/components/schemas/JobStatus' }
+        lifecycle: { type: string, enum: [active, paused, cancelled] }
+        progress: { $ref: '#/components/schemas/Progress' }
+        remaining: { type: [string, 'null'], description: 'What is left, as the last try said it.' }
+        whereItStands:
+          type: [object, 'null']
+          required: [text, trust]
+          additionalProperties: false
+          properties:
+            text: { type: string }
+            trust: { type: string, enum: [high, medium, untrusted] }
+        seenAt: { type: [integer, 'null'] }
+        capUsd: { type: [number, 'null'] }
+        costUsd: { type: number, description: 'Spent over all its tries.' }
+        tries: { type: integer, description: 'How many tries it has.' }
+        archived: { type: boolean }
+        scheduleId: { type: [string, 'null'] }
+        goalId: { type: [string, 'null'] }
+        session: { type: [string, 'null'], description: 'The conversation it reports to.' }
+    Try:
+      type: object
+      required: [id, n, trigger, state, dueAt, startedAt, endedAt, reason, outcome, progress, remaining, costUsd, steps, toolCalls, capHit, summary, tainted, staged, estUsd, estMs, pagesRead]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        n: { type: integer }
+        trigger: { type: string, enum: [first, auto-continue, continue, start-over, fire, resume-after-restart] }
+        state: { type: string, enum: [queued, running, ended] }
+        dueAt: { type: [integer, 'null'] }
+        startedAt: { type: [integer, 'null'] }
+        endedAt: { type: [integer, 'null'] }
+        reason: { type: [string, 'null'], description: 'Why its run ended: done, budget, stuck, error, paused, stopped.' }
+        outcome: { type: [string, 'null'], description: 'What it achieved: changed, no-change, could-not, blocked, complete.' }
+        progress: { $ref: '#/components/schemas/Progress' }
+        remaining: { type: [string, 'null'] }
+        costUsd: { type: [number, 'null'] }
+        steps: { type: [integer, 'null'] }
+        toolCalls: { type: [integer, 'null'] }
+        capHit: { type: [string, 'null'], description: 'The hard limit that ended it: steps, wall, tokens (usd from A3b).' }
+        summary: { type: [string, 'null'] }
+        tainted: { type: boolean }
+        staged: { type: array, items: { type: string }, description: 'Approvals it staged.' }
+        estUsd: { type: [number, 'null'] }
+        estMs: { type: [integer, 'null'] }
+        pagesRead: { type: [integer, 'null'] }
+    JobList:
+      type: object
+      required: [jobs]
+      additionalProperties: false
+      properties:
+        jobs: { type: array, items: { $ref: '#/components/schemas/Job' } }
+    JobDetail:
+      type: object
+      required: [job, tries]
+      additionalProperties: false
+      properties:
+        job: { $ref: '#/components/schemas/Job' }
+        tries: { type: array, items: { $ref: '#/components/schemas/Try' } }
+        message: { type: string, description: 'What happened, in plain words (after an action).' }
   responses:
     Error:
       description: An error.
@@ -190,4 +289,142 @@ paths:
         '200':
           description: Signed out (Clear-Site-Data sent).
           content: { application/json: { schema: { $ref: '#/components/schemas/Revoked' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /jobs:
+    get:
+      operationId: listJobs
+      summary: What the helper is working on, has done or is waiting on, each with the server's status.
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema: { type: string, enum: [working, waiting, continuing, stopped_by_you, partly_done, stopped, scheduled, done] }
+        - name: archived
+          in: query
+          required: false
+          schema: { type: string, enum: ['0', '1'] }
+      responses:
+        '200':
+          description: The jobs, most recently changed first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobList' }
+        default: { $ref: '#/components/responses/Error' }
+  /jobs/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getJob
+      summary: One job with all its tries.
+      responses:
+        '200':
+          description: The job and its tries, oldest try first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobDetail' }
+        default: { $ref: '#/components/responses/Error' }
+  /jobs/{id}/stop:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: stopJob
+      summary: 'Stop it. A running step finishes; nothing new starts; what it did is kept. A queued try will not start.'
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: The job after the action, and what happened.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobDetail' }
+        default: { $ref: '#/components/responses/Error' }
+  /jobs/{id}/continue:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: continueJob
+      summary: 'Finish it from where it stopped (a new try of the same job). 409 when it is already working or continuing, finished, or repeating.'
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: The job after the action, and what happened.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobDetail' }
+        default: { $ref: '#/components/responses/Error' }
+  /jobs/{id}/start-over:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: startJobOver
+      summary: 'Do it again from the beginning (a new try of the same job).'
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: The job after the action, and what happened.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobDetail' }
+        default: { $ref: '#/components/responses/Error' }
+  /jobs/{id}/open:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: openJob
+      summary: 'The person opened the result, so it is no longer "ready".'
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: The job after the action, and what happened.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobDetail' }
+        default: { $ref: '#/components/responses/Error' }
+  /jobs/{id}/pause:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: pauseJob
+      summary: 'Pause a repeating job or a reminder (the existing schedule control).'
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: The job after the action, and what happened.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobDetail' }
+        default: { $ref: '#/components/responses/Error' }
+  /jobs/{id}/resume:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: resumeJob
+      summary: 'Resume a paused repeating job or reminder.'
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: The job after the action, and what happened.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobDetail' }
+        default: { $ref: '#/components/responses/Error' }
+  /jobs/{id}/cancel:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: cancelJob
+      summary: 'Cancel a repeating job or a reminder (undo within ten minutes from the schedule controls).'
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: The job after the action, and what happened.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobDetail' }
         default: { $ref: '#/components/responses/Error' }

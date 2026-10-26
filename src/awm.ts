@@ -219,7 +219,25 @@ export interface ScheduleOpts {
   kind?: 'reminder';
   /** BL-44: the person's own message that set the job up, verbatim — every fire sees their words and sources. */
   request?: string;
+  /** v2 (A3a): the Job this task belongs to in app.db, and the queued Try it runs (src/v2/jobs.ts). A task carrying
+   *  them was created by v2 code; one without them is mapped to a Job by the store hook (storeHooks.scheduled). */
+  v2job?: string;
+  v2try?: string;
 }
+
+/**
+ * v2 (A3a): what the app's own state (app.db: Jobs and Tries, src/v2/jobs.ts) needs to hear from the memory store,
+ * without the store knowing about it. A scheduled task added, paused, resumed, cancelled or restored, and where a
+ * goal stands, all pass through here: the model's tools, the schedule controls, hand-offs and resumes alike. A hook
+ * never throws into the store (each call is wrapped).
+ */
+export interface StoreHooks {
+  scheduled?: (id: string, instruction: string, dueMs: number, opts: ScheduleOpts) => void;
+  scheduleChanged?: (id: string, change: 'paused' | 'resumed' | 'canceled' | 'uncanceled') => void;
+  goalRecord?: (goalId: string, rec: { state: string; next?: string; by: string; untrusted?: boolean }) => void;
+}
+export const storeHooks: StoreHooks = {};
+function hook(fn: () => void): void { try { fn(); } catch (e) { console.error('[awm] store hook failed:', (e as Error).message.slice(0, 160)); } }
 
 /** BL-44: what a job's last good run reported, kept on the job itself — deterministic, per job, not recall.
  *  A watch keeps its last value and a short history of changes; a brief keeps when it last ran and what it said. */
@@ -302,6 +320,9 @@ export interface ScheduledTask {
   lastRun?: JobLastRun;
   /** BL-51: fires in a row that could not finish (absent = 0). */
   fails?: number;
+  /** v2 (A3a): see ScheduleOpts.v2job / v2try. */
+  v2job?: string;
+  v2try?: string;
 }
 
 // BL-59: AWM 0.18 orders the final window by the cross-encoder alone (rerank2, on by default), so recency no longer
@@ -754,6 +775,8 @@ export class MwaMemory implements Memory {
     if (opts.urgent) tags.push('urgent=1');
     if (opts.kind === 'reminder') tags.push('kind=reminder');
     if (opts.request) tags.push(`request64=${Buffer.from(opts.request.slice(0, 2000), 'utf8').toString('base64')}`);
+    if (opts.v2job && /^[\w-]{3,64}$/.test(opts.v2job)) tags.push(`v2job=${opts.v2job}`);
+    if (opts.v2try && /^[\w-]{3,64}$/.test(opts.v2try)) tags.push(`v2try=${opts.v2try}`);
     // Base64 the check command so an arbitrary shell string (spaces, commas, pipes, '=') survives
     // both tag serializations (JSON array or comma-split). No commas in base64 → comma-split is safe.
     if (opts.check) tags.push(`check64=${Buffer.from(opts.check, 'utf8').toString('base64')}`, 'checkmode=dry'); // BL-08: starts disabled
@@ -784,12 +807,14 @@ export class MwaMemory implements Memory {
         }
       } catch { /* fall through to a separate write */ }
     }
-    return this.write(`scheduled: ${instruction.slice(0, 56)}`, instruction, tags, {
+    const id = await this.write(`scheduled: ${instruction.slice(0, 56)}`, instruction, tags, {
       // Canonical is the SALIENCE floor, not trust: a scheduled task must never be staged or discarded.
       // Trust comes from provenance — a tainted task is stored untrusted (flagged if recalled).
       canonical: true, eventType: 'decision', global: true, noMerge: true,
       ...(opts.tainted ? { provenance: 'ingested' as const } : {}),
     });
+    if (id && storeHooks.scheduled) hook(() => storeHooks.scheduled!(id, instruction, Math.round(dueMs), opts));
+    return id;
   }
 
   /** All pending scheduled tasks (parsed). */
@@ -809,6 +834,7 @@ export class MwaMemory implements Memory {
           ...(tags.includes('kind=reminder') ? { kind: 'reminder' as const } : {}),
           ...(tags.includes('paused=1') ? { paused: true } : {}),
           ...(get('request64=') ? { request: Buffer.from(get('request64='), 'base64').toString('utf8') } : {}),
+          ...(get('v2job=') ? { v2job: get('v2job=') } : {}), ...(get('v2try=') ? { v2try: get('v2try=') } : {}),
           ...(get('allow64=') ? { allow: ((): import('./tools/registry.js').JobAllow | undefined => { try { return JSON.parse(Buffer.from(get('allow64='), 'base64').toString('utf8')); } catch { return undefined; } })() } : {}),
           ...(get('lastrun64=') ? { lastRun: parseLastRun(get('lastrun64=')) } : {}) });
       }
@@ -818,7 +844,7 @@ export class MwaMemory implements Memory {
 
   // ── Schedule controls (usability review 2026-10-24, F04: a job could not be stopped from the app) ──
   /** A scheduled job by id, whatever its status (pending, done, canceled) — for the controls' ownership checks. */
-  async getScheduled(id: string): Promise<{ id: string; status: string; person?: string; instruction: string; recur?: string; due: number; canceledAt?: number; paused: boolean } | null> {
+  async getScheduled(id: string): Promise<{ id: string; status: string; person?: string; instruction: string; recur?: string; due: number; canceledAt?: number; paused: boolean; goal?: string; notify?: string; dir?: string; kind?: 'reminder'; task?: string; request?: string; resumeOf?: string } | null> {
     try {
       await this.init();
       const e = await this.store.getEngram(id);
@@ -827,12 +853,18 @@ export class MwaMemory implements Memory {
       if (!tags.includes('topic=scheduled-task')) return null;
       const get = (p: string) => (tags.find((t) => t.startsWith(p)) ?? '').slice(p.length);
       return { id: e.id, status: get('status=') || 'pending', person: get('person=') || undefined, instruction: e.content, recur: get('recur=') || undefined,
-        due: Number(get('due=')) || 0, canceledAt: Number(get('canceledat=')) || undefined, paused: tags.includes('paused=1') };
+        due: Number(get('due=')) || 0, canceledAt: Number(get('canceledat=')) || undefined, paused: tags.includes('paused=1'),
+        // v2 migration (A3a) maps a finished job's results to its Job: what it was for and where it reported.
+        ...(get('goal=') ? { goal: get('goal=') } : {}), ...(get('notify=') ? { notify: get('notify=') } : {}), ...(get('dir=') ? { dir: get('dir=') } : {}),
+        ...(tags.includes('kind=reminder') ? { kind: 'reminder' as const } : {}), ...(get('resumeof=') ? { resumeOf: get('resumeof=') } : {}),
+        ...(get('task64=') ? { task: Buffer.from(get('task64='), 'base64').toString('utf8') } : {}),
+        ...(get('request64=') ? { request: Buffer.from(get('request64='), 'base64').toString('utf8') } : {}) };
     } catch { return null; }
   }
   /** Pause a pending job: it keeps its place and settings, and the scheduler skips it until resumed. */
   async pauseScheduled(id: string): Promise<void> {
     await this.setScheduledTags(id, (tags) => [...tags.filter((t) => t !== 'paused=1'), 'paused=1']);
+    if (storeHooks.scheduleChanged) hook(() => storeHooks.scheduleChanged!(id, 'paused'));
   }
   /** Resume a paused job at its next natural slot (a daily job at its time, an interval job one interval from now,
    *  a one-off at its own time, which is now if that has passed). */
@@ -843,12 +875,14 @@ export class MwaMemory implements Memory {
       : cur.recur?.startsWith('every:') ? nowMs + (Number(cur.recur.slice(6)) || 60) * 60_000
         : Math.max(cur.due, nowMs);
     await this.setScheduledTags(id, (tags) => [...tags.filter((t) => t !== 'paused=1' && !t.startsWith('due=')), `due=${Math.round(due)}`]);
+    if (storeHooks.scheduleChanged) hook(() => storeHooks.scheduleChanged!(id, 'resumed'));
   }
   /** Undo a cancel made in the last `withinMs` (ten minutes): the job is pending again, as it was. */
   async uncancelScheduled(id: string, withinMs = 10 * 60_000, nowMs = Date.now()): Promise<boolean> {
     const cur = await this.getScheduled(id);
     if (!cur || cur.status !== 'canceled' || !cur.canceledAt || nowMs - cur.canceledAt > withinMs) return false;
     await this.setScheduledTags(id, (tags) => tags.filter((t) => !t.startsWith('canceledat=')).map((t) => (t.startsWith('status=') ? 'status=pending' : t)));
+    if (storeHooks.scheduleChanged) hook(() => storeHooks.scheduleChanged!(id, 'uncanceled'));
     return true;
   }
 
@@ -950,6 +984,7 @@ export class MwaMemory implements Memory {
   async cancelScheduled(id: string, nowMs = Date.now()): Promise<void> {
     // `canceledat` lets the person undo a cancel for a few minutes (uncancelScheduled).
     await this.setScheduledTags(id, (tags) => [...tags.filter((t) => !t.startsWith('canceledat=')).map((t) => (t.startsWith('status=') ? 'status=canceled' : t)), `canceledat=${Math.round(nowMs)}`]);
+    if (storeHooks.scheduleChanged) hook(() => storeHooks.scheduleChanged!(id, 'canceled'));
   }
 
   // ── Goals (BL-05) ────────────────────────────────────────────────────────────────────────────
@@ -1041,6 +1076,7 @@ export class MwaMemory implements Memory {
       ...(rec.conv ? [`conv=${rec.conv.slice(0, 60)}`] : [])];
     const opts: WriteOpts = { canonical: !rec.untrusted, eventType: 'observation', global: true, noMerge: true, ...(rec.untrusted ? { provenance: 'ingested' as const } : {}) };
     const prev = await this.getGoalRecord(goal.id);
+    if (storeHooks.goalRecord) hook(() => storeHooks.goalRecord!(goal.id, { state: rec.state, next: rec.next, by: rec.by, untrusted: rec.untrusted }));
     return prev ? this.supersede(prev.id, `where we are: ${goal.title}`.slice(0, 80), lines, tags, opts) : this.write(`where we are: ${goal.title}`.slice(0, 80), lines, tags, opts);
   }
 
