@@ -29,9 +29,14 @@ export class FakeGoogleCalendar {
   /** every request, for assertions */
   requests: { method: string; path: string; query: Record<string, string>; auth?: string; body?: any }[] = [];
   inserts: { query: Record<string, string>; body: any }[] = [];
+  deletes: { id: string; query: Record<string, string> }[] = [];
+  /** fail the next N inserts with this status (after doing nothing) */
+  failInserts: { status: number; times: number } | null = null;
   private events = new Map<string, GEvent & { _seq: number }>();
   private seq = 0;
   private validFrom = 0; // tokens below this are invalid (410)
+  /** a broken server: every page hands back the same page token (MWA must stop, not loop) */
+  stuckPaging = false;
   private pages = new Map<string, { items: GEvent[]; next: number; sync?: string }>();
 
   async start(): Promise<this> {
@@ -50,7 +55,7 @@ export class FakeGoogleCalendar {
   invalidateTokens(): void { this.validFrom = this.seq + 1; this.seq++; }
   get(id: string): GEvent | undefined { return this.events.get(id); }
   /** forget every event, request and insert (a fresh calendar) */
-  clear(): void { this.events.clear(); this.requests = []; this.inserts = []; this.pages.clear(); this.refreshFails = null; }
+  clear(): void { this.events.clear(); this.requests = []; this.inserts = []; this.deletes = []; this.pages.clear(); this.refreshFails = null; this.failInserts = null; this.stuckPaging = false; }
 
   private async handle(req: IncomingMessage): Promise<{ status: number; body: unknown }> {
     const url = new URL(req.url ?? '/', this.base);
@@ -73,10 +78,21 @@ export class FakeGoogleCalendar {
 
     if (req.method === 'POST' && !eventId) {
       this.inserts.push({ query, body });
+      if (this.failInserts && this.failInserts.times > 0) {
+        this.failInserts.times--;
+        return { status: this.failInserts.status, body: { error: { code: this.failInserts.status, message: 'Backend Error' } } };
+      }
       const id = body?.id ?? `gen${this.seq + 1}`;
       if (this.events.has(id)) return { status: 409, body: { error: { code: 409, message: 'The requested identifier already exists.', errors: [{ reason: 'duplicate' }] } } };
       this.put({ ...body, id });
       return { status: 200, body: this.out(this.events.get(id)!) };
+    }
+    if (req.method === 'DELETE' && eventId) {
+      // Google keeps a deleted event as status 'cancelled' (its id stays taken: a re-insert is 409)
+      this.deletes.push({ id: eventId, query });
+      if (!this.events.has(eventId) || this.events.get(eventId)!.status === 'cancelled') return { status: 410, body: { error: { code: 410, message: 'Resource has been deleted' } } };
+      this.cancel(eventId);
+      return { status: 204, body: '' };
     }
     if (req.method === 'GET' && eventId) {
       const e = this.events.get(eventId);
@@ -86,9 +102,9 @@ export class FakeGoogleCalendar {
 
     // events.list
     if (query.pageToken) {
-      const p = this.pages.get(query.pageToken);
+      const p = this.pages.get(query.pageToken.split('~')[0]);
       if (!p) return { status: 400, body: { error: { code: 400, message: 'Invalid page token' } } };
-      return { status: 200, body: this.page(p) };
+      return { status: 200, body: this.page(p, query.pageToken.split('~')[0]) };
     }
     let items: (GEvent & { _seq: number })[];
     let sync: string;
@@ -121,7 +137,7 @@ export class FakeGoogleCalendar {
     const slice = p.items.slice(p.next, p.next + this.pageSize);
     p.next += this.pageSize;
     const more = p.next < p.items.length;
-    return { kind: 'calendar#events', timeZone: this.timeZone, items: slice, ...(more ? { nextPageToken: k } : { nextSyncToken: p.sync }) };
+    return { kind: 'calendar#events', timeZone: this.timeZone, items: slice, ...(more ? { nextPageToken: this.stuckPaging ? k : `${k}~${p.next}` } : { nextSyncToken: p.sync }) };
   }
   private out(e: GEvent & { _seq?: number }): GEvent {
     const { _seq, ...rest } = e as GEvent & { _seq?: number };

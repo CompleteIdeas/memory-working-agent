@@ -15,7 +15,9 @@ import { createServer } from 'node:http';
 import { randomBytes, createHash } from 'node:crypto';
 import type { RegisteredTool } from '../tools/registry.js';
 import { connectorTokenPath } from '../paths.js';
-import { v2DraftsOn, proposeDraft } from '../sync/drafts.js';
+import { proposeDraft } from '../sync/drafts.js';
+import { v2DraftsOn } from '../sync/flags.js';
+import { resetCalendarProvider } from '../v2/calendar.js';
 
 const tokenPath = (): string => connectorTokenPath('microsoft-token.json', 'MWA_MS_TOKEN');
 const TENANT = process.env.MICROSOFT_TENANT ?? 'common'; // common = personal + work/school
@@ -25,7 +27,8 @@ const AUTH_BASE_DEFAULT = `https://login.microsoftonline.com/${TENANT}/oauth2/v2
 const GRAPH_DEFAULT = 'https://graph.microsoft.com/v1.0';
 // Tests only (v2 A7): a fake Graph / token server stands in for Microsoft. Read per call so a test can set them.
 const authBase = (): string => process.env.MWA_MS_AUTH_BASE || AUTH_BASE_DEFAULT;
-const graphBase = (): string => (process.env.MWA_GRAPH_BASE || GRAPH_DEFAULT).replace(/\/+$/, '');
+/** Microsoft Graph's base URL (MWA_GRAPH_BASE for a fake in tests). The one place it is decided; mail sync (A8) uses it too. */
+export const graphBase = (): string => (process.env.MWA_GRAPH_BASE || GRAPH_DEFAULT).replace(/\/+$/, '');
 
 const SCOPES_RW = ['offline_access', 'User.Read', 'Mail.ReadWrite', 'Calendars.ReadWrite'];
 const SCOPES_RO = ['offline_access', 'User.Read', 'Mail.Read', 'Calendars.Read']; // v2 A7: the calendar view reads events
@@ -35,7 +38,7 @@ const SCOPES_RO = ['offline_access', 'User.Read', 'Mail.Read', 'Calendars.Read']
 // from the user. Override with MICROSOFT_CLIENT_ID to bring your own app registration.
 const DEFAULT_MS_CLIENT_ID = process.env.MWA_DEFAULT_MS_CLIENT_ID ?? '';
 
-interface StoredToken { access_token: string; refresh_token?: string; expires_at: number; scope: string }
+interface StoredToken { access_token: string; refresh_token?: string; expires_at: number; scope: string; /** the signed-in address (v2 A7) */ account?: string }
 
 function clientId(): string {
   const id = process.env.MICROSOFT_CLIENT_ID || DEFAULT_MS_CLIENT_ID;
@@ -63,6 +66,26 @@ export function microsoftConfigured(): boolean {
 /** Forget the stored Outlook token (the local sign-in). Env keys are cleared separately. */
 export function disconnectMicrosoft(): void {
   try { rmSync(tokenPath(), { force: true }); } catch { /* */ }
+  forgetCalendar();
+}
+
+/** v2 (A7): what MWA cached from the Outlook calendar belongs to a sign-in that is gone or replaced. */
+function forgetCalendar(): void {
+  try { resetCalendarProvider('outlook'); } catch { /* app.db unavailable: the next refresh clears a foreign account */ }
+}
+
+/** v2 (A7): a sign-in finished — keep the address beside the token (the calendar cache is keyed by it) and start the
+ *  calendar afresh for it. */
+export function recordMicrosoftSignIn(address: string | null): void {
+  const t = loadToken();
+  if (t && address) saveToken({ ...t, account: address });
+  forgetCalendar();
+}
+
+/** The calendar cache's account key: 'outlook:<address>' once the signed-in address is known, else 'outlook'. */
+export function outlookAccountKey(): string {
+  const a = loadToken()?.account;
+  return typeof a === 'string' && a.includes('@') ? `outlook:${a.toLowerCase()}` : 'outlook';
 }
 
 /** Valid access token, refreshing with the stored refresh_token when near expiry. */
@@ -81,7 +104,7 @@ async function accessToken(): Promise<string> {
     throw Object.assign(new Error(`token refresh failed: ${res.status}${code ? ` ${code}` : ''}`), { status: res.status, code: code || undefined });
   }
   const j: any = await res.json();
-  const next: StoredToken = { access_token: j.access_token, refresh_token: j.refresh_token ?? t.refresh_token, expires_at: Date.now() + (Number(j.expires_in ?? 3600) * 1000), scope: t.scope };
+  const next: StoredToken = { access_token: j.access_token, refresh_token: j.refresh_token ?? t.refresh_token, expires_at: Date.now() + (Number(j.expires_in ?? 3600) * 1000), scope: t.scope, ...(t.account ? { account: t.account } : {}) };
   saveToken(next);
   return next.access_token;
 }
@@ -130,6 +153,7 @@ function beginConsent(readOnly = false): { url: string; done: Promise<string> } 
     const j: any = await res.json();
     saveToken({ access_token: j.access_token, refresh_token: j.refresh_token, expires_at: Date.now() + (Number(j.expires_in ?? 3600) * 1000), scope });
     const me = await graph('/me');
+    recordMicrosoftSignIn(me.userPrincipalName || me.mail || null);
     return me.userPrincipalName || me.mail || 'your account';
   })();
   return { url, done };
@@ -191,7 +215,9 @@ async function pollDeviceToken(clientIdValue: string, scope: string, deviceCode:
       j = await res.json();
       if (res.ok && j.access_token) {
         saveToken({ access_token: j.access_token, refresh_token: j.refresh_token, expires_at: Date.now() + (Number(j.expires_in ?? 3600) * 1000), scope });
-        try { const me = await graph('/me'); console.log(`  ✅ Outlook connected as ${me.userPrincipalName || me.mail || 'your account'}`); } catch { /* */ }
+        let who: string | null = null;
+        try { const me = await graph('/me'); who = me.userPrincipalName || me.mail || null; console.log(`  ✅ Outlook connected as ${who ?? 'your account'}`); } catch { /* */ }
+        recordMicrosoftSignIn(who);
         return;
       }
     } catch { continue; /* transient — keep polling */ }
@@ -352,9 +378,9 @@ export function microsoftTools(): RegisteredTool[] {
     },
     {
       def: { name: 'propose_outlook_event', description: 'Propose an Outlook calendar event. It is held in MWA as a DRAFT the person confirms (nothing is added to Outlook and no invites are sent until they do). Times in ISO 8601; a time with no offset is the person’s local time; a bare date (YYYY-MM-DD) makes an all-day event.', parameters: { type: 'object', properties: { summary: { type: 'string' }, start: { type: 'string' }, end: { type: 'string' }, location: { type: 'string' }, description: { type: 'string' } }, required: ['summary', 'start', 'end'] } },
-      handler: async (args) => {
+      handler: async (args, ctx) => {
         // v2 (A7): an MWA-held draft. MWA_V2_DRAFTS=0 restores the old behaviour (a real "[Proposed]" event).
-        if (v2DraftsOn()) return proposeDraft('outlook', args);
+        if (v2DraftsOn()) return proposeDraft('outlook', args, ctx);
         const e = await graph('/me/events', { method: 'POST', body: JSON.stringify({
           subject: `[Proposed] ${args.summary}`,
           body: { contentType: 'Text', content: String(args.description ?? '') },

@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { resetAppDb, appDb } from '../src/v2/db.js';
 import { getDraft, getCalEvent, getSyncState, calendarItems, openDrafts } from '../src/v2/calendar.js';
-import { addDraft, confirmDraft, removeDraft, draftFromInput, googleEventIdFor, DRAFT_ADDED, CONFIRM_RECEIPT, DraftError, v2DraftsOn } from '../src/sync/drafts.js';
+import { addDraft, confirmDraft, removeDraft, draftFromInput, googleEventIdFor, DRAFT_ADDED, CONFIRM_RECEIPT, DraftError, v2DraftsOn, OUTLOOK_DRAFT_PROP } from '../src/sync/drafts.js';
 import { buildIcs, parseIcs, icsFold, icsEscape, icsFileName } from '../src/sync/ics.js';
 import { googleTools } from '../src/connectors/google.js';
 import { microsoftTools } from '../src/connectors/microsoft.js';
@@ -122,19 +122,22 @@ describe('Confirm', () => {
     expect(f.google.requests.filter((q) => q.method === 'GET' && q.path.endsWith(googleEventIdFor(draft.id))).length).toBe(1);
   });
 
-  it('Outlook: no attendees, the draft id as transactionId; a repeat after a lost record returns the same event', async () => {
+  it('Outlook: no attendees, tagged with the draft id; a repeat after a lost record finds that event instead of adding a second', async () => {
     const { draft } = addDraft({ title: 'Board call', start: '2026-11-11T14:00', end: '2026-11-11T15:00', provider: 'outlook' });
     const r = await confirmDraft(draft.id);
     expect(r.message).toBe(CONFIRM_RECEIPT);
     const body = f.graph.inserts[0];
     expect(body.attendees).toBeUndefined();
     expect(body).toMatchObject({ subject: 'Board call', transactionId: draft.id, isAllDay: false, start: { dateTime: '2026-11-11T19:00:00.000', timeZone: 'UTC' } });
+    expect(body.singleValueExtendedProperties).toEqual([{ id: OUTLOOK_DRAFT_PROP, value: draft.id }]);
+    expect(f.graph.lookups.length).toBe(1); // looked first, found nothing, added
     const pid = getDraft(draft.id)!.provider_id;
     // simulate a crash that lost the record: back to draft, confirm again
     appDb().prepare(`UPDATE cal_drafts SET state = 'draft', provider_id = NULL WHERE id = ?`).run(draft.id);
     await confirmDraft(draft.id);
-    expect(f.graph.inserts.length).toBe(2); // asked twice …
-    expect(getDraft(draft.id)!.provider_id).toBe(pid); // … one event
+    expect(f.graph.inserts.length).toBe(1); // found by its tag: not added again (transactionId is not relied on)
+    expect(f.graph.live().filter((e) => e.subject === 'Board call').length).toBe(1);
+    expect(getDraft(draft.id)!.provider_id).toBe(pid);
   });
 
   it('all-day: Google gets dates, Outlook midnight in the zone', async () => {
@@ -240,6 +243,7 @@ describe('list_events (the helper reads the synced calendar)', () => {
     expect(out).toContain('Thu, Nov 12 | 4:00 PM–5:00 PM | Farrier');
     expect(out).toContain('Sat, Nov 14 | 3:00 PM–6:00 PM | Book fair (draft, not confirmed) | Oakwood Elementary');
     expect(out).toMatch(/Double-booked: Farrier and Riley — practice overlap Thu, Nov 12 4:00 PM–5:00 PM/);
-    expect(String(await t.handler({ from: '2026-12-01', to: '2026-12-02' }, ctx))).toBe('No events in that range.');
+    // never synced: it does not claim an empty range (tests/calendar-review.test.ts P1 covers the cases)
+    expect(String(await t.handler({ from: '2026-12-01', to: '2026-12-02' }, ctx))).toMatch(/^I can't confirm that range is empty. Google Calendar hasn't synced yet/);
   });
 });

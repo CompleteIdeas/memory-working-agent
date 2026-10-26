@@ -17,9 +17,12 @@ export interface IcsEvent {
   stamp?: number;
 }
 
-/** TEXT escaping (RFC 5545 3.3.11): backslash, semicolon, comma, and newlines as \n. */
+/** TEXT escaping (RFC 5545 3.3.11): backslash, semicolon, comma, and newlines as \n. Other control characters
+ *  (CONTROL in 3.1: U+0000–U+0008, U+000A–U+001F except as \n, U+007F) are dropped; tab is kept. */
 export function icsEscape(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r\n|\r|\n/g, '\\n');
+  return s.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r\n|\r|\n/g, '\\n')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000A-\u001F\u007F]/g, '');
 }
 
 /** Fold one content line at 75 octets; continuation lines start with one space (which counts). */

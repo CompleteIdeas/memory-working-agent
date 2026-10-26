@@ -8,20 +8,20 @@ import { ApiError, type Route } from '../router.js';
 import { calendarItems, draftItem, getDraft } from '../../v2/calendar.js';
 import { addDraft, confirmDraft, removeDraft, DraftError } from '../../sync/drafts.js';
 import { findConflicts } from '../../sync/conflicts.js';
-import { calendarAccounts, calendarWindow, refresh } from '../../sync/calendar.js';
+import { calendarAccounts, calendarWindow, calendarTz, refresh } from '../../sync/calendar.js';
 import { buildIcs, icsFileName } from '../../sync/ics.js';
-import { localTz, localDate, parseWhen, iso, localMidnight, addDays } from '../../sync/tz.js';
+import { localDate, parseWhen, iso, localMidnight, addDays } from '../../sync/tz.js';
 
 const MAX_RANGE_MS = 62 * 86_400_000;
 
 function when(v: string | null, name: string): number | null {
   if (v === null || v === '') return null;
   if (!/^\d{4}-\d{2}-\d{2}([T ][\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/i.test(v)) throw new ApiError(400, 'bad_range', `${name} must be a date (2026-11-14) or an ISO 8601 time.`);
-  try { return parseWhen(v, localTz()).ms; } catch { throw new ApiError(400, 'bad_range', `${name} is not a date I can read.`); }
+  try { return parseWhen(v, calendarTz()).ms; } catch { throw new ApiError(400, 'bad_range', `${name} is not a date I can read.`); }
 }
 
 const rethrow = (e: unknown): never => {
-  if (e instanceof DraftError) throw new ApiError(e.status, e.code, e.message);
+  if (e instanceof DraftError) throw new ApiError(e.status, e.code, e.message, e.transient);
   throw e;
 };
 
@@ -56,7 +56,7 @@ export const calendarRoutes: Route[] = [
       const fromMs = when(url.searchParams.get('from'), 'from') ?? w.fromMs;
       const toRaw = url.searchParams.get('to') ?? '';
       let toMs = when(toRaw, 'to') ?? w.toMs;
-      if (/^\d{4}-\d{2}-\d{2}$/.test(toRaw)) toMs = localMidnight(addDays(toRaw, 1), localTz()); // a date 'to' includes that day
+      if (/^\d{4}-\d{2}-\d{2}$/.test(toRaw)) toMs = localMidnight(addDays(toRaw, 1), calendarTz()); // a date 'to' includes that day
       if (toMs <= fromMs) throw new ApiError(400, 'bad_range', 'to must be after from.');
       if (toMs - fromMs > MAX_RANGE_MS) throw new ApiError(400, 'bad_range', 'Ask for at most 62 days at a time.');
       const from = iso(fromMs), to = iso(toMs);
@@ -84,7 +84,7 @@ export const calendarRoutes: Route[] = [
         const { draft, existing } = addDraft({
           title: str(b.title, 'title', 300, true)!, start: str(b.start, 'start', 40, true)!, end: str(b.end, 'end', 40),
           allDay: b.allDay as boolean | undefined, location: str(b.location, 'location', 300), notes: str(b.notes, 'notes', 4000),
-          provider: providerOf(b.provider) ?? null, projectId: str(b.projectId, 'projectId', 100) ?? null,
+          provider: providerOf(b.provider) ?? null, origin: 'you', projectId: str(b.projectId, 'projectId', 100) ?? null,
         });
         return { status: existing ? 200 : 201, body: { draft: draftItem(draft), message: existing ? 'That draft is already there.' : 'Added as a draft. Nothing is on your calendar until you confirm it.' } };
       } catch (e) { return rethrow(e); }

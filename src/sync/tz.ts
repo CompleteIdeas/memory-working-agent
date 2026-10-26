@@ -35,6 +35,17 @@ export function offsetMinutes(ms: number, tz: string): number {
 }
 
 const WALL = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?)?$/;
+const ZONED = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|([+-])(\d{2}):?(\d{2}))$/i;
+
+/**
+ * Refuse a date or time that does not exist instead of letting Date roll it over (review of A7: Feb 30 became Mar 2,
+ * and month 13 next January). Hours 0–23, minutes and seconds 0–59.
+ */
+export function checkDateParts(y: number, mo: number, d: number, h = 0, mi = 0, s = 0): void {
+  const t = new Date(Date.UTC(y, mo - 1, d));
+  if (mo < 1 || mo > 12 || d < 1 || t.getUTCFullYear() !== y || t.getUTCMonth() !== mo - 1 || t.getUTCDate() !== d) throw new Error(`no such date: ${y}-${mo}-${d}`);
+  if (h > 23 || mi > 59 || s > 59) throw new Error(`no such time: ${h}:${mi}:${s}`);
+}
 
 /**
  * A wall-clock time in a zone ('2026-11-14T15:00', 'America/New_York') → epoch ms. A time in the hour a clock skips
@@ -45,6 +56,7 @@ export function zonedToUtc(wall: string, tz: string): number {
   const m = WALL.exec(wall.trim());
   if (!m) throw new Error(`not a local date-time: ${wall}`);
   const [y, mo, d, h, mi, s] = [m[1], m[2], m[3], m[4] ?? '0', m[5] ?? '0', m[6] ?? '0'].map(Number);
+  checkDateParts(y, mo, d, h, mi, s);
   const naive = Date.UTC(y, mo - 1, d, h, mi, s);
   if (tz === 'UTC' || tz === 'Etc/UTC') return naive;
   // The offsets in force a day either side cover both sides of any change; a candidate is real when the zone's
@@ -78,7 +90,11 @@ export function parseWhen(s: string, tz: string): { ms: number; dateOnly: boolea
   const v = String(s ?? '').trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return { ms: localMidnight(v, tz), dateOnly: true };
   if (/(Z|[+-]\d{2}:?\d{2})$/i.test(v)) {
-    const ms = Date.parse(v);
+    const m = ZONED.exec(v);
+    if (!m) throw new Error(`not a date-time: ${s}`);
+    checkDateParts(+m[1], +m[2], +m[3], +m[4], +m[5], +(m[6] ?? 0));
+    if (m[8] && (+m[9] > 14 || +m[10] > 59)) throw new Error(`no such offset: ${s}`);
+    const ms = Date.parse(v.replace(' ', 'T'));
     if (Number.isNaN(ms)) throw new Error(`not a date-time: ${s}`);
     return { ms, dateOnly: false };
   }

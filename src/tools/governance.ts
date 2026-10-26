@@ -6,6 +6,7 @@
  * the field keeps rediscovering). All pure + dependency-free so it is fully unit-testable.
  */
 import { randomBytes } from 'node:crypto';
+import { v2DraftsOn } from '../sync/flags.js';
 
 export type ActionCategory = 'read' | 'write-local' | 'execute' | 'external' | 'schedule' | 'memory' | 'control';
 
@@ -89,7 +90,7 @@ export function markMcpReadOnly(name: string): boolean {
 export function classifyTool(name: string): ActionCategory {
   // v2 (A7): with MWA-held drafts on, proposing an event writes a draft in MWA — nothing leaves the machine until
   // the person confirms it. With MWA_V2_DRAFTS=0 it inserts into the calendar again, which is outward.
-  if ((name === 'propose_event' || name === 'propose_outlook_event') && !/^(0|false|off|no)$/i.test(String(process.env.MWA_V2_DRAFTS ?? '').trim())) return 'write-local';
+  if ((name === 'propose_event' || name === 'propose_outlook_event') && v2DraftsOn()) return 'write-local';
   return TOOL_CATEGORY[String(name)] ?? (MCP_READ_ONLY.has(String(name)) ? 'read' : 'external');
 }
 

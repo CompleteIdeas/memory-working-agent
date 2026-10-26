@@ -98,7 +98,7 @@ describe('Google Calendar sync', () => {
     expect(ev('google', 'december')).toBeNull();
     const st = getSyncState('google', 'calendar')!;
     expect(st.cursor).toMatch(/^tok-\d+$/);
-    expect([st.window_from, st.needs_reconnect, st.last_error, st.last_ok]).toEqual(['2026-11-09T05:00:00.000Z', 0, null, NOW]);
+    expect([st.window_from, st.needs_reconnect, st.last_error, st.last_ok]).toEqual([Date.parse('2026-11-09T05:00:00.000Z'), 0, null, NOW]);
   });
 
   it('incremental: only the changes (syncToken, no timeMin); cancelled instance deleted; moved out of the window dropped', async () => {
@@ -152,7 +152,7 @@ describe('Google Calendar sync', () => {
     now = NOW + 86_400_000;
     const r = await syncCalendar('google');
     expect(r.result?.mode).toBe('full');
-    expect(getSyncState('google', 'calendar')!.window_from).toBe('2026-11-10T05:00:00.000Z');
+    expect(getSyncState('google', 'calendar')!.window_from).toBe(Date.parse('2026-11-10T05:00:00.000Z'));
   });
 
   it('across the end of daylight saving (Nov 1 2026)', async () => {

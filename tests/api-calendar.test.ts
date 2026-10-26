@@ -49,7 +49,7 @@ describe('/api/v1/calendar', () => {
     const made = await call(ACTOR, 'POST', '/calendar/drafts', { title: 'Book fair', start: '2026-11-14T15:00', end: '2026-11-14T18:00', location: 'Oakwood Elementary' });
     expect(made.status).toBe(201);
     const id = made.body.draft.id;
-    expect(made.body.draft).toMatchObject({ kind: 'draft', state: 'draft', title: 'Book fair', start: '2026-11-14T20:00:00.000Z', end: '2026-11-14T23:00:00.000Z', allDay: false });
+    expect(made.body.draft).toMatchObject({ kind: 'draft', state: 'draft', origin: 'you', title: 'Book fair', start: '2026-11-14T20:00:00.000Z', end: '2026-11-14T23:00:00.000Z', allDay: false });
     expect(f.google.inserts.length).toBe(0);
 
     // Saturday, November 14: the lunch, then the draft (dashed in the app)

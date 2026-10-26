@@ -447,7 +447,7 @@ export interface components {
     schemas: {
         Error: {
             error: {
-                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error */
+                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
                 code: string;
                 /** @description Plain words for a person. */
                 message: string;
@@ -629,6 +629,13 @@ export interface components {
             confirmedAt?: number | null;
             /** @description Events only: a draft the person confirmed through MWA. */
             addedByHelper?: boolean;
+            /**
+             * @description Drafts only: who proposed it. helper-after-reading = the helper had read outside content (an email, a web page) first; check it before confirming.
+             * @enum {string}
+             */
+            origin?: "you" | "helper" | "helper-after-reading";
+            /** @description Drafts only: a plain line about where it came from, when there is one. */
+            originNote?: string;
         };
         /** @description Two timed things that overlap (all-day, declined and cancelled events are not counted). */
         CalendarConflict: {
