@@ -19,11 +19,12 @@
 import { ApiError, type Route, type RouteCtx } from '../router.js';
 import {
   getJob, listJobs, viewJob, viewJobs, addTry, linkTry, dropQueuedTry, endQueued, updateJob, reserveJob, releaseJob,
-  ownerOwns, claimerAlive, personAction, stampEstimates, CLAIMER,
+  ownerOwns, claimerAlive, personAction, stampEstimates, defaultCapFor, CLAIMER,
   type JobRow, type TryRow, type JobView, type ViewCtx,
 } from '../../v2/jobs.js';
 import { JOB_STATES, type JobState } from '../../v2/status.js';
-import { aboutUsd, usdText, roundUsd, type JobEstimate } from '../../v2/estimate.js';
+import { aboutUsd, usdText, CAP_MAX_USD, type JobEstimate } from '../../v2/estimate.js';
+export { CAP_MAX_USD };
 import type { MwaMemory } from '../../awm.js';
 
 /** What the job routes need from the running server. serve.ts sets it; tests set fakes. */
@@ -164,18 +165,20 @@ async function withReservation<T>(v: JobView, fn: () => Promise<T>): Promise<T> 
   try { return await fn(); } finally { releaseJob(v.job.id, holder); }
 }
 
-export const CAP_MAX_USD = 20;
-export const CAP_MIN_DEFAULT_USD = 0.05;
-/** The `capUsd` of a Continue or Start over: given (above 0, at most $20), else twice the estimate, at least 5 cents. */
-export function capFor(body: unknown, estimateUsd: number | undefined): number {
+/**
+ * The `capUsd` of a Continue or Start over: the given one (a number above 0, at most $20 — anything else is refused),
+ * else the default policy (review of A3b): twice the estimate, or the estimate plus three of the job's largest steps
+ * and the wrap-up, whichever is more; at least 25¢, 50¢ for a first guess; never above $20.
+ */
+export function capFor(body: unknown, v: Pick<JobView, 'job' | 'tries' | 'estimate'>, which: 'continue' | 'start-over'): number {
   const raw = body && typeof body === 'object' ? (body as Record<string, unknown>).capUsd : undefined;
-  if (raw === undefined || raw === null) return Math.max(CAP_MIN_DEFAULT_USD, roundUsd(2 * (estimateUsd ?? 0)));
+  if (raw === undefined || raw === null) return Math.min(CAP_MAX_USD, defaultCapFor(v.job, v.tries, which, v.estimate));
   const n = typeof raw === 'number' ? raw : Number.NaN;
   if (!Number.isFinite(n) || n <= 0 || n > CAP_MAX_USD) throw new ApiError(400, 'bad_cap', `capUsd must be a number of dollars above 0 and at most ${CAP_MAX_USD}.`);
-  return Math.round(n * 10_000) / 10_000;
+  return Math.min(CAP_MAX_USD, Math.round(n * 10_000) / 10_000);
 }
 /** Set the job's cap for the run about to be queued; returns a function that puts the old one back. */
-function setCap(job: JobRow, capUsd: number): () => void {
+export function setCap(job: JobRow, capUsd: number): () => void {
   const before = job.cap_usd;
   updateJob(job.id, { cap_usd: capUsd });
   return () => { try { updateJob(job.id, { cap_usd: before }); } catch { /* */ } };
@@ -255,7 +258,7 @@ export const jobRoutes: Route[] = [
     handler: async (ctx) => {
       const v = load(ctx);
       if (RECURRING.has(v.job.kind)) throw new ApiError(409, 'not_continuable', 'A repeating job runs again on its own schedule.');
-      const cap = capFor(ctx.body, v.estimate?.continue?.usd ?? v.estimate?.startOver?.usd);
+      const cap = capFor(ctx.body, v, 'continue');
       return withReservation(v, async () => {
         if (v.status.state === 'done') throw new ApiError(409, 'nothing_left', 'It is finished. Start over to do it again.');
         const d = need();
@@ -279,7 +282,7 @@ export const jobRoutes: Route[] = [
     handler: async (ctx) => {
       const v = load(ctx);
       if (RECURRING.has(v.job.kind)) throw new ApiError(409, 'not_continuable', 'A repeating job runs again on its own schedule.');
-      const cap = capFor(ctx.body, v.estimate?.startOver?.usd);
+      const cap = capFor(ctx.body, v, 'start-over');
       return withReservation(v, async () => {
         const undoCap = setCap(v.job, cap);
         try { await queueRun(v, 'start-over'); } catch (e) { undoCap(); throw e; }

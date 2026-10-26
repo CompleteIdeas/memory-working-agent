@@ -625,6 +625,10 @@ export interface components {
                 /** @description The button: "Finish the last 10 pages", "Continue", "Open". A Continue or Start over carries its price: "Finish the last 10 pages · about 3¢". */
                 label: string;
                 estimate?: components["schemas"]["Amount"];
+                /** @description The spending limit this action sets by default ("up to 40¢"); send capUsd to choose another. */
+                limitUsd?: number;
+                /** @description The price rests on the default or a single sample: said as "a first guess, about 30¢". */
+                firstGuess?: boolean;
             };
         };
         /** @description An estimate, always "about": dollars rounded the way they are said (whole cents under $1, 5-cent steps above) and milliseconds. */
@@ -646,7 +650,7 @@ export interface components {
             samples: number;
         };
         CapRequest: {
-            /** @description The most the new run may spend, in dollars. Default: twice the estimate, at least 0.05. A run that reaches it waits for you. */
+            /** @description The most the new run may spend, in dollars. Default: twice the estimate, or the estimate plus three of its largest steps and the wrap-up, whichever is more; at least 0.25 (0.50 for a first guess); at most 20. A run that reaches it waits for you. */
             capUsd?: number;
         };
         Job: {

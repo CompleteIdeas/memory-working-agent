@@ -61,13 +61,14 @@ import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, ru
 import { logger, readLogs, type LogLevel } from './logger.js';
 import { createV1Handler } from './api/v1.js';
 import { makeAuthenticate } from './api/auth.js';
-import { setJobRouteDeps } from './api/routes/jobs.js';
+import { setJobRouteDeps, capFor, setCap } from './api/routes/jobs.js';
 import { setStreamDeps } from './api/routes/stream.js';
 import { startCalendarSync } from './sync/calendar.js';
 import { startMailSync } from './sync/mail.js';
 import { mailSyncOn } from './sync/flags.js';
 import { migrateV2Once, describeReport } from './v2/migrate.js';
-import { reapDeadTries, personAction } from './v2/jobs.js';
+import { reapDeadTries, personAction, jobByGoal, busyReason, viewJob } from './v2/jobs.js';
+import { historyStats } from './v2/estimate.js';
 import { runAgent } from './agent.js';
 import { preparePersonTurn, learnFromTurn } from './person-turn.js';
 import { INTAKE_FIELDS } from './person-intake.js';
@@ -655,6 +656,8 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   // v2 (A3a review): existing goals, scheduled tasks and results become Jobs and Tries once, at server start, with or
   // without a model (the scheduler starts only with one), and Tries a crashed process left running are reaped. The
   // first /api/v1 request waits for it (at most 15 s; the slow reads happen before its short transaction).
+  // v2 (A3b review, M7): read the run history once now, off any request, so estimates never parse logs inline.
+  { const t = setTimeout(() => { try { historyStats(); } catch { /* estimates fall back to the default */ } }, 2_000); t.unref?.(); }
   v2Ready = MEMORY_OFF ? Promise.resolve() : (async () => {
     reapDeadTries();
     const m = new MwaMemory(SERVE_AGENT, dbFile(), loadConfig().awm.workspace);
@@ -1188,7 +1191,16 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
             res.end(JSON.stringify({ ok: true, message: status === 'done' ? 'Marked done. Its jobs stop.' : status === 'blocked' ? 'Paused. Its jobs wait.' : 'Updated.' }));
             return;
           }
+          // v2 (A3b review, M6): this older Continue sets the goal's Job a spending limit too — the one asked for
+          // (capUsd), else the default policy — so it is not a way around the limit the job stopped at.
+          let undoCap: (() => void) | undefined;
+          const gj = jobByGoal(goal.id);
+          if (gj && !busyReason(gj.id)) {
+            try { undoCap = setCap(gj, capFor(b, viewJob(gj, { running: new Set(), pending: new Set() }), 'continue')); }
+            catch (e) { res.end(JSON.stringify({ ok: false, message: (e as Error).message })); return; }
+          }
           const c = await continueGoal(memory, { goalId: goal.id, personId: me, workspace: cfg.workspace ?? './mwa-workspace' });
+          if (!c || c.already) undoCap?.();
           res.end(JSON.stringify(c ? { ok: true, session: c.session, message: c.already ? "I'm already on it. The result will appear in its conversation." : "Picking it up now. I'll post the result in its conversation." } : { ok: false, message: 'That goal is finished. Reopen it first.' }));
         } finally { memory.close(); }
         return;

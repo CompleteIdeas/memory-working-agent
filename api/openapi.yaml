@@ -127,6 +127,8 @@ components:
             action: { type: string, enum: [stop, continue, start-over, open, review, resume] }
             label: { type: string, description: 'The button: "Finish the last 10 pages", "Continue", "Open". A Continue or Start over carries its price: "Finish the last 10 pages · about 3¢".' }
             estimate: { $ref: '#/components/schemas/Amount' }
+            limitUsd: { type: number, description: 'The spending limit this action sets by default ("up to 40¢"); send capUsd to choose another.' }
+            firstGuess: { type: boolean, description: 'The price rests on the default or a single sample: said as "a first guess, about 30¢".' }
     Amount:
       type: object
       description: 'An estimate, always "about": dollars rounded the way they are said (whole cents under $1, 5-cent steps above) and milliseconds.'
@@ -153,7 +155,7 @@ components:
       type: object
       additionalProperties: false
       properties:
-        capUsd: { type: number, exclusiveMinimum: 0, maximum: 20, description: 'The most the new run may spend, in dollars. Default: twice the estimate, at least 0.05. A run that reaches it waits for you.' }
+        capUsd: { type: number, exclusiveMinimum: 0, maximum: 20, description: 'The most the new run may spend, in dollars. Default: twice the estimate, or the estimate plus three of its largest steps and the wrap-up, whichever is more; at least 0.25 (0.50 for a first guess); at most 20. A run that reaches it waits for you.' }
     Job:
       type: object
       required: [id, kind, title, request, projectId, createdAt, updatedSeq, status, lifecycle, progress, remaining, whereItStands, seenAt, capUsd, costUsd, tries, archived, scheduleId, goalId, session, nextRunAt, estimate, estimateVsActual]

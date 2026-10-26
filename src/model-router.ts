@@ -88,6 +88,13 @@ export class RoutedProvider implements Provider {
   private active(): Provider { return this.tier === 'fetch' ? this.fetchP : this.reasonP; }
 
   getTier(): Tier { return this.tier; }
+  /** How much dearer a call on tier `to` is than on tier `from` (list prices, input + output): a dollar cap projects
+   *  the next step with it after an escalation (A3b review). 1 when either price is unknown or zero. */
+  priceRatio(from: Tier, to: Tier): number {
+    const sum = (t: Tier) => { const p = (t === 'fetch' ? this.fetchP : this.reasonP).price; return (p?.[0] ?? 0) + (p?.[1] ?? 0); };
+    const a = sum(from), b = sum(to);
+    return a > 0 && b > 0 ? b / a : 1;
+  }
   /** A stronger model is still above this one: not yet escalated, and the strong tier is a different model (with
    *  MWA_MODEL set, both tiers are the same model, and "escalating" would only change the reasoning effort). */
   strongerAvailable(): boolean { return this.tier === 'fetch' && this.reasonP.model !== this.fetchP.model; }

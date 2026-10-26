@@ -27,7 +27,7 @@
  * src/v2/estimate.ts): "Finish the last 10 pages · about 3¢", "Start over · about 90¢". At the dollar limit the job
  * waits for the person — it never continues by itself, because spending more is theirs to decide.
  */
-import { aboutUsd, type Amount } from './estimate.js';
+import { aboutUsd, usdText, firstGuess, type Amount, type Basis } from './estimate.js';
 
 export type JobState = 'working' | 'waiting' | 'continuing' | 'stopped_by_you' | 'partly_done' | 'stopped' | 'scheduled' | 'done';
 export const JOB_STATES: readonly JobState[] = ['working', 'waiting', 'continuing', 'stopped_by_you', 'partly_done', 'stopped', 'scheduled', 'done'];
@@ -40,7 +40,7 @@ export interface JobStatus {
   /** one plain sentence: why, and what is left */
   detail: string;
   /** the main button; a Continue or Start over carries what it is expected to cost (`estimate`, and in the label) */
-  primaryAction?: { action: JobActionName; label: string; estimate?: Amount };
+  primaryAction?: { action: JobActionName; label: string; estimate?: Amount; limitUsd?: number; firstGuess?: boolean };
   /** a delivered result the person has not opened since it arrived */
   resultReady?: boolean;
 }
@@ -92,7 +92,7 @@ export interface StatusCtx {
   /** whether the process that claimed a Try is still alive (its heartbeat); absent = trust the row */
   claimerAlive?: (claimer: string) => boolean;
   /** what Continue and Start over are expected to cost (slice A3b); without them the buttons carry no price */
-  estimates?: { continue?: Amount; startOver?: Amount };
+  estimates?: { continue?: Amount; startOver?: Amount; basis?: Basis; samples?: number; continueCap?: number; startOverCap?: number };
 }
 
 const AUTO = new Set(['auto-continue', 'resume-after-restart']);
@@ -136,9 +136,17 @@ function finishLabel(l: ReturnType<typeof leftOf>): string {
 const CUT_OFF = 'It was cut off when the helper stopped.';
 
 /** A Continue or Start over button with its price, when known: "Finish the last 10 pages · about 3¢". */
-function priced(action: 'continue' | 'start-over', label: string, ctx: StatusCtx): { action: JobActionName; label: string; estimate?: Amount } {
+/** The price as said: "about 16¢", or "a first guess, about 30¢" when it rests on the default or a single sample. */
+function said(ctx: StatusCtx, usd: number): string {
+  const guess = ctx.estimates?.basis !== undefined && firstGuess({ basis: ctx.estimates.basis, samples: ctx.estimates.samples ?? 0 });
+  return `${guess ? 'a first guess, ' : ''}${aboutUsd(usd)}`;
+}
+function priced(action: 'continue' | 'start-over', label: string, ctx: StatusCtx): { action: JobActionName; label: string; estimate?: Amount; limitUsd?: number; firstGuess?: boolean } {
   const e = action === 'continue' ? ctx.estimates?.continue : ctx.estimates?.startOver;
-  return e ? { action, label: `${label} · ${aboutUsd(e.usd)}`, estimate: e } : { action, label };
+  if (!e) return { action, label };
+  const limit = action === 'continue' ? ctx.estimates?.continueCap : ctx.estimates?.startOverCap;
+  const guess = ctx.estimates?.basis !== undefined && firstGuess({ basis: ctx.estimates.basis, samples: ctx.estimates.samples ?? 0 });
+  return { action, label: `${label} · ${said(ctx, e.usd)}${limit ? `, up to ${usdText(limit)}` : ''}`, estimate: e, ...(limit ? { limitUsd: limit } : {}), ...(ctx.estimates?.basis !== undefined ? { firstGuess: guess } : {}) };
 }
 
 export function jobStatus(job: StatusJob, input: StatusTry[], ctx: StatusCtx): JobStatus {
@@ -181,7 +189,7 @@ export function jobStatus(job: StatusJob, input: StatusTry[], ctx: StatusCtx): J
     const cap = job.cap_usd != null ? `the ${money(job.cap_usd)} limit you set` : 'the spending limit you set';
     const ask = lastLeft && lastLeft.left > 0 ? ` ${finishLabel(lastLeft)}?` : ' Finish the rest?';
     const e = ctx.estimates?.continue;
-    const about = e ? ` ${aboutUsd(e.usd).replace(/^a/, 'A')}.` : '';
+    const about = e ? ` ${said(ctx, e.usd).replace(/^a/, 'A')}.` : '';
     return { state: 'waiting', label: 'Waiting for you', detail: `It reached ${cap}.${ask}${about}`, primaryAction: priced('continue', finishLabel(lastLeft), ctx) };
   }
 

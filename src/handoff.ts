@@ -12,7 +12,7 @@ import { resolve, join } from 'node:path';
 import { asksForLater } from './claim-check.js';
 import { sessionFolder } from './files.js';
 import type { MwaMemory } from './awm.js';
-import { createJob, jobByGoal, addTry, linkTry, dropQueuedTry, triesOf, titleOf, busyReason, jobLocked } from './v2/jobs.js';
+import { createJob, jobByGoal, addTry, linkTry, dropQueuedTry, triesOf, titleOf, busyReason, jobLocked, defaultCapFor, updateJob } from './v2/jobs.js';
 
 // Research, then a written-up DELIVERABLE: "research X and write me a report" is the case this exists for. Not
 // "find the email and draft a reply" or "look up the weather and write it in a file" (BL-71 review: the first
@@ -165,6 +165,9 @@ export async function startBackgroundWork(memory: MwaMemory, o: { message: strin
     const made = createJob({ kind: 'background', title: goalTitle(ownText(message) || message), request: message, person: o.personId, legacyGoalId: goalId,
       session: o.session, dir, legacyKey: `goal:${goalId}`, ...(o.capUsd && o.capUsd > 0 ? { capUsd: o.capUsd } : {}) }, { trigger: 'first', dueAt: now });
     v2 = made.try ? { jobId: made.job.id, tryId: made.try.id } : null;
+    // v2 (A3b review, policy): a hand-off without a limit gets the default one — twice the estimate, or the estimate
+    // plus three large steps and the wrap-up; at least 25¢ (50¢ for a first guess), at most $5.
+    if (v2 && !(o.capUsd && o.capUsd > 0)) updateJob(made.job.id, { cap_usd: defaultCapFor(made.job, triesOf(made.job.id), 'first') });
   } catch { v2 = null; }
   const jobId = await memory.addScheduledTask(instruction, now, {
     notify: o.session, dir, person: o.personId, goal: goalId, task: instruction, request: message, depth: 0, ...(tainted ? { tainted: true } : {}),

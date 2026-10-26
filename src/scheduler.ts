@@ -22,7 +22,8 @@ import { budgetHold } from './billing.js';
 import { claimInterrupted, describeSteps, startHeartbeat, STALE_MS } from './transcript.js';
 import { configuredWatchGate, SAME_THRESHOLD, type WatchGate } from './watch-gate.js';
 import { liveRuns } from './live-runs.js';
-import { startFire, finishTry, tryEndFromResult, restartCutOff, queueContinuation, linkTry, dropQueuedTry, endScheduleTries, reapDeadTries, runCapUsd } from './v2/jobs.js';
+import { startFire, finishTry, tryEndFromResult, restartCutOff, queueContinuation, linkTry, dropQueuedTry, endScheduleTries, reapDeadTries, fireBudget, setTryAllowance, runningSpend } from './v2/jobs.js';
+import { newLedger, withLedger } from './spend.js';
 
 export interface InterruptedRun { runId: string; instruction: string; session?: string; personId?: string; jobId?: string; recurring: boolean; resumed: boolean; steps: number; unfinished: number }
 
@@ -311,8 +312,12 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     else await deps.memory.completeScheduled(task.id);
     // v2 (A3b): the job's dollar cap, less what its Tries have spent since the person last said go. Nothing left to
     // spend (an automatic continuation of a run that used it up): the Try ends at the cap, waiting for the person.
-    const capUsd = v2 ? runCapUsd(v2.jobId, v2.tryId) : undefined;
-    if (v2 && capUsd === 0) {
+    // Review of A3b: an allowance below one step's worth is none (the first step is projected, not assumed free); a
+    // repeating job without a limit of its own gets the per-fire default (MWA_FIRE_CAP_USD, 25¢).
+    const money = v2 ? fireBudget(v2.jobId, v2.tryId) : { wait: false } as ReturnType<typeof fireBudget>;
+    const capUsd = money.maxUsd;
+    if (v2) setTryAllowance(v2.tryId, capUsd);
+    if (v2 && money.wait) {
       finishTry(v2.tryId, { reason: 'budget', outcome: 'could-not', capHit: 'usd', costUsd: 0, steps: 0, toolCalls: 0, summary: 'It reached the spending limit you set before this part started.' });
       log(`· not started (its spending limit is used up): ${task.instruction.slice(0, 50)}`);
       continue;
@@ -347,8 +352,11 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       // dueNow: tell the run the timing is already settled (a resume carries its own framing, and
       // "do only the remaining work" must not be overridden by "do it all now").
       // extraRoots: the folder the task was created in, so a baked-in absolute path still resolves.
-      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt || task.recur ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobAllow: task.allow, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: { ...jobBudget(task, deps), ...(capUsd !== undefined ? { maxUsd: capUsd } : {}) }, v2JobId: v2?.jobId,
-        onEvent: live ? (type, data) => liveRuns.record(liveKey, type, data ?? {}, now()) : undefined, signal: live?.controller.signal, inbox: live ? () => liveRuns.takeInbox(liveKey) : undefined });
+      // The fire's own ledger: what it spends, live, so a second Try of the job sees it while this one runs.
+      const fireLedger = newLedger();
+      if (v2) runningSpend.set(v2.tryId, fireLedger);
+      r = await withLedger(fireLedger, () => run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt || task.recur ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobAllow: task.allow, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: { ...jobBudget(task, deps), ...(capUsd !== undefined ? { maxUsd: capUsd } : {}), ...(money.stepUsd ? { stepUsd: money.stepUsd } : {}), ...(money.finishGrace ? { finishGrace: true } : {}) }, v2JobId: v2?.jobId,
+        onEvent: live ? (type, data) => liveRuns.record(liveKey, type, data ?? {}, now()) : undefined, signal: live?.controller.signal, inbox: live ? () => liveRuns.takeInbox(liveKey) : undefined }));
       ranOk = true;
     } catch (e) {
       r = { summary: `failed: ${(e as Error).message.slice(0, 120)}`, reason: 'error', steps: 0, toolCalls: 0, costUsd: 0, durationMs: 0 } as any;
@@ -546,7 +554,8 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // Receipts (BL-13): this fire's id, so every channel's record of its result lines up.
     const job = task.resumeOf ?? task.id;
     const fire = `${job.slice(0, 8)}-${now()}`;
-    if (v2) finishTry(v2.tryId, tryEndFromResult({ ...(r as object), outcome, summary: String(summary ?? '') } as Parameters<typeof tryEndFromResult>[0], { runId: live?.runId, pagesRead: (r as { pagesRead?: number }).pagesRead, delivered: deliver, fireId: fire }));
+    if (v2) finishTry(v2.tryId, tryEndFromResult({ ...(r as object), outcome, summary: String(summary ?? '') } as Parameters<typeof tryEndFromResult>[0], { runId: live?.runId, pagesRead: (r as { pagesRead?: number }).pagesRead, reads: (r as { reads?: number }).reads, delivered: deliver, fireId: fire }));
+    if (v2) runningSpend.delete(v2.tryId);
     if (!deliver) {
       const why = outcome === 'could-not' ? `could not finish again (${fails} in a row); told at 1, 3, 7, 15\u2026 in a row`
         : repeat ? 'the same message as its last one' : `told only ${policy === 'never' ? 'if it fails' : 'when something changes'}; this run: ${outcome}`;
