@@ -341,6 +341,23 @@ export async function getQuiet(): Promise<QuietState | null> {
   try { return await (bounceIfLocked(await fetch('/api/quiet', { cache: 'no-store' }))).json(); } catch { return null; }
 }
 export const setQuiet = (value: string) => postJson('/api/quiet', { value });
+/** Billing and token tracking (2026-10-27): the sums of the model-call log, the budget, the provider's balance. */
+export interface Tokens { in: number; cached: number; out: number; reasoning: number }
+export interface Bucket { cost: number; calls: number; tokens: Tokens }
+export interface BillingSummary {
+  now: number;
+  month: Bucket & { from: number; label: string };
+  days: { day: string; cost: number; calls: number }[];
+  byModel: ({ model: string } & Bucket)[];
+  bySession: ({ session: string; kind: 'chat' | 'job' | 'other' } & Bucket)[];
+  budget: { monthlyUsd: number | null; usedUsd: number; pct: number | null; state: 'none' | 'ok' | 'warn' | 'over'; fixed: boolean };
+  balance: { provider: string; remainingUsd: number; at: number } | null;
+  logPath: string;
+}
+export async function getBilling(): Promise<BillingSummary | null> {
+  try { return await (bounceIfLocked(await fetch('/api/billing', { cache: 'no-store' }))).json(); } catch { return null; }
+}
+export const setBudget = (value: string) => postJson('/api/billing/budget', { value });
 export async function getQuestions(): Promise<{ id: string; question: string }[]> {
   try { const r = await fetch('/api/questions'); return (await r.json()).questions ?? []; } catch { return []; }
 }

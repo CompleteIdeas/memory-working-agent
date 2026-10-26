@@ -31,6 +31,8 @@ export interface MwaConfig {
   workspace?: string;
   /** delivery (BL-07): quietHours "22:00-07:00" holds pushes (Telegram) until the window ends. */
   notify?: { quietHours?: string };
+  /** billing (2026-10-27): a monthly model-spend budget in dollars; 80% warns, 100% holds unattended jobs. */
+  billing?: { monthlyUsd?: number };
   tools: {
     builtins: string[];
     /** MCP servers whose tools register into the same registry (namespaced <server>__<tool>) */

@@ -94,6 +94,7 @@ import { scheduleRows, scheduleControl, type ScheduleAction } from './schedule-a
 import { liveRuns, FINAL_EVENTS } from './live-runs.js';
 import { resolvePersonId } from './person.js';
 import { appendTurn, answerOffer, readConversation, listConversations } from './conversations.js';
+import { readCalls, billingSummary, callsCsv, setMonthlyBudget, providerBalance, monthStart, budgetHold } from './billing.js';
 import { thinkMode, thinkDue, thinkOnce, thinkEveryMs, thinkDailyUsd, readThoughts, latestThoughts } from './thinking.js';
 import { exportDoc, exportFormats } from './doc-export.js';
 import { dbFile, runLogPath, notifyPath, installLogPath } from './paths.js';
@@ -518,7 +519,10 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     });
     s.history.push({ instruction: message, summary: r.summary, tainted: r.tainted === true });
     // BL-71b: it ran out of room and already queued a resume — say so, rather than leave a half answer.
-    const summary = r.resumeQueued ? `${r.summary}\n\nI ran out of room in this chat, so I'm continuing in the background. The result will appear here when it's done.` : r.summary;
+    // Billing: a chat still runs at the monthly budget, and says so (unattended jobs wait).
+    const hold = budgetHold();
+    const summary = (r.resumeQueued ? `${r.summary}\n\nI ran out of room in this chat, so I'm continuing in the background. The result will appear here when it's done.` : r.summary)
+      + (hold.held ? `\n\n(This month's model spend has reached the $${hold.budgetUsd} budget — $${hold.usedUsd} so far. Scheduled jobs wait until next month or a higher budget in Settings › Billing; chats still run.)` : '');
     const turnTs = Date.now();
     appendTurn({ ts: turnTs, session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat', tainted: r.tainted === true, runId: run.runId, ...(resumed?.stopped.ts !== undefined ? { resumes: resumed.stopped.ts } : {}) }); // BL-71d; the runId retires the `running` turn (F09); `resumes` keeps the task's own words reachable (3b)
     // S3/S5 — LEARN durable facts about this person + recompress their dossier (suppressed for the
@@ -730,6 +734,27 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       if (p === '/api/quiet' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
         res.end(JSON.stringify(quietState()));
+        return;
+      }
+      // Billing and token tracking (Robert, 2026-10-27): the month so far, the last 30 days, by model, the costliest
+      // conversations and jobs, the budget, and the provider's own balance; the calls as CSV; the budget setting.
+      if (p === '/api/billing' && req.method === 'GET') {
+        const calls = readCalls(undefined, Math.min(monthStart(Date.now()), Date.now() - 30 * 86_400_000));
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(billingSummary(calls, Date.now(), undefined, undefined, await providerBalance())));
+        return;
+      }
+      if (p === '/api/billing.csv' && req.method === 'GET') {
+        const days = Math.max(1, Math.min(366, Number(url.searchParams.get('days') ?? 30) || 30));
+        res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="mwa-model-calls-${days}d.csv"`, 'cache-control': 'no-store' });
+        res.end(callsCsv(readCalls(undefined, Date.now() - days * 86_400_000)));
+        return;
+      }
+      if (p === '/api/billing/budget' && req.method === 'POST') {
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(setMonthlyBudget(String(b.value ?? ''))));
         return;
       }
       // Pending list 2026-10-26, 5c: the person removes a standing preference from its card or the Memory view

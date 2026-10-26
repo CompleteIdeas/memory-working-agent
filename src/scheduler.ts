@@ -18,6 +18,7 @@ import type { ToolRegistry } from './tools/registry.js';
 import { runAgent } from './agent.js';
 import { detectorArmed, scoreDryRun } from './detector.js';
 import { recordReceipt } from './receipts.js';
+import { budgetHold } from './billing.js';
 import { claimInterrupted, describeSteps, startHeartbeat, STALE_MS } from './transcript.js';
 import { configuredWatchGate, SAME_THRESHOLD, type WatchGate } from './watch-gate.js';
 import { liveRuns } from './live-runs.js';
@@ -141,6 +142,8 @@ export interface SchedulerDeps {
   /** A run this process lost to a crash or restart that is NOT resumed automatically — a chat, the
    *  inbox, or a job past its resume cap (BL-10). The channel tells the person. */
   onInterrupted?: (info: InterruptedRun) => void | Promise<void>;
+  /** Billing: whether the month's model spend has reached the budget (tests inject; production reads the token log). */
+  budgetHold?: (nowMs: number) => { held: boolean; usedUsd: number; budgetUsd: number | null };
   /** BL-73: the check before a change-only watch speaks (Clef). Defaults to the configured one; null turns it off. */
   watchGate?: WatchGate | null;
 }
@@ -269,6 +272,14 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       await deps.onFire(task, { job, fire: `${job.slice(0, 8)}-${now()}`, outcome: 'changed', summary: `Reminder: ${task.instruction}`, files: [], dir: '', reason: 'done', steps: 0, toolCalls: 0, costUsd: 0, durationMs: 0 })
         .catch((e) => log(`onFire failed: ${(e as Error).message.slice(0, 80)}`));
       log(`⏰ reminder sent: ${task.instruction.slice(0, 50)}`);
+      continue;
+    }
+    // Billing (2026-10-27): at the monthly budget, unattended work waits — an hour at a time, until the month turns or
+    // the budget is raised. Said in the log and in the app (Settings › Billing); a chat still runs and says so.
+    const hold = (deps.budgetHold ?? budgetHold)(now());
+    if (hold.held) {
+      log(`· held (monthly budget $${hold.budgetUsd} reached: $${hold.usedUsd} spent): ${task.instruction.slice(0, 50)}`);
+      await deps.memory.rescheduleTask(task.id, now() + 60 * 60_000);
       continue;
     }
     log(`⏰ firing: ${task.instruction.slice(0, 50)}${task.resumeAttempt ? ` (resume ${task.resumeAttempt})` : ''}`);

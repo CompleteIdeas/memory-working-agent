@@ -1,7 +1,62 @@
 import { useEffect, useState } from 'react';
-import { getVault, forgetVault, getQuiet, setQuiet, type VaultRow, type QuietState } from '../api';
+import { getVault, forgetVault, getQuiet, setQuiet, getBilling, setBudget, type VaultRow, type QuietState, type BillingSummary } from '../api';
 import { Connections } from './Connections';
 import { Log } from './Log';
+
+const usd = (n: number) => (n >= 10 ? `$${n.toFixed(2)}` : n >= 0.01 ? `$${n.toFixed(3)}` : n > 0 ? `$${n.toFixed(4)}` : '$0');
+const k = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(n >= 100_000 ? 0 : 1)}k` : String(n));
+
+/** Billing and token tracking (2026-10-27): what the model calls cost, where it went, and a monthly budget. */
+function Billing() {
+  const [b, setB] = useState<BillingSummary | null>(null);
+  const [budgetText, setBudgetText] = useState('');
+  const [msg, setMsg] = useState('');
+  const load = () => getBilling().then((s) => { setB(s); if (s?.budget.monthlyUsd) setBudgetText(String(s.budget.monthlyUsd)); });
+  useEffect(() => { void load(); }, []);
+  if (!b) return null;
+  const { month, budget, balance } = b;
+  const max = Math.max(...b.days.map((d) => d.cost), 0.0001);
+  const state = budget.state === 'over' ? 'text-signal' : budget.state === 'warn' ? 'text-signal' : 'text-ok';
+  return (
+    <section aria-labelledby="s-billing">
+      <h2 id="s-billing" className="label mb-2">Billing and tokens</h2>
+      <div className="rounded-[4px] border border-line bg-surface px-4 py-3 space-y-3">
+        <p className="text-[15px]"><strong>{usd(month.cost)}</strong> so far in {month.label} · {month.calls} model call{month.calls === 1 ? '' : 's'} · {k(month.tokens.in)} in ({k(month.tokens.cached)} cached), {k(month.tokens.out)} out{month.tokens.reasoning ? `, ${k(month.tokens.reasoning)} reasoning` : ''}</p>
+        {budget.monthlyUsd ? (
+          <div>
+            <div className="h-2 rounded bg-line overflow-hidden" role="progressbar" aria-valuenow={Math.min(100, budget.pct ?? 0)} aria-valuemin={0} aria-valuemax={100} aria-label="Share of the monthly budget used">
+              <div className={`h-2 ${budget.state === 'ok' ? 'bg-ok' : 'bg-signal'}`} style={{ width: `${Math.min(100, budget.pct ?? 0)}%` }} />
+            </div>
+            <p className={`text-[13.5px] mt-1 ${state}`}>{budget.pct}% of the ${budget.monthlyUsd} monthly budget{budget.state === 'over' ? ' — reached: scheduled jobs wait until next month or a higher budget; chats still run' : budget.state === 'warn' ? ' — close to it' : ''}.</p>
+          </div>
+        ) : <p className="text-[13.5px] text-dim">No monthly budget set.</p>}
+        {budget.fixed ? <p className="text-[13px] text-dim">The budget is set by this deployment (MWA_MONTHLY_BUDGET_USD).</p> : (
+          <form className="flex flex-wrap items-end gap-2" onSubmit={async (e) => { e.preventDefault(); const r = await setBudget(budgetText ? budgetText : 'off'); setMsg(r.message); void load(); }}>
+            <label className="text-[13px]">Monthly budget $<input type="number" min={1} step={1} value={budgetText} onChange={(e) => setBudgetText(e.target.value)} className="rounded-[3px] border border-edge bg-bone px-2 py-1.5 text-[14px] w-24" aria-label="Monthly budget in dollars" /></label>
+            <button className="btn small primary">Save</button>
+            {budget.monthlyUsd && <button type="button" className="btn small" onClick={async () => { const r = await setBudget('off'); setMsg(r.message); setBudgetText(''); void load(); }}>Turn off</button>}
+          </form>
+        )}
+        {msg && <p className="text-[13px] text-dim" role="status">{msg}</p>}
+        {balance && <p className="text-[13.5px]">{balance.provider === 'openrouter' ? 'OpenRouter' : balance.provider} balance: <strong>{usd(balance.remainingUsd)}</strong> left (checked {new Date(balance.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}).</p>}
+        <div>
+          <p className="text-[13px] text-dim mb-1">Last 30 days, by day</p>
+          <div className="flex items-end gap-[2px] h-12" aria-label="Spend by day for the last 30 days">
+            {b.days.map((d) => <div key={d.day} title={`${d.day}: ${usd(d.cost)} · ${d.calls} calls`} className="flex-1 bg-ink/70 rounded-t-[2px] min-w-[3px]" style={{ height: `${Math.max(d.cost > 0 ? 6 : 1, Math.round((d.cost / max) * 100))}%` }} />)}
+          </div>
+          <p className="text-[12px] text-dim mt-0.5">{b.days[0].day} to {b.days[b.days.length - 1].day}</p>
+        </div>
+        {b.byModel.length > 0 && (
+          <dl className="kv">
+            <dt>By model</dt><dd>{b.byModel.slice(0, 6).map((m) => `${m.model} ${usd(m.cost)} (${m.calls})`).join(' · ')}</dd>
+            {b.bySession.length > 0 && <><dt>Costliest</dt><dd>{b.bySession.slice(0, 5).map((s) => `${s.kind === 'job' ? 'job' : 'chat'} ${s.session.replace(/^job_/, '').slice(0, 14)} ${usd(s.cost)}`).join(' · ')}</dd></>}
+          </dl>
+        )}
+        <p className="text-[13px]"><a className="linkbtn" href="/api/billing.csv?days=30" download>Download the last 30 days as CSV</a> <span className="text-dim">· one row per model call, for an expense claim</span></p>
+      </div>
+    </section>
+  );
+}
 
 function Quiet() {
   const [q, setQ] = useState<QuietState | null>(null);
@@ -67,6 +122,7 @@ export function Settings({ onWizard }: { onWizard: () => void }) {
       </div>
       <Connections />
       <div className="max-w-xl space-y-6">
+        <Billing />
         <Quiet />
         <Vault />
         <section aria-labelledby="s-warm">
