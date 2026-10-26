@@ -426,6 +426,8 @@ export interface components {
             goalId: string | null;
             /** @description The conversation it reports to. */
             session: string | null;
+            /** @description A repeating job's next run. */
+            nextRunAt: number | null;
         };
         Try: {
             id: string;
@@ -455,9 +457,18 @@ export interface components {
             estUsd: number | null;
             estMs: number | null;
             pagesRead: number | null;
+            /**
+             * @description Who ended it when its own run did not: the person, a cancel, the job itself, its goal being marked done, or the reaper (its process stopped).
+             * @enum {string|null}
+             */
+            endedBy: "person" | "cancel" | "self" | "goal-done" | "reaper" | "duplicate" | null;
+            /** @description False when its result was kept quiet (nothing new); null when not a scheduled fire. */
+            delivered: boolean | null;
         };
         JobList: {
             jobs: components["schemas"]["Job"][];
+            /** @description Pass as `before` for the next page; null on the last page. */
+            next: number | null;
         };
         JobDetail: {
             job: components["schemas"]["Job"];
@@ -640,6 +651,9 @@ export interface operations {
             query?: {
                 state?: "working" | "waiting" | "continuing" | "stopped_by_you" | "partly_done" | "stopped" | "scheduled" | "done";
                 archived?: "0" | "1";
+                limit?: number;
+                /** @description The `next` of the previous page. */
+                before?: number;
             };
             header?: never;
             path?: never;

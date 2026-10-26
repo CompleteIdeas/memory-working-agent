@@ -128,7 +128,7 @@ components:
             label: { type: string, description: 'The button: "Finish the last 10 pages", "Continue", "Open".' }
     Job:
       type: object
-      required: [id, kind, title, request, projectId, createdAt, updatedSeq, status, lifecycle, progress, remaining, whereItStands, seenAt, capUsd, costUsd, tries, archived, scheduleId, goalId, session]
+      required: [id, kind, title, request, projectId, createdAt, updatedSeq, status, lifecycle, progress, remaining, whereItStands, seenAt, capUsd, costUsd, tries, archived, scheduleId, goalId, session, nextRunAt]
       additionalProperties: false
       properties:
         id: { type: string }
@@ -157,9 +157,10 @@ components:
         scheduleId: { type: [string, 'null'] }
         goalId: { type: [string, 'null'] }
         session: { type: [string, 'null'], description: 'The conversation it reports to.' }
+        nextRunAt: { type: [integer, 'null'], description: "A repeating job's next run." }
     Try:
       type: object
-      required: [id, n, trigger, state, dueAt, startedAt, endedAt, reason, outcome, progress, remaining, costUsd, steps, toolCalls, capHit, summary, tainted, staged, estUsd, estMs, pagesRead]
+      required: [id, n, trigger, state, dueAt, startedAt, endedAt, reason, outcome, progress, remaining, costUsd, steps, toolCalls, capHit, summary, tainted, staged, estUsd, estMs, pagesRead, endedBy, delivered]
       additionalProperties: false
       properties:
         id: { type: string }
@@ -183,12 +184,15 @@ components:
         estUsd: { type: [number, 'null'] }
         estMs: { type: [integer, 'null'] }
         pagesRead: { type: [integer, 'null'] }
+        endedBy: { type: [string, 'null'], enum: [person, cancel, self, goal-done, reaper, duplicate, null], description: 'Who ended it when its own run did not: the person, a cancel, the job itself, its goal being marked done, or the reaper (its process stopped).' }
+        delivered: { type: [boolean, 'null'], description: 'False when its result was kept quiet (nothing new); null when not a scheduled fire.' }
     JobList:
       type: object
-      required: [jobs]
+      required: [jobs, next]
       additionalProperties: false
       properties:
         jobs: { type: array, items: { $ref: '#/components/schemas/Job' } }
+        next: { type: [integer, 'null'], description: 'Pass as `before` for the next page; null on the last page.' }
     JobDetail:
       type: object
       required: [job, tries]
@@ -303,6 +307,15 @@ paths:
           in: query
           required: false
           schema: { type: string, enum: ['0', '1'] }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: before
+          in: query
+          required: false
+          description: The `next` of the previous page.
+          schema: { type: integer }
       responses:
         '200':
           description: The jobs, most recently changed first.

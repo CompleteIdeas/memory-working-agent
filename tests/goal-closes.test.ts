@@ -9,12 +9,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tickScheduler } from '../src/scheduler.js';
+import { resetAppDb } from '../src/v2/db.js';
 
 type Run = { summary: string; reason: string; outcome?: string; resumeQueued?: boolean };
 
 const fire = async (o: { task: Record<string, unknown>; run: Run; goalStatus?: string; others?: Record<string, unknown>[] }) => {
   const outRoot = mkdtempSync(join(tmpdir(), 'mwa-goal-'));
   const set: string[] = [];
+  resetAppDb(':memory:'); // each case is its own world: a scheduled fire now runs once for good (v2 review H2)
   let pending = [o.task, ...(o.others ?? [])];
   const memory = {
     async pendingScheduled() { return pending; },

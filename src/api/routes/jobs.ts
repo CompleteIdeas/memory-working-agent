@@ -5,11 +5,17 @@
  * design offers: Stop, Continue ("Finish the last 10 pages"), Start over, Open (a result is "ready" until opened), and
  * for a recurring job Pause, Resume and Cancel through the existing schedule control (the same ownership and timing
  * rules as the model's tools). Estimates (est_usd) and the dollar cap are slice A3b.
+ *
+ * Review of A3a: every caller of /api/v1 is the owner (the password session, this machine, or a device paired by the
+ * owner), so a caller sees and acts on the owner's jobs only — another person's (a Telegram contact's) are "No such
+ * job" (M10). Continue and Start over reserve the job synchronously before any await, and anything queued counts as
+ * busy (H4). The list is batched and paged.
  */
 import { ApiError, type Route, type RouteCtx } from '../router.js';
 import {
-  getJob, listJobs, viewJob, addTry, linkTry, dropQueuedTry, endQueued, updateJob,
-  type JobRow, type TryRow, type JobView,
+  getJob, listJobs, viewJob, viewJobs, addTry, linkTry, dropQueuedTry, endQueued, updateJob, reserveJob, releaseJob,
+  ownerOwns, claimerAlive, personAction, CLAIMER,
+  type JobRow, type TryRow, type JobView, type ViewCtx,
 } from '../../v2/jobs.js';
 import { JOB_STATES, type JobState } from '../../v2/status.js';
 import type { MwaMemory } from '../../awm.js';
@@ -24,7 +30,7 @@ export interface JobRouteDeps {
   stopLive: (key: string) => boolean;
   /** ids of approvals still waiting */
   pendingApprovals: () => Set<string>;
-  /** the existing schedule control (pause, resume, cancel), for a recurring job's own task */
+  /** the existing schedule control (pause, resume, cancel), for a recurring job's own task, as `person` */
   scheduleControl: (person: string, action: 'pause' | 'resume' | 'cancel', scheduleId: string) => Promise<{ ok: boolean; message: string }>;
   /** a goal's Continue (handoff.ts continueGoal) — a goal's Job continues the goal's way */
   continueGoal?: (goalId: string, personId: string) => Promise<{ jobId: string; already?: boolean } | null>;
@@ -49,7 +55,7 @@ export function apiTry(t: TryRow) {
     id: t.id, n: t.n, trigger: t.trigger, state: t.state, dueAt: t.due_at, startedAt: t.started_at, endedAt: t.ended_at,
     reason: t.reason, outcome: t.outcome, progress: progressOf(t.progress_done, t.progress_total, t.progress_unit), remaining: t.remaining,
     costUsd: t.cost_usd, steps: t.steps, toolCalls: t.tool_calls, capHit: t.cap_hit, summary: t.summary, tainted: t.tainted === 1,
-    staged, estUsd: t.est_usd, estMs: t.est_ms, pagesRead: t.pages_read,
+    staged, estUsd: t.est_usd, estMs: t.est_ms, pagesRead: t.pages_read, endedBy: t.ended_by, delivered: t.delivered == null ? null : t.delivered === 1,
   };
 }
 export function apiJob(v: JobView) {
@@ -60,20 +66,28 @@ export function apiJob(v: JobView) {
     status: v.status, lifecycle: j.status, progress: progressOf(j.progress_done, j.progress_total, j.progress_unit), remaining: j.remaining,
     whereItStands: j.where_it_stands ? { text: j.where_it_stands, trust: j.stands_trust ?? 'high' } : null,
     seenAt: j.seen_at, capUsd: j.cap_usd, costUsd: Math.round(spent * 10_000) / 10_000, tries: v.tries.length, archived: j.archived === 1,
-    scheduleId: j.schedule_id, goalId: j.legacy_goal_id, session: j.session,
+    scheduleId: j.schedule_id, goalId: j.legacy_goal_id, session: j.session, nextRunAt: j.next_due_at,
   };
 }
 
-function view(job: JobRow): JobView {
+/** The live context a status needs, read once per request. */
+export function viewCtx(): ViewCtx {
   const d = need();
-  return viewJob(job, { running: d.running(), pending: d.pendingApprovals(), now: (d.now ?? Date.now)() });
+  return { running: d.running(), pending: d.pendingApprovals(), now: (d.now ?? Date.now)() };
 }
+/** Whether a caller may see a job: every v1 caller acts for the owner, so the owner's jobs only (review M10). */
+export function visibleJob(job: JobRow): boolean { return ownerOwns(job.person); }
+
+function view(job: JobRow, ctx: ViewCtx = viewCtx()): JobView { return viewJob(job, ctx); }
 function load(ctx: RouteCtx): JobView {
   const job = getJob(ctx.params.id);
-  if (!job) throw new ApiError(404, 'not_found', 'No such job.');
+  if (!job || !visibleJob(job)) throw new ApiError(404, 'not_found', 'No such job.');
   return view(job);
 }
 const full = (v: JobView) => ({ job: apiJob(v), tries: v.tries.map(apiTry) });
+/** The person the caller acts as for the schedule's ownership check: the owner, under the identity that owns this
+ *  job (the owner may appear as `unknown` or `web-<name>`). Never another person's identity: load() refused those. */
+const actingPerson = (job: JobRow) => job.person ?? 'unknown';
 
 /** The words a Continue runs: the job's own request, how far it got and what is left — never a fresh start. */
 export function continueInstruction(v: JobView): { instruction: string; tainted: boolean } {
@@ -90,9 +104,7 @@ export function continueInstruction(v: JobView): { instruction: string; tainted:
   return { instruction: lines.join('\n'), tainted };
 }
 
-const BUSY: JobState[] = ['working', 'continuing'];
-
-/** Queue a Try and the scheduled task that runs it (due now). */
+/** Queue a Try and the scheduled task that runs it (due now). Called with the job reserved. */
 async function queueRun(v: JobView, trigger: 'continue' | 'start-over'): Promise<void> {
   const d = need();
   const now = (d.now ?? Date.now)();
@@ -119,20 +131,48 @@ async function queueRun(v: JobView, trigger: 'continue' | 'start-over'): Promise
   } finally { m.close?.(); }
 }
 
-function refuseIfBusy(v: JobView): void {
-  if (BUSY.includes(v.status.state)) throw new ApiError(409, 'already_running', v.status.state === 'continuing' ? 'It is already continuing on its own.' : 'It is already working on this.');
-}
 const RECURRING = new Set(['recurring', 'reminder']);
+/** Continue and Start over: refused while anything is running or queued (whatever its due time), and the job is
+ *  reserved synchronously before any await, so two taps cannot both pass the check (review H4). */
+async function withReservation<T>(v: JobView, fn: () => Promise<T>): Promise<T> {
+  const holder = `${CLAIMER}:${Math.random().toString(36).slice(2)}`;
+  const r = reserveJob(v.job.id, holder);
+  if (!r.ok) {
+    throw new ApiError(409, 'already_running', r.why === 'running' ? 'It is already working on this.'
+      : r.why === 'queued' ? 'It is already set to run (it may be waiting its turn). Stop it first to change that.'
+        : 'Another request for this job is being handled. Try again in a moment.');
+  }
+  try { return await fn(); } finally { releaseJob(v.job.id, holder); }
+}
 
+const LIST_MAX = 200;
 export const jobRoutes: Route[] = [
   {
     method: 'GET', path: '/jobs', scope: 'read',
     handler: ({ url }) => {
       const want = url.searchParams.get('state');
       if (want && !JOB_STATES.includes(want as JobState)) throw new ApiError(400, 'bad_state', `state must be one of: ${JOB_STATES.join(', ')}.`);
+      const limit = Math.min(LIST_MAX, Math.max(1, Number.parseInt(url.searchParams.get('limit') ?? '50', 10) || 50));
+      const beforeRaw = url.searchParams.get('before');
+      let before = beforeRaw != null && /^\d+$/.test(beforeRaw) ? Number(beforeRaw) : undefined;
       const archived = url.searchParams.get('archived') === '1';
-      const jobs = listJobs({ archived }).map(view).filter((v) => !want || v.status.state === want);
-      return { body: { jobs: jobs.map(apiJob) } };
+      const ctx = viewCtx(); // running, approvals and now: once per request, not once per job
+      const out: JobView[] = [];
+      let next: number | null = null;
+      // Pages of rows, newest change first, until `limit` jobs match the state (a state is computed, not stored).
+      for (let pass = 0; pass < 50 && out.length < limit; pass++) {
+        const rows = listJobs({ archived, limit: LIST_MAX, before });
+        if (!rows.length) { next = null; break; }
+        for (const v of viewJobs(rows.filter(visibleJob), ctx)) {
+          if (!want || v.status.state === want) out.push(v);
+          if (out.length === limit) break;
+        }
+        const lastSeq = out.length === limit ? out[out.length - 1].job.updated_seq : rows[rows.length - 1].updated_seq;
+        next = rows.length < LIST_MAX && out.length < limit ? null : lastSeq;
+        if (rows.length < LIST_MAX) break;
+        before = rows[rows.length - 1].updated_seq;
+      }
+      return { body: { jobs: out.map(apiJob), next } };
     },
   },
   {
@@ -146,18 +186,22 @@ export const jobRoutes: Route[] = [
       const d = need();
       const running = v.tries.filter((t) => t.state === 'running' && t.live_key);
       const stoppedLive = running.some((t) => d.stopLive(t.live_key!));
-      // Queued Tries will never start: they end, stopped, and their scheduled tasks are cancelled.
+      const elsewhere = !stoppedLive && running.some((t) => t.claimed_by !== CLAIMER && claimerAlive(t.claimed_by));
+      // Queued Tries will never start: they end, stopped by the person, and their scheduled tasks are cancelled.
       const queuedSchedules = v.tries.filter((t) => t.state === 'queued').map((t) => t.schedule_id).filter((x): x is string => !!x);
-      const ended = endQueued(v.job.id, 'stopped', 'Stopped before it started.');
+      const ended = endQueued(v.job.id, 'Stopped before it started.');
       if (queuedSchedules.length) {
         const m = d.memory();
-        try { for (const s of queuedSchedules) await m.cancelScheduled(s); } finally { m.close?.(); }
+        try { await personAction(async () => { for (const s of queuedSchedules) await m.cancelScheduled(s); }); } finally { m.close?.(); }
       }
       if (!stoppedLive && !ended.length && !queuedSchedules.length) {
-        throw new ApiError(409, 'nothing_running', running.length ? 'It is running somewhere I cannot stop from here.' : 'Nothing is running for this job.');
+        if (elsewhere) throw new ApiError(409, 'running_elsewhere', 'It is still finishing in another MWA process (the Telegram one, or a second server). It cannot be stopped from here; it will end on its own.');
+        throw new ApiError(409, 'nothing_running', 'Nothing is running for this job.');
       }
       const after = view(getJob(v.job.id)!);
-      return { body: { ...full(after), message: stoppedLive ? 'Stopping. The step that is running finishes; nothing new starts. What it has done so far is kept.' : 'Stopped. It will not start.' } };
+      const message = stoppedLive ? 'Stopping. The step that is running finishes; nothing new starts. What it has done so far is kept.'
+        : elsewhere ? 'Stopped what was waiting. The run going in another MWA process is still finishing there.' : 'Stopped. It will not start.';
+      return { body: { ...full(after), message } };
     },
   },
   {
@@ -165,17 +209,18 @@ export const jobRoutes: Route[] = [
     handler: async (ctx) => {
       const v = load(ctx);
       if (RECURRING.has(v.job.kind)) throw new ApiError(409, 'not_continuable', 'A repeating job runs again on its own schedule.');
-      refuseIfBusy(v);
-      if (v.status.state === 'done') throw new ApiError(409, 'nothing_left', 'It is finished. Start over to do it again.');
-      const d = need();
-      if (v.job.legacy_goal_id && d.continueGoal) {
-        // A goal's Job continues the goal's way (its note, its conversation's folder): a Try of this same Job.
-        const m = d.memory();
-        try { const g = await m.getGoal(v.job.legacy_goal_id).catch(() => null); if (g?.status === 'done') await m.setGoalStatus(g.id, 'in_progress'); } finally { m.close?.(); }
-        const c = await d.continueGoal(v.job.legacy_goal_id, v.job.person ?? 'unknown');
-        if (!c) throw new ApiError(409, 'refused', 'That could not be picked up. Its goal may belong to someone else.');
-      } else await queueRun(v, 'continue');
-      return { status: 202, body: { ...full(view(getJob(v.job.id)!)), message: 'Picking it up where it stopped.' } };
+      return withReservation(v, async () => {
+        if (v.status.state === 'done') throw new ApiError(409, 'nothing_left', 'It is finished. Start over to do it again.');
+        const d = need();
+        if (v.job.legacy_goal_id && d.continueGoal) {
+          // A goal's Job continues the goal's way (its note, its conversation's folder): a Try of this same Job.
+          const m = d.memory();
+          try { const g = await m.getGoal(v.job.legacy_goal_id).catch(() => null); if (g?.status === 'done') await m.setGoalStatus(g.id, 'in_progress'); } finally { m.close?.(); }
+          const c = await d.continueGoal(v.job.legacy_goal_id, actingPerson(v.job));
+          if (!c) throw new ApiError(409, 'refused', 'That could not be picked up. Its goal may belong to someone else.');
+        } else await queueRun(v, 'continue');
+        return { status: 202, body: { ...full(view(getJob(v.job.id)!)), message: 'Picking it up where it stopped.' } };
+      });
     },
   },
   {
@@ -183,9 +228,10 @@ export const jobRoutes: Route[] = [
     handler: async (ctx) => {
       const v = load(ctx);
       if (RECURRING.has(v.job.kind)) throw new ApiError(409, 'not_continuable', 'A repeating job runs again on its own schedule.');
-      refuseIfBusy(v);
-      await queueRun(v, 'start-over');
-      return { status: 202, body: { ...full(view(getJob(v.job.id)!)), message: 'Starting it over from the beginning.' } };
+      return withReservation(v, async () => {
+        await queueRun(v, 'start-over');
+        return { status: 202, body: { ...full(view(getJob(v.job.id)!)), message: 'Starting it over from the beginning.' } };
+      });
     },
   },
   {
@@ -202,7 +248,7 @@ export const jobRoutes: Route[] = [
     handler: async (ctx) => {
       const v = load(ctx);
       if (!RECURRING.has(v.job.kind) || !v.job.schedule_id) throw new ApiError(409, 'not_recurring', 'Only a repeating job or a reminder can be paused, resumed or cancelled. Use Stop for this one.');
-      const out = await need().scheduleControl(v.job.person ?? 'unknown', action, v.job.schedule_id);
+      const out = await personAction(() => need().scheduleControl(actingPerson(v.job), action, v.job.schedule_id!));
       if (!out.ok) throw new ApiError(409, 'refused', out.message);
       return { body: { ...full(view(getJob(v.job.id)!)), message: out.message } };
     },

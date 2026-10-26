@@ -27,6 +27,11 @@ export interface MigrateMemory {
   listGoals(): Promise<Goal[]>;
   listGoalRecords(): Promise<GoalRecord[]>;
   pendingScheduled(): Promise<ScheduledTask[]>;
+  /** Reads that THROW when the store cannot be read (MwaMemory has them). Preferred: the forgiving ones return []
+   *  on a failure, and a migration that saw "nothing" must not record itself done (review M2). */
+  listGoalsStrict?(): Promise<Goal[]>;
+  listGoalRecordsStrict?(): Promise<GoalRecord[]>;
+  pendingScheduledStrict?(): Promise<ScheduledTask[]>;
   getScheduled(id: string): Promise<{ id: string; status: string; person?: string; instruction: string; recur?: string; due: number; goal?: string; notify?: string; dir?: string; kind?: 'reminder'; task?: string; request?: string } | null>;
 }
 
@@ -51,15 +56,23 @@ function readJsonl<T>(file?: string): T[] {
 
 class Rollback extends Error {}
 
+/** runs.jsonl indexed by job prefix and by the instruction's first 60 characters (review M9: no full scan per line). */
+function indexRuns(runs: RunRow[]): { byJob: Map<string, RunRow[]>; byWords: Map<string, RunRow[]> } {
+  const byJob = new Map<string, RunRow[]>(), byWords = new Map<string, RunRow[]>();
+  const add = (m: Map<string, RunRow[]>, k: string, r: RunRow) => { const a = m.get(k); if (a) a.push(r); else m.set(k, [r]); };
+  for (const r of runs) {
+    if (r.job) add(byJob, String(r.job).slice(0, 8), r);
+    const w = String(r.instruction ?? '').slice(0, 60);
+    if (w) add(byWords, w, r);
+  }
+  return { byJob, byWords };
+}
 /** The runs.jsonl row of the same run as a notification: the same job (or the same instruction), ending when it fired. */
-function runFor(n: Notif, runs: RunRow[]): RunRow | undefined {
+function runFor(n: Notif, idx: ReturnType<typeof indexRuns>): RunRow | undefined {
   const j8 = String(n.job ?? '').slice(0, 8);
   const inst = String(n.instruction ?? '').slice(0, 60);
   let best: RunRow | undefined; let gap = Infinity;
-  for (const r of runs) {
-    const sameJob = !!r.job && (r.job === n.job || r.job.slice(0, 8) === j8);
-    const sameWords = !!inst && String(r.instruction ?? '').slice(0, 60) === inst;
-    if (!sameJob && !sameWords) continue;
+  for (const r of [...(idx.byJob.get(j8) ?? []), ...(inst ? idx.byWords.get(inst) ?? [] : [])]) {
     const end = Number(r.ts) + Number(r.durationMs ?? 0);
     const g = Math.abs(end - Number(n.ts));
     if (g <= 10 * 60_000 && g < gap) { best = r; gap = g; }
@@ -70,9 +83,14 @@ function runFor(n: Notif, runs: RunRow[]): RunRow | undefined {
 export async function migrateV2(memory: MigrateMemory, o: { notifyFile?: string; runsFile?: string; dryRun?: boolean; record?: boolean; d?: AppDb } = {}): Promise<MigrateReport> {
   const d = o.d ?? appDb();
   // Everything async is read first: a SQLite transaction cannot wait on the memory store.
-  const [goals, records, pending] = await Promise.all([memory.listGoals(), memory.listGoalRecords(), memory.pendingScheduled()]);
+  // Strict reads: a store that cannot be read throws here, before anything is written or recorded (review M2).
+  const [goals, records, pending] = await Promise.all([
+    memory.listGoalsStrict ? memory.listGoalsStrict() : memory.listGoals(),
+    memory.listGoalRecordsStrict ? memory.listGoalRecordsStrict() : memory.listGoalRecords(),
+    memory.pendingScheduledStrict ? memory.pendingScheduledStrict() : memory.pendingScheduled(),
+  ]);
   const notifs = readJsonl<Notif>(o.notifyFile);
-  const runs = readJsonl<RunRow>(o.runsFile);
+  const runs = indexRuns(readJsonl<RunRow>(o.runsFile));
   const withJob = notifs.filter((n) => n.job && n.fire);
   const groups = new Map<string, Notif[]>();
   for (const n of withJob) { const k = String(n.job).slice(0, 8); groups.set(k, [...(groups.get(k) ?? []), n]); }
@@ -109,6 +127,8 @@ export async function migrateV2(memory: MigrateMemory, o: { notifyFile?: string;
   const words = (t: { request?: string; task?: string; instruction: string }) => t.request ?? t.task ?? t.instruction;
   const v2Native = (t: ScheduledTask) => !!(t.v2job || t.v2try);
 
+  // The matching run of every result, found before the write transaction (review M9: keep it short).
+  const enriched = new Map<Notif, RunRow | undefined>(withJob.map((n) => [n, runFor(n, runs)]));
   try {
     d.transaction(() => {
       // 1. goals
@@ -140,7 +160,10 @@ export async function migrateV2(memory: MigrateMemory, o: { notifyFile?: string;
         for (const n of [...group].sort((a, b) => a.ts - b.ts)) {
           const key = `fire:${n.fire}`;
           if (keyExists('tries', key)) { report.skipped++; continue; }
-          const run = runFor(n, runs);
+          // A fire v2 already recorded live is the same fire (review M1): by its fire id, or the same Job ending then.
+          if (d.prepare('SELECT 1 FROM tries WHERE fire_id = ?').get(String(n.fire))
+              || d.prepare(`SELECT 1 FROM tries WHERE job_id = ? AND legacy_key IS NULL AND state = 'ended' AND ended_at BETWEEN ? AND ?`).get(target.id, n.ts - 120_000, n.ts + 120_000)) { report.skipped++; continue; }
+          const run = enriched.get(n);
           if (run) report.tries.enriched++;
           const resume = /^Resume and finish this task/.test(String(n.instruction ?? ''));
           const hasEnded = !!d.prepare(`SELECT 1 FROM tries WHERE job_id = ? AND state = 'ended' LIMIT 1`).get(target.id);
@@ -202,6 +225,11 @@ export async function migrateV2(memory: MigrateMemory, o: { notifyFile?: string;
     if (!(e instanceof Rollback)) throw e;
   }
   return report;
+}
+
+/** When the data migration was recorded (ms), or null. */
+export function migrationRecordedAt(d: AppDb = appDb()): number | null {
+  return (d.prepare('SELECT at FROM migrations WHERE name = ?').get(DATA_MIGRATION) as { at: number } | undefined)?.at ?? null;
 }
 
 /** Run once on first start (recorded in `migrations` as data-002-jobs). Returns the report, or null when already done. */

@@ -12,7 +12,7 @@ import { resolve, join } from 'node:path';
 import { asksForLater } from './claim-check.js';
 import { sessionFolder } from './files.js';
 import type { MwaMemory } from './awm.js';
-import { createJob, jobByGoal, addTry, linkTry, dropQueuedTry, triesOf, titleOf } from './v2/jobs.js';
+import { createJob, jobByGoal, addTry, linkTry, dropQueuedTry, triesOf, titleOf, busyReason, jobLocked } from './v2/jobs.js';
 
 // Research, then a written-up DELIVERABLE: "research X and write me a report" is the case this exists for. Not
 // "find the email and draft a reply" or "look up the weather and write it in a file" (BL-71 review: the first
@@ -106,7 +106,7 @@ export function resumeInstruction(turns: { ts?: number; kind?: string; reason?: 
 /** BL-71d: "Continue" on a goal — a job due now that picks up from where the goal's record says it stands,
  *  in the folder of the conversation it came from (so its files are there), reporting back to that
  *  conversation. A record written after outside content makes the job start tainted: its words are data. */
-export async function continueGoal(memory: MwaMemory, o: { goalId: string; personId: string; workspace: string }): Promise<{ jobId: string; session: string; already?: boolean; v2JobId?: string; v2TryId?: string } | null> {
+export async function continueGoal(memory: MwaMemory, o: { goalId: string; personId: string; workspace: string; /** the v1 route already reserved the goal's Job */ holdsReservation?: boolean }): Promise<{ jobId: string; session: string; already?: boolean; v2JobId?: string; v2TryId?: string } | null> {
   const goal = await memory.getGoal(o.goalId);
   if (!goal || (goal.person && goal.person !== o.personId) || goal.status === 'done') return null;
   const rec = await memory.getGoalRecord(goal.id);
@@ -114,6 +114,9 @@ export async function continueGoal(memory: MwaMemory, o: { goalId: string; perso
   // A second tap is not a second job: one already due for this goal is doing it (BL-71 review).
   const waiting = (await memory.pendingScheduled()).find((t) => t.goal === goal.id && !t.recur && t.due <= Date.now() + 10 * 60_000);
   if (waiting) return { jobId: waiting.id, session: waiting.notify ?? session, already: true };
+  // v2 (review): the goal's Job already running or set to run (or another tap being handled) is "already on it" too.
+  const gj = jobByGoal(goal.id);
+  if (gj && (busyReason(gj.id) || (!o.holdsReservation && jobLocked(gj.id)))) return { jobId: gj.schedule_id ?? gj.id, session: gj.session ?? session, already: true, v2JobId: gj.id };
   const untrusted = rec?.trust === 'untrusted';
   const instruction = [
     `Continue working on the person's goal "${goal.title}" — they asked you to pick it up from where it stands.`,
