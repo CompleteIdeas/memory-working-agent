@@ -534,6 +534,35 @@ async function pdfPages(buf: Buffer): Promise<string[]> {
   while (pdfPagesCache.size > 4) pdfPagesCache.delete(pdfPagesCache.keys().next().value as string);
   return pages;
 }
+/** What read_document returns per call when the model does not ask for more (its `max_chars` default). */
+export const READ_DOCUMENT_CHARS = 8000;
+/**
+ * v2 A6 (the big-ask plan): how big a document is, counted the way read_document reads it — no model call. `pages`: a
+ * PDF's own page count, else the text in 3,000-character pages; `reads`: the read_document calls it takes at the
+ * default window (each is one "page read" in the run log, the unit estimates price by). A file it cannot parse counts
+ * as one page of its size in bytes.
+ */
+export async function documentSize(src: string, buf: Buffer): Promise<{ pages: number; chars: number; reads: number }> {
+  const sized = (chars: number, pages?: number) => ({ pages: Math.max(1, pages ?? Math.ceil(chars / 3000)), chars, reads: Math.max(1, Math.ceil(chars / READ_DOCUMENT_CHARS)) });
+  try {
+    if (isPdf(src, buf)) {
+      const pages = await pdfPages(buf);
+      // the text read_document shows: each page headed "[page n of N]"
+      const chars = pages.reduce((s, t, i) => s + t.trim().length + `[page ${i + 1} of ${pages.length}]\n\n`.length, 0);
+      return sized(chars, pages.length);
+    }
+    if (src.toLowerCase().endsWith('.docx')) {
+      const m: any = await import('mammoth');
+      const fn = m.extractRawText ?? m.default?.extractRawText;
+      const { value } = await fn({ buffer: buf });
+      return sized(String(value ?? '').length);
+    }
+    const text = buf.toString('utf8');
+    return sized(/<!doctype html|<html[\s>]/i.test(text.slice(0, 1024)) ? htmlToText(text).length : text.length);
+  } catch {
+    return sized(buf.length);
+  }
+}
 const MAX_DOCUMENT_LOOKS = Math.max(0, Number(process.env.MWA_DOCUMENT_LOOKS ?? 6) || 0);
 const documentLooks = new Map<string, number>(); // per run
 

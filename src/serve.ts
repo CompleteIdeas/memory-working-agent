@@ -64,7 +64,7 @@ import { makeAuthenticate } from './api/auth.js';
 import { setJobRouteDeps, capFor, setCap } from './api/routes/jobs.js';
 import { setStreamDeps } from './api/routes/stream.js';
 import { startCalendarSync } from './sync/calendar.js';
-import { startMailSync } from './sync/mail.js';
+import { startMailSync, openMail } from './sync/mail.js';
 import { startImportant } from './v2/important-serve.js';
 import { mailSyncOn } from './sync/flags.js';
 import { migrateV2Once, describeReport } from './v2/migrate.js';
@@ -107,7 +107,10 @@ import { resolvePersonId } from './person.js';
 import { appendTurn, answerOffer, readConversation, listConversations, conversationsPath } from './conversations.js';
 import { GENERAL, getProject, sessionOf, projectOfSession, crossTalk, apiProvenance, interruptStaleRunning, resultSessionFor, threadOfSession, runningIn, type Provenance } from './v2/projects.js';
 import { importConversations, describeConversationsReport } from './v2/migrate-conversations.js';
-import { setProjectRouteDeps, type ChatStart } from './api/routes/projects.js';
+import { setProjectRouteDeps, type ChatStart, type ChatExtras } from './api/routes/projects.js';
+import { setAskRouteDeps } from './api/routes/ask.js';
+import { finishAsk, setNarrowModel, narrowPrompt, firstJson, framedQuestion, askOfferAccepted, narrowAffordable, NARROW_CAP_USD } from './v2/ask.js';
+import { newLedger, withLedger, metered } from './spend.js';
 import { readCalls, billingSummary, callsCsv, setMonthlyBudget, providerBalance, monthStart, budgetHold } from './billing.js';
 import { thinkMode, thinkDue, thinkOnce, thinkEveryMs, thinkDailyUsd, readThoughts, latestThoughts } from './thinking.js';
 import { exportDoc, exportFormats } from './doc-export.js';
@@ -431,7 +434,7 @@ async function workNote(memory: MwaMemory, sessionId: string, person: string | n
 
 /** Where a chat's events go: an SSE response (/api/chat), or the v1 send that answers as soon as the run starts. */
 interface ChatSink { write(type: string, data: Record<string, unknown>): void; ping(): void; end(): void; onClose(fn: () => void): void }
-interface ChatParams { message: string; sessionId: string; resumeParam: string; stay: boolean; person: string | null }
+interface ChatParams { message: string; sessionId: string; resumeParam: string; stay: boolean; person: string | null; /** A6: an ask's shaping of the run */ extras?: ChatExtras }
 
 /** Stream one runAgent over SSE: every onEvent becomes an SSE event for the spine. */
 async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -468,13 +471,15 @@ async function acceptProjectOffer(projectId: string, o: { message?: string; pers
     const started = await startBackgroundWork(memory, { message: offer.message, session, personId, workspace: cfg.workspace ?? './mwa-workspace' });
     if (!started) return null;
     answerOffer(session, 'background', started.goalId.slice(0, 8), undefined, undefined, offer.message);
+    // A6 review: an offer an ask made records the job it became
+    if (offer.id && started.v2JobId) { try { askOfferAccepted(offer.id, started.v2JobId); } catch { /* bookkeeping */ } }
     return { goal: started.goalId.slice(0, 8), message: "On it. I'll work on this in the background and post the result here when it's done." };
   } finally { memory.close(); }
 }
 
 /** A5: a message sent into a project from /api/v1: the same run as /api/chat, answered once it has started (or offered,
  *  or refused as busy). Its progress goes out on /stream; its answer lands in the thread. */
-function startProjectChat(projectId: string, text: string, o: { stay?: boolean; person?: string }): Promise<ChatStart> {
+function startProjectChat(projectId: string, text: string, o: { stay?: boolean; person?: string; extras?: ChatExtras }): Promise<ChatStart> {
   return new Promise((done) => {
     let settled = false;
     const settle = (v: ChatStart) => { if (!settled) { settled = true; done(v); } };
@@ -489,7 +494,7 @@ function startProjectChat(projectId: string, text: string, o: { stay?: boolean; 
       end: () => settle({ state: 'busy', message: 'That could not start just now. Try again in a moment.' }),
       onClose: () => { /* nobody to detach: the run is followed on /stream */ },
     };
-    void runChat({ message: text, sessionId: sessionOf(projectId), resumeParam: '', stay: o.stay === true, person: o.person ?? null }, sink)
+    void runChat({ message: text, sessionId: sessionOf(projectId), resumeParam: '', stay: o.stay === true, person: o.person ?? null, ...(o.extras ? { extras: o.extras } : {}) }, sink)
       .catch((e) => settle({ state: 'busy', message: (e as Error).message.slice(0, 200) }));
   });
 }
@@ -529,7 +534,8 @@ async function runChat(p: ChatParams, sink: ChatSink): Promise<void> {
   const run = liveRuns.start(sessionId, message);
   const off = liveRuns.attach(sessionId, (e) => sink.write(e.type, e.data as Record<string, unknown>));
   const emitLive = (type: string, data: Record<string, unknown>) => liveRuns.record(sessionId, type, data);
-  const runningTurn = appendTurn({ ts: run.startedAt, session: sessionId, message, reply: '', kind: 'running', runId: run.runId });
+  const ex = p.extras;
+  const runningTurn = appendTurn({ ts: run.startedAt, session: sessionId, message, reply: '', kind: 'running', runId: run.runId, ...(ex?.about ? { about: ex.about } : {}), ...(ex?.source === 'voice' ? { source: 'voice' as const } : {}) });
   emitLive('run', { runId: run.runId, startedAt: run.startedAt, ...(runningTurn ? { turn: runningTurn } : {}) });
   // Heartbeat: keep the SSE stream alive during slow steps so proxies/browsers don't drop it mid-run.
   const hb = setInterval(() => sink.ping(), 15_000);
@@ -554,9 +560,11 @@ async function runChat(p: ChatParams, sink: ChatSink): Promise<void> {
     // AUTO-CHAIN, but know when to stop: continue the current topic, start a new one, or ask.
     const topicTurns = s.history.slice(s.topicStart);
     const resumed = resume ? resumeInstruction(readConversation(sessionId, 80), resumeTs) : null; // null: nothing stopped — a plain message
-    const relation = resumed ? 'continue' as const : CARRY_ALL ? (s.history.length ? 'continue' as const : 'fresh' as const) : await classifyContinuity(brain, topicTurns, message, idleMs);
+    // A6: a question about one thing stands on its own (the thing is its context): no conversation is carried, no
+    // classifier call, and the thread's topic is left as it was
+    const relation = resumed ? 'continue' as const : ex?.about ? 'fresh' as const : CARRY_ALL ? (s.history.length ? 'continue' as const : 'fresh' as const) : await classifyContinuity(brain, topicTurns, message, idleMs);
     const hadContext = topicTurns.length > 0;
-    if (relation === 'fresh') s.topicStart = s.history.length;
+    if (relation === 'fresh' && !ex?.about) s.topicStart = s.history.length;
     // F5: topic-scoped memory is OPT-IN (MWA_TOPIC_NAMESPACE=1). Default OFF preserves cross-session continuity.
     if (process.env.MWA_TOPIC_NAMESPACE === '1') memory.setNamespace(`${sessionId}-t${s.topicStart}`);
     emitLive('topic', { relation, hadContext, ...(resumed ? { resumed: true } : {}) });
@@ -571,7 +579,10 @@ async function runChat(p: ChatParams, sink: ChatSink): Promise<void> {
     // BL-70: the person sees this chat's folder in the Files tab, and a link by file name opens it there.
     const added = uploadsIn(resolve(cfg.workspace ?? './mwa-workspace'), sessionFolder(sessionId));
     const filesNote = `\n\n(Files you write here are saved for the person and appear in their Files tab; when you mention one, link it by its path, e.g. [the notes](notes.md). Files from their earlier chats and jobs are theirs too: list_files with \`search\` finds one by name, and read_file opens it by that full path.${added.length ? ` Files they added to this chat: ${added.join(', ')}.` : ''})`;
-    const asked = resumed?.instruction ?? message; // a resume runs the stopped task's own words, framed; the person's words stay the turn
+    // A6: an ask's framing comes before the person's words (never the thing's own text: that is fenced, below), and its
+    // attached files are named after them
+    // (A6 review) the files' paths are not here: they reach the run fenced, in `carried`; the note is fixed wording
+    const asked = (resumed?.instruction ?? framedQuestion(ex?.framing, message)) + (ex?.note ?? ''); // a resume runs the stopped task's own words, framed; the person's words stay the turn
     const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${asked}` : asked) + askNote + filesNote + await workNote(memory, sessionId, p.person, resumed?.stopped.message ?? message);
 
     // Per-person Profile (S1–S6): resolve who's talking, build their prompt context (identity guard +
@@ -587,13 +598,17 @@ async function runChat(p: ChatParams, sink: ChatSink): Promise<void> {
     const r = await runAgent({
       instruction, userMessage: resumed?.stopped.message ?? message, dir: s.dir, memory: agentMemory(memory), brain, worker, tools: registry, transcript: true, // BL-10; a resume is judged on the task's words, not the button's
       // Fenced context: a tainted earlier turn, and a stopped run's last word when that run had read outside content
-      ...(((ctx && ctxTainted) || resumed?.tainted) ? { carried: [ctx && ctxTainted ? `Recent conversation so far:\n${ctx}` : '', resumed?.tainted ? `Last word of the stopped attempt: ${resumed.lastWord}` : ''].filter(Boolean).join('\n\n'), startTainted: true } : {}),
+      ...(((ctx && ctxTainted) || resumed?.tainted || ex?.carried) ? {
+        carried: [ctx && ctxTainted ? `Recent conversation so far:\n${ctx}` : '', resumed?.tainted ? `Last word of the stopped attempt: ${resumed.lastWord}` : '', ex?.carried ?? ''].filter(Boolean).join('\n\n'),
+        // A6: the thing an ask is about starts the run tainted when its words are someone else's
+        startTainted: !!((ctx && ctxTainted) || resumed?.tainted || ex?.startTainted),
+      } : {}),
       workspace: cfg.awm.workspace, session: sessionId, interactive: true, // a human is watching → ask_user can ask them
       style: cfg.style, // guided (proactive/plain) vs direct (concise) — independent of access preset
       personContext, // S2: per-person adaptation block (empty for the shared/unknown profile)
       personId: prepared.personId, identityInDoubt: prepared.mismatch, // S6 v2: gate sensitive confirms on step-up
       domainPackDir: process.env.MWA_DOMAIN_PACK, // optional domain pack (AGENT.md + topics) for a domain agent
-      budget: { maxSteps: 40, maxWallMs: 10 * 60_000, consolidateEvery: 10, maxTokens: Number(process.env.MWA_MAX_TOKENS ?? 400_000) },
+      budget: { maxSteps: ex?.budget?.maxSteps ?? 40, maxWallMs: ex?.budget?.maxWallMs ?? 10 * 60_000, consolidateEvery: 10, maxTokens: Number(process.env.MWA_MAX_TOKENS ?? 400_000), ...(ex?.budget?.maxUsd ? { maxUsd: ex.budget.maxUsd } : {}) },
       onEvent: (type, d) => emitLive(type, d as Record<string, unknown>),
       signal: run.controller.signal, inbox: () => liveRuns.takeInbox(sessionId), // F06 Stop, F08 steer
     });
@@ -606,7 +621,9 @@ async function runChat(p: ChatParams, sink: ChatSink): Promise<void> {
     const turnTs = Date.now();
     // A5: the other projects whose memories this answer used ("using what I know from Eventing").
     const provenance = crossTalkFor(sessionId, await memory.usedMemories(r.summary, { exclude: prepared.terms ?? [] }).catch(() => []));
-    const turnId = appendTurn({ ts: turnTs, session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat', tainted: r.tainted === true, runId: run.runId, ...(provenance.length ? { provenance } : {}), ...(r.v2JobId ? { job: r.v2JobId } : {}), ...(resumed?.stopped.ts !== undefined ? { resumes: resumed.stopped.ts } : {}) }); // BL-71d; the runId retires the `running` turn (F09); `resumes` keeps the task's own words reachable (3b)
+    const turnId = appendTurn({ ts: turnTs, session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat', tainted: r.tainted === true, runId: run.runId, ...(provenance.length ? { provenance } : {}), ...(r.v2JobId ? { job: r.v2JobId } : {}), ...(resumed?.stopped.ts !== undefined ? { resumes: resumed.stopped.ts } : {}), ...(ex?.about ? { about: ex.about } : {}), ...(ex?.source === 'voice' ? { source: 'voice' as const } : {}) }); // BL-71d; the runId retires the `running` turn (F09); `resumes` keeps the task's own words reachable (3b)
+    // A6: the ask is answered — on the ask, and under the item it was about
+    if (ex?.askId) { try { finishAsk(ex.askId, { turnId, runId: run.runId, reply: summary, tainted: r.tainted === true, ok: true }); } catch (e) { logger.error('ask', 'the answer could not be kept on its ask', { error: (e as Error).message.slice(0, 160) }); } }
     // S3/S5 — LEARN durable facts about this person + recompress their dossier (suppressed for the
     // shared 'unknown' profile and on an identity mismatch). Before the result closes the stream, so an attached
     // page hears it too; it is quick and runs on the reply, not the person's wait.
@@ -617,7 +634,9 @@ async function runChat(p: ChatParams, sink: ChatSink): Promise<void> {
   } catch (e) {
     logger.error('chat', 'agent run failed', { session: sessionId, error: (e as Error).message.slice(0, 200) });
     // A5: the turn is finished with what went wrong, so no `running` turn stays behind
-    appendTurn({ ts: Date.now(), session: sessionId, message, reply: `This stopped with an error before it finished: ${(e as Error).message.slice(0, 300)}`, reason: 'error', kind: 'chat', runId: run.runId });
+    const errReply = `This stopped with an error before it finished: ${(e as Error).message.slice(0, 300)}`;
+    const errTurn = appendTurn({ ts: Date.now(), session: sessionId, message, reply: errReply, reason: 'error', kind: 'chat', runId: run.runId, ...(ex?.about ? { about: ex.about } : {}), ...(ex?.source === 'voice' ? { source: 'voice' as const } : {}) });
+    if (ex?.askId) { try { finishAsk(ex.askId, { turnId: errTurn, runId: run.runId, reply: errReply, tainted: ex.startTainted === true, ok: false }); } catch { /* */ } }
     emitLive('error', { message: (e as Error).message, runId: run.runId });
   } finally {
     activeRuns--;
@@ -756,6 +775,38 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
     attach: (projectId, fn) => { const s = liveSessionOf(projectId); return s ? liveRuns.attach(s, fn) : null; },
     finalEvents: FINAL_EVENTS,
     acceptOffer: acceptProjectOffer,
+  });
+  // v2 (A6): /ask — the background hand-off on the background tier, the mail reader for an ask about an email, the
+  // models (the background tier is priced by its list price), and the cheap model that proposes one narrower ask.
+  setAskRouteDeps({
+    workspace: () => resolve(loadConfig().workspace ?? './mwa-workspace'),
+    startBackground: async (projectId, o) => {
+      if (MEMORY_OFF) return null;
+      const cfg = loadConfig();
+      const memory = new MwaMemory(SERVE_AGENT, dbFile(), cfg.awm.workspace);
+      try {
+        const personId = resolvePersonId({ channel: 'web', name: (o.person ?? '').trim() || undefined });
+        const started = await startBackgroundWork(memory, { message: o.message, session: sessionOf(projectId), personId, workspace: cfg.workspace ?? './mwa-workspace', capUsd: o.capUsd, modelTier: 'background',
+          ...(o.attachments ? { attachments: o.attachments } : {}),
+          // a model's suggested focus goes as fenced context, and the job starts tainted
+          ...(o.suggestedFocus ? { context: { text: o.suggestedFocus, tainted: true } } : {}) });
+        return started?.v2JobId ? { jobId: started.v2JobId, goalId: started.goalId } : null;
+      } finally { memory.close(); }
+    },
+    mailBody: async (account, providerId) => (await openMail(account, providerId)).body.text,
+    models: () => { try { const m = loadConfig().models; return { fetch: m.fetch, background: m.background }; } catch { return null; } },
+  });
+  // (A6 review) on the background tier, and only when it fits a 1¢ ledger: a model that would cost more is not asked
+  setNarrowModel(async (input) => {
+    const { system, user } = narrowPrompt(input);
+    return backgroundCalls.run(true, async () => {
+      const provider = getProvider('brain');
+      if (!narrowAffordable(provider.model, { system, user })) return null;
+      const ledger = newLedger({ cap: NARROW_CAP_USD });
+      const out = await withLedger(ledger, () => metered(provider).chat({ system, messages: [{ role: 'user', content: user }], maxTokens: 200, reasoningEffort: 'minimal' }));
+      const j = firstJson(out.text ?? '');
+      return j ? { label: String(j.label ?? '') } : null;
+    });
   });
   // v2 (A4): the live stream and /sync compute job views with the same running runs and waiting approvals.
   setStreamDeps({ running: () => new Set(liveRuns.all().map((r) => r.session)), pending: () => new Set(listPendingActions().map((a) => a.id)) });

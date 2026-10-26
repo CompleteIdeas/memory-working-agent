@@ -25,7 +25,9 @@ import { localDate, addDays } from '../src/sync/tz.js';
 import { setProjectRouteDeps } from '../src/api/routes/projects.js';
 import { createProject, setEmbedder } from '../src/v2/projects.js';
 import { appendTurn } from '../src/conversations.js';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { setAskRouteDeps } from '../src/api/routes/ask.js';
+import { insertAsk, buildPlan } from '../src/v2/ask.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -135,12 +137,26 @@ beforeAll(async () => {
   const family = createProject({ name: 'Family & school' });
   const turn = appendTurn({ ts: Date.now(), session: `p-${eventing.id}`, message: 'When do entries close?', reply: 'Friday at 5pm.', kind: 'chat' })!;
   Object.assign(ids, { eventing: eventing.id, family: family.id, turn });
+  // A6: asks — a workspace with one long uploaded file, a fake background hand-off, no history (the default rate)
+  const askWs = mkdtempSync(join(tmpdir(), 'mwa-a6-ws-'));
+  mkdirSync(join(askWs, 'serve', 'p-general', 'uploads'), { recursive: true });
+  writeFileSync(join(askWs, 'serve', 'p-general', 'uploads', 'rules.txt'), 'The rules. '.repeat(15_000));
+  let jobs = 0;
+  setAskRouteDeps({
+    workspace: () => askWs, startBackground: async () => ({ jobId: `j_contract_${++jobs}` }),
+    history: () => ({ main: null, background: null }), now: () => Date.UTC(2026, 10, 9, 14, 10), tz: () => 'America/New_York',
+  });
+  const askRoute = { projectId: eventing.id, name: 'Eventing', confidence: 'given' as const, alternatives: [] };
+  const built = buildPlan({ text: 'Learn everything about the rules', files: [], history: { main: null, background: null } });
+  const planned = insertAsk({ text: 'Learn everything about the rules', projectId: eventing.id, route: askRoute, kind: 'plan', mode: 'auto', plan: built.plan!, state: 'planned', createdAt: Date.UTC(2026, 10, 9, 14, 0) });
+  const answered = insertAsk({ text: 'When do entries close?', projectId: eventing.id, route: askRoute, kind: 'answer', mode: 'auto', state: 'answered' });
+  Object.assign(ids, { plannedAsk: planned.id, answeredAsk: answered.id });
   const v1 = createV1(v1Routes(), { authenticate: () => TEST_CALLER, sameOrigin: () => true });
   server = createServer(async (req, res) => { if (!(await v1(req, res))) { res.writeHead(404); res.end(); } });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
-afterAll(() => { server?.close(); setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); });
+afterAll(() => { server?.close(); setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); });
 
 /** One request per operation (and a few error cases). Slices append theirs. */
 const ids: Record<string, string> = {};
@@ -260,6 +276,26 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'GET /projects/{id}/live', path: () => `/projects/${ids.eventing}/live`, status: 200 },
   { op: 'POST /projects/{id}/offer/accept', path: () => `/projects/${ids.eventing}/offer/accept`, init: post, status: 202 },
   { op: 'POST /projects/{id}/offer/accept', path: () => `/projects/${ids.family}/offer/accept`, init: post, status: 409 },
+  // A6 asks
+  { op: 'POST /ask', path: '/ask', init: () => ({ ...post(), body: JSON.stringify({ text: 'When do entries close?', projectId: ids.eventing }) }), status: 202 },
+  { op: 'POST /ask', path: '/ask', init: () => ({ ...post(), body: JSON.stringify({ text: 'Go through all the rules and tell me what changed', projectId: ids.eventing }) }), status: 202 },
+  { op: 'POST /ask', path: '/ask', init: () => ({ ...post(), body: JSON.stringify({ text: 'What do these say?', files: ['serve/p-general/uploads/rules.txt'], source: 'voice' }) }), status: 202 },
+  { op: 'POST /ask', path: '/ask', init: () => ({ ...post(), body: JSON.stringify({ text: 'Read these later', projectId: ids.eventing, mode: 'background', capUsd: 0.4 }) }), status: 202 },
+  { op: 'POST /ask', path: '/ask', init: () => ({ ...post(), body: JSON.stringify({ text: 'Is this right?', about: { kind: 'draft', id: ids.fair } }) }), status: 202 },
+  { op: 'POST /ask', path: '/ask', init: () => ({ ...post(), body: JSON.stringify({ text: 'Why?', about: { kind: 'item', id: 'it_nothing' } }) }), status: 404 },
+  { op: 'POST /ask', path: '/ask', init: () => ({ ...post(), body: JSON.stringify({ text: 'x', files: ['../outside.txt'] }) }), status: 400 },
+  { op: 'POST /ask', path: '/ask', init: post, status: 400 },
+  { op: 'GET /ask', path: () => `/ask?about=draft:${ids.fair}`, status: 200 },
+  { op: 'GET /ask', path: '/ask', status: 400 },
+  { op: 'GET /ask/suggestions', path: () => `/ask/suggestions?about=draft:${ids.fair}`, status: 200 },
+  { op: 'GET /ask/suggestions', path: '/ask/suggestions?about=job:j_nope', status: 404 },
+  { op: 'GET /ask/{id}', path: () => `/ask/${ids.plannedAsk}`, status: 200 },
+  { op: 'GET /ask/{id}', path: '/ask/ak_nope', status: 404 },
+  { op: 'POST /ask/{id}/choose', path: () => `/ask/${ids.plannedAsk}/choose`, init: () => ({ ...post(), body: JSON.stringify({ mode: 'background' }) }), status: 202 },
+  { op: 'POST /ask/{id}/choose', path: () => `/ask/${ids.plannedAsk}/choose`, init: () => ({ ...post(), body: JSON.stringify({ mode: 'background' }) }), status: 200 },
+  { op: 'POST /ask/{id}/choose', path: () => `/ask/${ids.plannedAsk}/choose`, init: () => ({ ...post(), body: JSON.stringify({ mode: 'now' }) }), status: 409 },
+  { op: 'POST /ask/{id}/choose', path: () => `/ask/${ids.answeredAsk}/choose`, init: () => ({ ...post(), body: JSON.stringify({ mode: 'now' }) }), status: 409 },
+  { op: 'POST /ask/{id}/choose', path: () => `/ask/${ids.plannedAsk}/choose`, init: post, status: 400 },
   { op: 'GET /sync', path: '/sync?collections=projects,turns', status: 200 },
   { op: 'GET /sync', path: '/sync?since=1&collections=projects,turns,jobs', status: 200 },
 ];

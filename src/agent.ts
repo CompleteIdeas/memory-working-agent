@@ -2969,7 +2969,9 @@ export async function runAgent(opts: {
     }
   }
 
-  appendRunLog({
+  // A6 review: a plan step's spend is in its plan's row (the plan logs the total, its reads and its job); a row per
+  // step as well counted a planned job about twice in the history estimates read
+  if (!opts.planStep) appendRunLog({
     ts: start, session: opts.session ?? '', instruction: instruction.slice(0, 160), reason, outcome, ...(opts.jobId ? { job: opts.jobId } : {}),
     steps, dispatches, toolCalls, reRecalls, supersedes, consolidations, refusals,
     ...(refusalLog.length ? { refusalLog } : {}),
@@ -3238,7 +3240,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     ts: start, session: opts.session ?? '', instruction: instruction.slice(0, 160), reason,
     steps: aggSteps, dispatches: aggDispatches, toolCalls: aggToolCalls, reRecalls: 0, supersedes: 0, consolidations: 0,
     planned: steps.length, durationMs: now() - start, costUsd: Number(costUsd.toFixed(4)), summary: finalSummary.slice(0, 200),
-    ...(cappedUsd ? { capHit: 'usd', maxUsd } : {}),
+    ...(cappedUsd ? { capHit: 'usd', maxUsd } : {}), ...(opts.jobId ? { job: opts.jobId } : {}), pagesRead: aggPages, reads: aggReads, run: planRunId,
   });
   emit('end', { reason, steps: aggSteps, dispatches: aggDispatches, durationMs: now() - start, planned: steps.length });
   // A planned run's outcome: unfinished → could-not; the LAST step's complete passes through (the plan

@@ -27,6 +27,9 @@
  * Projects (A5): a project or a thread's turn changing is sent with its current shape; /sync has 'projects' (all of
  * them, archived included, so an archive reaches the phone) and 'turns' (a snapshot holds each active project's latest
  * 50; a delta holds every turn changed since the cursor, a moved one included with its new project).
+ *
+ * Asks (A6): an ask changing (planned, chosen, answered) is sent as entity 'ask' with its current shape; its run's
+ * progress is the project's `live` events and its answer the thread's turn.
  */
 import type { ServerResponse, IncomingMessage } from 'node:http';
 import { ApiError, type Route } from '../router.js';
@@ -40,6 +43,7 @@ import { mailSnapshot, mailDelta } from '../../v2/mail.js';
 import { importantSnapshot, itemForStream } from '../../v2/important.js';
 import { triageNow, triageTz } from '../../v2/triage.js';
 import { apiProject, apiTurn, getProject, getTurn, listProjects, recentTurns } from '../../v2/projects.js';
+import { apiAsk, getAsk } from '../../v2/ask.js';
 
 export const EVENT_RETENTION_MS = 7 * 24 * 3_600_000;
 const POLL_MS = 1_000, KEEPALIVE_MS = 15_000, BATCH = 500, STEP_EVERY_MS = 1_000;
@@ -120,6 +124,13 @@ function present(rows: EventRow[], who: Caller | null) {
       const data = e.op === 'delete' ? null : e.entity === 'project' ? (() => { const p = getProject(e.entity_id); return p ? apiProject(p) : null; })()
         : (() => { const t = getTurn(e.entity_id); return t ? apiTurn(t, undefined, { summary: true }) : null; })();
       out.push({ seq: e.seq, entity: e.entity, id: e.entity_id, op: data ? 'upsert' : 'delete', ...(data ? { data } : {}) });
+      return;
+    }
+    if (e.entity === 'ask') {
+      // A6: an ask as it is now (its plan, its choice, its answer); one per ask per batch
+      if (rows.findLastIndex((x) => x.entity === 'ask' && x.entity_id === e.entity_id) !== i) return;
+      const a = getAsk(e.entity_id);
+      out.push({ seq: e.seq, entity: 'ask', id: e.entity_id, op: a ? 'upsert' : 'delete', ...(a ? { data: apiAsk(a) } : {}) });
       return;
     }
     const j = jobIdOf(e);
