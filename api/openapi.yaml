@@ -439,7 +439,7 @@ components:
         `running` is a message whose answer is being written (the same turn fills in when it is done); `offer` is the
         offer to work on it in the background; `result` is a job's result posted into the thread; `divider` heads a
         conversation from before projects ("Conversation from Oct 22: …").
-      required: [id, projectId, kind, ts, message, reply, truncated, reason, tainted, runId, tryId, about, provenance, offer, legacySession, movedFrom, updatedSeq]
+      required: [id, projectId, kind, ts, message, reply, truncated, reason, tainted, runId, tryId, about, provenance, offer, legacySession, movedFrom, updatedSeq, source]
       additionalProperties: false
       properties:
         id: { type: string }
@@ -482,6 +482,7 @@ components:
         legacySession: { type: ['string', 'null'], description: 'The conversation it came from before projects (its files stay in that folder).' }
         movedFrom: { type: ['string', 'null'], description: 'The project it was last moved out of.' }
         updatedSeq: { type: integer }
+        source: { type: string, enum: [typed, voice], description: 'voice: the person spoke it (the browser turned speech into text).' }
     Suggestion:
       type: object
       description: |
@@ -503,6 +504,184 @@ components:
               projectId: { type: string }
               name: { type: string }
               score: { type: number }
+    AskRoute:
+      type: object
+      description: 'Where an ask went: "To: Family & school · suggested". given = the project the person chose; about = the project of the thing it is about; suggested / not sure = the routing suggestion (not sure goes to General).'
+      required: [projectId, name, confidence, alternatives]
+      additionalProperties: false
+      properties:
+        projectId: { type: string }
+        name: { type: string }
+        confidence: { type: string, enum: [given, about, suggested, not sure] }
+        alternatives:
+          type: array
+          items:
+            type: object
+            required: [projectId, name, score]
+            additionalProperties: false
+            properties:
+              projectId: { type: string }
+              name: { type: string }
+              score: { type: number }
+    AskAbout:
+      type: object
+      description: 'The thing an ask is about. `label` is the chip ("About: Book fair · Sat Nov 14"), for the screen only.'
+      required: [kind, id, label]
+      additionalProperties: false
+      properties:
+        kind: { type: string, enum: [item, mail, event, draft, job, conflict] }
+        id: { type: string }
+        label: { type: string }
+    AskFile:
+      type: object
+      required: [path, name, pages, reads]
+      additionalProperties: false
+      properties:
+        path: { type: string, description: 'A workspace path, as an upload returns it.' }
+        name: { type: string }
+        pages: { type: integer, minimum: 1, description: 'Counted as read_document counts them (a PDF''s own pages), no model call.' }
+        reads: { type: integer, minimum: 1, description: 'read_document calls it takes at the default window: the unit estimates price by.' }
+    AskPlanOption:
+      type: object
+      required: [usd, ms, label, firstGuess, capDefault]
+      additionalProperties: false
+      properties:
+        usd: { type: number, description: 'Rounded as said: whole cents under $1, 5-cent steps above.' }
+        ms: { type: integer }
+        label: { type: string, description: '"Do it now · about 40¢"; "a first guess, about …" when the estimate rests on the default or a single sample.' }
+        firstGuess: { type: boolean }
+        capDefault: { type: number, description: 'The spending limit this choice gets unless the person sets one.' }
+        readyAt: { type: integer, description: 'In the background only: when it should be ready (epoch ms).' }
+    AskPlan:
+      type: object
+      description: |
+        A big ask, not started (SCENARIOS N04): what it is, what it would cost now (main model) and in the background
+        (background model), narrower asks, and the limit it would stop at. Shown with "Or narrow it…" and "Details"
+        ("Stop if it costs more than $…").
+      required: [size, message, reasons, now, background, narrow, capDefault, basis]
+      additionalProperties: false
+      properties:
+        size:
+          type: object
+          additionalProperties: false
+          properties:
+            pages: { type: integer }
+            sources: { type: integer }
+        message: { type: string, description: '"This is a big read — 149 pages, about 20 minutes. Do it now, or in the background for less and I''ll tell you when it''s done?"' }
+        reasons: { type: array, items: { type: string, enum: [steps, cost, pages, wording] } }
+        now: { $ref: '#/components/schemas/AskPlanOption' }
+        background: { $ref: '#/components/schemas/AskPlanOption' }
+        narrow:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            required: [label, text, files, usd, by]
+            additionalProperties: false
+            properties:
+              label: { type: string, description: '"Only ICP Eventing Handbook · 61 pages, about 8¢"' }
+              text: { type: string }
+              files: { type: array, items: { type: string } }
+              pages: { type: integer }
+              usd: { type: number }
+              by: { type: string, enum: [file, model], description: 'file: one per attached file (deterministic); model: at most one, proposed by the cheap model and checked.' }
+        capDefault: { type: number }
+        basis: { type: string, enum: [this-job, history, default] }
+    AskStart:
+      type: object
+      description: |
+        What an ask became. kind answer: it runs now in the project's thread (state started; or offer, the older offer
+        to work on it in the background) — follow it on /stream. kind plan: a big ask waiting for POST /ask/{id}/choose.
+        kind job: handed to the background (jobId, its limit, when it should be ready).
+      required: [askId, projectId, route, kind]
+      additionalProperties: false
+      properties:
+        askId: { type: string }
+        projectId: { type: string }
+        route: { $ref: '#/components/schemas/AskRoute' }
+        kind: { type: string, enum: [answer, plan, job] }
+        about: { $ref: '#/components/schemas/AskAbout' }
+        state: { type: string, enum: [started, offer] }
+        runId: { type: string }
+        turnId: { type: string }
+        message: { type: string }
+        plan: { $ref: '#/components/schemas/AskPlan' }
+        jobId: { type: string }
+        tier: { type: string, enum: [background] }
+        capUsd: { type: number }
+        estimate:
+          type: object
+          required: [usd, ms]
+          additionalProperties: false
+          properties:
+            usd: { type: number }
+            ms: { type: integer }
+        readyAt: { type: integer }
+        budget:
+          type: object
+          description: 'An ask about one thing: 8 steps, 5¢.'
+          required: [maxSteps, maxUsd]
+          additionalProperties: false
+          properties:
+            maxSteps: { type: integer }
+            maxUsd: { type: number }
+        tainted: { type: boolean, description: 'An ask about one thing: the run starts tainted (the thing holds someone else''s words), so any write it attempts waits for approval.' }
+    AskChosen:
+      type: object
+      required: [askId, chosen]
+      additionalProperties: false
+      properties:
+        askId: { type: string }
+        chosen: { type: string, enum: [now, background, narrow] }
+        kind: { type: string, enum: [answer, job] }
+        state: { type: string, enum: [started, offer] }
+        runId: { type: string }
+        turnId: { type: string }
+        message: { type: string }
+        capUsd: { type: number }
+        jobId: { type: string }
+        tier: { type: string, enum: [background] }
+        estimate:
+          type: object
+          required: [usd, ms]
+          additionalProperties: false
+          properties:
+            usd: { type: number }
+            ms: { type: integer }
+        readyAt: { type: integer }
+        narrowed: { $ref: '#/components/schemas/AskStart' }
+    Ask:
+      type: object
+      required: [id, createdAt, text, projectId, route, kind, mode, about, files, source, plan, state, choice, jobId, runId, turnId, answer, tainted, capUsd, parentId, updatedSeq]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        createdAt: { type: integer }
+        text: { type: string }
+        projectId: { type: string }
+        route: { oneOf: [{ $ref: '#/components/schemas/AskRoute' }, { type: 'null' }] }
+        kind: { type: string, enum: [answer, plan, job] }
+        mode: { type: ['string', 'null'] }
+        about:
+          type: ['object', 'null']
+          required: [kind, id]
+          additionalProperties: false
+          properties:
+            kind: { type: string }
+            id: { type: string }
+        files: { type: array, items: { $ref: '#/components/schemas/AskFile' } }
+        source: { type: string, enum: [typed, voice] }
+        plan: { oneOf: [{ $ref: '#/components/schemas/AskPlan' }, { type: 'null' }] }
+        state: { type: string, enum: [planned, choosing, running, offered, answered, queued, narrowed, failed] }
+        choice: { type: ['object', 'null'] }
+        jobId: { type: ['string', 'null'] }
+        runId: { type: ['string', 'null'] }
+        turnId: { type: ['string', 'null'] }
+        answer: { type: ['string', 'null'], description: 'The answer, once written (also on the thread''s turn, and under an item).' }
+        tainted: { type: ['boolean', 'null'] }
+        capUsd: { type: ['number', 'null'] }
+        parentId: { type: ['string', 'null'], description: 'A narrower ask: the plan it was chosen from.' }
+        updatedSeq: { type: integer }
   responses:
     Error:
       description: An error.
@@ -1341,4 +1520,122 @@ paths:
                 properties:
                   goal: { type: string }
                   message: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /ask:
+    post:
+      operationId: ask
+      summary: 'Ask, or hand over a job. Routed to the project given, the project of the thing it is about, or a suggestion. An ordinary ask runs now in that thread; a big one (more than 20 steps, more than 30¢, more than 40 attached pages, or "learn everything / go through all / review all / triage") comes back as a plan; mode background hands it to a job at once. POST only: what is asked never sits in a URL.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, minLength: 1, maxLength: 8000 }
+                projectId: { type: string }
+                about:
+                  type: object
+                  description: '"Ask about this": the item (A9 Important), email, calendar event or draft, job, or double-booking (conflict:<a>|<b>). Its own text goes to the run fenced, never into the instruction; 8 steps, 5¢.'
+                  required: [kind, id]
+                  properties:
+                    kind: { type: string, enum: [item, mail, event, draft, job, conflict] }
+                    id: { type: string }
+                files: { type: array, maxItems: 10, items: { type: string }, description: 'Workspace paths of uploaded files.' }
+                mode: { type: string, enum: [auto, now, background], default: auto }
+                capUsd: { type: number, minimum: 0.01, maximum: 20, description: 'The most it may spend (now: the run; background: the job).' }
+                source: { type: string, enum: [typed, voice], default: typed, description: 'voice: the words came from the browser''s speech recognition.' }
+      responses:
+        '202':
+          description: Answering, planned, or handed to the background.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AskStart' }
+        default: { $ref: '#/components/responses/Error' }
+    get:
+      operationId: listAsksAbout
+      summary: 'The asks about one thing, oldest first: the answers shown in place under it ("You asked").'
+      parameters:
+        - { name: about, in: query, required: true, description: 'kind:id', schema: { type: string } }
+      responses:
+        '200':
+          description: The asks.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [about, asks]
+                additionalProperties: false
+                properties:
+                  about: { $ref: '#/components/schemas/AskAbout' }
+                  asks: { type: array, items: { $ref: '#/components/schemas/Ask' } }
+        default: { $ref: '#/components/responses/Error' }
+  /ask/suggestions:
+    get:
+      operationId: askSuggestions
+      summary: '2–3 questions specific to one thing ("Remind me the day before", "Who else is going?"), from templates by kind: no model call.'
+      parameters:
+        - { name: about, in: query, required: true, description: 'kind:id', schema: { type: string } }
+      responses:
+        '200':
+          description: The chip and the questions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [about, suggestions]
+                additionalProperties: false
+                properties:
+                  about: { $ref: '#/components/schemas/AskAbout' }
+                  suggestions: { type: array, minItems: 2, maxItems: 3, items: { type: string } }
+        default: { $ref: '#/components/responses/Error' }
+  /ask/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getAsk
+      summary: An ask as it stands, with its turn in the thread once there is one.
+      responses:
+        '200':
+          description: The ask.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ask, turn]
+                additionalProperties: false
+                properties:
+                  ask: { $ref: '#/components/schemas/Ask' }
+                  turn: { oneOf: [{ $ref: '#/components/schemas/Turn' }, { type: 'null' }] }
+        default: { $ref: '#/components/responses/Error' }
+  /ask/{id}/choose:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: chooseAsk
+      summary: 'A plan''s choice, made once: now (main model, its limit), background (a Job on the background model tier, with the default limit or capUsd), or a narrower ask (which is asked in turn). The same choice again answers what the first did (200); another choice is 409 already_chosen.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode: { type: string, enum: [now, background] }
+                narrowIndex: { type: integer, minimum: 0, maximum: 2 }
+                capUsd: { type: number, minimum: 0.01, maximum: 20 }
+      responses:
+        '202':
+          description: Chosen.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AskChosen' }
+        '200':
+          description: The same choice again; what the first one did.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AskChosen' }
         default: { $ref: '#/components/responses/Error' }

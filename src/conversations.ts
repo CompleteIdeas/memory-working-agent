@@ -50,6 +50,8 @@ export interface ConversationTurn {
   job?: string;
   /** A6: what the turn asked about (an item, an event, a job) */
   about?: { kind: string; id: string };
+  /** A6: the words came from the browser's speech recognition (kept for later analytics) */
+  source?: 'voice';
 }
 export interface ConversationSummary { session: string; title: string; last: number; turns: number; lastMessage: string }
 
@@ -88,6 +90,7 @@ function toTurn(r: TurnRow): ConversationTurn {
     ...(meta.offer ? { offer: meta.offer } : {}),
     ...(meta.resumes !== undefined ? { resumes: meta.resumes } : {}),
     ...(meta.job ? { job: meta.job } : {}),
+    ...(meta.source ? { source: meta.source } : {}),
     ...(prov.length ? { provenance: prov } : {}),
     ...(r.about_kind && r.about_id ? { about: { kind: r.about_kind, id: r.about_id } } : {}),
   };
@@ -118,7 +121,7 @@ export function appendTurn(t: ConversationTurn, path?: string): string | undefin
         kind: (t.kind ?? 'chat') as Exclude<ConversationTurn['kind'], 'offer-answer' | undefined>, message: t.message,
         reply: t.kind === 'running' ? t.reply : t.reply + note,
         reason: t.reason ?? null, tainted: t.tainted ?? null, runId: t.runId ?? null, provenance: t.provenance ?? null, about: t.about ?? null,
-        meta: { ...(t.offer ? { offer: t.offer } : {}), ...(t.resumes !== undefined ? { resumes: t.resumes } : {}), ...(t.job ? { job: t.job } : {}),
+        meta: { ...(t.offer ? { offer: t.offer } : {}), ...(t.resumes !== undefined ? { resumes: t.resumes } : {}), ...(t.job ? { job: t.job } : {}), ...(t.source ? { source: t.source } : {}),
           ...(place.archivedFrom ? { archivedFrom: place.archivedFrom.id } : {}) },
       }, d).id;
     }), 'keeping a turn');

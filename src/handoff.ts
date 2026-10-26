@@ -146,7 +146,8 @@ export async function continueGoal(memory: MwaMemory, o: { goalId: string; perso
 }
 
 /** Start the background work: a goal, and a one-shot job due now in the chat's folder. */
-export async function startBackgroundWork(memory: MwaMemory, o: { message: string; session: string; personId: string; workspace: string; context?: { text: string; tainted: boolean }; /** v2 (A3b): the most it may spend before it waits for the person */ capUsd?: number }): Promise<{ goalId: string; jobId: string; v2JobId?: string } | null> {
+export async function startBackgroundWork(memory: MwaMemory, o: { message: string; session: string; personId: string; workspace: string; context?: { text: string; tainted: boolean }; /** v2 (A3b): the most it may spend before it waits for the person */ capUsd?: number;
+  /** v2 (A6): the model tier its runs are priced on (the big-ask plan's "in the background" is the background tier) */ modelTier?: 'main' | 'background' }): Promise<{ goalId: string; jobId: string; v2JobId?: string } | null> {
   const message = o.message.trim();
   if (!message) return null;
   const goalId = await memory.addGoal(goalTitle(ownText(message) || message), ownText(message).slice(0, 600) || message.slice(0, 600), 'medium', o.personId);
@@ -167,7 +168,8 @@ export async function startBackgroundWork(memory: MwaMemory, o: { message: strin
     v2 = made.try ? { jobId: made.job.id, tryId: made.try.id } : null;
     // v2 (A3b review, policy): a hand-off without a limit gets the default one — twice the estimate, or the estimate
     // plus three large steps and the wrap-up; at least 25¢ (50¢ for a first guess), at most $5.
-    if (v2 && !(o.capUsd && o.capUsd > 0)) updateJob(made.job.id, { cap_usd: defaultCapFor(made.job, triesOf(made.job.id), 'first') });
+    if (v2 && o.modelTier) updateJob(made.job.id, { model_tier: o.modelTier });
+    if (v2 && !(o.capUsd && o.capUsd > 0)) updateJob(made.job.id, { cap_usd: defaultCapFor({ ...made.job, model_tier: o.modelTier ?? made.job.model_tier }, triesOf(made.job.id), 'first') });
   } catch { v2 = null; }
   const jobId = await memory.addScheduledTask(instruction, now, {
     notify: o.session, dir, person: o.personId, goal: goalId, task: instruction, request: message, depth: 0, ...(tainted ? { tainted: true } : {}),
