@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.9.0 (2026-10-27) — the pending list worked through: background work, the browser, the prime
+
+Thirteen commits over the list in `docs/pending-2026-10-26.md`, each cluster read by fresh-context reviewers
+(security, code quality) with their findings fixed before release.
+
+Background work:
+- **Offer answers are recorded on the server.** "Work on it" and "do it here" are kept on the offer turn
+  (`/api/work/start`, `stay=1`), so another device or a reload shows the offer answered and linked to its goal.
+- **Continue from where it stopped is a server resume** (`/api/chat?resume=<ts>`): the stopped task's own words,
+  framed as a resume in the same folder, tainted if the stopped run had read outside content.
+- **A plan's later steps get the files earlier steps found** (fenced), instead of listing the folder again.
+- **A resume that found the earlier work in place finishes quietly**, instead of posting a second "stuck" result;
+  a resume that was refused something, or queued another resume, keeps its own word.
+- **An allowed saved login is not one of an unattended run's three outward actions**; a job that reads the
+  person's files is held once at scheduling time when no folder is granted (`needs-folder`).
+
+The agent browser:
+- **Control numbers drawn on the picture** `browser_look` sends, removed from the page right after.
+- **Per-site allow and deny lists** (`tools.browser.allow` / `deny`, `MWA_BROWSER_ALLOW` / `DENY`): deny holds
+  every request; allow holds openings, landings and redirect hops; an unlisted frame stays blank.
+- **One-time codes and sign-in or reset links are hidden** from the model in outside content (`MWA_STRIP_CODES`);
+  `browser_look` refuses a page that holds one.
+- **Downloads** land in `downloads/` in the conversation's folder, only after the agent's own click, capped, and
+  read back as outside content; **new tabs** a click opens become the page (`browser_back` returns; a tab the page
+  opened on its own is closed); **`browser_find`** scrolls to the words.
+
+The web app and the prime:
+- **Remove a standing preference from its card** or the Memory view (`/api/policies/forget`); the Work view
+  follows a running job's steps.
+- **The prime keeps the question's own results.** The entity bridge fills at most `MWA_BRIDGE_SLOTS` (2) of the
+  ten, under them; which of two differing memories is newer is decided by the dates in their own words, and the
+  older is said to be history. Measured on the pilot's C2: the current $40 cap instead of the old $10.
+  `MWA_PRIME_LOG` writes each run's prime for a replay.
+
 ## 0.8.1 (2026-10-26) — background jobs you can watch and stop, and fewer cards for nothing
 
 From the replay of the task-centred workspace on the real runtime:
