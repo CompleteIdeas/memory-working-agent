@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CONSEQUENTIAL, GO_AHEAD, AGENT_BROWSER_HEADER, BROWSING_GUIDE, browserTools, closeBrowsers } from '../src/tools/browser.js';
@@ -25,6 +25,26 @@ describe('what counts as a consequential click, and as going ahead', () => {
   it('the person\'s go-ahead, in their own words', () => {
     for (const m of ['Yes, submit it', 'go ahead', 'Confirmed — pay it']) expect([m, GO_AHEAD.test(m)]).toEqual([m, true]);
     for (const m of ['Fill out the entry form for Tessa', 'What does the page say?']) expect([m, GO_AHEAD.test(m)]).toEqual([m, false]);
+  });
+  it('a download name is made safe and unique (4d)', async () => {
+    const { downloadName } = await import('../src/tools/browser.js');
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-dl-'));
+    try {
+      expect(downloadName(dir, '../../mwa.config.json')).toBe('_.._mwa.config.json'); // no traversal, no leading dots
+      expect(downloadName(dir, 'CON.csv')).toBe('_CON.csv'); // a reserved Windows name
+      expect(downloadName(dir, 'report. ')).toBe('report');
+      expect(downloadName(dir, '')).toBe('download');
+      writeFileSync(join(dir, 'a.csv'), 'x');
+      expect(downloadName(dir, 'a.csv')).toBe('a (2).csv');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it('a site list entry is read as a bare host (4b, audit)', async () => {
+    const { siteEntry } = await import('../src/tools/browser.js');
+    expect(siteEntry('https://Evil.com:443/x')).toBe('evil.com');
+    expect(siteEntry('evil.com.')).toBe('evil.com');
+    expect(siteEntry('*.Example.ORG')).toBe('*.example.org');
+    expect(siteEntry('bücher.de')).toBe('xn--bcher-kva.de');
+    expect(siteEntry('  ')).toBeNull();
   });
   it('a site list names hosts and their subdomains; "*.x" only subdomains (4b)', async () => {
     const { hostListed, siteRefusal } = await import('../src/tools/browser.js');
@@ -104,13 +124,16 @@ describe.skipIf(!hasPlaywright)('in a real browser', () => {
         // 4d: a file the site offers; 4e: a link that opens a new tab
         if (path === '/entries.csv') { res.writeHead(200, { 'content-type': 'text/csv', 'content-disposition': 'attachment; filename="entries.csv"' }); res.end('name,level\nTessa,Novice\n'); return; }
         if (path === '/popup') { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<html><head><title>Popup</title></head><body><p>The stabling form.</p><a href="/">Home</a></body></html>'); return; }
+        // audit 2026-10-26: a page that opens a tab and starts a download on its own, and one with a one-time code
+        if (path === '/auto') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(`<html><head><title>Auto</title></head><body><p>Nothing to see.</p><script>setTimeout(() => { window.open('/popup'); const a = document.createElement('a'); a.href = '/entries.csv'; a.download = 'mwa.config.json'; document.body.appendChild(a); a.click(); }, 150);</script></body></html>`); return; }
+        if (path === '/code') { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<html><head><title>Code</title></head><body><p>Your verification code is 482913. Enter it to continue.</p><a href="/">Home</a></body></html>'); return; }
         res.writeHead(200, { 'content-type': 'text/html' });
         res.end(`<html><head><title>Entries</title></head><body><h1>Fox Run entries close Nov 13</h1>
           <form method="post" action="/done"><input name="user" placeholder="Username"><input name="pw" type="password" placeholder="Password">
           <button type="submit">Submit entry</button></form><a href="/next">Next page</a>
           <select name="level"><option>Novice</option><option>Training</option><option>Preliminary</option></select>
           <div style="height:3000px"></div><p>Bottom of the page: stabling closes Nov 10.</p>
-          <a href="/entries.csv" download>Download the entries CSV</a> <a href="/popup" target="_blank">Stabling form (new tab)</a></body></html>`);
+          <a href="/entries.csv" download>Download the entries CSV</a> <a href="/popup" target="_blank">Stabling form (new tab)</a> <a href="${base}/next">Same site by number</a></body></html>`);
       });
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
@@ -221,7 +244,11 @@ describe.skipIf(!hasPlaywright)('in a real browser', () => {
     // 4a: the numbers were drawn on the page for the picture (the five controls in view) and removed right after
     const { lastLook } = await import('../src/tools/browser.js');
     expect(lastLook.marks).toBe(5);
-    expect(await tool('browser_page').handler({}, ctx({ session: 'conv-look', runId: 'look-1' }))).not.toMatch(/__mwa_marks/);
+    expect(lastLook.clean).toBe(true); // the marks' element (a random id per look) is gone from every frame
+    // a one-time code on the page: no picture, since nothing can hide it there (audit 2026-10-26)
+    await tool('browser_open').handler({ url: `${base}/code` }, ctx({ session: 'conv-look', runId: 'look-1' }));
+    await expect(tool('browser_look').handler({}, ctx({ session: 'conv-look', runId: 'look-1', brainModel: 'openai/gpt-6.1-sol' }))).rejects.toThrow(/a one-time code is on this page/);
+    await tool('browser_open').handler({ url: `${base}/` }, ctx({ session: 'conv-look', runId: 'look-1' }));
     await tool('browser_type').handler({ ref: 2, text: 'hunter2' }, ctx({ session: 'conv-look', runId: 'look-1' }));
     await expect(tool('browser_look').handler({}, ctx({ session: 'conv-look', runId: 'look-1', brainModel: 'openai/gpt-6.1-sol' }))).rejects.toThrow(/password box on this page holds a value/);
   }, 60_000);
@@ -250,11 +277,44 @@ describe.skipIf(!hasPlaywright)('in a real browser', () => {
     const page = await tool('browser_open').handler({ url: `${base}/` }, c) as string;
     expect(page).toMatch(/\[6\] link "Download the entries CSV"/);
     const after = await tool('browser_click').handler({ ref: 6 }, c) as string;
-    expect(after).toMatch(/\(downloaded entries\.csv to your folder/);
-    expect(readFileSync(join(cfgDir, 'entries.csv'), 'utf8')).toBe('name,level\nTessa,Novice\n');
+    expect(after).toMatch(/\(downloaded downloads\/entries\.csv to your folder — read_file opens it as outside content/);
+    expect(readFileSync(join(cfgDir, 'downloads', 'entries.csv'), 'utf8')).toBe('name,level\nTessa,Novice\n');
     // the same name again does not overwrite
     const again = await tool('browser_click').handler({ ref: 6 }, c) as string;
-    expect(again).toMatch(/\(downloaded entries \(2\)\.csv to your folder/);
+    expect(again).toMatch(/\(downloaded downloads\/entries \(2\)\.csv to your folder/);
+    // what a site hands over is read as outside content, not as the person's own file
+    const { builtinTools } = await import('../src/tools/builtins.js');
+    const readFile = builtinTools(['read_file']).find((t) => t.def.name === 'read_file')!;
+    const { OTHER_FOLDER_MARK } = await import('../src/tools/governance.js');
+    expect(String(await readFile.handler({ path: 'downloads/entries.csv' }, ctx() as never))).toMatch(new RegExp(`^${OTHER_FOLDER_MARK.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  }, 60_000);
+
+  // audit 2026-10-26: a page's own tab or download, with no click, is closed / not saved
+  it('a tab or a download the page starts on its own is closed or dropped, and said', async () => {
+    setPreset('developer');
+    const c = ctx({ session: 'conv-auto', runId: 'auto-1' });
+    const first = await tool('browser_open').handler({ url: `${base}/auto` }, c) as string;
+    expect(first).toMatch(/Page: Auto/);
+    await new Promise((r) => setTimeout(r, 1_200));
+    const next = await tool('browser_page').handler({}, c) as string;
+    expect(next).toMatch(/Page: Auto/); // still the page itself, not the tab it opened
+    expect(next).toMatch(/the page opened a tab on its own; it was closed/);
+    expect(next).toMatch(/the page started a download on its own; it was not saved/);
+    expect(existsSync(join(cfgDir, 'mwa.config.json.1'))).toBe(false);
+    expect(existsSync(join(cfgDir, 'downloads', 'mwa.config.json'))).toBe(false);
+  }, 60_000);
+
+  // audit 2026-10-26: a click that leads off a non-empty allow list is refused on the hop, not after landing
+  it('with an allow list, a link to a host off it is refused', async () => {
+    setPreset('developer');
+    vi.stubEnv('MWA_BROWSER_ALLOW', 'localhost');
+    try {
+      const c = ctx({ session: 'conv-allow', runId: 'allow-1' });
+      const page = await tool('browser_open').handler({ url: `${base.replace('127.0.0.1', 'localhost')}/` }, c) as string;
+      expect(page).toMatch(/\[8\] link "Same site by number"/);
+      const out = await tool('browser_click').handler({ ref: 8 }, c).catch((e: Error) => e.message) as string;
+      expect(out).toMatch(/refused|may not reach|not on the browser's allow list/);
+    } finally { vi.stubEnv('MWA_BROWSER_ALLOW', ''); }
   }, 60_000);
 
   // 4e: a click that opens a new tab, browser_back, and browser_find.

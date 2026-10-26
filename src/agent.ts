@@ -2163,7 +2163,7 @@ export async function runAgent(opts: {
       // content (a page, an email, a connector's result) — the classic injection prize. Own and local output is not
       // touched: a file the person wrote may hold a number beside the word "code".
       const redacted = redactVault(called.text + calNote);
-      const hidden = STRIP_CODES && !called.failed && readsUntrustedContent(action.action) ? stripOneTimeSecrets(redacted) : null;
+      const hidden = STRIP_CODES && readsUntrustedContent(action.action) ? stripOneTimeSecrets(redacted) : null; // a failed call's text too (audit 2026-10-26)
       const result = hidden?.text ?? redacted;
       if (hidden && (hidden.codes || hidden.links)) { secretsHidden += hidden.codes + hidden.links; if (secretsHidden === hidden.codes + hidden.links) history.push(`(hid ${hidden.codes ? `${hidden.codes} one-time code${hidden.codes > 1 ? 's' : ''}` : ''}${hidden.codes && hidden.links ? ' and ' : ''}${hidden.links ? `${hidden.links} sign-in/reset link${hidden.links > 1 ? 's' : ''}` : ''} in ${action.action}'s result)`); }
       if (draftNo) gatesFired.push('draft');

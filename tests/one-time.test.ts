@@ -68,11 +68,57 @@ describe('stripOneTimeSecrets', () => {
       'Fox Run results: Tessa 3rd with 29.4 penalties, dressage 28.1.',
       'Your order #1203 ships Monday. Account 4471 is in good standing.',
       'The code for the new feature is in src/agent.ts line 2155.',
+      // audit 2026-10-26: the pages MWA is used for — a menu's "Sign in", event and member numbers, ZIP codes
+      'Sign in | Register\nEvent 18969 Fox Run Horse Trials',
+      '[1] link "Log in"\n[2] link "USEF 341980"',
+      'Access 2024 results for event 18969',
+      'Your confirmation number is 884412.',
+      'ZIP code 20147, area code 703',
+      'Booking confirmation code: ABC123',
+      'PLEASE ENTER YOUR VERIFICATION CODE on the next page',
+      'Promo code SUMMER26 gives 10% off; the discount code is 2026SALE',
+      'Flight confirmation code: K7X9QZ for the 06:40 to Lexington',
+      'Your confirmation number is 48291733.',
+      'Sign in to see your dressage score: 1234 and the entry 20147',
+      '1200 Main St, Lexington KY 40511 — call 800 555 0100 to access the barn',
+      'SECURITY NOTICE: CONTINUE AT YOUR OWN RISK',
+      'Error code 500123 from the server; HTTP status code 404',
     ]) {
       const r = stripOneTimeSecrets(s);
       expect([s, r.codes, r.links]).toEqual([s, 0, 0]);
       expect(r.text).toBe(s);
     }
+  });
+  it('hides the other shapes a code takes: dashes, spaced pairs, a letter prefix', () => {
+    for (const [s, hidden] of [
+      ['Your verification code: 4821-9937', '4821-9937'],
+      ['One-time passcode 48 29 13 expires in 5 minutes', '48 29 13'],
+      ['G-482913 is your Google verification code', 'G-482913'],
+      ['Your Apple ID code is: 123456. Do not share it.', '123456'],
+      ['Your code: x7k9q2', 'x7k9q2'],
+      ['Steam Guard code: F8K2Q', 'F8K2Q'],
+      ['Enter the verification code 4 8 2 9 1 3 to continue', '4 8 2 9 1 3'],
+    ] as const) {
+      const r = stripOneTimeSecrets(s);
+      expect([s, r.codes]).toEqual([s, 1]);
+      expect(r.text).not.toContain(hidden);
+    }
+  });
+  it('is linear on a long hostile URL and leaves file paths and campaign names alone', () => {
+    const hostile = `https://e.com/${'auth/'.repeat(8_000)}`;
+    const t0 = Date.now();
+    const r = stripOneTimeSecrets(`see ${hostile} now`);
+    expect(Date.now() - t0).toBeLessThan(200);
+    expect(r.links).toBe(0);
+    for (const s of [
+      'https://github.com/CompleteIdeas/mwa/blob/master/src/auth/magic-link-settings-page.ts',
+      'https://shop.example/invite-friends/campaign_summer_2026_promo',
+      'https://portal.example.com/login',
+      'https://www.npr.org/2026/10/26/election-results-confirmed-by-state-officials',
+      'https://www.npr.org/authors/jane-doe-and-somebody-else-writes-here',
+      'Page: Entries — https://www.useventing.com/login?returnUrl=/events/foxrun2026results',
+    ]) expect([s, stripOneTimeSecrets(s).links]).toEqual([s, 0]);
+    expect(stripOneTimeSecrets('https://accounts.example.com/reset/3f9a2c7b1d4e5f6a8b9c0d1e2f3a4b5c').links).toBe(1); // a hex token
   });
   it('hides a reset or sign-in link that carries a token, keeping the host, and leaves plain links', () => {
     const reset = 'Reset your password: https://accounts.example.com/reset?token=Zx9kq2LmP0aQ7vTbR4sWe1 — the link expires in an hour.';

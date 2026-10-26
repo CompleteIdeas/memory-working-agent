@@ -104,7 +104,9 @@ function personFile(ctx: ToolContext, p: string, absoluteOnly = false): string |
  *  says which, for the mark). Writes keep using allowed(): a run writes only in its own folder. */
 function readable(ctx: ToolContext, p: string, absoluteOnly = false): { path: string; other: boolean } | null {
   const own = allowed(ctx, p);
-  if (own && existsSync(own)) return { path: own, other: false };
+  // `downloads/` holds what a site handed the browser (browser.ts, 4d): outside content, marked as such, so a read
+  // of it counts as reading outside content and is not laundered into the person's own words (audit 2026-10-26).
+  if (own && existsSync(own)) return { path: own, other: /^downloads[\\/]/i.test(relative(resolve(ctx.sandboxDir), own)) };
   const pf = personFile(ctx, p, absoluteOnly);
   if (pf) return { path: pf, other: true };
   return own ? { path: own, other: false } : null;
