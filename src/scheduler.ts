@@ -333,6 +333,17 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // pilot: a price watch's first check said "complete" — delivered as news, and it would have stopped the job).
     if (outcome === 'complete' && !task.until) { outcome = 'changed'; overridden = true; }
     const actedThisRun = Boolean((r as { staged?: string[] }).staged?.length) || Number((r as { actionsTaken?: number }).actionsTaken) > 0;
+    // Pending list 2026-10-26, 3d (interface replay U02, twice): after a run out of room, the resume read the file the
+    // first attempt had written, did nothing, and ended "stuck" — a second result that called correct work a problem.
+    // A resume that read the earlier work, changed nothing and staged nothing has found nothing more to do: that is
+    // what it says, as a quiet finish, not a failure. A resume that got stuck WITHOUT reading anything keeps its word.
+    const readBack = ((r as { filesFound?: { read?: string[] } }).filesFound?.read ?? []).map((p) => p.replace(/^.*[\\/]/, '')).slice(0, 6);
+    if (task.resumeAttempt && ranOk && !actedThisRun && (r.reason === 'stuck' || (r.reason === 'done' && outcome === 'could-not')) && readBack.length) {
+      (r as { reason: string }).reason = 'done';
+      outcome = 'no-change';
+      summary = `Picked this up again after it ran out of room, read what the earlier attempt left (${readBack.join(', ')}) and found nothing more to do. ${readBack.length > 1 ? 'Those files stand' : 'That file stands'}.`;
+      log(`· resume found nothing more to do: ${task.instruction.slice(0, 40)}`);
+    }
     // BL-44: the job's own record of its last good run — a watch's value and its changes, a brief's "since".
     // A failed run keeps the last good record: "couldn't open the page" is not a new reading.
     if (ranOk && !task.resumeAttempt && outcome !== 'could-not' && outcome !== 'blocked' && deps.memory.setJobLastRun) {

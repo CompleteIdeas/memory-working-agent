@@ -122,6 +122,26 @@ describe('scheduler: a fired task knows it is due now and can reach its origin f
     expect(seen[0].dueNow).toBe(false);
   });
 
+  // Pending list 2026-10-26, 3d (interface replay U02): the resume after a budget cut-off read the file the first
+  // attempt wrote, did nothing, and posted "stuck" — a correct file plus a "problem".
+  it('a resume that read the earlier work and changed nothing finishes quietly instead of posting "stuck"', async () => {
+    const stuck = { summary: 'I kept looking but stopped making progress.', reason: 'stuck', outcome: 'could-not' };
+    const { fired } = await fire({ id: 'res33333', instruction: 'Resume and finish this task', due: 1, resumeAttempt: 1 },
+      { ...stuck, filesFound: { listing: 'board-briefing.md', read: ['C:\\w\\serve\\web-1\\board-briefing.md'] } });
+    expect(fired[0]).toMatchObject({ reason: 'done', outcome: 'no-change' });
+    expect(String(fired[0].summary)).toMatch(/read what the earlier attempt left \(board-briefing\.md\) and found nothing more to do\. That file stands\./);
+  });
+  it('a resume that got stuck without reading anything, or that acted, keeps its own word', async () => {
+    const stuck = { summary: 'I kept looking but stopped making progress.', reason: 'stuck', outcome: 'could-not' };
+    const blind = await fire({ id: 'res44444', instruction: 'Resume and finish this task', due: 1, resumeAttempt: 1 }, stuck);
+    expect(blind.fired[0]).toMatchObject({ reason: 'stuck', outcome: 'could-not' });
+    const acted = await fire({ id: 'res55555', instruction: 'Resume and finish this task', due: 1, resumeAttempt: 1 }, { ...stuck, actionsTaken: 1, filesFound: { read: ['a.md'] } });
+    expect(acted.fired[0]).toMatchObject({ reason: 'stuck', outcome: 'could-not' });
+    // a first fire is not a resume: its "stuck" is news
+    const first = await fire({ id: 'one66666', instruction: 'Write the briefing', due: 1 }, { ...stuck, filesFound: { read: ['a.md'] } });
+    expect(first.fired[0]).toMatchObject({ reason: 'stuck', outcome: 'could-not' });
+  });
+
   it('passes the origin folder as an extra allowed root so a baked-in absolute path resolves', async () => {
     // Inside the workspace (outRoot's parent — here the tmpdir that fire() creates outRoot in).
     const origin = resolve(tmpdir(), 'serve', 'trial-1791952944183-3');
