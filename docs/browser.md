@@ -46,7 +46,7 @@ A job that needs either carries an **allowance** you give when you set it up, in
 - which saved logins it may type (`allow_vault`), still only on each login's own site;
 - which controls it may click (`allow_click`), as "site: control text", at most two, each checked against the page it is on and the control's own label at run time, and at most two such clicks a run.
 
-The job's words in "what's scheduled?" show the allowance ("may, unattended: use the saved login "the-internet" on its own site; click "Login" on the-internet.herokuapp.com"), the run is told the same, and nothing outside it is allowed. A job set up from a conversation that had read outside content carries no allowance, and a job without one that hits a sign-in stops there and says so.
+The job's words in "what's scheduled?" show the allowance ("may, unattended: use the saved login "the-internet" on its own site; click "Login" on the-internet.herokuapp.com"), the run is told the same, and nothing outside it is allowed. A job set up from a conversation that had read outside content carries no allowance, and a job without one that hits a sign-in stops there and says so. A saved login typed under the allowance is your own action, not one of the run's three outward actions: a sign-in of two fields and a click leaves the job its three for the work itself. The click still counts.
 
 ## The vault (BL-63)
 

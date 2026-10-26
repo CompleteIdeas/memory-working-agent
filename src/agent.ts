@@ -14,7 +14,7 @@
  *   - pluggable tools (built-ins + MCP) are first-class, not just codegen dispatch.
  */
 import { readFileSync, statSync, appendFileSync, mkdirSync, existsSync } from 'node:fs';
-import { redactVault, vaultList } from './vault/vault.js';
+import { redactVault, vaultList, hasVaultRef } from './vault/vault.js';
 import { randomUUID } from 'node:crypto';
 import { resolve, sep, dirname, join, basename } from 'node:path';
 import type { Provider } from './provider.js';
@@ -34,7 +34,7 @@ import { TAINTED_JOB_MARK, parseLocalAt, ownWords, groundedInMessage } from './s
 import { MAX_PENDING_TAINTED_CHAT } from './fanout.js';
 // Moved to schedule-request.ts (the work tools use them too); exported here as before.
 export { parseLocalAt, ownWords };
-import { expectedJobCount, whenMismatch, clock12, friendlySchedule, friendlyWhen, unreadSources, asksToChangeJob, asksToStopJob, parseDaysArg, nextDailyDue, asksChangesOnly, asksEveryMinutes, latestReadings, namesWebPage, hasLink, isWatch } from './schedule-request.js';
+import { expectedJobCount, whenMismatch, clock12, friendlySchedule, friendlyWhen, unreadSources, asksToChangeJob, asksToStopJob, parseDaysArg, nextDailyDue, asksChangesOnly, asksEveryMinutes, latestReadings, namesWebPage, hasLink, isWatch, namesFolder } from './schedule-request.js';
 import { EMAIL_DRAFT_TOOL, addressesIn, draftKey, draftRefusal, repeatDraftOf } from './draft-guard.js';
 import { lessonJudge, judgeLesson, lessonDisposition, LESSON_PROMPT_RULE, MAX_LESSON_CHARS } from './lesson-gate.js';
 import { COMPACTION_MODE, summaryCompaction, type Compaction } from './compaction.js';
@@ -47,8 +47,15 @@ import { RoutedProvider, classifyIntent, startTier, wantsPlan } from './model-ro
 import type { ToolRegistry, JobAllow } from './tools/registry.js';
 import { runWorker } from './worker.js';
 import { stageAction, pendingStagedBy, listPendingActions, cancelPending } from './tools/approval.js';
-import { sourcesLine } from './tools/access.js';
-import { BROWSING_GUIDE, NEEDS_ALLOW, parseAllow, allowText } from './tools/browser.js';
+import { sourcesLine, resolveAllowed } from './tools/access.js';
+
+/** Every absolute path the instruction names lands inside this run's own folder or a granted one (3f): a job that
+ *  names only reachable paths does not need a further grant. False when it names none, or one it cannot reach. */
+export function pathInsideRun(instruction: string, dir: string): boolean {
+  const paths = [...instruction.matchAll(/(?:^|[\s"'(])((?:[A-Za-z]:\\|\/(?:Users|home)\/)[^\s"')]+)/g)].map((m) => m[1].replace(/[.,;:]+$/, ''));
+  return paths.length > 0 && paths.every((p) => resolveAllowed(dir, p) !== null);
+}
+import { BROWSING_GUIDE, NEEDS_ALLOW, parseAllow, allowText, vaultAllowed } from './tools/browser.js';
 import { fanoutRefusal, newJobDepth } from './fanout.js';
 import { normalizePersonId } from './person.js';
 import { parseJsonLoose, runCommand } from './util.js';
@@ -821,7 +828,7 @@ export async function runAgent(opts: {
   const nearRejected = new Set<string>(); // F04: a job with the same words at another time, held once
   const repeatRejected = new Set<string>(); // U04 (2026-10-26): a repeat the person asked for, booked once — held once
   const extraRejected = new Set<string>(); // a second job for a request that named no count — held once
-  let countRejections = 0, sourceRejections = 0, changeRejections = 0, kindRejections = 0, kindFollowups = 0, linkRejections = 0, allowRejections = 0, fileCheckRejections = 0;
+  let countRejections = 0, sourceRejections = 0, changeRejections = 0, kindRejections = 0, kindFollowups = 0, linkRejections = 0, allowRejections = 0, fileCheckRejections = 0, folderRejections = 0;
   const filesWritten: string[] = []; // files this run wrote with write_file — a summary that calls the work incomplete is checked against them
   let pendingImage: { mime: 'image/jpeg' | 'image/png'; data: string } | undefined; // a screenshot from browser_look, shown to the model on its next step only
   let cancelRejections = 0; // F04: a stop request that ended with nothing stopped, asked once
@@ -952,7 +959,9 @@ export async function runAgent(opts: {
   };
   // F3 governance: side-effecting actions taken THIS run — feeds the SPINE action log, the
   // "what I did" report, and the cumulative trajectory tripwire.
-  const runActions: { verb: string; tool: string; effect: 'external' | 'local' | 'read' }[] = [];
+  // `allowed`: a saved login typed under this job's allowance — the person's own action, not one of the run's three
+  // outward actions (pending list 2026-10-26, 3e: a sign-in of two fields and a click sat exactly at the limit).
+  const runActions: { verb: string; tool: string; effect: 'external' | 'local' | 'read'; allowed?: boolean }[] = [];
   // BL-36: a claim is judged against the PERSON's own words (a chat's instruction is wrapped in history
   // and channel boilerplate), and not at all in a plan step or a resume, which report on work an earlier
   // run did.
@@ -1985,6 +1994,17 @@ export async function runAgent(opts: {
         nudge = 'This job will run with nobody watching, and an unattended run cannot type a saved login or click a control that signs in, submits, sends or pays. If the person wants it to, call schedule again with allow_vault (the saved login\'s name from vault_list) and/or allow_click ("site: control text"), and tell them in your reply exactly what the job may use and click. If not, call schedule again unchanged, and say in your reply that the job will stop at that step and report.';
         continue;
       }
+      // A JOB THAT READS THE PERSON'S FILES needs a granted folder (pending list 2026-10-26, 3f). The fired run has
+      // only its own folder and the person's granted ones: "every Friday, go through my notes folder" with nothing
+      // granted would run with nobody watching and find nothing, every week. Held once, like the page-link hold; a
+      // path inside this run's own folder, or a granted one, is reachable and passes. Resending unchanged schedules it.
+      if (kind !== 'reminder' && !saysRemind && opts.interactive === true && opts.jobId === undefined && folderRejections < 1
+          && namesFolder(String(action.instruction)) && !sourcesLine(dir) && !pathInsideRun(String(action.instruction), dir)) {
+        folderRejections++; consecNoProgress++; gatesFired.push('needs-folder'); lastSig = '';
+        history.push('(schedule held once: the job reads the person\'s files and no folder is granted)');
+        nudge = 'This job reads the person\'s files or a folder on their machine, but no folder is granted, so the job will run with nobody watching and will not have them. Tell the person which folder it needs and that they can grant it in Settings (Folders) before it first runs; or, if the files are in this chat\'s own folder, say so. Then call schedule again with the same instruction, and it will be scheduled.';
+        continue;
+      }
       const check = typeof action.check === 'string' && action.check.trim() ? action.check.trim() : undefined;
       // `origin` = the folder this run is working in. The fired run gets a FRESH folder, so without
       // this an instruction that named an absolute path here is unreachable there and the task can
@@ -2061,8 +2081,11 @@ export async function runAgent(opts: {
       // F3 PRE-GATE: on an unattended run, pause BEFORE executing the action that would exceed the
       // outward-action limit — so the (N+1)th external side effect never happens (post-hoc halting
       // would let it through). A human-watched run isn't pre-gated; per-action approval covers it.
-      if (opts.interactive === false && countsAsReach(action.action)
-          && runActions.filter((a) => countsAsReach(a.tool)).length >= MAX_EXTERNAL) {
+      // A saved login typed under the job's allowance is the person's own action (3e): it neither counts nor is counted.
+      const allowedLogin = action.action === 'browser_type' && opts.interactive === false && opts.jobId !== undefined && !opts.jobSettingsTainted
+        && hasVaultRef(String((action as Record<string, unknown>).text ?? '')) && vaultAllowed(opts.jobAllow, String((action as Record<string, unknown>).text ?? ''));
+      if (opts.interactive === false && countsAsReach(action.action) && !allowedLogin
+          && runActions.filter((a) => countsAsReach(a.tool) && !a.allowed).length >= MAX_EXTERNAL) {
         reason = 'paused';
         finalSummary = `Paused for your review: I've reached outside your machine ${MAX_EXTERNAL} times and would rather check with you before doing more.`;
         emit('escalate', { reason: 'external-action limit reached' });
@@ -2183,10 +2206,10 @@ export async function runAgent(opts: {
       if (action.action === 'schedule_cancel' && !refused) { const c = /^canceled — "(.*)" will not run again/.exec(result); if (c) jobsCancelled.push(c[1]); }
       if (action.action === 'write_file' && !refused && !/^\[APPROVAL REQUIRED\]/.test(result) && typeof args.path === 'string') filesWritten.push(String(args.path));
       if (harnessOn && !refused && isSensitive(action.action)) {
-        const rec = { verb: action.action.replace(/_/g, ' '), tool: action.action, effect: effectOf(action.action) };
+        const rec = { verb: action.action.replace(/_/g, ' '), tool: action.action, effect: effectOf(action.action), ...(allowedLogin ? { allowed: true } : {}) };
         runActions.push(rec);
         try { await memory.logAction({ verb: rec.verb, summary: result.slice(0, 200).replace(/\n/g, ' '), effect: rec.effect, tool: rec.tool }); } catch { /* */ }
-        const tw = checkTripwires(runActions);
+        const tw = checkTripwires(runActions.filter((a) => !a.allowed)); // an allowed login is logged, not counted
         if (tw.tripped) {
           emit('escalate', { reason: tw.reason });
           // HARD HALT on unattended/scheduled runs — nobody is present to approve, so stop before

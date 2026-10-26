@@ -359,6 +359,16 @@ export function hasLink(text: string): boolean {
   return /\bhttps?:\/\/\S+|\bwww\.\S+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|org|net|io|co|example|gov|edu|us|uk|app|dev|ai|info|biz|shop|store)\/\S*/i.test(t);
 }
 
+/** The instruction names the person's files or a folder on their machine: an absolute path, or "my notes folder",
+ *  "the documents folder", "my files". A job that will read them needs the folder granted (pending list 2026-10-26,
+ *  3f): a fired run has only its own folder and the person's granted ones, so "go through my notes every Friday" with
+ *  nothing granted would run with nobody watching and find nothing. A file name alone ("save it as notes.md") is the
+ *  run's own folder, not the person's. */
+export function namesFolder(text: string): boolean {
+  if (/(?:^|[\s"'(])(?:[A-Za-z]:\\|\/(?:Users|home)\/)[^\s"')]+/.test(text)) return true;
+  return /\b(?:my|our|the person's)\s+(?:[\w-]+\s+){0,2}(?:folder|directory|files|notes|documents|downloads|desktop)\b(?!\s+(?:tab|app|list|in the chat))|\b(?:the|that|this)\s+[\w-]+\s+(?:folder|directory)\b/i.test(text);
+}
+
 /**
  * A WATCH: a job that tracks one thing's value — set to report only changes, to finish when something becomes true,
  * or checking a page it names by link. Only a watch keeps a reading (BL-54). A report job — a brief, a plan — gave
