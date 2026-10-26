@@ -67,7 +67,7 @@ import { startCalendarSync } from './sync/calendar.js';
 import { startMailSync } from './sync/mail.js';
 import { mailSyncOn } from './sync/flags.js';
 import { migrateV2Once, describeReport } from './v2/migrate.js';
-import { reapDeadTries, personAction } from './v2/jobs.js';
+import { reapDeadTries, personAction, jobBySchedule, getJob } from './v2/jobs.js';
 import { runAgent } from './agent.js';
 import { preparePersonTurn, learnFromTurn } from './person-turn.js';
 import { INTAKE_FIELDS } from './person-intake.js';
@@ -103,8 +103,8 @@ import { scheduleRows, scheduleControl, type ScheduleAction } from './schedule-a
 import { liveRuns, FINAL_EVENTS } from './live-runs.js';
 import { resolvePersonId } from './person.js';
 import { appendTurn, answerOffer, readConversation, listConversations, conversationsPath } from './conversations.js';
-import { GENERAL, getProject, sessionOf, projectOfSession, crossTalk, type Provenance } from './v2/projects.js';
-import { migrateConversationsOnce, describeConversationsReport } from './v2/migrate-conversations.js';
+import { GENERAL, getProject, sessionOf, projectOfSession, crossTalk, apiProvenance, interruptStaleRunning, resultSessionFor, threadOfSession, runningIn, type Provenance } from './v2/projects.js';
+import { importConversations, describeConversationsReport } from './v2/migrate-conversations.js';
 import { setProjectRouteDeps, type ChatStart } from './api/routes/projects.js';
 import { readCalls, billingSummary, callsCsv, setMonthlyBudget, providerBalance, monthStart, budgetHold } from './billing.js';
 import { thinkMode, thinkDue, thinkOnce, thinkEveryMs, thinkDailyUsd, readThoughts, latestThoughts } from './thinking.js';
@@ -451,6 +451,25 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
   await runChat({ message: (url.searchParams.get('message') ?? '').trim(), sessionId, resumeParam: url.searchParams.get('resume') ?? '', stay: url.searchParams.get('stay') === '1', person: url.searchParams.get('person') }, sink);
 }
 
+/** A5: "Work on it" on an offer in a project's thread (v1): the same as /api/work/start — a goal and a job that starts
+ *  now in the thread's folder; the offer turn records it. Null when there is no waiting offer with those words. */
+async function acceptProjectOffer(projectId: string, o: { message?: string; person?: string }): Promise<{ goal: string; message: string } | null> {
+  if (MEMORY_OFF) return null;
+  const session = sessionOf(projectId);
+  const waiting = readConversation(session, 200).filter((t) => t.kind === 'offer' && !t.offer);
+  const offer = o.message ? waiting.find((t) => t.message === o.message) : waiting[waiting.length - 1];
+  if (!offer) return null;
+  const cfg = loadConfig();
+  const memory = new MwaMemory(SERVE_AGENT, dbFile(), cfg.awm.workspace);
+  try {
+    const personId = resolvePersonId({ channel: 'web', name: (o.person ?? '').trim() || undefined });
+    const started = await startBackgroundWork(memory, { message: offer.message, session, personId, workspace: cfg.workspace ?? './mwa-workspace' });
+    if (!started) return null;
+    answerOffer(session, 'background', started.goalId.slice(0, 8), undefined, undefined, offer.message);
+    return { goal: started.goalId.slice(0, 8), message: "On it. I'll work on this in the background and post the result here when it's done." };
+  } finally { memory.close(); }
+}
+
 /** A5: a message sent into a project from /api/v1: the same run as /api/chat, answered once it has started (or offered,
  *  or refused as busy). Its progress goes out on /stream; its answer lands in the thread. */
 function startProjectChat(projectId: string, text: string, o: { stay?: boolean; person?: string }): Promise<ChatStart> {
@@ -493,7 +512,9 @@ async function runChat(p: ChatParams, sink: ChatSink): Promise<void> {
   // F08 (usability review 2026-10-24): one live run per conversation. A message sent while one is going is not a
   // second run: the page hears `busy` and offers to add it to the running task (/api/chat/steer), send it
   // separately (a new conversation) or stop the run (/api/chat/stop) and send it.
-  const busy = liveRuns.describe(sessionId);
+  // A5: one run at a time per PROJECT, whichever session names it (p-general and an older client's conversation kept in
+  // General are the same thread).
+  const busy = liveRuns.describe(sessionId) ?? busyInProject(threadOf(sessionId));
   if (busy) { send('busy', busy as unknown as Record<string, unknown>); sink.end(); return; }
   // "do it here": the offer with these words records the choice — only once the run really starts (audit 2026-10-26)
   if (p.stay) answerOffer(sessionId, 'now', undefined, undefined, undefined, message);
@@ -582,17 +603,19 @@ async function runChat(p: ChatParams, sink: ChatSink): Promise<void> {
       + (hold.held ? `\n\n(This month's model spend has reached the $${hold.budgetUsd} budget — $${hold.usedUsd} so far. Scheduled jobs wait until next month or a higher budget in Settings › Billing; chats still run.)` : '');
     const turnTs = Date.now();
     // A5: the other projects whose memories this answer used ("using what I know from Eventing").
-    const provenance = crossTalkFor(sessionId, await memory.usedMemories(r.summary).catch(() => []));
-    const turnId = appendTurn({ ts: turnTs, session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat', tainted: r.tainted === true, runId: run.runId, ...(provenance.length ? { provenance } : {}), ...(resumed?.stopped.ts !== undefined ? { resumes: resumed.stopped.ts } : {}) }); // BL-71d; the runId retires the `running` turn (F09); `resumes` keeps the task's own words reachable (3b)
+    const provenance = crossTalkFor(sessionId, await memory.usedMemories(r.summary, { exclude: prepared.terms ?? [] }).catch(() => []));
+    const turnId = appendTurn({ ts: turnTs, session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat', tainted: r.tainted === true, runId: run.runId, ...(provenance.length ? { provenance } : {}), ...(r.v2JobId ? { job: r.v2JobId } : {}), ...(resumed?.stopped.ts !== undefined ? { resumes: resumed.stopped.ts } : {}) }); // BL-71d; the runId retires the `running` turn (F09); `resumes` keeps the task's own words reachable (3b)
     // S3/S5 — LEARN durable facts about this person + recompress their dossier (suppressed for the
     // shared 'unknown' profile and on an identity mismatch). Before the result closes the stream, so an attached
     // page hears it too; it is quick and runs on the reply, not the person's wait.
     const learned = r.tainted || MEMORY_OFF ? 0 : await learnFromTurn(brain, memory, prepared, message, r.summary);
     if (learned) emitLive('learned', { about: prepared.personId, count: learned });
     emitLive('result', { reason: r.reason, summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)), runId: run.runId, turnId: turnTs, elapsedMs: turnTs - run.startedAt,
-      ...(turnId ? { turn: turnId } : {}), ...(provenance.length ? { provenance: provenance.map((x) => ({ ...x, name: getProject(x.projectId)?.name ?? x.projectId })) } : {}), ...(r.staged?.length ? { staged: r.staged } : {}), ...(r.v2JobId ? { job: r.v2JobId } : {}) });
+      ...(turnId ? { turn: turnId } : {}), ...(provenance.length ? { provenance: apiProvenance(provenance) } : {}), ...(r.staged?.length ? { staged: r.staged } : {}), ...(r.v2JobId ? { job: r.v2JobId } : {}) });
   } catch (e) {
     logger.error('chat', 'agent run failed', { session: sessionId, error: (e as Error).message.slice(0, 200) });
+    // A5: the turn is finished with what went wrong, so no `running` turn stays behind
+    appendTurn({ ts: Date.now(), session: sessionId, message, reply: `This stopped with an error before it finished: ${(e as Error).message.slice(0, 300)}`, reason: 'error', kind: 'chat', runId: run.runId });
     emitLive('error', { message: (e as Error).message, runId: run.runId });
   } finally {
     activeRuns--;
@@ -607,7 +630,17 @@ async function runChat(p: ChatParams, sink: ChatSink): Promise<void> {
 /** A5: a run's used memories as cross-talk provenance — the projects other than this thread's (General for an older
  *  conversation's session). Never fails the chat. */
 function crossTalkFor(sessionId: string, used: { id: string; session?: string }[]): Provenance[] {
-  try { return crossTalk(used, projectOfSession(sessionId) ?? GENERAL); } catch { return []; }
+  try { return crossTalk(used, { projectId: threadOf(sessionId), session: sessionId }); } catch { return []; }
+}
+
+const threadOf = (sessionId: string) => threadOfSession(sessionId);
+/** A run going in a project's thread, under whichever session it was started. */
+function busyInProject(projectId: string): ReturnType<typeof liveRuns.describe> {
+  try { const s = runningIn(projectId, liveRuns.all().map((r) => r.session)); return s ? liveRuns.describe(s) : null; } catch { return null; }
+}
+/** The live session of a project's run, if one is going. */
+function liveSessionOf(projectId: string): string | null {
+  try { return runningIn(projectId, liveRuns.all().map((r) => r.session)); } catch { return null; }
 }
 
 /** BL-70: a document converted for download (web page, Word or PDF), always as an attachment. */
@@ -703,15 +736,24 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   });
   // v2 (A5): the conversations kept before Projects move into General's thread, once, before anything is answered
   // (synchronous: a turn written meanwhile would land beside them). The old log is only read.
-  try {
-    const conv = migrateConversationsOnce({ file: conversationsPath() });
-    if (conv) logger.info('v2', describeConversationsReport(conv));
-  } catch (e) { logger.error('v2', 'conversations migration failed (it is tried again at the next start)', { error: (e as Error).message.slice(0, 200) }); }
+  // Review of A5: incremental (it picks up lines an older build appended since), streamed in batches, and in the
+  // background — /meta and /projects say "Importing older conversations…" while it runs. Then the turns a crashed
+  // process left `running` are marked interrupted.
+  void importConversations({ file: conversationsPath() })
+    .then((conv) => { if (conv.lines || conv.badLines) logger.info('v2', describeConversationsReport(conv)); })
+    .catch((e) => logger.error('v2', 'importing older conversations failed (it continues from where it stopped at the next start)', { error: (e as Error).message.slice(0, 200) }))
+    .finally(() => { try { interruptStaleRunning(SERVER_START, new Set(liveRuns.all().map((r) => r.runId))); } catch { /* */ } });
   setProjectRouteDeps({
     workspace: () => resolve(loadConfig().workspace ?? './mwa-workspace'),
     startChat: startProjectChat,
-    // what the server carried for both threads is read again from the table on their next run
-    onTurnMoved: (from, to) => { sessions.delete(sessionOf(from)); sessions.delete(sessionOf(to)); },
+    // what the server carried for both threads (and the older conversation it left) is read again on their next run
+    onTurnMoved: (from, to, legacy) => { sessions.delete(sessionOf(from)); sessions.delete(sessionOf(to)); if (legacy) sessions.delete(legacy); },
+    live: (projectId) => { const s = liveSessionOf(projectId); return s ? { session: s, run: liveRuns.describe(s) } : null; },
+    stop: (projectId) => { const s = liveSessionOf(projectId); return s ? liveRuns.stop(s) : false; },
+    steer: (projectId, text) => { const s = liveSessionOf(projectId); return s ? liveRuns.steer(s, text) : false; },
+    attach: (projectId, fn) => { const s = liveSessionOf(projectId); return s ? liveRuns.attach(s, fn) : null; },
+    finalEvents: FINAL_EVENTS,
+    acceptOffer: acceptProjectOffer,
   });
   // v2 (A4): the live stream and /sync compute job views with the same running runs and waiting approvals.
   setStreamDeps({ running: () => new Set(liveRuns.all().map((r) => r.session)), pending: () => new Set(listPendingActions().map((a) => a.id)) });
@@ -1788,7 +1830,12 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
             ...(title ? { title } : {}), ...(task.notify ? { session: task.notify } : {}),
           });
           // BL-71d: the result belongs to the conversation that asked for it, so it is there when that one is reopened.
-          if (task.notify && !task.notify.startsWith('tg-')) appendTurn({ ts: Date.now(), session: task.notify, message: title ?? task.instruction.slice(0, 300), reply: r.summary, reason: r.reason, kind: 'result' });
+          if (task.notify && !task.notify.startsWith('tg-')) {
+            // A5: a job whose message was moved to another project reports there now
+            let session = task.notify;
+            try { const job = (task.v2job ? getJob(task.v2job) : undefined) ?? jobBySchedule(task.id); session = resultSessionFor(task.notify, job?.project_id); } catch { /* where the task said */ }
+            appendTurn({ ts: Date.now(), session, message: title ?? task.instruction.slice(0, 300), reply: r.summary, reason: r.reason, kind: 'result', ...(r.job ? { job: String(r.job) } : {}) });
+          }
           // BL-13: saved in the app's feed (or not). Whether an open tab is handed it is recorded when one is.
           if (r.job && r.fire) recordReceipt({ job: r.job, fire: r.fire, channel: 'app', status: saved ? 'stored' : 'failed', ...(saved ? {} : { detail: 'could not write the app feed' }) });
           console.log(`  ⏰ fired: ${task.instruction.slice(0, 60)} → ${r.summary.slice(0, 80)}`);

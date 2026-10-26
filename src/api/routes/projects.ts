@@ -11,10 +11,13 @@
  */
 import { resolve } from 'node:path';
 import { ApiError, type Route } from '../router.js';
+import type { ServerResponse } from 'node:http';
 import {
   GENERAL, apiProject, apiTurn, createProject, updateProject, getProject, listProjects, threadPage, moveTurn, getTurn,
-  suggestProject, sessionOf, ProjectError, MoveError,
+  suggestProject, sessionOf, decodeCursor, ProjectError, MoveError,
 } from '../../v2/projects.js';
+import { importProgress } from '../../v2/migrate-conversations.js';
+import type { LiveEvent } from '../../live-runs.js';
 import { projectJobs, viewJobs } from '../../v2/jobs.js';
 import { apiJob, visibleJob, viewCtx } from './jobs.js';
 import { listFiles, sessionFolder, type FileRow } from '../../files.js';
@@ -31,8 +34,17 @@ export interface ProjectRouteDeps {
   workspace: () => string;
   /** start a chat run in a project's thread (serve.ts) */
   startChat?: (projectId: string, text: string, o: { stay?: boolean; person?: string }) => Promise<ChatStart>;
-  /** a turn moved: the server forgets what it carried for both threads, so their next run reads them again */
-  onTurnMoved?: (fromProjectId: string, toProjectId: string) => void;
+  /** a turn moved: the server forgets what it carried for both threads (and the older conversation it left), so their
+   *  next run reads them again */
+  onTurnMoved?: (fromProjectId: string, toProjectId: string, legacySession: string | null) => void;
+  /** the run going in a project's thread, if any; Stop; add a note to it; follow it (serve.ts, live-runs) */
+  live?: (projectId: string) => { session: string; run: unknown } | null;
+  stop?: (projectId: string) => boolean;
+  steer?: (projectId: string, text: string) => boolean;
+  attach?: (projectId: string, fn: (e: LiveEvent) => void) => (() => void) | null;
+  finalEvents?: Set<string>;
+  /** "Work on it" on a waiting offer in the thread: a goal and a background job (serve.ts) */
+  acceptOffer?: (projectId: string, o: { message?: string; person?: string }) => Promise<{ goal: string; message: string } | null>;
 }
 let deps: ProjectRouteDeps | null = null;
 export function setProjectRouteDeps(d: ProjectRouteDeps | null): void { deps = d; }
@@ -52,7 +64,7 @@ const bodyOf = (b: unknown): Record<string, unknown> => (b && typeof b === 'obje
 /** The files of a project's thread: its own folder, and (General, or a project a message was moved into) the folders
  *  of the older conversations its turns came from. Paths are relative to the workspace, as /api/files serves them. */
 export function projectFiles(projectId: string, root: string): FileRow[] {
-  const legacy = (appDb().prepare(`SELECT DISTINCT legacy_session s FROM turns WHERE project_id = ? AND legacy_session IS NOT NULL`).all(projectId) as { s: string }[]).map((r) => r.s);
+  const legacy = (appDb().prepare(`SELECT DISTINCT origin_session s FROM turns WHERE project_id = ? AND origin_session IS NOT NULL`).all(projectId) as { s: string }[]).map((r) => r.s);
   const folders = [...new Set([sessionFolder(sessionOf(projectId)), ...legacy.map(sessionFolder)])];
   const out: FileRow[] = [];
   for (const f of folders) {
@@ -64,7 +76,7 @@ export function projectFiles(projectId: string, root: string): FileRow[] {
 export const projectRoutes: Route[] = [
   {
     method: 'GET', path: '/projects', scope: 'read',
-    handler: ({ url }) => ({ body: { projects: listProjects({ archived: url.searchParams.get('archived') === '1' }).map(apiProject) } }),
+    handler: ({ url }) => ({ body: { projects: listProjects({ archived: url.searchParams.get('archived') === '1' }).map(apiProject), importing: importingNow() } }),
   },
   {
     method: 'POST', path: '/projects', scope: 'act',
@@ -102,7 +114,7 @@ export const projectRoutes: Route[] = [
     handler: ({ params, url }) => {
       const p = load(params.id);
       const before = url.searchParams.get('before') || undefined;
-      if (before && !/^tu_[0-9a-f]{12}$/.test(before)) throw new ApiError(400, 'bad_cursor', '`before` is the `next` the previous page gave.');
+      if (before && !decodeCursor(before)) throw new ApiError(400, 'bad_cursor', '`before` is the `next` the previous page gave.');
       const limitRaw = url.searchParams.get('limit');
       const limit = limitRaw == null ? 50 : Number.parseInt(limitRaw, 10);
       if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new ApiError(400, 'bad_limit', '`limit` is 1 to 200.');
@@ -141,19 +153,73 @@ export const projectRoutes: Route[] = [
     },
   },
   {
+    method: 'POST', path: '/projects/{id}/stop', scope: 'act',
+    handler: ({ params }) => {
+      const p = load(params.id);
+      if (!deps?.stop?.(p.id)) throw new ApiError(409, 'nothing_running', 'Nothing is running in this project.');
+      return { body: { stopped: true, message: 'Stopping. The step that is running finishes; nothing new starts.' } };
+    },
+  },
+  {
+    method: 'POST', path: '/projects/{id}/steer', scope: 'act',
+    handler: ({ params, body }) => {
+      const p = load(params.id);
+      const text = String(bodyOf(body).text ?? '').trim().slice(0, 4000);
+      if (!text) throw new ApiError(400, 'bad_text', 'Nothing to add.');
+      if (!deps?.steer?.(p.id, text)) throw new ApiError(409, 'nothing_running', 'Nothing is running in this project. Send it as a message.');
+      return { body: { added: true, message: 'Added to the running answer. It is taken into account from the next step.' } };
+    },
+  },
+  {
+    method: 'GET', path: '/projects/{id}/live', scope: 'read',
+    handler: ({ params }) => {
+      const p = load(params.id);
+      return {
+        stream: (res: ServerResponse, req) => {
+          const write = (type: string, data: unknown) => { try { res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* gone */ } };
+          let detach: (() => void) | null = null;
+          let hb: ReturnType<typeof setInterval> | undefined;
+          const done = () => { detach?.(); if (hb) clearInterval(hb); try { res.end(); } catch { /* */ } };
+          detach = deps?.attach?.(p.id, (e) => { write(e.type, e.data); if (deps?.finalEvents?.has(e.type)) done(); }) ?? null;
+          if (!detach) { write('gone', { projectId: p.id }); res.end(); return; }
+          hb = setInterval(() => { try { res.write(': keepalive\n\n'); } catch { /* */ } }, 15_000);
+          hb.unref?.();
+          req.on('close', done);
+        },
+      };
+    },
+  },
+  {
+    method: 'POST', path: '/projects/{id}/offer/accept', scope: 'act',
+    handler: async ({ params, body }) => {
+      const p = load(params.id);
+      const b = bodyOf(body);
+      if (!deps?.acceptOffer) throw new ApiError(503, 'unavailable', 'Background work is not available on this server.', true);
+      const out = await deps.acceptOffer(p.id, { message: typeof b.message === 'string' ? b.message : undefined, person: typeof b.person === 'string' ? b.person : undefined });
+      if (!out) throw new ApiError(409, 'no_offer', 'There is no waiting offer to accept here.');
+      return { status: 202, body: out };
+    },
+  },
+  {
     method: 'POST', path: '/turns/{id}/move', scope: 'act',
     handler: ({ params, body }) => {
       const to = String(bodyOf(body).projectId ?? '');
       if (!to) throw new ApiError(400, 'bad_body', 'Send the project to move it to as `projectId`.');
       if (!getTurn(params.id)) throw new ApiError(404, 'not_found', 'No such message.');
       try {
-        const { turn, from } = moveTurn(params.id, to);
-        deps?.onTurnMoved?.(from, to);
+        const { turn, from, legacySession } = moveTurn(params.id, to);
+        deps?.onTurnMoved?.(from, to, legacySession);
         const name = getProject(to)?.name ?? to;
         return { body: { turn: apiTurn(turn), from, message: `Moved to ${name}.`, undo: { projectId: from } } };
       } catch (e) { asApi(e); }
     },
   },
 ];
+
+/** The older-conversations import, while it runs (shown as "Importing older conversations…"). */
+export function importingNow(): { done: number; total: number } | null {
+  const pr = importProgress();
+  return pr.running ? { done: pr.bytesDone, total: pr.bytesTotal } : null;
+}
 
 export { GENERAL };

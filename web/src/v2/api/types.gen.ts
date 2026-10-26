@@ -306,7 +306,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** What changed since a cursor, as current objects and deletions (the phone's offline catch-up). */
+        /**
+         * What changed since a cursor, as current objects and deletions (the phone's offline catch-up).
+         * @description A delta is paged: at most 500 changes and about 5 MB per answer. `more: true` means call again with the returned
+         *     `cursor` (repeat until `more` is false). Turns come as summaries (message and reply cut to 500 characters,
+         *     `truncated: true`); the thread endpoint has them whole. A snapshot (`reset: true`) is never paged; its turns are
+         *     each active project's latest 50.
+         *
+         */
         get: operations["syncChanges"];
         put?: never;
         post?: never;
@@ -679,13 +686,89 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop the answer being written in this project. The step that is running finishes; nothing new starts. 409 nothing_running. */
+        post: operations["stopProjectRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/steer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add a note to the answer being written in this project (the "add to it" of a busy send). 409 nothing_running. */
+        post: operations["steerProjectRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** Follow the answer being written in this project (server-sent events): its events so far, then live, until result or error. With nothing running: one `gone` event. */
+        get: operations["followProjectRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/offer/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** "Work on it": the waiting offer in this thread (the latest, or the one with `message`) becomes a background job reporting here. 409 no_offer. */
+        post: operations["acceptProjectOffer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         Error: {
             error: {
-                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
+                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
                 code: string;
                 /** @description Plain words for a person. */
                 message: string;
@@ -720,6 +803,11 @@ export interface components {
             revoked: string;
         };
         Meta: {
+            /** @description While conversations from before projects are being imported into General: bytes done of total. Show "Importing older conversations…". */
+            importing: {
+                done: number;
+                total: number;
+            } | null;
             /** @constant */
             api: "v1";
             /** @description The server version (package.json). */
@@ -1032,6 +1120,8 @@ export interface components {
          *      */
         Turn: {
             id: string;
+            /** @description True when message or reply was cut to 500 characters (/sync and the live stream send summaries; the thread has the whole turn). */
+            truncated: boolean;
             projectId: string;
             /** @enum {string} */
             kind: "chat" | "result" | "offer" | "running" | "divider";
@@ -1047,9 +1137,9 @@ export interface components {
                 kind: string;
                 id: string;
             } | null;
-            /** @description Other projects whose memories this answer used: show "using what I know from <name>". */
+            /** @description Where the memories this answer used came from, other than this thread: show "using what I know from <name>". projectId is null for "an earlier conversation" (from before projects). */
             provenance: {
-                projectId: string;
+                projectId: string | null;
                 name: string;
                 n: number;
             }[];
@@ -1521,6 +1611,8 @@ export interface operations {
                     "application/json": {
                         cursor: number;
                         reset: boolean;
+                        /** @description More changes after this page: call again with this cursor. */
+                        more: boolean;
                         upserts: {
                             jobs?: components["schemas"]["Job"][];
                             calendar?: components["schemas"]["CalendarItem"][];
@@ -1919,6 +2011,11 @@ export interface operations {
                 content: {
                     "application/json": {
                         projects: components["schemas"]["Project"][];
+                        /** @description As /meta: older conversations still being imported into General. */
+                        importing: {
+                            done: number;
+                            total: number;
+                        } | null;
                     };
                 };
             };
@@ -2017,7 +2114,7 @@ export interface operations {
     getProjectThread: {
         parameters: {
             query?: {
-                /** @description The `next` of the previous page (a turn id). */
+                /** @description The `next` of the previous page: a position in the thread, valid even if the turn it came from was moved away since. */
                 before?: string;
                 limit?: number;
             };
@@ -2175,6 +2272,128 @@ export interface operations {
                         undo: {
                             projectId: string;
                         };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    stopProjectRun: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stopping. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        stopped: true;
+                        message: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    steerProjectRun: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    text: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Added. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        added: true;
+                        message: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    followProjectRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description An event stream. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    acceptProjectOffer: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description The offered message, to pick that offer when several wait. */
+                    message?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Started in the background. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        goal: string;
+                        message: string;
                     };
                 };
             };

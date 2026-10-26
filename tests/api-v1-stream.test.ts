@@ -70,7 +70,7 @@ describe('/sync', () => {
     expect(cursor).toBe(headSeq());
 
     const same = await j(await fetch(`${base}/sync?since=${cursor}`));
-    expect(same.body).toEqual({ cursor, reset: false, upserts: { jobs: [] }, deletes: { jobs: [] } });
+    expect(same.body).toEqual({ cursor, reset: false, more: false, upserts: { jobs: [] }, deletes: { jobs: [] } });
 
     claimTry(a.try!.id, {});
     endTry(a.try!.id, { reason: 'done', outcome: 'changed', summary: 'Read both.' });

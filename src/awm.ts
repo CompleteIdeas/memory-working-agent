@@ -15,7 +15,8 @@
  * "decision continuity" thesis — which is what the benchmark measures.)
  */
 // AWM's internals come through one file (BL-11): an AWM upgrade that moves them breaks awm-api.ts only.
-import { loadEngines, loadSqliteStore, loadPGliteStore, loadPostgresStore, loadConflictOrder, loadImplicitFeedback, type AwmEngines } from './awm-api.js';
+import { loadEngines, loadSqliteStore, loadPGliteStore, loadPostgresStore, loadConflictOrder, type AwmEngines } from './awm-api.js';
+import { usedMemoriesIn, type ShownMemory } from './v2/provenance-match.js';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isReservedConcept, unreservedConcept } from './reserved-concept.js';
@@ -180,6 +181,8 @@ export interface Memory {
   saveQuestion(question: string): Promise<string | null>;
   /** AWM 0.20: credits recalled memories whose identifiers appear in `text` (a reply, a write). Optional. */
   noteUse?(text: string, source: string): Promise<number>;
+  /** A5: these recalled memories were put in front of the model (provenance counts only what was shown). Optional. */
+  markShown?(ids: string[]): void;
   close(): void;
 }
 
@@ -1582,34 +1585,38 @@ export class MwaMemory implements Memory {
   }
 
   // ── A5: which memories a run used, and where they came from ──────────────────────────────────────────────────
-  // Every recall this handle returned (the last 40), and the memories noteUse found used. A memory counts as used by
-  // AWM's own rule (core/implicit-feedback matchUses): its id, or two of its distinctive tokens, appear in the text.
-  private recalledLog: { eventId: string; at: number; agentId: string; engrams: { id: string; concept: string; content: string; tags: string[] }[] }[] = [];
+  // What recall returned is kept (id → concept, content, tags; the last 400); what the run actually put in front of
+  // the model is marked `shown` by the agent (the PRIOR KNOWLEDGE block it rendered, the planner's list) — recall
+  // returns far more than is shown (prime 40 → 12). A shown memory counts as used when the answer carries its id or
+  // two of its distinctive content tokens (src/v2/provenance-match.ts — stricter than AWM's implicit-use rule).
+  private recallCache = new Map<string, ShownMemory>();
+  private shown = new Set<string>();
   private used = new Map<string, string | undefined>();
   private noteRecalled(engrams: any[]): void {
-    if (!engrams.length) return;
-    this.recalledLog.push({ eventId: `r${this.recalledLog.length}`, at: Date.now(), agentId: this.agentId,
-      engrams: engrams.map((e) => ({ id: String(e.id), concept: String(e.concept ?? ''), content: String(e.content ?? ''), tags: this.parseTags(e.tags) })) });
-    if (this.recalledLog.length > 40) this.recalledLog.splice(0, this.recalledLog.length - 40);
+    for (const e of engrams) {
+      const id = String(e.id);
+      this.recallCache.delete(id);
+      this.recallCache.set(id, { id, concept: String(e.concept ?? ''), content: String(e.content ?? ''), tags: this.parseTags(e.tags) });
+    }
+    while (this.recallCache.size > 400) this.recallCache.delete(this.recallCache.keys().next().value as string);
   }
-  /** The memories recalled through this handle that `text` shows were used, each with the `session=` its writer had. */
-  async usedMemories(text?: string): Promise<{ id: string; session?: string }[]> {
+  /** The agent rendered these memories into the model's context. */
+  markShown(ids: string[]): void { for (const id of ids) if (this.recallCache.has(id)) this.shown.add(id); }
+  /** A new run starts on this handle (the scheduler keeps one handle across runs): forget the last run's. */
+  resetUse(): void { this.shown.clear(); this.used.clear(); }
+  /** The memories shown to this run that `text` shows were used, each with the `session=` its writer had. `exclude`:
+   *  words of the person's own profile (their name, their household's), which never count as evidence. */
+  async usedMemories(text?: string, o: { exclude?: Iterable<string> } = {}): Promise<{ id: string; session?: string }[]> {
     if (text) {
-      try {
-        const { matchUses } = await loadImplicitFeedback();
-        const byId = new Map(this.recalledLog.flatMap((r) => r.engrams.map((e) => [e.id, e] as const)));
-        for (const u of matchUses(this.recalledLog, text, { windowMs: 6 * 3_600_000 })) {
-          const e = byId.get(u.engramId);
-          this.used.set(u.engramId, e?.tags.find((t) => t.startsWith('session='))?.slice(8));
-        }
-      } catch { /* the module is missing: what noteUse already found */ }
+      const shown = [...this.shown].map((id) => this.recallCache.get(id)).filter((m): m is ShownMemory => !!m);
+      for (const m of usedMemoriesIn(shown, text, o.exclude ?? [])) this.used.set(m.id, m.tags.find((t) => t.startsWith('session='))?.slice(8));
     }
     return [...this.used.entries()].map(([id, session]) => ({ id, ...(session ? { session } : {}) }));
   }
 
   /** AWM 0.20 implicit feedback (ActivationEngine.noteImplicitUse); a no-op on an older engine. */
   async noteUse(text: string, source: string): Promise<number> {
-    await this.usedMemories(text); // A5: remember which ones, for the answer's provenance
+    await this.usedMemories(text); // A5: remember which ones, for the answer's provenance (stricter rule, shown only)
     try {
       const a = this.activation as { noteImplicitUse?: (t: string, s: string) => Promise<number> } | undefined;
       return a?.noteImplicitUse ? await a.noteImplicitUse(text, source) : 0;

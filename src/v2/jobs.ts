@@ -270,10 +270,18 @@ export function jobByPrefix(prefix: string, d: AppDb = appDb()): JobRow | undefi
     ?? (d.prepare('SELECT j.* FROM jobs j JOIN tries t ON t.job_id = j.id WHERE t.schedule_prefix = ? ORDER BY t.n LIMIT 1').get(p) as JobRow | undefined);
 }
 
+function projectFor(d: AppDb, id: string | null): string | null {
+  if (!id) return null;
+  try {
+    const p = d.prepare('SELECT archived FROM projects WHERE id = ?').get(id) as { archived: number } | undefined;
+    return p && !p.archived ? id : 'general';
+  } catch { return null; /* no projects table in this database */ }
+}
 function insertJob(d: AppDb, j: NewJob): JobRow {
   const id = newId('j');
-  // A5: a Job made from a project's thread (its session is `p-<project id>`) works for that project.
-  const projectId = j.projectId ?? (j.session && j.session.startsWith('p-') && j.session.length > 2 ? j.session.slice(2) : null);
+  // A5: a Job made from a project's thread (its session is `p-<project id>`) works for that project — one that exists;
+  // a session naming none (deleted, made up) or an archived one makes it General's.
+  const projectId = projectFor(d, j.projectId ?? (j.session && j.session.startsWith('p-') && j.session.length > 2 ? j.session.slice(2) : null));
   d.prepare(`INSERT INTO jobs (id, project_id, kind, title, request, person, created_at, schedule_id, legacy_goal_id, cap_usd, session, dir, legacy_key, status, where_it_stands, stands_trust, next_due_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, projectId, j.kind, j.title.slice(0, 300), j.request?.slice(0, 4000) ?? null, j.person ?? null,
     j.createdAt ?? Date.now(), j.scheduleId ?? null, j.legacyGoalId ?? null, j.capUsd ?? null, j.session ?? null, j.dir ?? null,

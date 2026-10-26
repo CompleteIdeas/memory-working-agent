@@ -76,11 +76,6 @@ export async function loadEmbeddings(): Promise<{ embed: (text: string) => Promi
   return import('agent-working-memory/dist/core/embeddings.js');
 }
 
-/** AWM's implicit-use rule (A5: which recalled memories an answer used). */
-export async function loadImplicitFeedback(): Promise<{ matchUses: typeof import('agent-working-memory/dist/core/implicit-feedback.js').matchUses }> {
-  return import('agent-working-memory/dist/core/implicit-feedback.js');
-}
-
 /** The SQLite store (the default backend). */
 export async function loadSqliteStore(): Promise<any> {
   return (await import('agent-working-memory/dist/storage/sqlite.js')).EngramStore;

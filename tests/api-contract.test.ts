@@ -113,7 +113,11 @@ beforeAll(async () => {
   // A5: two projects with a turn each; a stub embedder (the routing model is exercised in tests/projects-routing) and a
   // fake chat start (no model)
   setEmbedder(async (t) => [t.length % 7, 1, t.includes('horse') ? 3 : 0]);
-  setProjectRouteDeps({ workspace: () => mkdtempSync(join(tmpdir(), 'mwa-a5-ws-')), startChat: async () => ({ state: 'started', runId: 'live_contract' }) });
+  setProjectRouteDeps({
+    workspace: () => mkdtempSync(join(tmpdir(), 'mwa-a5-ws-')), startChat: async () => ({ state: 'started', runId: 'live_contract' }),
+    stop: (id) => id === ids.eventing, steer: (id) => id === ids.eventing, attach: () => null,
+    acceptOffer: async (id) => (id === ids.eventing ? { goal: 'abcd1234', message: 'On it.' } : null),
+  });
   const eventing = createProject({ name: 'Eventing', icon: 'horse' });
   const family = createProject({ name: 'Family & school' });
   const turn = appendTurn({ ts: Date.now(), session: `p-${eventing.id}`, message: 'When do entries close?', reply: 'Friday at 5pm.', kind: 'chat' })!;
@@ -208,6 +212,13 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /turns/{id}/move', path: () => `/turns/${ids.turn}/move`, init: () => ({ ...post(), body: JSON.stringify({ projectId: ids.family }) }), status: 200 },
   { op: 'POST /turns/{id}/move', path: () => `/turns/${ids.turn}/move`, init: () => ({ ...post(), body: JSON.stringify({ projectId: ids.family }) }), status: 409 },
   { op: 'POST /turns/{id}/move', path: '/turns/tu_000000000000/move', init: () => ({ ...post(), body: JSON.stringify({ projectId: 'general' }) }), status: 404 },
+  { op: 'POST /projects/{id}/stop', path: () => `/projects/${ids.eventing}/stop`, init: post, status: 200 },
+  { op: 'POST /projects/{id}/stop', path: () => `/projects/${ids.family}/stop`, init: post, status: 409 },
+  { op: 'POST /projects/{id}/steer', path: () => `/projects/${ids.eventing}/steer`, init: () => ({ ...post(), body: JSON.stringify({ text: 'Also the ride times' }) }), status: 200 },
+  { op: 'POST /projects/{id}/steer', path: () => `/projects/${ids.family}/steer`, init: () => ({ ...post(), body: JSON.stringify({ text: 'x' }) }), status: 409 },
+  { op: 'GET /projects/{id}/live', path: () => `/projects/${ids.eventing}/live`, status: 200 },
+  { op: 'POST /projects/{id}/offer/accept', path: () => `/projects/${ids.eventing}/offer/accept`, init: post, status: 202 },
+  { op: 'POST /projects/{id}/offer/accept', path: () => `/projects/${ids.family}/offer/accept`, init: post, status: 409 },
   { op: 'GET /sync', path: '/sync?collections=projects,turns', status: 200 },
   { op: 'GET /sync', path: '/sync?since=1&collections=projects,turns,jobs', status: 200 },
 ];

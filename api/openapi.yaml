@@ -48,7 +48,7 @@ components:
           required: [code, message]
           additionalProperties: false
           properties:
-            code: { type: string, description: 'Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again.' }
+            code: { type: string, description: 'Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again.' }
             message: { type: string, description: Plain words for a person. }
     Scope:
       type: string
@@ -90,9 +90,17 @@ components:
         revoked: { type: string }
     Meta:
       type: object
-      required: [api, server, minClient, secure, features]
+      required: [api, server, minClient, secure, features, importing]
       additionalProperties: false
       properties:
+        importing:
+          type: ['object', 'null']
+          description: 'While conversations from before projects are being imported into General: bytes done of total. Show "Importing older conversations…".'
+          required: [done, total]
+          additionalProperties: false
+          properties:
+            done: { type: integer }
+            total: { type: integer }
         api: { type: string, const: v1 }
         server: { type: string, description: The server version (package.json). }
         minClient: { type: string, description: The oldest client version still accepted. }
@@ -387,10 +395,11 @@ components:
         `running` is a message whose answer is being written (the same turn fills in when it is done); `offer` is the
         offer to work on it in the background; `result` is a job's result posted into the thread; `divider` heads a
         conversation from before projects ("Conversation from Oct 22: …").
-      required: [id, projectId, kind, ts, message, reply, reason, tainted, runId, tryId, about, provenance, offer, legacySession, movedFrom, updatedSeq]
+      required: [id, projectId, kind, ts, message, reply, truncated, reason, tainted, runId, tryId, about, provenance, offer, legacySession, movedFrom, updatedSeq]
       additionalProperties: false
       properties:
         id: { type: string }
+        truncated: { type: boolean, description: 'True when message or reply was cut to 500 characters (/sync and the live stream send summaries; the thread has the whole turn).' }
         projectId: { type: string }
         kind: { type: string, enum: [chat, result, offer, running, divider] }
         ts: { type: integer }
@@ -409,13 +418,13 @@ components:
             id: { type: string }
         provenance:
           type: array
-          description: 'Other projects whose memories this answer used: show "using what I know from <name>".'
+          description: 'Where the memories this answer used came from, other than this thread: show "using what I know from <name>". projectId is null for "an earlier conversation" (from before projects).'
           items:
             type: object
             required: [projectId, name, n]
             additionalProperties: false
             properties:
-              projectId: { type: string }
+              projectId: { type: ['string', 'null'] }
               name: { type: string }
               n: { type: integer, minimum: 1 }
         offer:
@@ -711,6 +720,11 @@ paths:
     get:
       operationId: syncChanges
       summary: What changed since a cursor, as current objects and deletions (the phone's offline catch-up).
+      description: |
+        A delta is paged: at most 500 changes and about 5 MB per answer. `more: true` means call again with the returned
+        `cursor` (repeat until `more` is false). Turns come as summaries (message and reply cut to 500 characters,
+        `truncated: true`); the thread endpoint has them whole. A snapshot (`reset: true`) is never paged; its turns are
+        each active project's latest 50.
       parameters:
         - { name: since, in: query, required: false, schema: { type: string, pattern: '^[0-9]{1,15}$' } }
         - { name: collections, in: query, required: false, description: 'Comma-separated: jobs, calendar, mail (mail is headers only), projects (archived included), turns (a snapshot holds each active project''s latest 50).', schema: { type: string, default: jobs } }
@@ -721,11 +735,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [cursor, reset, upserts, deletes]
+                required: [cursor, reset, more, upserts, deletes]
                 additionalProperties: false
                 properties:
                   cursor: { type: integer }
                   reset: { type: boolean }
+                  more: { type: boolean, description: 'More changes after this page: call again with this cursor.' }
                   upserts:
                     type: object
                     properties:
@@ -960,10 +975,18 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [projects]
+                required: [projects, importing]
                 additionalProperties: false
                 properties:
                   projects: { type: array, items: { $ref: '#/components/schemas/Project' } }
+                  importing:
+                    type: ['object', 'null']
+                    description: 'As /meta: older conversations still being imported into General.'
+                    required: [done, total]
+                    additionalProperties: false
+                    properties:
+                      done: { type: integer }
+                      total: { type: integer }
         default: { $ref: '#/components/responses/Error' }
     post:
       operationId: createProject
@@ -1033,7 +1056,7 @@ paths:
       operationId: getProjectThread
       summary: A project's thread, oldest first, a page at a time (the latest page without `before`).
       parameters:
-        - { name: before, in: query, required: false, description: 'The `next` of the previous page (a turn id).', schema: { type: string } }
+        - { name: before, in: query, required: false, description: 'The `next` of the previous page: a position in the thread, valid even if the turn it came from was moved away since.', schema: { type: string } }
         - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
       responses:
         '200':
@@ -1163,4 +1186,92 @@ paths:
                     additionalProperties: false
                     properties:
                       projectId: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /projects/{id}/stop:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: stopProjectRun
+      summary: 'Stop the answer being written in this project. The step that is running finishes; nothing new starts. 409 nothing_running.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Stopping.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [stopped, message]
+                additionalProperties: false
+                properties:
+                  stopped: { type: boolean, const: true }
+                  message: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /projects/{id}/steer:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: steerProjectRun
+      summary: 'Add a note to the answer being written in this project (the "add to it" of a busy send). 409 nothing_running.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, minLength: 1, maxLength: 4000 }
+      responses:
+        '200':
+          description: Added.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [added, message]
+                additionalProperties: false
+                properties:
+                  added: { type: boolean, const: true }
+                  message: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /projects/{id}/live:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: followProjectRun
+      summary: 'Follow the answer being written in this project (server-sent events): its events so far, then live, until result or error. With nothing running: one `gone` event.'
+      responses:
+        '200':
+          description: An event stream.
+          content: { text/event-stream: { schema: { type: string } } }
+        default: { $ref: '#/components/responses/Error' }
+  /projects/{id}/offer/accept:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: acceptProjectOffer
+      summary: '"Work on it": the waiting offer in this thread (the latest, or the one with `message`) becomes a background job reporting here. 409 no_offer.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message: { type: string, description: 'The offered message, to pick that offer when several wait.' }
+      responses:
+        '202':
+          description: Started in the background.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [goal, message]
+                additionalProperties: false
+                properties:
+                  goal: { type: string }
+                  message: { type: string }
         default: { $ref: '#/components/responses/Error' }

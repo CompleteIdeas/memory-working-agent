@@ -2,25 +2,22 @@
  * v2 slice A5: Projects and their threads.
  *
  * A Project is one of the person's groupings — Eventing, Family & school, AI newsletter — plus General, which always
- * exists and catches whatever has no better home. Each project has ONE continuous thread (its `turns`), its notes and
- * files (the thread's folder), and the jobs working for it (jobs.project_id). A thread's session is `p-<projectId>`:
- * the live run, the working folder (serve/p-<id>) and the memory's `session=` tag all use it, so a memory written
- * during a project's runs says which project it came from.
+ * exists and catches whatever has no better home. Each project has ONE continuous thread (its `turns`), its files (the
+ * thread's folder) and the jobs working for it (jobs.project_id). A thread's session is `p-<projectId>`: the live run,
+ * the working folder (serve/p-<id>) and the memory's `session=` tag all use it, so a memory written during a project's
+ * runs says which project it came from.
  *
- * Turns live in app.db (they were conversations.jsonl, which src/conversations.ts still reads for the one-time
- * migration). A chat turn holds the person's message AND the reply, so moving it moves both. A `running` turn is the
- * same row its finished turn later fills in (by run id), so a turn keeps its id from the moment it is sent.
+ * Turns live in app.db. A chat turn holds the person's message AND the reply, so moving it moves both. A `running`
+ * turn is the same row its finished turn later fills in (by run id), so a turn keeps its id from the moment it is sent.
  *
- * Routing (suggestProject): the message is embedded with the model AWM already loads for recall and compared with
- * each project's name and the centroid of its last 20 messages. Inside a project the answer is that project unless
- * another matches strongly — then a hint, never a switch. From Now/Today or General: a suggestion, or "not sure"
- * (General) when the match is weak or two projects are close.
+ * Order (review of A5). A thread is ordered by (ord, grp, n): `ord` is the time it was sent (for a conversation
+ * imported from before projects: that conversation's start, shared by all its turns), `grp` keeps one imported
+ * conversation's turns together when two start in the same millisecond (0 for a live turn), and `n` is the insertion
+ * order — so two turns in one millisecond keep the order they were written in. A page cursor is that triple, which
+ * stays valid when the turn it came from is moved away.
  *
- * Cross-talk provenance (crossTalk): the memories a run actually used carry the `session=` of the run that wrote
- * them; each project other than the current one is counted on the turn, and the app shows a quiet "using what I know
- * from Eventing" under the answer.
- *
- * Every write records an event (the sync cursor) in the same transaction.
+ * Routing (suggestProject) and cross-talk provenance (crossTalk) are below. Every write records an event (the sync
+ * cursor) in the same transaction.
  */
 import { randomBytes } from 'node:crypto';
 import { appDb, registerMigrations, recordEvent, type AppDb, type Migration } from './db.js';
@@ -38,20 +35,25 @@ export const PROJECTS_MIGRATION: Migration = {
       created_at INTEGER NOT NULL,
       sort INTEGER NOT NULL DEFAULT 0,
       archived INTEGER NOT NULL DEFAULT 0,
-      -- decision D6 (a project kept out of cross-talk) is deferred: the column exists, nothing reads it yet
+      -- decision D6 is deferred; until then a private project is never named as another answer's source
       private INTEGER NOT NULL DEFAULT 0,
       updated_seq INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS projects_seq ON projects(updated_seq);
     CREATE TABLE IF NOT EXISTS turns (
       id TEXT PRIMARY KEY,
+      -- insertion order (the last tie-break of the thread order)
+      n INTEGER NOT NULL UNIQUE,
       project_id TEXT NOT NULL REFERENCES projects(id),
-      -- p-<projectId>; a turn from an older client keeps its own conversation id in legacy_session
+      -- p-<projectId>
       session TEXT NOT NULL,
+      -- the older conversation (before projects, or an older client's) it belongs to; cleared when it is moved out
       legacy_session TEXT,
+      -- the older conversation it came from, kept after a move: its folder's files stay listed
+      origin_session TEXT,
       ts INTEGER NOT NULL,
-      -- the thread's order: the time it was sent, except migrated conversations, which stay together under their divider
       ord REAL NOT NULL,
+      grp INTEGER NOT NULL DEFAULT 0,
       kind TEXT NOT NULL CHECK (kind IN ('chat','result','offer','running','divider')),
       message TEXT NOT NULL DEFAULT '',
       reply TEXT NOT NULL DEFAULT '',
@@ -62,21 +64,30 @@ export const PROJECTS_MIGRATION: Migration = {
       try_id TEXT,
       about_kind TEXT,
       about_id TEXT,
-      -- [{projectId, n}]: other projects whose memories this answer used
+      -- [{projectId, n}] or [{earlier: true, n}]: where the memories this answer used came from
       provenance TEXT,
-      -- {offer, resumes}: how an offer was answered; which stopped turn a resume continued
+      -- {offer, resumes, job, archivedFrom, untitled}
       meta TEXT,
       moved_from TEXT,
-      migrated INTEGER NOT NULL DEFAULT 0,
       updated_seq INTEGER NOT NULL DEFAULT 0
     );
-    CREATE INDEX IF NOT EXISTS turns_project ON turns(project_id, ord);
-    CREATE INDEX IF NOT EXISTS turns_session ON turns(session, ord);
-    CREATE INDEX IF NOT EXISTS turns_legacy ON turns(legacy_session, ord);
+    CREATE INDEX IF NOT EXISTS turns_thread ON turns(project_id, ord, grp, n);
+    CREATE INDEX IF NOT EXISTS turns_session ON turns(session, legacy_session, ord, grp, n);
+    CREATE INDEX IF NOT EXISTS turns_legacy ON turns(legacy_session, ord, grp, n);
+    CREATE INDEX IF NOT EXISTS turns_origin ON turns(origin_session);
     CREATE INDEX IF NOT EXISTS turns_run ON turns(run_id);
     CREATE INDEX IF NOT EXISTS turns_seq ON turns(updated_seq);
-    -- the conversation migration's key: a second run finds what the first one wrote
-    CREATE UNIQUE INDEX IF NOT EXISTS turns_legacy_key ON turns(legacy_session, ts, kind, COALESCE(run_id, '')) WHERE migrated = 1;
+    CREATE INDEX IF NOT EXISTS turns_kind ON turns(kind) WHERE kind IN ('running', 'divider');
+    -- the conversation list: one group per conversation, newest first, without reading bodies
+    CREATE INDEX IF NOT EXISTS turns_conv ON turns(COALESCE(legacy_session, session), ts) WHERE kind != 'divider';
+    CREATE INDEX IF NOT EXISTS turns_recent ON turns(ts, COALESCE(legacy_session, session)) WHERE kind != 'divider';
+    -- the waiting offers of a thread or of an older conversation
+    CREATE INDEX IF NOT EXISTS turns_offer_thread ON turns(session, ord) WHERE kind = 'offer' AND legacy_session IS NULL;
+    CREATE INDEX IF NOT EXISTS turns_offer_legacy ON turns(legacy_session, ord) WHERE kind = 'offer';
+    -- the conversation import (src/v2/migrate-conversations.ts): every line it took (content hash + line number), and
+    -- how far into each log it has read
+    CREATE TABLE IF NOT EXISTS conv_import_lines (key TEXT PRIMARY KEY, turn_id TEXT);
+    CREATE TABLE IF NOT EXISTS conv_import_state (file TEXT PRIMARY KEY, offset INTEGER NOT NULL, line INTEGER NOT NULL, head TEXT, updated_at INTEGER, report TEXT);
     INSERT OR IGNORE INTO projects (id, name, icon, created_at, sort) VALUES ('general', 'General', 'chat', CAST(strftime('%s','now') AS INTEGER) * 1000, 0);
     INSERT INTO events (ts, entity, entity_id, op) VALUES (CAST(strftime('%s','now') AS INTEGER) * 1000, 'project', 'general', 'upsert');
     UPDATE projects SET updated_seq = last_insert_rowid() WHERE id = 'general';`,
@@ -88,15 +99,21 @@ registerMigrations([PROJECTS_MIGRATION]);
 export interface ProjectRow { id: string; name: string; icon: string | null; created_at: number; sort: number; archived: number; private: number; updated_seq: number }
 export type TurnKind = 'chat' | 'result' | 'offer' | 'running' | 'divider';
 export interface TurnRow {
-  id: string; project_id: string; session: string; legacy_session: string | null; ts: number; ord: number; kind: TurnKind;
-  message: string; reply: string; reason: string | null; tainted: number | null; run_id: string | null; try_id: string | null;
-  about_kind: string | null; about_id: string | null; provenance: string | null; meta: string | null; moved_from: string | null;
-  migrated: number; updated_seq: number;
+  id: string; n: number; project_id: string; session: string; legacy_session: string | null; origin_session: string | null; ts: number; ord: number; grp: number;
+  kind: TurnKind; message: string; reply: string; reason: string | null; tainted: number | null; run_id: string | null; try_id: string | null;
+  about_kind: string | null; about_id: string | null; provenance: string | null; meta: string | null; moved_from: string | null; updated_seq: number;
 }
-export interface Provenance { projectId: string; n: number }
+/** Where an answer's memories came from: another project, or a conversation from before projects. */
+export type Provenance = { projectId: string; n: number } | { earlier: true; n: number };
 export interface TurnMeta {
   offer?: { answered: 'background' | 'now'; goal?: string; at: number };
   resumes?: number;
+  /** the Job this turn's run (or its offer) made: moving the turn moves the job */
+  job?: string;
+  /** it was meant for a project that is archived, and was kept in General */
+  archivedFrom?: string;
+  /** an imported conversation's divider still waits for the first thing the person typed, to be titled by it */
+  untitled?: boolean;
 }
 
 export const sessionOf = (projectId: string) => `p-${projectId}`;
@@ -104,24 +121,35 @@ export const sessionOf = (projectId: string) => `p-${projectId}`;
 export function projectOfSession(session: string | null | undefined): string | null {
   return session && session.startsWith('p-') && session.length > 2 ? session.slice(2) : null;
 }
+/** An older conversation's id, as stored (long ids are cut at 80 characters, the old log's own limit). */
+export const legacyId = (session: string) => session.slice(0, 80);
 
 const MAX_TEXT = 20_000;
+/** /sync and the live stream send turns as summaries; the thread endpoint has them whole. */
+export const SUMMARY_CHARS = 500;
 const newId = (p: 'pr' | 'tu') => `${p}_${randomBytes(6).toString('hex')}`;
 const parse = <T>(s: string | null): T | null => { if (!s) return null; try { return JSON.parse(s) as T; } catch { return null; } };
+export const THREAD_ORDER = 'ord, grp, n';
+export const THREAD_ORDER_DESC = 'ord DESC, grp DESC, n DESC';
+export const EARLIER = 'an earlier conversation';
 
 export function apiProject(p: ProjectRow) {
   return { id: p.id, name: p.name, icon: p.icon, createdAt: p.created_at, sort: p.sort, archived: p.archived === 1, general: p.id === GENERAL, updatedSeq: p.updated_seq };
 }
-export function apiTurn(t: TurnRow, d: AppDb = appDb()) {
+export function apiProvenance(prov: Provenance[], d: AppDb = appDb()) {
+  // the names travel with the ids: "using what I know from Eventing" needs no second request
+  return prov.map((p) => ('earlier' in p ? { projectId: null, name: EARLIER, n: p.n } : { projectId: p.projectId, name: getProject(p.projectId, d)?.name ?? p.projectId, n: p.n }));
+}
+export function apiTurn(t: TurnRow, d: AppDb = appDb(), o: { summary?: boolean } = {}) {
   const meta = parse<TurnMeta>(t.meta) ?? {};
-  const prov = parse<Provenance[]>(t.provenance) ?? [];
+  const cut = (s: string) => (o.summary && s.length > SUMMARY_CHARS ? s.slice(0, SUMMARY_CHARS) : s);
   return {
-    id: t.id, projectId: t.project_id, kind: t.kind, ts: t.ts, message: t.message, reply: t.reply, reason: t.reason,
+    id: t.id, projectId: t.project_id, kind: t.kind, ts: t.ts, message: cut(t.message), reply: cut(t.reply), reason: t.reason,
+    truncated: !!o.summary && (t.message.length > SUMMARY_CHARS || t.reply.length > SUMMARY_CHARS),
     tainted: t.tainted == null ? null : t.tainted === 1, runId: t.run_id, tryId: t.try_id,
     about: t.about_kind && t.about_id ? { kind: t.about_kind, id: t.about_id } : null,
-    // the names travel with the ids: "using what I know from Eventing" needs no second request
-    provenance: prov.map((p) => ({ projectId: p.projectId, name: getProject(p.projectId, d)?.name ?? p.projectId, n: p.n })),
-    offer: meta.offer ?? null, legacySession: t.legacy_session, movedFrom: t.moved_from, updatedSeq: t.updated_seq,
+    provenance: apiProvenance(parse<Provenance[]>(t.provenance) ?? [], d),
+    offer: meta.offer ?? null, legacySession: t.legacy_session ?? t.origin_session, movedFrom: t.moved_from, updatedSeq: t.updated_seq,
   };
 }
 
@@ -131,9 +159,9 @@ function bumpProject(d: AppDb, id: string): void {
   const seq = recordEvent({ entity: 'project', id }, d);
   d.prepare('UPDATE projects SET updated_seq = ? WHERE id = ?').run(seq, id);
 }
-function bumpTurn(d: AppDb, id: string, projectId: string, op: 'upsert' | 'delete' = 'upsert'): void {
-  const seq = recordEvent({ entity: 'turn', id, op, payload: { project: projectId } }, d);
-  if (op === 'upsert') d.prepare('UPDATE turns SET updated_seq = ? WHERE id = ?').run(seq, id);
+function bumpTurn(d: AppDb, id: string, projectId: string): void {
+  const seq = recordEvent({ entity: 'turn', id, payload: { project: projectId } }, d);
+  d.prepare('UPDATE turns SET updated_seq = ? WHERE id = ?').run(seq, id);
 }
 
 export function getProject(id: string, d: AppDb = appDb()): ProjectRow | undefined {
@@ -152,14 +180,14 @@ function nameTaken(d: AppDb, name: string, except?: string): boolean {
   return !!d.prepare(`SELECT 1 FROM projects WHERE archived = 0 AND lower(name) = lower(?) AND id != ?`).get(name, except ?? '');
 }
 
-export function createProject(p: { name: string; icon?: string | null; now?: number }, d: AppDb = appDb()): ProjectRow {
+export function createProject(p: { name: string; icon?: string | null; now?: number; private?: boolean }, d: AppDb = appDb()): ProjectRow {
   const name = cleanName(p.name);
   if (!name) throw new ProjectError('bad_name', 'Give the project a name.');
   return d.transaction(() => {
     if (nameTaken(d, name)) throw new ProjectError('name_taken', `You already have a project called ${name}.`);
     const id = newId('pr');
     const sort = ((d.prepare('SELECT MAX(sort) m FROM projects').get() as { m: number | null }).m ?? 0) + 1;
-    d.prepare('INSERT INTO projects (id, name, icon, created_at, sort) VALUES (?, ?, ?, ?, ?)').run(id, name, cleanIcon(p.icon), p.now ?? Date.now(), sort);
+    d.prepare('INSERT INTO projects (id, name, icon, created_at, sort, private) VALUES (?, ?, ?, ?, ?, ?)').run(id, name, cleanIcon(p.icon), p.now ?? Date.now(), sort, p.private ? 1 : 0);
     bumpProject(d, id);
     return getProject(id, d)!;
   }).immediate();
@@ -197,48 +225,58 @@ export function updateProject(id: string, f: { name?: string; icon?: string | nu
 export interface NewTurn {
   projectId: string; ts: number; kind: TurnKind; message: string; reply: string; reason?: string | null; tainted?: boolean | null;
   runId?: string | null; tryId?: string | null; about?: { kind: string; id: string } | null; provenance?: Provenance[] | null;
-  meta?: TurnMeta | null; legacySession?: string | null; ord?: number; migrated?: boolean;
+  meta?: TurnMeta | null; legacySession?: string | null;
+  /** the thread order (default: ts) and the imported conversation it groups with ('self': a divider starting one) */
+  ord?: number; grp?: number | 'self';
 }
 
 export function getTurn(id: string, d: AppDb = appDb()): TurnRow | undefined {
   return d.prepare('SELECT * FROM turns WHERE id = ?').get(id) as TurnRow | undefined;
 }
 
-/** Insert one turn (inside the caller's transaction, or its own). Returns it, or undefined when a migrated key exists. */
-export function insertTurn(t: NewTurn, d: AppDb = appDb()): TurnRow | undefined {
+/** Insert one turn (inside the caller's transaction, or as its own statement). */
+export function insertTurn(t: NewTurn, d: AppDb = appDb()): TurnRow {
   const id = newId('tu');
-  const r = d.prepare(`INSERT ${t.migrated ? 'OR IGNORE ' : ''}INTO turns (id, project_id, session, legacy_session, ts, ord, kind, message, reply, reason, tainted, run_id, try_id, about_kind, about_id, provenance, meta, migrated)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, t.projectId, sessionOf(t.projectId), t.legacySession ?? null, t.ts, t.ord ?? t.ts, t.kind,
-    String(t.message ?? '').slice(0, MAX_TEXT), String(t.reply ?? '').slice(0, MAX_TEXT), t.reason ?? null, t.tainted == null ? null : t.tainted ? 1 : 0,
-    t.runId ?? null, t.tryId ?? null, t.about?.kind ?? null, t.about?.id ?? null, t.provenance?.length ? JSON.stringify(t.provenance) : null,
-    t.meta && Object.keys(t.meta).length ? JSON.stringify(t.meta) : null, t.migrated ? 1 : 0);
-  if (!r.changes) return undefined;
+  const n = ((d.prepare('SELECT MAX(n) m FROM turns').get() as { m: number | null }).m ?? 0) + 1;
+  const legacy = t.legacySession ? legacyId(t.legacySession) : null;
+  d.prepare(`INSERT INTO turns (id, n, project_id, session, legacy_session, origin_session, ts, ord, grp, kind, message, reply, reason, tainted, run_id, try_id, about_kind, about_id, provenance, meta)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, n, t.projectId, sessionOf(t.projectId), legacy, legacy, t.ts, t.ord ?? t.ts,
+    t.grp === 'self' ? n : t.grp ?? 0, t.kind, String(t.message ?? '').slice(0, MAX_TEXT), String(t.reply ?? '').slice(0, MAX_TEXT), t.reason ?? null,
+    t.tainted == null ? null : t.tainted ? 1 : 0, t.runId ?? null, t.tryId ?? null, t.about?.kind ?? null, t.about?.id ?? null,
+    t.provenance?.length ? JSON.stringify(t.provenance) : null, t.meta && Object.keys(t.meta).length ? JSON.stringify(t.meta) : null);
   bumpTurn(d, id, t.projectId);
-  return getTurn(id, d);
+  return getTurn(id, d)!;
+}
+
+/** The unfinished turn of a run (a `running` turn, or one marked interrupted that its run finishes after all). */
+export function unfinishedTurnOf(runId: string, d: AppDb = appDb()): TurnRow | undefined {
+  return d.prepare(`SELECT * FROM turns WHERE run_id = ? AND (kind = 'running' OR reason = 'interrupted') ORDER BY n DESC LIMIT 1`).get(runId) as TurnRow | undefined;
+}
+/** Fill a run's unfinished turn in with how it ended: same id, same place in its thread. */
+export function finishTurn(row: TurnRow, t: Pick<NewTurn, 'kind' | 'ts' | 'message' | 'reply' | 'reason' | 'tainted' | 'tryId' | 'provenance' | 'meta'>, d: AppDb = appDb()): TurnRow {
+  const meta = { ...(parse<TurnMeta>(row.meta) ?? {}), ...(t.meta ?? {}) };
+  d.prepare(`UPDATE turns SET kind = ?, ts = ?, message = ?, reply = ?, reason = ?, tainted = ?, try_id = COALESCE(?, try_id), provenance = ?, meta = ? WHERE id = ?`)
+    .run(t.kind, t.ts, String(t.message ?? '').slice(0, MAX_TEXT), String(t.reply ?? '').slice(0, MAX_TEXT), t.reason ?? null, t.tainted == null ? null : t.tainted ? 1 : 0,
+      t.tryId ?? null, t.provenance?.length ? JSON.stringify(t.provenance) : null, Object.keys(meta).length ? JSON.stringify(meta) : null, row.id);
+  bumpTurn(d, row.id, row.project_id);
+  return getTurn(row.id, d)!;
 }
 
 /**
- * Write a turn. A finished turn whose run already has a `running` turn fills that same row in (its id stays, its
+ * Write a turn. A finished turn whose run already has an unfinished turn fills that same row in (its id stays, its
  * place in the thread stays — and a move made while the answer was being written is kept).
  */
-export function writeTurn(t: NewTurn, d: AppDb = appDb()): TurnRow | undefined {
+export function writeTurn(t: NewTurn, d: AppDb = appDb()): TurnRow {
   return d.transaction(() => {
     if (t.runId && t.kind !== 'running') {
-      const running = d.prepare(`SELECT * FROM turns WHERE run_id = ? AND kind = 'running' ORDER BY ord DESC LIMIT 1`).get(t.runId) as TurnRow | undefined;
-      if (running) {
-        const meta = { ...(parse<TurnMeta>(running.meta) ?? {}), ...(t.meta ?? {}) };
-        d.prepare(`UPDATE turns SET kind = ?, ts = ?, message = ?, reply = ?, reason = ?, tainted = ?, try_id = COALESCE(?, try_id), provenance = ?, meta = ? WHERE id = ?`)
-          .run(t.kind, t.ts, String(t.message ?? '').slice(0, MAX_TEXT), String(t.reply ?? '').slice(0, MAX_TEXT), t.reason ?? null, t.tainted == null ? null : t.tainted ? 1 : 0,
-            t.tryId ?? null, t.provenance?.length ? JSON.stringify(t.provenance) : null, Object.keys(meta).length ? JSON.stringify(meta) : null, running.id);
-        bumpTurn(d, running.id, running.project_id);
-        return getTurn(running.id, d);
-      }
+      const open = unfinishedTurnOf(t.runId, d);
+      if (open) return finishTurn(open, t, d);
     }
     return insertTurn(t, d);
   }).immediate();
 }
 
-/** Set an offer turn's answer (how the person chose: background or here). */
+/** Merge into a turn's meta (an offer's answer, the job a run made). */
 export function setTurnMeta(id: string, meta: TurnMeta, d: AppDb = appDb()): void {
   d.transaction(() => {
     const t = getTurn(id, d);
@@ -248,30 +286,50 @@ export function setTurnMeta(id: string, meta: TurnMeta, d: AppDb = appDb()): voi
   }).immediate();
 }
 
-/** Record which other projects' memories an answer used. */
-export function setProvenance(id: string, prov: Provenance[], d: AppDb = appDb()): void {
-  d.transaction(() => {
-    const t = getTurn(id, d);
-    if (!t) return;
-    d.prepare('UPDATE turns SET provenance = ? WHERE id = ?').run(prov.length ? JSON.stringify(prov) : null, id);
-    bumpTurn(d, id, t.project_id);
+/**
+ * Turns left `running` by a process that is gone (it crashed, or an imported conversation's run never finished): they
+ * become "interrupted" chat turns — shown as such, movable, and still filled in if their run's end arrives later.
+ * `before`: only turns started before this (a live run started after the server did is never touched).
+ */
+export function interruptStaleRunning(before: number, live: Set<string> = new Set(), d: AppDb = appDb()): number {
+  return d.transaction(() => {
+    const rows = d.prepare(`SELECT * FROM turns WHERE kind = 'running' AND ts < ?`).all(before) as TurnRow[];
+    let n = 0;
+    for (const r of rows) {
+      if (r.run_id && live.has(r.run_id)) continue;
+      d.prepare(`UPDATE turns SET kind = 'chat', reason = 'interrupted' WHERE id = ?`).run(r.id);
+      bumpTurn(d, r.id, r.project_id);
+      n++;
+    }
+    return n;
   }).immediate();
 }
 
-/** A project's thread, oldest first: the `limit` turns before `before` (a turn id), or the latest. `next` pages back. */
+/** A page cursor: the thread position (ord, grp, n) of the oldest turn on the page. It does not need that turn to
+ *  still be in the thread (review of A5: moving it away used to end paging). */
+export function encodeCursor(t: Pick<TurnRow, 'ord' | 'grp' | 'n'>): string { return `${t.ord}:${t.grp}:${t.n}`; }
+export function decodeCursor(c: string): { ord: number; grp: number; n: number } | null {
+  const m = /^(-?\d+(?:\.\d+)?(?:e[+-]?\d+)?):(\d{1,15}):(\d{1,15})$/i.exec(c);
+  if (!m) return null;
+  const ord = Number(m[1]);
+  return Number.isFinite(ord) ? { ord, grp: Number(m[2]), n: Number(m[3]) } : null;
+}
+
+/** A project's thread, oldest first: the `limit` turns before the cursor `before`, or the latest. `next` pages back. */
 export function threadPage(projectId: string, o: { before?: string; limit?: number } = {}, d: AppDb = appDb()): { turns: TurnRow[]; next: string | null } {
   const limit = Math.max(1, Math.min(200, o.limit ?? 50));
   let rows: TurnRow[];
   if (o.before) {
-    const b = d.prepare('SELECT ord, rowid r FROM turns WHERE id = ? AND project_id = ?').get(o.before, projectId) as { ord: number; r: number } | undefined;
-    if (!b) return { turns: [], next: null };
-    rows = d.prepare(`SELECT * FROM turns WHERE project_id = ? AND (ord < ? OR (ord = ? AND rowid < ?)) ORDER BY ord DESC, rowid DESC LIMIT ?`).all(projectId, b.ord, b.ord, b.r, limit + 1) as TurnRow[];
+    const c = decodeCursor(o.before);
+    if (!c) return { turns: [], next: null };
+    rows = d.prepare(`SELECT * FROM turns WHERE project_id = @p AND (ord < @o OR (ord = @o AND (grp < @g OR (grp = @g AND n < @n)))) ORDER BY ${THREAD_ORDER_DESC} LIMIT @l`)
+      .all({ p: projectId, o: c.ord, g: c.grp, n: c.n, l: limit + 1 }) as TurnRow[];
   } else {
-    rows = d.prepare(`SELECT * FROM turns WHERE project_id = ? ORDER BY ord DESC, rowid DESC LIMIT ?`).all(projectId, limit + 1) as TurnRow[];
+    rows = d.prepare(`SELECT * FROM turns WHERE project_id = ? ORDER BY ${THREAD_ORDER_DESC} LIMIT ?`).all(projectId, limit + 1) as TurnRow[];
   }
   const more = rows.length > limit;
   const page = rows.slice(0, limit).reverse();
-  return { turns: page, next: more && page.length ? page[0].id : null };
+  return { turns: page, next: more && page.length ? encodeCursor(page[0]) : null };
 }
 
 /** The latest turns of every active project (the /sync snapshot). */
@@ -284,8 +342,10 @@ export class MoveError extends Error { constructor(public code: 'not_found' | 'n
 /**
  * Move a turn — the person's message and its answer, which are one row — to another project. The thread it leaves
  * and the one it joins both see the change; `moved_from` remembers where it was, so Undo is a move back.
+ *   - A turn of an older conversation leaves that conversation too (its folder's files stay listed with it).
+ *   - The Job its run or its offer made moves with it: the job's project, and the thread its results go to.
  */
-export function moveTurn(id: string, toProjectId: string, d: AppDb = appDb()): { turn: TurnRow; from: string } {
+export function moveTurn(id: string, toProjectId: string, d: AppDb = appDb()): { turn: TurnRow; from: string; legacySession: string | null; job: string | null } {
   return d.transaction(() => {
     const t = getTurn(id, d);
     if (!t) throw new MoveError('not_found', 'No such message.');
@@ -295,34 +355,86 @@ export function moveTurn(id: string, toProjectId: string, d: AppDb = appDb()): {
     if (!to) throw new MoveError('not_found', 'No such project.');
     if (to.archived) throw new MoveError('archived', `${to.name} is archived. Restore it first.`);
     if (t.project_id === to.id) throw new MoveError('same', `It is already in ${to.name}.`);
-    d.prepare('UPDATE turns SET project_id = ?, session = ?, moved_from = ? WHERE id = ?').run(to.id, sessionOf(to.id), t.project_id, id);
+    d.prepare('UPDATE turns SET project_id = ?, session = ?, moved_from = ?, legacy_session = NULL WHERE id = ?').run(to.id, sessionOf(to.id), t.project_id, id);
     bumpTurn(d, id, to.id);
-    return { turn: getTurn(id, d)!, from: t.project_id };
+    const job = jobOfTurn(t, d);
+    if (job) {
+      d.prepare('UPDATE jobs SET project_id = ?, session = ? WHERE id = ?').run(to.id, sessionOf(to.id), job);
+      const seq = recordEvent({ entity: 'job', id: job }, d);
+      d.prepare('UPDATE jobs SET updated_seq = ? WHERE id = ?').run(seq, job);
+    }
+    return { turn: getTurn(id, d)!, from: t.project_id, legacySession: t.legacy_session, job };
   }).immediate();
+}
+/** The Job a turn made: recorded on it (a chat run's job), or the goal its offer's "Work on it" started. */
+function jobOfTurn(t: TurnRow, d: AppDb): string | null {
+  const meta = parse<TurnMeta>(t.meta) ?? {};
+  try {
+    if (meta.job && d.prepare('SELECT 1 FROM jobs WHERE id = ?').get(meta.job)) return meta.job;
+    const goal = meta.offer?.answered === 'background' ? meta.offer.goal : undefined;
+    if (goal && /^[0-9a-f-]{8,}$/i.test(goal)) {
+      const j = d.prepare(`SELECT id FROM jobs WHERE substr(legacy_goal_id, 1, ?) = ? ORDER BY created_at LIMIT 1`).get(goal.length, goal) as { id: string } | undefined;
+      if (j) return j.id;
+    }
+  } catch { /* no jobs table here */ }
+  return null;
+}
+
+/** The thread a job's result goes to: its project's, when the job works for one (it may have been moved since its task
+ *  was scheduled); else where the task said. */
+export function resultSessionFor(notify: string, jobProjectId: string | null | undefined, d: AppDb = appDb()): string {
+  if (!jobProjectId) return notify;
+  const p = getProject(jobProjectId, d);
+  return p && !p.archived ? sessionOf(p.id) : notify;
+}
+
+/** The project whose thread a session writes to: its own, or General (an older conversation, an archived or unknown
+ *  project). */
+export function threadOfSession(session: string, d: AppDb = appDb()): string {
+  const pid = projectOfSession(session);
+  const p = pid ? getProject(pid, d) : undefined;
+  return p && !p.archived ? p.id : GENERAL;
+}
+/** Of the sessions with a run going, the one writing to this project's thread (one run at a time per project, whatever
+ *  session alias started it). */
+export function runningIn(projectId: string, liveSessions: string[], d: AppDb = appDb()): string | null {
+  return liveSessions.find((s) => threadOfSession(s, d) === projectId) ?? null;
 }
 
 // ── Cross-talk provenance ───────────────────────────────────────────────────────────────────────────────────────
 
-/** The project a memory came from, by the `session=` its writing run had: a thread session names it; an older
- *  conversation's session is found among the migrated turns (General, unless a turn of it was moved). */
-export function projectOfMemorySession(session: string | null | undefined, d: AppDb = appDb()): string | null {
-  if (!session) return null;
-  const p = projectOfSession(session);
-  if (p) return getProject(p, d) ? p : null;
-  const row = d.prepare(`SELECT project_id FROM turns WHERE legacy_session = ? GROUP BY project_id ORDER BY COUNT(*) DESC LIMIT 1`).get(session) as { project_id: string } | undefined;
-  return row?.project_id ?? null;
+/** Whether a session is an older conversation's (one the turns know, or the web app's own `web-…` ids). */
+function isEarlierConversation(session: string, d: AppDb): boolean {
+  if (session.startsWith('web-')) return true;
+  const s = legacyId(session);
+  return !!(d.prepare('SELECT 1 FROM turns WHERE legacy_session = ? LIMIT 1').get(s) ?? d.prepare('SELECT 1 FROM turns WHERE origin_session = ? LIMIT 1').get(s));
 }
 
-/** The other projects whose memories a run used, with how many of each — most first. */
-export function crossTalk(used: { id: string; session?: string | null }[], currentProjectId: string, d: AppDb = appDb()): Provenance[] {
-  const counts = new Map<string, Set<string>>();
+/**
+ * Where the memories a run used came from, other than the thread it ran in — most first. A memory from another
+ * active project names that project; one from a conversation before projects is "an earlier conversation". Archived
+ * and private projects are never named. Memories with no session, or from runs that are not conversations (a job, an
+ * import), are not cross-talk.
+ */
+export function crossTalk(used: { id: string; session?: string | null }[], current: { projectId: string; session?: string }, d: AppDb = appDb()): Provenance[] {
+  const projects = new Map<string, Set<string>>();
+  const earlier = new Set<string>();
   for (const u of used) {
-    const p = projectOfMemorySession(u.session, d);
-    if (!p || p === currentProjectId) continue;
-    const s = counts.get(p) ?? new Set<string>();
-    s.add(u.id); counts.set(p, s);
+    if (!u.session) continue;
+    if (current.session && legacyId(u.session) === legacyId(current.session)) continue;
+    const pid = projectOfSession(u.session);
+    if (pid) {
+      if (pid === current.projectId) continue;
+      const p = getProject(pid, d);
+      if (!p || p.archived || p.private) continue;
+      const s = projects.get(pid) ?? new Set<string>();
+      s.add(u.id); projects.set(pid, s);
+    } else if (isEarlierConversation(u.session, d)) earlier.add(u.id);
   }
-  return [...counts.entries()].map(([projectId, s]) => ({ projectId, n: s.size })).sort((a, b) => b.n - a.n || a.projectId.localeCompare(b.projectId));
+  const out: Provenance[] = [...projects.entries()].map(([projectId, s]) => ({ projectId, n: s.size }));
+  out.sort((a, b) => b.n - a.n || ('projectId' in a && 'projectId' in b ? a.projectId.localeCompare(b.projectId) : 0));
+  if (earlier.size) out.push({ earlier: true, n: earlier.size });
+  return out;
 }
 
 // ── Routing suggestion ──────────────────────────────────────────────────────────────────────────────────────────
@@ -354,7 +466,7 @@ function cos(a: number[], b: number[]): number {
 
 /** What a project's thread is about: the person's last 20 messages there. */
 function recentMessages(projectId: string, d: AppDb): { id: string; text: string }[] {
-  return (d.prepare(`SELECT id, message FROM turns WHERE project_id = ? AND kind IN ('chat','offer','running') AND message != '' ORDER BY ord DESC, rowid DESC LIMIT 20`)
+  return (d.prepare(`SELECT id, message FROM turns WHERE project_id = ? AND kind IN ('chat','offer','running') AND message != '' ORDER BY ${THREAD_ORDER_DESC} LIMIT 20`)
     .all(projectId) as { id: string; message: string }[]).map((r) => ({ id: r.id, text: r.message.slice(0, 500) }));
 }
 

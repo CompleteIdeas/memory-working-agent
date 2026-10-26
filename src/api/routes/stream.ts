@@ -104,7 +104,7 @@ function present(rows: EventRow[], who: Caller | null) {
       const last = e.entity === 'project' ? lastForProject : lastForTurn;
       if (last.get(e.entity_id) !== i) return; // one message per project or turn per batch: as it is now
       const data = e.op === 'delete' ? null : e.entity === 'project' ? (() => { const p = getProject(e.entity_id); return p ? apiProject(p) : null; })()
-        : (() => { const t = getTurn(e.entity_id); return t ? apiTurn(t) : null; })();
+        : (() => { const t = getTurn(e.entity_id); return t ? apiTurn(t, undefined, { summary: true }) : null; })();
       out.push({ seq: e.seq, entity: e.entity, id: e.entity_id, op: data ? 'upsert' : 'delete', ...(data ? { data } : {}) });
       return;
     }
@@ -126,6 +126,9 @@ const CAL_ENTITIES = new Set(['cal_event', 'cal_draft']);
 /** The calendar collection's full snapshot: every cached event and every draft not removed. */
 const calendarSnapshot = () => calendarItems('0000-01-01T00:00:00.000Z', '9999-12-31T23:59:59.999Z');
 const COLLECTIONS = ['jobs', 'calendar', 'mail', 'projects', 'turns'];
+/** A /sync delta answers at most this many events, and stops early near this many bytes (`more: true`). */
+export const SYNC_PAGE = 500;
+export const SYNC_MAX_BYTES = 5 * 1024 * 1024;
 
 function parseCursor(v: string | null | undefined): number {
   if (v === null || v === undefined || v === '') return 0;
@@ -187,7 +190,7 @@ export const streamRoutes: Route[] = [
       const unknown = wanted.filter((w) => !COLLECTIONS.includes(w));
       if (unknown.length) throw new ApiError(400, 'unknown_collection', `Unknown collection: ${unknown.join(', ')}. Available: ${COLLECTIONS.join(', ')}.`);
       const want = new Set(wanted);
-      const cursor = headSeq();
+      const head = headSeq();
       const c = ctx();
       const upserts: Record<string, unknown[]> = {}, deletes: Record<string, string[]> = {};
       if (since === 0 || cursorTooOld(since)) {
@@ -195,22 +198,37 @@ export const streamRoutes: Route[] = [
         if (want.has('calendar')) { upserts.calendar = calendarSnapshot(); deletes.calendar = []; }
         if (want.has('mail')) { upserts.mail = mailSnapshot(); deletes.mail = []; }
         if (want.has('projects')) { upserts.projects = listProjects({ archived: true }).map(apiProject); deletes.projects = []; }
-        if (want.has('turns')) { upserts.turns = recentTurns(50).map((t) => apiTurn(t)); deletes.turns = []; }
-        return { body: { cursor, reset: true, upserts, deletes } };
+        if (want.has('turns')) { upserts.turns = recentTurns(50).map((t) => apiTurn(t, undefined, { summary: true })); deletes.turns = []; }
+        return { body: { cursor: head, reset: true, more: false, upserts, deletes } };
       }
-      const rows = appDb().prepare('SELECT seq, ts, entity, entity_id, op, payload FROM events WHERE seq > ? AND seq <= ? ORDER BY seq').all(since, cursor) as EventRow[];
+      // A page of at most SYNC_PAGE events and about SYNC_MAX_BYTES of answer (review of A5: a delta across the
+      // conversation import was 127 MB). `more: true` — call again with the returned cursor.
+      const page = appDb().prepare('SELECT seq, ts, entity, entity_id, op, payload FROM events WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?').all(since, head, SYNC_PAGE + 1) as EventRow[];
+      let more = page.length > SYNC_PAGE;
+      const fetched = page.slice(0, SYNC_PAGE);
+      const rows: EventRow[] = [];
+      const presented: ReturnType<typeof present> = [];
+      let bytes = 0;
+      for (let i = 0; i < fetched.length; i += 100) {
+        const chunk = fetched.slice(i, i + 100);
+        const out = present(chunk, who);
+        rows.push(...chunk); presented.push(...out);
+        bytes += JSON.stringify(out).length;
+        if (bytes >= SYNC_MAX_BYTES && i + 100 < fetched.length) { more = true; break; }
+      }
+      const cursor = more && rows.length ? rows[rows.length - 1].seq : head;
       const KEYS = ['jobs', 'calendar', 'projects', 'turns'] as const;
       const COLL: Record<string, (typeof KEYS)[number]> = { job: 'jobs', calendar: 'calendar', project: 'projects', turn: 'turns' };
       const ups = Object.fromEntries(KEYS.map((k) => [k, new Map<string, unknown>()])) as Record<(typeof KEYS)[number], Map<string, unknown>>;
       const dels = Object.fromEntries(KEYS.map((k) => [k, new Set<string>()])) as Record<(typeof KEYS)[number], Set<string>>;
-      for (const m of present(rows, who)) {
+      for (const m of presented) {
         const k = COLL[m.entity];
         if (!k || !want.has(k)) continue;
         if (m.op === 'delete') { dels[k].add(m.id); ups[k].delete(m.id); } else { ups[k].set(m.id, m.data); dels[k].delete(m.id); }
       }
       for (const k of KEYS) if (want.has(k)) { upserts[k] = [...ups[k].values()]; deletes[k] = [...dels[k]]; }
       if (want.has('mail')) { const d = mailDelta(rows); upserts.mail = d.upserts; deletes.mail = d.deletes; }
-      return { body: { cursor, reset: false, upserts, deletes } };
+      return { body: { cursor, reset: false, more, upserts, deletes } };
     },
   },
 ];
