@@ -365,9 +365,18 @@ export function hasLink(text: string): boolean {
  *  nothing granted would run with nobody watching and find nothing. A file name alone ("save it as notes.md") is the
  *  run's own folder, not the person's. */
 export function namesFolder(text: string): boolean {
-  if (/(?:^|[\s"'(])(?:[A-Za-z]:\\|\/(?:Users|home)\/)[^\s"')]+/.test(text)) return true;
-  return /\b(?:my|our|the person's)\s+(?:[\w-]+\s+){0,2}(?:folder|directory|files|notes|documents|downloads|desktop)\b(?!\s+(?:tab|app|list|in the chat))|\b(?:the|that|this)\s+[\w-]+\s+(?:folder|directory)\b/i.test(text);
+  if (ABSOLUTE_PATH.test(text)) return true; // not a global regex: .test keeps no state between calls
+  // "my notes folder", "the documents folder", "my files"; not the run's own ("the working folder", "the output
+  // folder", "this chat's folder"), not a mail folder ("the Spam folder in my inbox"), not the app's Files tab, and
+  // not "desktop notifications"
+  if (/\b(?:folder|directory)\s+(?:in|of)\s+(?:my|the)\s+(?:inbox|mailbox|mail|e-?mail|outlook|gmail)\b|\b(?:inbox|mail|e-?mail|spam|junk|sent)\s+folder\b/i.test(text)) return false;
+  return /\b(?:my|our|the person's)\s+(?:[\w-]+\s+){0,2}(?:folder|directory|files|notes|documents|downloads|desktop)\b(?!\s+(?:tab|app|list|in the chat|notifications?|alerts?))|\b(?:the|that|this)\s+(?!(?:working|output|same|chat's|chat|run's|job's|current|spam|junk|inbox|sent|drafts|archive)\b)[\w-]+\s+(?:folder|directory)\b/i.test(text);
 }
+
+/** An absolute path on the person's machine: `C:\…` or `C:/…`, `/Users/…`, `/home/…`, `~/…`, `\\server\share`.
+ *  Not global: use `new RegExp(ABSOLUTE_PATH.source, 'g')` to find every one (audit 2026-10-26: a global regex's
+ *  .test() keeps lastIndex between calls and skipped matches at random). */
+export const ABSOLUTE_PATH = /(?:^|[\s"'(])((?:[A-Za-z]:[\\/]|\/(?:Users|home)\/|~[\\/]|\\\\[^\s\\]+\\)[^\s"')]*)/;
 
 /**
  * A WATCH: a job that tracks one thing's value — set to report only changes, to finish when something becomes true,

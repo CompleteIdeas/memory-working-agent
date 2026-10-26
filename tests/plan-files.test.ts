@@ -31,13 +31,14 @@ describe('a planned task over a folder', () => {
           handler: async (args) => (String(args.path).endsWith('missing.md') ? '(no such file yet: missing.md — nothing exists there.)' : `# ${String(args.path)}\nnotes`) },
       ]);
       const stepInstructions: string[] = []; // what each sub-run was told, in order
+      const stepSystems: string[] = []; // each sub-run's whole system prompt (the fenced carried context is there too)
       let stepCalls = 0;
       const brain: Provider = { id: 'p', model: 'p', price: [0, 0], chat: async (input: ChatInput): Promise<ChatResult> => {
         const sys = String(input.system ?? '');
         if (sys.includes('You are the PLANNER')) return { text: JSON.stringify({ steps: [{ task: 'find the board minutes', done_when: 'files named' }, { task: 'summarise the decisions', done_when: 'summary written' }] }), usage: { input: 1, output: 1 } };
         if (!sys.includes('TRUST BOUNDARY')) return { text: '{}', usage: { input: 1, output: 1 } };
         const m = /INSTRUCTION: ([\s\S]*?)\n(?:Now|The time|Today|It is)/.exec(sys) ?? /INSTRUCTION: ([\s\S]*?)\nFENCE CODE/.exec(sys); // the step's instruction sits in the system prompt
-        if (m && (stepInstructions.length === 0 || !stepInstructions[stepInstructions.length - 1].startsWith(m[1].slice(0, 40)))) stepInstructions.push(m[1]);
+        if (m && (stepInstructions.length === 0 || !stepInstructions[stepInstructions.length - 1].startsWith(m[1].slice(0, 40)))) { stepInstructions.push(m[1]); stepSystems.push(sys); }
         stepCalls++;
         // step 1: list the folder, read two files (one missing), done. step 2: done at once.
         if (stepInstructions.length === 1) {
@@ -57,9 +58,12 @@ describe('a planned task over a folder', () => {
       const second = stepInstructions[1];
       expect(second).toContain('FILES THE EARLIER STEPS ALREADY FOUND');
       expect(second).toContain('do not call list_files for the same folders again');
-      expect(second).toContain('board-2026-09.md\nboard-2026-10.md\ntreasurer-q3.md'); // the listing as step 1 saw it
       expect(second).toContain('already read by an earlier step: C:/notes/board-2026-10.md');
       expect(second).not.toContain('missing.md'); // a read that found nothing is not a file found
+      // the listing itself travels fenced (file names may have come off the web), not in the instruction
+      expect(second).not.toContain('treasurer-q3.md');
+      expect(stepSystems[1]).toMatch(/FOLDER LISTING the earlier steps saw \(file names only\): .*board-2026-09\.md board-2026-10\.md treasurer-q3\.md/);
+      expect(stepSystems[0]).not.toContain('FOLDER LISTING the earlier steps saw');
     } finally { mem.close(); rmSync(dir, { recursive: true, force: true }); }
   }, 90_000);
 

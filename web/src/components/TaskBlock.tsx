@@ -85,7 +85,7 @@ export function TaskBlock({ task, highlight }: { task: Task; highlight?: boolean
           )}
           {canRevise && !revising && <button className="btn small" onClick={() => setRevising(true)}>Revise</button>}
           {/* 3b: the server resumes the stopped run from its own words (resume=1); these words are what the person sees */}
-          {task.status === 'stopped' && !task.offer && <button className="btn small" onClick={() => send(`Continue from where it stopped: "${task.title.replace(/"/g, "'")}". Keep what is already done.`, { session: task.session, resume: true })}>Continue from where it stopped</button>}
+          {task.status === 'stopped' && !task.offer && <button className="btn small" onClick={() => send(`Continue from where it stopped: "${task.title.replace(/"/g, "'")}". Keep what is already done.`, { session: task.session, resume: task.endedAt ?? true })}>Continue from where it stopped</button>}
           {task.status === 'failed' && <button className="btn small" onClick={() => send(task.words.replace(/^⏰\s*/, ''), { session: task.session, stay: true })}>Try again</button>}
         </div>
       )}

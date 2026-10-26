@@ -91,7 +91,9 @@ export function allowText(a: JobAllow): string {
 
 /** Every saved login this text refers to is one the job may use. */
 export function vaultAllowed(a: JobAllow | undefined, text: string): boolean {
-  const names = [...text.matchAll(/\{\{vault:([^.}]+)\./g)].map((m) => vaultName(m[1]));
+  // The same reading as the vault's own (resolveVaultRefs): any case, spaces inside the braces (audit 2026-10-26:
+  // "{{VAULT:bank.password}}" passed this check and was still filled in).
+  const names = [...text.matchAll(/\{\{\s*vault:([a-z0-9-]+)\.[a-z0-9-]+\s*\}\}/gi)].map((m) => vaultName(m[1]));
   return names.length > 0 && names.every((n) => a?.vault?.includes(n));
 }
 

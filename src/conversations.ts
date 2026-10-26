@@ -23,6 +23,9 @@ export interface ConversationTurn {
   offer?: { answered: 'background' | 'now'; goal?: string; at: number };
   /** on an `offer-answer` record: the `ts` of the offer turn it answers */
   answers?: number;
+  /** on a chat turn that resumed a stopped run (3b): the `ts` of the stopped turn whose words it continued, so a
+   *  second stop still resumes the person's own task, not the "Continue from where it stopped" words */
+  resumes?: number;
 }
 export interface ConversationSummary { session: string; title: string; last: number; turns: number; lastMessage: string }
 
@@ -66,8 +69,9 @@ export function answerOffer(session: string, answered: 'background' | 'now', goa
   const mine = readAll(path).filter((t) => t.session === session);
   const answered0 = new Set(mine.filter((t) => t.kind === 'offer-answer').map((t) => t.answers));
   const open = [...mine].reverse().filter((t) => t.kind === 'offer' && !answered0.has(t.ts));
-  // two offers waiting: the one whose words were sent back, else the latest
-  const offer = (message ? open.find((t) => t.message === message.slice(0, MAX_TEXT)) : undefined) ?? open[0];
+  // With the words sent back, only the offer with those words: "Try again" on a failed task also sends stay=1 (audit
+  // 2026-10-26), and must not answer an unrelated offer. Without words, the latest waiting one.
+  const offer = message ? open.find((t) => t.message === message.slice(0, MAX_TEXT)) : open[0];
   if (!offer) return null;
   appendTurn({ ts: now, session, message: offer.message, reply: '', kind: 'offer-answer', answers: offer.ts, offer: { answered, ...(goal ? { goal } : {}), at: now } }, path);
   return offer.ts;

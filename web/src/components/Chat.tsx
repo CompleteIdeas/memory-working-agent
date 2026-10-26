@@ -57,7 +57,7 @@ function BusyChooser() {
           // wait for the run to end, then send
           const t0 = Date.now();
           const wait = async () => { while (Date.now() - t0 < 120_000) { if (!(await getLive(s))) return; await new Promise((r) => setTimeout(r, 800)); } };
-          await wait(); setBusy(null); setMsg(''); setTimeout(() => send(m, { session: s }), 400);
+          await wait(); setBusy(null); setMsg(''); setTimeout(() => send(m, { session: s, ...(busy.opts ?? {}) }), 400); // a resume stays a resume
         }}>Stop it and send this</button>
         <button className="btn" onClick={() => setBusy(null)}>Cancel</button>
       </div>

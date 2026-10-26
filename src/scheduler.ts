@@ -337,11 +337,17 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // first attempt had written, did nothing, and ended "stuck" — a second result that called correct work a problem.
     // A resume that read the earlier work, changed nothing and staged nothing has found nothing more to do: that is
     // what it says, as a quiet finish, not a failure. A resume that got stuck WITHOUT reading anything keeps its word.
-    const readBack = ((r as { filesFound?: { read?: string[] } }).filesFound?.read ?? []).map((p) => p.replace(/^.*[\\/]/, '')).slice(0, 6);
-    if (task.resumeAttempt && ranOk && !actedThisRun && (r.reason === 'stuck' || (r.reason === 'done' && outcome === 'could-not')) && readBack.length) {
-      (r as { reason: string }).reason = 'done';
+    // "The earlier work": files it read that are in the job's own folder (`files`, listed above), not any file at all.
+    const inFolder = new Set(files);
+    const readBack = [...new Set(((r as { filesFound?: { read?: string[] } }).filesFound?.read ?? []).map((p) => p.replace(/^.*[\\/]/, '')))].filter((f) => inFolder.has(f)).slice(0, 6);
+    // Not when a tool or gate refused it something, when it claimed what it had not done, when it said could-not in
+    // its own words, or when it queued a further resume: those are problems, kept as problems (audit 2026-10-26).
+    const refusedOrUnbacked = Number((r as { refusals?: number }).refusals) > 0 || ((r as { unbackedClaims?: unknown[] }).unbackedClaims?.length ?? 0) > 0;
+    const stuckQuietly = r.reason === 'stuck' || (r.reason === 'done' && outcome === 'could-not' && !(r as { outcomeDeclared?: boolean }).outcomeDeclared);
+    if (task.resumeAttempt && ranOk && !actedThisRun && !refusedOrUnbacked && !(r as { resumeQueued?: boolean }).resumeQueued && stuckQuietly && readBack.length) {
+      r = { ...r, reason: 'done' }; // a copy: the run's own result object is not rewritten
       outcome = 'no-change';
-      summary = `Picked this up again after it ran out of room, read what the earlier attempt left (${readBack.join(', ')}) and found nothing more to do. ${readBack.length > 1 ? 'Those files stand' : 'That file stands'}.`;
+      summary = `Picked this up again, read what the earlier attempt left (${readBack.join(', ')}) and found nothing more to do. ${readBack.length > 1 ? 'Those files stand' : 'That file stands'}.`;
       log(`· resume found nothing more to do: ${task.instruction.slice(0, 40)}`);
     }
     // BL-44: the job's own record of its last good run — a watch's value and its changes, a brief's "since".

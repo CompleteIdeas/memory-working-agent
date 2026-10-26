@@ -292,7 +292,7 @@ export function buildTasks(inp: Inputs): Task[] {
       reply: running ? undefined : t.reply, reason: running ? undefined : t.reason, runId: t.runId, turnId: running ? undefined : t.ts,
       steps: (t.runId && inp.stepsByRun?.[t.runId]) || [], results: [], cards: [], jobs: [], revisions: [], ...(rev ? { revises: rev } : {}),
       // the server's record of the answer (every device sees it) beats this page's memory of it, which beats nothing
-      ...(t.kind === 'offer' ? { offer: t.offer ? { answered: t.offer.answered, goal: t.offer.goal } : inp.offers?.[`${session}:${t.ts}`] ?? {} } : {}),
+      ...(t.kind === 'offer' ? { offer: t.offer ? { ...(inp.offers?.[`${session}:${t.ts}`] ?? {}), answered: t.offer.answered, goal: t.offer.goal } : inp.offers?.[`${session}:${t.ts}`] ?? {} } : {}),
       ...(running ? { live: { runId: t.runId, startedAt: t.ts, steps: [], notes: [] } } : {}),
       ...(lostRun ? { error: 'This run ended without an answer (the server may have restarted). Ask again to redo it.' } : {}),
     };
@@ -335,8 +335,9 @@ export function buildTasks(inp: Inputs): Task[] {
   const words = (x: string) => x.toLowerCase().replace(/…$/, '').replace(/\s+/g, ' ').trim();
   for (const d of drafts) if (d.offer) {
     const w = words(d.words);
-    // the goal the server named when the offer was answered, else the one that matches by words and time
-    const g = (d.offer.goal ? inp.goals.find((x) => !used.has(x.id) && x.id.startsWith(d.offer!.goal!)) : undefined) ?? inp.goals.find((x) => !used.has(x.id) && (x.record?.conv ? x.record.conv === session : true)
+    // the goal the server named when the offer was answered (and no other, if that one is not here); else the one
+    // that matches by words and time
+    const g = d.offer.goal ? inp.goals.find((x) => !used.has(x.id) && x.id.startsWith(d.offer!.goal!)) : inp.goals.find((x) => !used.has(x.id) && (x.record?.conv ? x.record.conv === session : true)
       && w.startsWith(words(x.title).slice(0, 60)) && (!x.createdAt || (x.createdAt >= d.startedAt - 2000 && x.createdAt <= d.startedAt + 6 * 3_600_000)));
     if (g && (d.offer.answered === 'background' || !d.offer.answered)) { used.add(g.id); d.goal = g; if (!d.offer.answered) d.offer = { answered: 'background' }; }
     if (d.offer && !d.offer.answered && d.results.length) d.offer = { answered: 'background' };

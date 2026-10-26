@@ -39,6 +39,37 @@ describe('resumeInstruction', () => {
     ];
     expect(resumeInstruction(turns)!.stopped.message).toBe('second task');
   });
+  it('a resumed run stopped again still resumes the person\'s own task, through the chain', () => {
+    const turns = [
+      { ts: 1, kind: 'chat', reason: 'stopped', message: task, reply: 'Stopped after step 3. Kept: formats.md.' },
+      { ts: 2, kind: 'chat', reason: 'stopped', message: 'Continue from where it stopped: "Research three rowing-club newsletter formats". Keep what is already done.', reply: 'Stopped after step 2. Kept: formats.md.', resumes: 1 },
+      { ts: 3, kind: 'chat', reason: 'stopped', message: 'Continue from where it stopped: "Research three rowing-club newsletter formats". Keep what is already done.', reply: 'Stopped after step 1.', resumes: 2 },
+    ];
+    const r = resumeInstruction(turns)!;
+    expect(r.stopped).toMatchObject({ ts: 1, message: task });
+    expect(r.instruction).toContain(`THE TASK:\n${task}`);
+    expect(r.instruction).toContain('last word was: "Stopped after step 1."'); // the latest stop's word, the original's task
+  });
+  it('resumes the card\'s own stopped turn when named, and skips one a later turn already continued', () => {
+    const turns = [
+      { ts: 1, kind: 'chat', reason: 'stopped', message: 'first task', reply: 'Stopped after step 1.' },
+      { ts: 2, kind: 'chat', reason: 'stopped', message: 'second task', reply: 'Stopped after step 2.' },
+      { ts: 3, kind: 'chat', reason: 'done', message: 'Continue from where it stopped: "second task"', reply: 'Done.', resumes: 2 },
+    ];
+    expect(resumeInstruction(turns, 1)!.stopped.message).toBe('first task'); // the card named it
+    expect(resumeInstruction(turns)!.stopped.message).toBe('first task'); // the second was continued and finished
+    expect(resumeInstruction(turns, 99)!.stopped.message).toBe('first task'); // an unknown ts: the latest not continued
+  });
+  it('a stopped run that had read outside content resumes tainted, its last word kept for the fenced context', () => {
+    const turns = [{ ts: 1, kind: 'chat', reason: 'stopped', message: task, reply: 'Stopped after step 2. Kept: formats.md.', tainted: true }];
+    const r = resumeInstruction(turns)!;
+    expect(r.tainted).toBe(true);
+    expect(r.lastWord).toBe('Stopped after step 2. Kept: formats.md.');
+    expect(r.instruction).not.toContain('Kept: formats.md'); // not in the instruction: it goes fenced
+    expect(r.instruction).toContain('its last word is in the fenced earlier-steps context');
+    expect(r.instruction).toContain(`THE TASK:\n${task}`); // the person's own words stay
+    expect(resumeInstruction([{ ...turns[0], tainted: false }])!.tainted).toBe(false);
+  });
 });
 
 describe('offersBackground', () => {

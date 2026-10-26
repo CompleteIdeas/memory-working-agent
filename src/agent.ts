@@ -34,7 +34,7 @@ import { TAINTED_JOB_MARK, parseLocalAt, ownWords, groundedInMessage } from './s
 import { MAX_PENDING_TAINTED_CHAT } from './fanout.js';
 // Moved to schedule-request.ts (the work tools use them too); exported here as before.
 export { parseLocalAt, ownWords };
-import { expectedJobCount, whenMismatch, clock12, friendlySchedule, friendlyWhen, unreadSources, asksToChangeJob, asksToStopJob, parseDaysArg, nextDailyDue, asksChangesOnly, asksEveryMinutes, latestReadings, namesWebPage, hasLink, isWatch, namesFolder } from './schedule-request.js';
+import { expectedJobCount, whenMismatch, clock12, friendlySchedule, friendlyWhen, unreadSources, asksToChangeJob, asksToStopJob, parseDaysArg, nextDailyDue, asksChangesOnly, asksEveryMinutes, latestReadings, namesWebPage, hasLink, isWatch, namesFolder, ABSOLUTE_PATH } from './schedule-request.js';
 import { EMAIL_DRAFT_TOOL, addressesIn, draftKey, draftRefusal, repeatDraftOf } from './draft-guard.js';
 import { lessonJudge, judgeLesson, lessonDisposition, LESSON_PROMPT_RULE, MAX_LESSON_CHARS } from './lesson-gate.js';
 import { COMPACTION_MODE, summaryCompaction, type Compaction } from './compaction.js';
@@ -52,8 +52,12 @@ import { sourcesLine, resolveAllowed } from './tools/access.js';
 /** Every absolute path the instruction names lands inside this run's own folder or a granted one (3f): a job that
  *  names only reachable paths does not need a further grant. False when it names none, or one it cannot reach. */
 export function pathInsideRun(instruction: string, dir: string): boolean {
-  const paths = [...instruction.matchAll(/(?:^|[\s"'(])((?:[A-Za-z]:\\|\/(?:Users|home)\/)[^\s"')]+)/g)].map((m) => m[1].replace(/[.,;:]+$/, ''));
+  const paths = namedPaths(instruction);
   return paths.length > 0 && paths.every((p) => resolveAllowed(dir, p) !== null);
+}
+/** The absolute paths an instruction names, trailing punctuation dropped. */
+export function namedPaths(instruction: string): string[] {
+  return [...instruction.matchAll(new RegExp(ABSOLUTE_PATH.source, 'g'))].map((m) => m[1].replace(/[.,;:!?)\]}\\/]+$/, '')).filter(Boolean);
 }
 import { BROWSING_GUIDE, NEEDS_ALLOW, parseAllow, allowText, vaultAllowed } from './tools/browser.js';
 import { fanoutRefusal, newJobDepth } from './fanout.js';
@@ -161,6 +165,9 @@ export interface AgentResult {
   /** what the run found in the files: its last folder listing (list_files, as the model saw it) and the files it
    *  read — handed to the next step of a plan so it does not list the folder again (pending list 2026-10-26, 3c). */
   filesFound?: { listing?: string; read: string[] };
+  /** tool calls a gate or a tool refused in this run (a login not allowed, a path outside, a held click): a run that
+   *  was refused did not simply find nothing to do (audit 2026-10-26). */
+  refusals?: number;
   /** true when this run read external content (H-3). A plan step's output is the NEXT step's
    *  instruction, so the chain needs to know — otherwise taint dies at every step boundary. */
   tainted?: boolean;
@@ -962,6 +969,7 @@ export async function runAgent(opts: {
   // `allowed`: a saved login typed under this job's allowance — the person's own action, not one of the run's three
   // outward actions (pending list 2026-10-26, 3e: a sign-in of two fields and a click sat exactly at the limit).
   const runActions: { verb: string; tool: string; effect: 'external' | 'local' | 'read'; allowed?: boolean }[] = [];
+  let allowedLogins = 0; // 3e: uncounted saved-login fields this run typed, capped
   // BL-36: a claim is judged against the PERSON's own words (a chat's instruction is wrapped in history
   // and channel boilerplate), and not at all in a plan step or a resume, which report on work an earlier
   // run did.
@@ -1029,6 +1037,8 @@ export async function runAgent(opts: {
   } : undefined);
   let compactionFailures = 0;
   const MAX_EXTERNAL = 3; // unattended runs pause BEFORE exceeding this many outward actions
+  const MAX_ALLOWED_LOGINS = 4; // 3e: saved-login fields typed under the allowance that do not count (a sign-in is two)
+  const ONE_VAULT_REF = /^\s*\{\{\s*vault:[a-z0-9-]+\.[a-z0-9-]+\s*\}\}\s*$/i; // the whole text is one reference
   const pageBudget = () => Math.max(1, Number(process.env.MWA_PAGE_BUDGET ?? 15) || 15);
   const recalled: RecalledMemory[] = memory.enabled ? rankForPrime((await memory.recall(recallQuery(instruction, opts.userMessage), { limit: 40, full: true, workspace: opts.workspace })).filter(primeable)).slice(0, 12) : [];
   // STANDING PREFERENCES — user policies that must apply to EVERY task (e.g. "never send
@@ -1998,8 +2008,11 @@ export async function runAgent(opts: {
       // only its own folder and the person's granted ones: "every Friday, go through my notes folder" with nothing
       // granted would run with nobody watching and find nothing, every week. Held once, like the page-link hold; a
       // path inside this run's own folder, or a granted one, is reachable and passes. Resending unchanged schedules it.
-      if (kind !== 'reminder' && !saysRemind && opts.interactive === true && opts.jobId === undefined && folderRejections < 1
-          && namesFolder(String(action.instruction)) && !sourcesLine(dir) && !pathInsideRun(String(action.instruction), dir)) {
+      // A named path decides by itself (reachable from this run, or not — a grant of some OTHER folder does not make
+      // it reachable, audit 2026-10-26); words like "my notes folder" need some folder granted.
+      const needsFolder = namesFolder(String(action.instruction))
+        && (namedPaths(String(action.instruction)).length ? !pathInsideRun(String(action.instruction), dir) : !sourcesLine(dir));
+      if (kind !== 'reminder' && !saysRemind && opts.interactive === true && opts.jobId === undefined && folderRejections < 1 && needsFolder) {
         folderRejections++; consecNoProgress++; gatesFired.push('needs-folder'); lastSig = '';
         history.push('(schedule held once: the job reads the person\'s files and no folder is granted)');
         nudge = 'This job reads the person\'s files or a folder on their machine, but no folder is granted, so the job will run with nobody watching and will not have them. Tell the person which folder it needs and that they can grant it in Settings (Folders) before it first runs; or, if the files are in this chat\'s own folder, say so. Then call schedule again with the same instruction, and it will be scheduled.';
@@ -2082,8 +2095,10 @@ export async function runAgent(opts: {
       // outward-action limit — so the (N+1)th external side effect never happens (post-hoc halting
       // would let it through). A human-watched run isn't pre-gated; per-action approval covers it.
       // A saved login typed under the job's allowance is the person's own action (3e): it neither counts nor is counted.
+      // Exactly one reference and nothing else, at most a few times a run (audit 2026-10-26).
+      const typedText = String((action as Record<string, unknown>).text ?? '');
       const allowedLogin = action.action === 'browser_type' && opts.interactive === false && opts.jobId !== undefined && !opts.jobSettingsTainted
-        && hasVaultRef(String((action as Record<string, unknown>).text ?? '')) && vaultAllowed(opts.jobAllow, String((action as Record<string, unknown>).text ?? ''));
+        && ONE_VAULT_REF.test(typedText) && hasVaultRef(typedText) && vaultAllowed(opts.jobAllow, typedText) && allowedLogins < MAX_ALLOWED_LOGINS;
       if (opts.interactive === false && countsAsReach(action.action) && !allowedLogin
           && runActions.filter((a) => countsAsReach(a.tool) && !a.allowed).length >= MAX_EXTERNAL) {
         reason = 'paused';
@@ -2148,8 +2163,12 @@ export async function runAgent(opts: {
         if (action.action === 'write_file' && typeof (args as Record<string, unknown>).path === 'string') writtenPaths.add(normPath(String((args as Record<string, unknown>).path)));
         // 3c (pending list 2026-10-26): what this run found in the files goes to the next step of a plan, so a
         // planned task over a folder does not list it again per step (pilot: 50–80 list_files calls a question).
-        if (action.action === 'list_files' && !(args as Record<string, unknown>).search && !/^\(/.test(result.trimStart())) folderListing = result.slice(0, 2500);
-        if (action.action === 'read_file' && typeof (args as Record<string, unknown>).path === 'string' && !/^\((?:no such file|could not read)/.test(result.trimStart())) filesRead.add(String((args as Record<string, unknown>).path));
+        if (action.action === 'list_files' && !(args as Record<string, unknown>).search && !/^\(/.test(result.trimStart())) {
+          folderListing = result.length > 2500 ? `${result.slice(0, result.lastIndexOf('\n', 2500) > 0 ? result.lastIndexOf('\n', 2500) : 2500)}\n…(listing cut)` : result; // cut at a line, not inside a path
+        }
+        // a read that found nothing, could not read, or was refused ("(refused: outside…)") is not a file found; a
+        // "(large file; first N bytes)" read is
+        if (action.action === 'read_file' && typeof (args as Record<string, unknown>).path === 'string' && !/^\((?:no such file|could not read|refused|not run)/.test(result.trimStart())) filesRead.add(String((args as Record<string, unknown>).path));
         // An address the call itself carried and the result merely echoes ("No messages matched to:x@y") is not
         // evidence of it (BL-54 review: a search for a guessed address made it "seen") — unless the result shows it
         // as a real sender or recipient ("Dana <dana@…>", "From: dana@…"). A file this run wrote is not a source.
@@ -2207,6 +2226,7 @@ export async function runAgent(opts: {
       if (action.action === 'write_file' && !refused && !/^\[APPROVAL REQUIRED\]/.test(result) && typeof args.path === 'string') filesWritten.push(String(args.path));
       if (harnessOn && !refused && isSensitive(action.action)) {
         const rec = { verb: action.action.replace(/_/g, ' '), tool: action.action, effect: effectOf(action.action), ...(allowedLogin ? { allowed: true } : {}) };
+        if (allowedLogin) allowedLogins++;
         runActions.push(rec);
         try { await memory.logAction({ verb: rec.verb, summary: result.slice(0, 200).replace(/\n/g, ' '), effect: rec.effect, tool: rec.tool }); } catch { /* */ }
         const tw = checkTripwires(runActions.filter((a) => !a.allowed)); // an allowed login is logged, not counted
@@ -2803,6 +2823,7 @@ export async function runAgent(opts: {
     ...(budgetRefusal ? { budgetRefusal } : {}),
     ...(resumeQueued ? { resumeQueued } : {}),
     ...(folderListing || filesRead.size ? { filesFound: { ...(folderListing ? { listing: folderListing } : {}), read: [...filesRead] } } : {}),
+    ...(refusals ? { refusals } : {}),
     ...(watchValue ? { watchValue } : {}),
     ...(runActions.length ? { actionsTaken: runActions.length } : {}),
     ...(runActions.some((a) => a.effect !== 'external') ? { localActions: runActions.filter((a) => a.effect !== 'external').length } : {}),
@@ -2891,9 +2912,12 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   // 3c: the files the earlier steps found — the folder listing as they saw it and what they read — so a step does
   // not list the folder again (the pilot's planned tasks over a folder re-listed it in every sub-run).
   const found: { listing?: string; read: Set<string> } = { read: new Set() };
-  const filesBlock = () => found.listing || found.read.size
-    ? `\n\nFILES THE EARLIER STEPS ALREADY FOUND (${found.listing ? 'the folder listing as they saw it — do not call list_files for the same folders again; go straight to read_file on the ones you need. A file an earlier step saved since is named in what it produced, above, not here' : 'go straight to read_file on the ones you need'}${found.read.size ? `; already read by an earlier step: ${[...found.read].slice(-12).join(', ')}` : ''}):${found.listing ? `\n${found.listing}` : ''}`
+  // The listing itself travels fenced (through `carried`, as earlier steps' output does): file names come from the
+  // person's disk and may have come off the web (audit 2026-10-26). The instruction says only where it is.
+  const filesNote = () => found.listing || found.read.size
+    ? `\n\nFILES THE EARLIER STEPS ALREADY FOUND: ${found.listing ? 'their folder listing is in the fenced earlier-steps context below — do not call list_files for the same folders again; go straight to read_file on the ones you need. A file an earlier step saved since is named in what it produced, not in the listing' : 'go straight to read_file on the ones you need'}${found.read.size ? `; already read by an earlier step: ${[...found.read].slice(-12).join(', ')}` : ''}.`
     : '';
+  const filesBlock = () => found.listing ? `FOLDER LISTING the earlier steps saw (file names only):\n${found.listing}` : '';
   let aggSteps = 0, aggDispatches = 0, aggToolCalls = 0;
   let allDone = true;
   const stepOutcomes: (RunOutcome | undefined)[] = [];
@@ -2903,7 +2927,9 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   let allStepsDeclared = true;
   const stagedAll: string[] = []; // approvals any step left waiting — the channel offers them (BL-03)
   const perStepBudget = Math.max(6, Math.ceil(totalSteps / steps.length) + 4);
+  let stoppedByPerson = false; // F06 for a planned run (audit 2026-10-26): Stop ends the plan, not just its step
   for (let i = 0; i < steps.length; i++) {
+    if (opts.signal?.aborted) { allDone = false; stoppedByPerson = true; history.push(`(stopped by the person before step ${i + 1})`); break; }
     if (now() - start > maxWallMs) { allDone = false; history.push(`(out of time before step ${i + 1})`); break; }
     const s = steps[i];
     emit('plan_step', { n: i + 1, total: steps.length, task: s.task.slice(0, 90) });
@@ -2912,24 +2938,27 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     const prior = chain.length
       ? `\n\nWHAT THE EARLIER STEPS ALREADY PRODUCED (build directly on this — do NOT redo this work; if you need an earlier step's exact text, draft, list, or number, use it from here, and check the working folder for any file it saved):\n${chain.slice(-3).join('\n\n')}`
       : '';
-    const ctx = `${s.task}${s.done_when ? `\n\nDone when: ${s.done_when}` : ''}${chainTainted ? '' : prior + filesBlock()}\n\n(This is step ${i + 1} of ${steps.length} of a larger task: "${instruction.slice(0, 140)}". The working folder is shared across all steps — read files an earlier step saved there, and save any substantial output you produce (a draft, a list, a report) to a file so the next step can use it verbatim. Do ONLY this step, then call done.)`;
+    const stepCtx = () => `${s.task}${s.done_when ? `\n\nDone when: ${s.done_when}` : ''}${chainTainted ? '' : prior}${filesNote()}\n\n(This is step ${i + 1} of ${steps.length} of a larger task: "${instruction.slice(0, 140)}". The working folder is shared across all steps — read files an earlier step saved there, and save any substantial output you produce (a draft, a list, a report) to a file so the next step can use it verbatim. Do ONLY this step, then call done.)`;
     const remainWall = Math.max(60_000, maxWallMs - (now() - start));
     const subBudget = { maxSteps: perStepBudget, maxWallMs: remainWall, consolidateEvery: 50 };
     // The caller's carried context (a tainted earlier chat turn) plus, once the chain is tainted, the
     // earlier steps' output. Dropping the caller's half lost the conversation for every step.
-    // Once the chain is tainted the file names found go the same fenced way as the earlier steps' output.
-    const carried = [opts.carried, chainTainted && chain.length ? chain.slice(-3).join('\n\n') : '', chainTainted ? filesBlock().trim() : ''].filter(Boolean).join('\n\n') || undefined;
+    // The file names found always go the fenced way, as the earlier steps' output does once the chain is tainted.
+    const carriedNow = () => [opts.carried, chainTainted && chain.length ? chain.slice(-3).join('\n\n') : '', filesBlock()].filter(Boolean).join('\n\n') || undefined;
     const stepWords = { userMessage: opts.userMessage ?? opts.instruction, capturePolicy: i === 0, rootRunId: planRunId, planStep: true };
-    let sub = await runAgent({ ...opts, ...stepWords, instruction: ctx, subRun: true, plan: false, budget: subBudget, now: opts.now, onEvent: emit, startTainted: chainTainted, carried });
+    const takeFiles = (r: AgentResult) => { if (r.filesFound) { if (r.filesFound.listing) found.listing = r.filesFound.listing; for (const f of r.filesFound.read) found.read.add(f); } };
+    let sub = await runAgent({ ...opts, ...stepWords, instruction: stepCtx(), subRun: true, plan: false, budget: subBudget, now: opts.now, onEvent: emit, startTainted: chainTainted, carried: carriedNow() });
     let attemptTainted = sub.tainted === true;
     if (sub.reason !== 'done' && now() - start < maxWallMs) {
-      // localized replanning: retry THIS step once (its friction memory auto-primes the retry).
-      const retryCtx = `${ctx}\n\nA previous attempt did not finish this step — recall what went wrong and take a DIFFERENT concrete approach this time.`;
+      // localized replanning: retry THIS step once (its friction memory auto-primes the retry). What the first
+      // attempt found in the files is kept for it (audit 2026-10-26), so it does not list the folder again.
+      takeFiles(sub);
+      const retryCtx = `${stepCtx()}\n\nA previous attempt did not finish this step — recall what went wrong and take a DIFFERENT concrete approach this time.`;
       // The first attempt failed, so the retry (done, or at worst equivalent) replaces it.
       // A tainted first attempt still tainted the shared folder — don't lose it when the retry replaces `sub`.
       if (sub.staged) stagedAll.push(...sub.staged); // the first attempt's approvals still wait — keep offering them
       // ...and a retry doesn't propose the same standing preference a second time.
-      sub = await runAgent({ ...opts, ...stepWords, capturePolicy: false, instruction: retryCtx, subRun: true, plan: false, budget: subBudget, now: opts.now, onEvent: emit, startTainted: chainTainted || attemptTainted, carried });
+      sub = await runAgent({ ...opts, ...stepWords, capturePolicy: false, instruction: retryCtx, subRun: true, plan: false, budget: subBudget, now: opts.now, onEvent: emit, startTainted: chainTainted || attemptTainted, carried: carriedNow() });
       attemptTainted = attemptTainted || sub.tainted === true;
     }
     usage.brainIn += sub.usage.brainIn; usage.brainOut += sub.usage.brainOut;
@@ -2943,7 +2972,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     planActions += sub.actionsTaken ?? 0;
     planLocal += sub.localActions ?? 0;
     if (attemptTainted) chainTainted = true;
-    if (sub.filesFound) { if (sub.filesFound.listing) found.listing = sub.filesFound.listing; for (const f of sub.filesFound.read) found.read.add(f); }
+    takeFiles(sub);
     const out = sub.summary.trim();
     // Plain here; once the chain is tainted, later steps receive it via `carried`, fenced with THEIR code.
     chain.push(`Step ${i + 1} (${s.task.slice(0, 70)}) produced:\n${out.slice(0, 1500)}`);
@@ -2971,14 +3000,15 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   } catch { finalSummary = stepResults.join('\n'); }
   if (brain instanceof RoutedProvider) costUsd += brain.spentUsd();
 
-  const reason: AgentResult['reason'] = allDone ? 'done' : 'budget';
+  const reason: AgentResult['reason'] = stoppedByPerson ? 'stopped' : allDone ? 'done' : 'budget';
+  if (stoppedByPerson) finalSummary = `Stopped after ${stepOutcomes.length} of ${steps.length} planned steps.${stepResults.length ? ` So far: ${stepResults.map((x) => x.slice(0, 200)).join(' | ')}` : ''}`;
   // A planned run that ran out of room queues a resume, as a direct run does (agent.ts, SCHEDULER-DRIVEN RESUME).
   // Cost test 2026-10-23: the newsletter's research step used the job's budget, the writing step never ran, and
   // nothing picked it up — the person got research notes and "the newsletter isn't finished". The resume runs
   // unplanned (the scheduler turns planning off for resumes) with the plan and how far it got.
   let planResumeQueued = false;
   const planAttempt = opts.resumeAttempt ?? 0;
-  if (!allDone && opts.memory.enabled && !opts.subRun && !opts.jobRecur && aggToolCalls > 0 && planAttempt < 2) {
+  if (!allDone && !stoppedByPerson && opts.memory.enabled && !opts.subRun && !opts.jobRecur && aggToolCalls > 0 && planAttempt < 2) {
     const plan = steps.map((s, i) => `${i + 1}. ${s.task}${i < stepOutcomes.length ? ' (ran)' : ' (not started)'}`).join('\n');
     const cont = `Resume and finish this task — an earlier attempt ran out of room before completing it (resume ${planAttempt + 1} of 2). It was planned as:\n${plan}\nFIRST recall what you already did and check the files already in the working folder (with list_files and read_file, not a shell command); then do ONLY the remaining steps and finish. Do not start over.\n\nTHE TASK: ${instruction}`;
     const id = await opts.memory.addScheduledTask(cont, now() + 60_000, { notify: opts.session, dir: opts.dir, resumeAttempt: planAttempt + 1, person: opts.personId, depth: opts.jobDepth, goal: opts.jobGoal,

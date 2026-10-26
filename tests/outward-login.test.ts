@@ -73,4 +73,17 @@ describe('an allowed login and the outward-action limit', () => {
     expect(r.reason).toBe('paused');
     expect(r.summary).toMatch(/reached outside your machine 3 times/);
   }, 60_000);
+
+  it('a typed field that carries anything beside the one reference counts like any other', async () => {
+    const script = SIGNIN.map((a) => (a.action === 'browser_type' ? { ...a, text: `${a.text} and more` } : a));
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-login-run-'));
+    const mem = new MwaMemory('login2', join(dir, 'm.db'));
+    const { calls, t } = tools();
+    try {
+      const r = await runAgent({ instruction: 'Sign in to the portal and read the secure area', dir, memory: mem, brain: scripted(script) as never, worker: scripted(script) as never, tools: t as never,
+        interactive: false, plan: false, jobId: 'job-1', jobAllow: { vault: ['portal'] }, budget: { maxSteps: 10, maxWallMs: 30_000 } } as never);
+      expect(calls.filter((c) => c === 'browser_click')).toHaveLength(1);
+      expect(r.reason).toBe('paused');
+    } finally { mem.close(); rmSync(dir, { recursive: true, force: true }); }
+  }, 60_000);
 });

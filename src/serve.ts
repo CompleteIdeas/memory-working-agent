@@ -422,7 +422,9 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
   // 3b (pending list 2026-10-26): "Continue from where it stopped" — the run the person stopped is picked up from
   // its own words, framed as a resume (resumeInstruction), not re-read from the page's title. Never offered to the
   // background (the task's words could match the offer test) and never put to the continuity classifier.
-  const resume = url.searchParams.get('resume') === '1';
+  const resumeParam = url.searchParams.get('resume') ?? '';
+  const resume = resumeParam !== '' && resumeParam !== '0';
+  const resumeTs = /^\d{6,}$/.test(resumeParam) ? Number(resumeParam) : undefined; // the card's own stopped turn, when the page names it
   // BL-71b: a request that researches and writes something up is offered to the background first; the
   // person picks. "Stay here" sends it again with stay=1, and it runs in the chat as before.
   if (!resume && url.searchParams.get('stay') !== '1' && process.env.MWA_OFFER_BACKGROUND !== '0' && offersBackground(message)) {
@@ -430,12 +432,13 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     appendTurn({ ts: Date.now(), session: sessionId, message, reply: OFFER_TEXT, reason: 'offer', kind: 'offer' });
     res.end(); return;
   }
-  if (url.searchParams.get('stay') === '1') answerOffer(sessionId, 'now', undefined, undefined, undefined, message); // "do it here": the offer turn records the choice
   // F08 (usability review 2026-10-24): one live run per conversation. A message sent while one is going is not a
   // second run: the page hears `busy` and offers to add it to the running task (/api/chat/steer), send it
   // separately (a new conversation) or stop the run (/api/chat/stop) and send it.
   const busy = liveRuns.describe(sessionId);
   if (busy) { send('busy', busy); res.end(); return; }
+  // "do it here": the offer with these words records the choice — only once the run really starts (audit 2026-10-26)
+  if (url.searchParams.get('stay') === '1') answerOffer(sessionId, 'now', undefined, undefined, undefined, message);
   // Concurrency cap — reserve the slot ATOMICALLY (before any await) so a burst of near-simultaneous
   // chats can't all pass the gate during the classifyContinuity / preparePersonTurn round-trips.
   if (activeRuns >= MAX_CONCURRENT) { send('error', { message: "I'm at capacity right now (too many chats running) — try again in a moment." }); res.end(); return; }
@@ -469,7 +472,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
 
     // AUTO-CHAIN, but know when to stop: continue the current topic, start a new one, or ask.
     const topicTurns = s.history.slice(s.topicStart);
-    const resumed = resume ? resumeInstruction(readConversation(sessionId, 80)) : null; // null: nothing stopped — a plain message
+    const resumed = resume ? resumeInstruction(readConversation(sessionId, 80), resumeTs) : null; // null: nothing stopped — a plain message
     const relation = resumed ? 'continue' as const : CARRY_ALL ? (s.history.length ? 'continue' as const : 'fresh' as const) : await classifyContinuity(brain, topicTurns, message, idleMs);
     const hadContext = topicTurns.length > 0;
     if (relation === 'fresh') s.topicStart = s.history.length;
@@ -501,8 +504,9 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     if (prepared.mismatch) emitLive('identity', { level: 'mismatch' });
 
     const r = await runAgent({
-      instruction, userMessage: message, dir: s.dir, memory: agentMemory(memory), brain, worker, tools: registry, transcript: true, // BL-10
-      ...(ctx && ctxTainted ? { carried: `Recent conversation so far:\n${ctx}`, startTainted: true } : {}),
+      instruction, userMessage: resumed?.stopped.message ?? message, dir: s.dir, memory: agentMemory(memory), brain, worker, tools: registry, transcript: true, // BL-10; a resume is judged on the task's words, not the button's
+      // Fenced context: a tainted earlier turn, and a stopped run's last word when that run had read outside content
+      ...(((ctx && ctxTainted) || resumed?.tainted) ? { carried: [ctx && ctxTainted ? `Recent conversation so far:\n${ctx}` : '', resumed?.tainted ? `Last word of the stopped attempt: ${resumed.lastWord}` : ''].filter(Boolean).join('\n\n'), startTainted: true } : {}),
       workspace: cfg.awm.workspace, session: sessionId, interactive: true, // a human is watching → ask_user can ask them
       style: cfg.style, // guided (proactive/plain) vs direct (concise) — independent of access preset
       personContext, // S2: per-person adaptation block (empty for the shared/unknown profile)
@@ -516,7 +520,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     // BL-71b: it ran out of room and already queued a resume — say so, rather than leave a half answer.
     const summary = r.resumeQueued ? `${r.summary}\n\nI ran out of room in this chat, so I'm continuing in the background. The result will appear here when it's done.` : r.summary;
     const turnTs = Date.now();
-    appendTurn({ ts: turnTs, session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat', tainted: r.tainted === true, runId: run.runId }); // BL-71d; the runId retires the `running` turn (F09)
+    appendTurn({ ts: turnTs, session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat', tainted: r.tainted === true, runId: run.runId, ...(resumed?.stopped.ts !== undefined ? { resumes: resumed.stopped.ts } : {}) }); // BL-71d; the runId retires the `running` turn (F09); `resumes` keeps the task's own words reachable (3b)
     // S3/S5 — LEARN durable facts about this person + recompress their dossier (suppressed for the
     // shared 'unknown' profile and on an identity mismatch). Before the result closes the stream, so an attached
     // page hears it too; it is quick and runs on the reply, not the person's wait.

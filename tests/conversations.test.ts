@@ -65,7 +65,9 @@ describe('conversation log', () => {
       appendTurn({ ts: 5000, session: 'web-a', message: 'Compare three grant programmes for the boathouse roof', reply: 'offer', kind: 'offer' }, p);
       appendTurn({ ts: 6000, session: 'web-a', message: 'Write the AGM agenda from last year\'s minutes', reply: 'offer', kind: 'offer' }, p);
       expect(answerOffer('web-a', 'background', 'ee112233', p, 6500, 'Compare three grant programmes for the boathouse roof')).toBe(5000);
-      expect(answerOffer('web-a', 'background', 'ff445566', p, 6600, 'words that match no offer')).toBe(6000); // falls back to the latest
+      // words that match no waiting offer answer nothing: "Try again" on a failed task sends stay=1 with its own words
+      expect(answerOffer('web-a', 'now', undefined, p, 6600, 'words that match no offer')).toBeNull();
+      expect(answerOffer('web-a', 'background', 'ff445566', p, 6700)).toBe(6000); // no words given: the latest waiting one
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

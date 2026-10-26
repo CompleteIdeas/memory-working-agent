@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
@@ -124,22 +124,40 @@ describe('scheduler: a fired task knows it is due now and can reach its origin f
 
   // Pending list 2026-10-26, 3d (interface replay U02): the resume after a budget cut-off read the file the first
   // attempt wrote, did nothing, and posted "stuck" — a correct file plus a "problem".
+  /** a resume runs in the job's own folder (task.dir); the earlier attempt's file is there */
+  const withJobDir = async (fn: (dir: string) => Promise<void>) => {
+    const dir = mkdtempSync(join(tmpdir(), 'mwa-sched-job-'));
+    try { writeFileSync(join(dir, 'board-briefing.md'), '# briefing'); await fn(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
+  };
+  const stuck = { summary: 'I kept looking but stopped making progress.', reason: 'stuck', outcome: 'could-not' };
   it('a resume that read the earlier work and changed nothing finishes quietly instead of posting "stuck"', async () => {
-    const stuck = { summary: 'I kept looking but stopped making progress.', reason: 'stuck', outcome: 'could-not' };
-    const { fired } = await fire({ id: 'res33333', instruction: 'Resume and finish this task', due: 1, resumeAttempt: 1 },
-      { ...stuck, filesFound: { listing: 'board-briefing.md', read: ['C:\\w\\serve\\web-1\\board-briefing.md'] } });
-    expect(fired[0]).toMatchObject({ reason: 'done', outcome: 'no-change' });
-    expect(String(fired[0].summary)).toMatch(/read what the earlier attempt left \(board-briefing\.md\) and found nothing more to do\. That file stands\./);
+    await withJobDir(async (dir) => {
+      const { fired } = await fire({ id: 'res33333', instruction: 'Resume and finish this task', due: 1, resumeAttempt: 1, dir },
+        { ...stuck, filesFound: { listing: 'board-briefing.md', read: [join(dir, 'board-briefing.md')] } });
+      expect(fired[0]).toMatchObject({ reason: 'done', outcome: 'no-change' });
+      expect(String(fired[0].summary)).toMatch(/read what the earlier attempt left \(board-briefing\.md\) and found nothing more to do\. That file stands\./);
+    });
   });
-  it('a resume that got stuck without reading anything, or that acted, keeps its own word', async () => {
-    const stuck = { summary: 'I kept looking but stopped making progress.', reason: 'stuck', outcome: 'could-not' };
+  it('a resume that got stuck without reading the earlier work, or that acted, keeps its own word', async () => {
     const blind = await fire({ id: 'res44444', instruction: 'Resume and finish this task', due: 1, resumeAttempt: 1 }, stuck);
     expect(blind.fired[0]).toMatchObject({ reason: 'stuck', outcome: 'could-not' });
-    const acted = await fire({ id: 'res55555', instruction: 'Resume and finish this task', due: 1, resumeAttempt: 1 }, { ...stuck, actionsTaken: 1, filesFound: { read: ['a.md'] } });
-    expect(acted.fired[0]).toMatchObject({ reason: 'stuck', outcome: 'could-not' });
-    // a first fire is not a resume: its "stuck" is news
-    const first = await fire({ id: 'one66666', instruction: 'Write the briefing', due: 1 }, { ...stuck, filesFound: { read: ['a.md'] } });
-    expect(first.fired[0]).toMatchObject({ reason: 'stuck', outcome: 'could-not' });
+    await withJobDir(async (dir) => {
+      const read = { read: [join(dir, 'board-briefing.md')] };
+      const acted = await fire({ id: 'res55555', instruction: 'Resume and finish this task', due: 1, resumeAttempt: 1, dir }, { ...stuck, actionsTaken: 1, filesFound: read });
+      expect(acted.fired[0]).toMatchObject({ reason: 'stuck', outcome: 'could-not' });
+      // a file read somewhere else is not the earlier work
+      const elsewhere = await fire({ id: 'res5555a', instruction: 'Resume and finish this task', due: 1, resumeAttempt: 1, dir }, { ...stuck, filesFound: { read: ['C:\\elsewhere\\other.md'] } });
+      expect(elsewhere.fired[0]).toMatchObject({ reason: 'stuck', outcome: 'could-not' });
+      // refused something, claimed something unbacked, said could-not in its own words, or queued another resume: a problem, kept
+      for (const [id, extra] of [['res5555b', { refusals: 1 }], ['res5555c', { unbackedClaims: ['file'] }], ['res5555d', { reason: 'done', outcome: 'could-not', outcomeDeclared: true }], ['res5555e', { resumeQueued: true }]] as const) {
+        const f = await fire({ id, instruction: 'Resume and finish this task', due: 1, resumeAttempt: 1, dir }, { ...stuck, ...extra, filesFound: read });
+        expect([id, f.fired[0].outcome]).toEqual([id, 'could-not']);
+        expect(`${id}: ${String(f.fired[0].summary)}`).not.toMatch(/found nothing more to do/);
+      }
+      // a first fire is not a resume: its "stuck" is news
+      const first = await fire({ id: 'one66666', instruction: 'Write the briefing', due: 1, dir }, { ...stuck, filesFound: read });
+      expect(first.fired[0]).toMatchObject({ reason: 'stuck', outcome: 'could-not' });
+    });
   });
 
   it('passes the origin folder as an extra allowed root so a baked-in absolute path resolves', async () => {

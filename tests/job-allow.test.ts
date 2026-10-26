@@ -30,6 +30,9 @@ describe('the allowance itself', () => {
     expect(allowText(allow)).toBe('use the saved login "fox-run" on its own site; click "Submit entry" on foxrunfarm.example');
     expect(vaultAllowed(allow, 'user {{vault:fox-run.password}}')).toBe(true);
     expect(vaultAllowed(allow, '{{vault:other.password}}')).toBe(false);
+    // read the way the vault fills them in: any case, spaces inside the braces (audit 2026-10-26)
+    expect(vaultAllowed(allow, '{{vault:fox-run.username}}{{VAULT:other.password}}')).toBe(false);
+    expect(vaultAllowed(allow, '{{ vault:fox-run.password }}')).toBe(true);
     expect(vaultAllowed(allow, 'plain text')).toBe(false);
     expect(clickAllowed(allow, 'https://entries.foxrunfarm.example/form', 'Submit entry submit')).toBe(true); // a subdomain, the control's fuller label
     expect(clickAllowed(allow, 'https://foxrunfarm.example.evil.net/form', 'Submit entry')).toBe(false);

@@ -17,7 +17,8 @@ const ls = {
 };
 function readJson<T>(k: string, d: T): T { try { const v = ls.get(k); return v ? JSON.parse(v) as T : d; } catch { return d; } }
 
-export interface Busy { session: string; message: string; info?: BusyInfo }
+/** `opts`: how the message was sent (stay / resume), so the chooser's "stop and send" replays it the same way */
+export interface Busy { session: string; message: string; info?: BusyInfo; opts?: { stay?: boolean; resume?: boolean | number } }
 export interface Toast { id: number; text: string; action?: { label: string; run: () => void } }
 
 interface Store {
@@ -33,7 +34,7 @@ interface Store {
   allTasks: Task[];
   /** cards whose conversation is not one of these (Telegram, a scheduled run) */
   looseCards: PendingApproval[];
-  send: (text: string, opts?: { stay?: boolean; session?: string; resume?: boolean }) => 'sent' | 'busy';
+  send: (text: string, opts?: { stay?: boolean; session?: string; resume?: boolean | number }) => 'sent' | 'busy';
   busy: Busy | null; setBusy: (b: Busy | null) => void;
   stop: (session: string) => Promise<string>;
   steer: (session: string, text: string) => Promise<{ ok: boolean; message: string }>;
@@ -166,10 +167,10 @@ export function StoreProvider({ children, onActivity }: { children: ReactNode; o
 
   const isRunning = useCallback((s: string) => { const last = (turns[s] ?? []).slice(-1)[0]; return !!live[s] || local.some((l) => l.session === s && !l.result && !l.error) || (last?.kind === 'running' && !(last.runId && lost.has(last.runId))); }, [live, local, turns, lost]);
 
-  const send = useCallback((text: string, opts: { stay?: boolean; session?: string; resume?: boolean } = {}): 'sent' | 'busy' => {
+  const send = useCallback((text: string, opts: { stay?: boolean; session?: string; resume?: boolean | number } = {}): 'sent' | 'busy' => {
     const t = text.trim(); const s = opts.session ?? session;
     if (!t) return 'sent';
-    if (isRunning(s)) { setBusy({ session: s, message: t }); return 'busy'; }
+    if (isRunning(s)) { setBusy({ session: s, message: t, opts: { stay: opts.stay, resume: opts.resume } }); return 'busy'; }
     const id = Date.now();
     const lt: LocalTask = { id, session: s, words: t, startedAt: id, steps: [], live: { startedAt: id, steps: [], notes: [] } };
     setLocal((prev) => [...prev, lt]);
@@ -181,7 +182,7 @@ export function StoreProvider({ children, onActivity }: { children: ReactNode; o
       onStep: (st) => patch((x) => ({ ...x, steps: [...x.steps, { ...st, id: stepId++ }] })),
       onStage: (st) => patchL((l) => ({ ...l, stage: st })),
       onStopping: () => patchL((l) => ({ ...l, stopping: true })),
-      onBusy: (b) => { setLocal((prev) => prev.filter((x) => x.id !== id)); setBusy({ session: s, message: t, info: b }); attach(s); },
+      onBusy: (b) => { setLocal((prev) => prev.filter((x) => x.id !== id)); setBusy({ session: s, message: t, info: b, opts: { stay: opts.stay, resume: opts.resume } }); attach(s); },
       onResult: (r: ChatResult) => {
         patch((x) => ({ ...x, result: r }));
         setLocal((prev) => { const me = prev.find((x) => x.id === id); if (me && r.runId) setStepsByRun((m) => ({ ...m, [r.runId!]: me.steps })); return prev; });
