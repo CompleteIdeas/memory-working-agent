@@ -539,14 +539,14 @@ describe('what a run spent', () => {
 // ── A follow-up a capped run schedules carries what is left (review M6) ─────────────────────────────────────────
 
 describe('a follow-up scheduled under a cap', () => {
-  it('becomes its own Job with the rest of the allowance as its cap', async () => {
+  it('becomes its own Job with a share of the allowance as its cap', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'mwa-a3b-follow-'));
     const mem = new MwaMemory('a3b-follow', join(dir, 'm.db'));
     try {
       const l = newLedger({ cap: 0.2 });
       l.usd = 0.08;
       const id = await withLedger(l, () => mem.addScheduledTask('Finish reading the rules tomorrow', Date.now() + 86_400_000, { task: 'Finish reading the rules', request: 'Finish reading the rules' }));
-      expect(viewJobOf(id!).cap_usd).toBeCloseTo(0.12, 6);
+      expect(viewJobOf(id!).cap_usd).toBeCloseTo(0.055, 6); // half of what is left after one call's worth (re-review: reserved, not copied)
       // scheduled outside any capped run: no cap is invented
       const free = await mem.addScheduledTask('Read the news later', Date.now() + 86_400_000, { task: 'Read the news', request: 'Read the news' });
       expect(viewJobOf(free!).cap_usd).toBeNull();

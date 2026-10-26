@@ -28,8 +28,9 @@ import { appDb, registerMigrations, recordEvent, type AppDb, type Migration } fr
 import { storeHooks, type ScheduleOpts, type ScheduledTask, type GoalStatus } from '../awm.js';
 import { jobStatus, normalizeRemaining, type JobStatus } from './status.js';
 import { estimateJob, estimateForTrigger, stepCost, defaultCapUsd, firstGuess, fireCapUsd, CAP_MAX_USD, type JobEstimate, type StepCost } from './estimate.js';
-import { allowanceLeft, type Ledger } from '../spend.js';
-import { readCalls, tokenLogPath } from '../billing.js';
+import { reserveForFollowUp, spendLedger, type Ledger } from '../spend.js';
+import { readTail, tokenLogPath } from '../billing.js';
+import { priceFor, UNKNOWN_PRICE } from '../model-prices.js';
 import { INSTANCE, instanceAlive, startHeartbeat, transcriptsDir } from '../transcript.js';
 
 export type JobKind = 'background' | 'recurring' | 'reminder' | 'plan' | 'live';
@@ -154,7 +155,9 @@ export const ESTIMATES_MIGRATION: Migration = {
     ALTER TABLE jobs ADD COLUMN est_ms_first INTEGER;
     -- pages read, fetched or in the browser (estimates price work by them), and the allowance the Try's run was given
     ALTER TABLE tries ADD COLUMN reads INTEGER;
-    ALTER TABLE tries ADD COLUMN cap_usd REAL;`,
+    ALTER TABLE tries ADD COLUMN cap_usd REAL;
+    -- a repeating follow-up of a capped run: the most all its fires together may spend (A3b re-review)
+    ALTER TABLE jobs ADD COLUMN cap_total_usd REAL;`,
 };
 registerMigrations([JOBS_MIGRATION, JOBS_FIX_MIGRATION, ESTIMATES_MIGRATION]);
 
@@ -167,6 +170,7 @@ export interface JobRow {
   session: string | null; dir: string | null; legacy_key: string | null;
   next_due_at: number | null; stopped_by: string | null; schedule_prefix: string | null;
   est_usd_first: number | null; est_ms_first: number | null;
+  cap_total_usd?: number | null;
 }
 export interface TryRow {
   id: string; job_id: string; n: number; trigger: TryTrigger; run_id: string | null; live_key: string | null;
@@ -485,15 +489,40 @@ const AUTHORISING = new Set<TryTrigger>(['first', 'continue', 'start-over', 'fir
 export const runningSpend = new Map<string, Ledger>();
 
 /** What the token log says a Try's run spent: its task's calls (tagged with the task's 8-character id) inside the
- *  Try's window. Null when the log has none (logging off, another machine, nothing recorded). */
+ *  Try's window — each call's own cost, or, for a line without one (openai:, gemini: direct), its tokens at the
+ *  model's list price (an unpriced model conservatively). Null when the log has no such calls at all. */
 export function loggedSpend(t: Pick<TryRow, 'schedule_id' | 'started_at' | 'ended_at'>, now = Date.now()): number | null {
   if (!t.schedule_id || t.started_at == null) return null;
   try {
     const job = t.schedule_id.slice(0, 8);
-    const to = t.ended_at ?? now;
-    const calls = readCalls(tokenLogPath(), t.started_at - 1000).filter((c) => c.job === job && c.ts <= to + 5000);
-    return calls.length ? calls.reduce((s, c) => s + c.cost, 0) : null;
+    const to = (t.ended_at ?? now) + 5000, from = t.started_at - 1000;
+    let found = 0, usd = 0;
+    for (const line of (readTail(tokenLogPath()) ?? '').split('\n')) {
+      if (!line.includes(job)) continue;
+      let d: Record<string, unknown>;
+      try { d = JSON.parse(line); } catch { continue; }
+      const ts = Number(d.ts);
+      if (d.job !== job || !(ts >= from && ts <= to)) continue;
+      found++;
+      if (typeof d.cost === 'number' && Number.isFinite(d.cost)) { usd += d.cost; continue; }
+      const p = priceFor(String(d.model ?? '')) ?? UNKNOWN_PRICE;
+      usd += (Number(d.in) || 0) / 1e6 * p.in + (Number(d.out) || 0) / 1e6 * p.out;
+    }
+    return found ? usd : null;
   } catch { return null; }
+}
+
+/** A call that landed after its Try reported (the lesson judge past its timeout): added to the Try's cost. */
+export function addTryCost(tryId: string, usd: number, d: AppDb = appDb()): void {
+  if (!(usd > 0)) return;
+  try {
+    d.transaction(() => {
+      const t = getTry(tryId, d);
+      if (!t) return;
+      d.prepare('UPDATE tries SET cost_usd = COALESCE(cost_usd, 0) + ? WHERE id = ?').run(usd, tryId);
+      bumpTry(d, tryId, t.job_id);
+    }).immediate();
+  } catch { /* bookkeeping */ }
 }
 
 /** What a Try has spent, as well as it can be known: its recorded cost; for one still running here, its live ledger;
@@ -532,7 +561,13 @@ export function runCapUsd(jobId: string, tryId: string | undefined, d: AppDb = a
     const since = recurring && me?.trigger === 'fire' ? [] : before.filter((t) => t.state !== 'queued' && (!auth || t.n >= auth.n));
     const spent = since.reduce((s, t) => s + spendOf(t), 0);
     if (!Number.isFinite(spent)) return 0;
-    return Math.max(0, Math.round((cap - spent) * 1e6) / 1e6);
+    let left = cap - spent;
+    // ...unless it carries a total (a repeating follow-up of a capped run): all its fires together stay inside it
+    if (job.cap_total_usd != null) {
+      const all = before.filter((t) => t.state !== 'queued').reduce((s, t) => s + spendOf(t), 0);
+      left = Math.min(left, Number.isFinite(all) ? job.cap_total_usd - all : 0);
+    }
+    return Math.max(0, Math.round(left * 1e6) / 1e6);
   } catch { return undefined; }
 }
 
@@ -556,18 +591,20 @@ export function defaultCapFor(job: JobRow, tries: TryRow[], which: 'first' | 'co
   return defaultCapUsd(est, stepCost(job, tries), !e || firstGuess(e), which === 'first' ? HANDOFF_FIRST_MAX : CAP_MAX_USD);
 }
 const HANDOFF_FIRST_MAX = 5;
+const d0 = () => appDb();
 
 /**
  * The dollar side of a Try's run budget (the scheduler's): the allowance (runCapUsd), the expected cost of one step
  * (the first step is projected with it), and whether a last unit may finish past the cap. An allowance below one
  * step's worth — or 1¢, whichever is more — is no allowance (`wait`): the job waits for the person (review M4).
  */
-export function fireBudget(jobId: string, tryId: string, d: AppDb = appDb()): { maxUsd?: number; stepUsd?: number; finishGrace?: boolean; wait: boolean } {
+export function fireBudget(jobId: string, tryId: string, d: AppDb = appDb()): { maxUsd?: number; stepUsd?: number; finishGrace?: boolean; wait: boolean; exhausted?: boolean } {
   const maxUsd = runCapUsd(jobId, tryId, d);
   if (maxUsd === undefined) return { wait: false };
   const step = jobStepCost(jobId, d);
   const stepUsd = step?.usd;
-  if (maxUsd < Math.max(0.01, stepUsd ?? 0)) return { maxUsd, wait: true };
+  // a repeating job whose total allowance is used up stops firing (the scheduler pauses it)
+  if (maxUsd < Math.max(0.01, stepUsd ?? 0)) return { maxUsd, wait: true, ...(getJob(jobId, d)?.cap_total_usd != null ? { exhausted: true } : {}) };
   const tries = triesOf(jobId, d);
   const me = tries.find((t) => t.id === tryId);
   const last = [...tries].reverse().find((t) => t.state === 'ended' && t.progress_total != null && t.progress_done != null);
@@ -833,9 +870,21 @@ storeHooks.scheduled = (id, instruction, due, opts) => {
   // own cap (review of A3b, M6): otherwise "schedule the rest for later" would be a way around the person's limit.
   // A separate Job, not a Try of the same one: the follow-up is new work with its own time and words, and the person
   // sees, stops or continues it on its own; linking it would make the capped job look "working" until it fires.
-  if (!opts.recur && !opts.resumeAttempt && !opts.v2try && opts.kind !== 'reminder' && job.cap_usd == null) {
-    const left = allowanceLeft();
-    if (left !== undefined) updateJob(job.id, { cap_usd: Math.max(0.0001, Math.round(left * 1e6) / 1e6) });
+  //
+  // Review of A3b (HIGH): the allowance is RESERVED, not copied — half of what is left (after one call's worth kept
+  // for the run's own wrap-up) moves to the follow-up and out of the run's cap, so a run and all its follow-ups
+  // together can never be authorised past the run's cap. A repeating follow-up gets a per-fire limit of
+  // min(the default fire limit, its share) and its share as a TOTAL: it stops firing (paused) once that is spent.
+  // (The alternative — sending repeating follow-ups of a capped run to the person for approval — would make every
+  // "check this again tomorrow" a card to tap; a bounded total keeps the limit without the interruption.)
+  if (!opts.resumeAttempt && !opts.v2try && opts.kind !== 'reminder' && job.cap_usd == null && (!opts.recur || job.schedule_id === id)) {
+    const l = spendLedger.getStore();
+    const share = reserveForFollowUp(l, l && l.calls ? l.usd / l.calls : 0.01);
+    if (share !== undefined) {
+      const cap = Math.max(0.0001, share);
+      if (opts.recur) d0().prepare('UPDATE jobs SET cap_total_usd = ? WHERE id = ?').run(cap, job.id);
+      updateJob(job.id, { cap_usd: opts.recur ? Math.max(0.0001, Math.min(fireCapUsd() ?? cap, cap)) : cap });
+    }
   }
   stampEstimates(job.id);
 };

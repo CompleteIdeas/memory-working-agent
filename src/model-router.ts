@@ -9,6 +9,7 @@
  * as a Provider so it drops into runBrain wherever a single provider was passed.
  */
 import type { Provider, ChatInput, ChatResult } from './provider.js';
+import { priceFor } from './model-prices.js';
 
 export type Tier = 'fetch' | 'reason';
 
@@ -88,10 +89,12 @@ export class RoutedProvider implements Provider {
   private active(): Provider { return this.tier === 'fetch' ? this.fetchP : this.reasonP; }
 
   getTier(): Tier { return this.tier; }
+  /** the provider that answers a call made now (the cost meter prices by it) */
+  current(): Provider { return this.active(); }
   /** How much dearer a call on tier `to` is than on tier `from` (list prices, input + output): a dollar cap projects
    *  the next step with it after an escalation (A3b review). 1 when either price is unknown or zero. */
   priceRatio(from: Tier, to: Tier): number {
-    const sum = (t: Tier) => { const p = (t === 'fetch' ? this.fetchP : this.reasonP).price; return (p?.[0] ?? 0) + (p?.[1] ?? 0); };
+    const sum = (t: Tier) => { const pr = t === 'fetch' ? this.fetchP : this.reasonP; const l = priceFor(pr.model); const p = l ? [l.in, l.out] : pr.price; return (p?.[0] ?? 0) + (p?.[1] ?? 0); };
     const a = sum(from), b = sum(to);
     return a > 0 && b > 0 ? b / a : 1;
   }

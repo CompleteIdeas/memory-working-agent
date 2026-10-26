@@ -899,7 +899,10 @@ export async function runAgent(opts: {
   /** what one more model call is likely to cost: this run's own average so far, else the step guess */
   const callGuess = () => (ledger.calls ? ledger.usd / ledger.calls : stepGuess);
   /** the person's dollar cap leaves room for one more optional call (a post-run pass, an extra draft) */
-  const canAfford = () => !maxUsd || maxUsd - ledger.usd >= callGuess();
+  // what the run has spent plus what it handed to follow-ups it scheduled (their allowance comes out of its cap)
+  const committed = () => ledger.usd + ledger.reserved;
+  const canAfford = () => !maxUsd || maxUsd - committed() >= callGuess();
+  let graceUsed = false; // finish grace is one last step, not every step up to 1.25x (A3b re-review)
   let spentAtStep = 0; // the spend when the last step began (its cost is the next step's likely cost)
   let tierAtStep: string | null = null; // the brain's tier when that step ran (an escalation changes the price)
   const history: string[] = [];
@@ -1402,14 +1405,17 @@ export async function runAgent(opts: {
       let next = steps > 0 ? Math.max(0, spentNow - spentAtStep) : stepGuess;
       const tier = brain instanceof RoutedProvider ? brain.getTier() : null;
       if (steps > 0 && brain instanceof RoutedProvider && tierAtStep && tier !== tierAtStep) next *= brain.priceRatio(tierAtStep as 'fetch' | 'reason', tier as 'fetch' | 'reason');
-      // One unit left when it started, and the last step fits in a quarter of the cap: let it finish (policy).
-      const ceiling = opts.budget?.finishGrace && next <= 0.25 * maxUsd + 1e-9 ? 1.25 * maxUsd : maxUsd;
-      if (spentNow >= ceiling - 1e-9 || spentNow + next > ceiling + 1e-9) { // (cents in floating point)
+      // One unit left when it started, and the last step fits in a quarter of the cap: let that ONE step run (policy).
+      const used = committed();
+      const graceOk = !!opts.budget?.finishGrace && !graceUsed && next <= 0.25 * maxUsd + 1e-9;
+      const ceiling = graceOk ? 1.25 * maxUsd : maxUsd;
+      if (used >= ceiling - 1e-9 || used + next > ceiling + 1e-9) { // (cents in floating point)
         reason = 'budget'; capHit = 'usd'; finalSummary = steps === 0 ? 'It reached the spending limit before it started.' : 'spending limit reached';
         if (steps === 0) modelAnswered = true; // no wrap-up: there is nothing to wrap up, and no call is allowed
         history.push(`(the spending limit of ${usdText(maxUsd)} was reached after step ${steps}: ${usdText(spentNow)} spent)`); emit('cap', { usd: maxUsd, spent: spentNow });
         break;
       }
+      if (used + next > maxUsd + 1e-9) graceUsed = true; // this step runs only because of the grace
       spentAtStep = spentNow; tierAtStep = tier;
     }
 
@@ -2466,6 +2472,12 @@ export async function runAgent(opts: {
   // honest "couldn't find it + next step". The difference between a dead end and help.
   // The merged draft stands when a hand-off after sampling ended without a later answer.
   if (!modelAnswered && sampledAnswer && reason !== 'paused') { finalSummary = sampledAnswer; modelAnswered = true; history.push('(the merged draft stands — the run ended without a later answer)'); }
+  // A3b re-review: part of this run's cap went to follow-ups it scheduled, so the one small wrap-up call allowed past
+  // the cap would take the run and its follow-ups together past it: no wrap-up then — the terse summary stands.
+  if (!modelAnswered && capHit === 'usd' && ledger.reserved > 0 && committed() + callGuess() > maxUsd + 1e-9) {
+    modelAnswered = true;
+    finalSummary = `I stopped at the ${usdText(maxUsd)} spending limit set for this; part of it is set aside for the follow-up${ledger.reserved > 0 ? 's' : ''} I scheduled.`;
+  }
   if (!modelAnswered && reason !== 'paused') {
     // F4: gauge how well-grounded the wrap-up actually is (from the trust+score of recalled facts)
     // and steer the phrasing so a weak/untrusted basis is hedged + offered for verification, never
@@ -3058,7 +3070,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   // v2 (A3b): the person's dollar cap covers the whole plan — the planning call, every step and its retry. Each step
   // runs with what is left; the plan stops at the cap, and does not queue a resume (that is the person's decision).
   const maxUsd = opts.budget?.maxUsd && opts.budget.maxUsd > 0 ? opts.budget.maxUsd : 0;
-  const capLeft = () => maxUsd - ledger.usd;
+  const capLeft = () => maxUsd - ledger.usd - ledger.reserved;
   // a step is not started on less than one step's worth (review M4: a 0.01¢ allowance still started a run)
   const minStep = Math.max(0.01, opts.budget?.stepUsd ?? DEFAULT_STEP.usd);
   let cappedUsd = false;
@@ -3135,7 +3147,9 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     const firstUsage = sub.usage;
     let retried = false;
     if (sub.capHit === 'usd') cappedUsd = true;
-    if (sub.reason !== 'done' && now() - start < maxWallMs && !cappedUsd && !(maxUsd && capLeft() < minStep)) {
+    // Not when the person stopped it: a stopped step is not retried, and the plan ends there (A3b re-review).
+    if (sub.reason === 'stopped' || opts.signal?.aborted) stoppedByPerson = true;
+    if (sub.reason !== 'done' && !stoppedByPerson && now() - start < maxWallMs && !cappedUsd && !(maxUsd && capLeft() < minStep)) {
       // localized replanning: retry THIS step once (its friction memory auto-primes the retry). What the first
       // attempt found in the files is kept for it (audit 2026-10-26), so it does not list the folder again.
       takeFiles(sub);
@@ -3170,6 +3184,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     // Persist for cross-SESSION durability (a fuller slice than before, so a later session's
     // recall isn't lossy — within THIS plan the chain[] threading above is the live bridge).
     await memory.write(`plan step ${i + 1}: ${s.task.slice(0, 50)}`, `For task "${instruction.slice(0, 70)}", step ${i + 1} ("${s.task.slice(0, 90)}") → ${out.slice(0, 600)}`, ['topic=plan-step', 'intent=decision', 'confidence_level=verified'], { eventType: 'decision', ...(attemptTainted || chainTainted ? { provenance: 'ingested' as const, canonical: false } : {}) });
+    if (stoppedByPerson) { allDone = false; history.push(`(stopped by the person in step ${i + 1})`); break; }
     if (cappedUsd) { allDone = false; history.push(`(the spending limit was reached in step ${i + 1})`); break; }
   }
 
@@ -3178,7 +3193,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   let finalSummary = '';
   if (brain instanceof RoutedProvider) brain.reset('reason');
   // At the dollar cap the step that hit it already made the one small call allowed past it (its wrap-up): no synthesis.
-  if (cappedUsd) finalSummary = stepResults.join('\n');
+  if (cappedUsd || stoppedByPerson) finalSummary = stepResults.join('\n'); // no synthesis call after the cap or a Stop
   else try {
     const syn = await brain.chat({
       system: 'Combine the sub-task results into ONE clear, direct answer to the user\'s ORIGINAL request. Lead with the answer; be concise — no preamble, no step-by-step narration. If a part could not be completed, say so honestly in one line and suggest a sensible next step.' + persona + personBlock,
