@@ -22,7 +22,8 @@ import { budgetHold } from './billing.js';
 import { claimInterrupted, describeSteps, startHeartbeat, STALE_MS } from './transcript.js';
 import { configuredWatchGate, SAME_THRESHOLD, type WatchGate } from './watch-gate.js';
 import { liveRuns } from './live-runs.js';
-import { startFire, finishTry, tryEndFromResult, restartCutOff, queueContinuation, linkTry, dropQueuedTry, endScheduleTries, reapDeadTries } from './v2/jobs.js';
+import { startFire, finishTry, tryEndFromResult, restartCutOff, queueContinuation, linkTry, dropQueuedTry, endScheduleTries, reapDeadTries, fireBudget, setTryAllowance, runningSpend, addTryCost } from './v2/jobs.js';
+import { newLedger, withLedger, closeLedger } from './spend.js';
 
 export interface InterruptedRun { runId: string; instruction: string; session?: string; personId?: string; jobId?: string; recurring: boolean; resumed: boolean; steps: number; unfinished: number }
 
@@ -309,6 +310,20 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // between the claim and the task moving on (review H1). A crash inside it leaves a Try the reaper frees.
     if (task.recur) await deps.memory.rescheduleTask(task.id, nextRecur(task.recur, now()));
     else await deps.memory.completeScheduled(task.id);
+    // v2 (A3b): the job's dollar cap, less what its Tries have spent since the person last said go. Nothing left to
+    // spend (an automatic continuation of a run that used it up): the Try ends at the cap, waiting for the person.
+    // Review of A3b: an allowance below one step's worth is none (the first step is projected, not assumed free); a
+    // repeating job without a limit of its own gets the per-fire default (MWA_FIRE_CAP_USD, 25¢).
+    const money = v2 ? fireBudget(v2.jobId, v2.tryId) : { wait: false } as ReturnType<typeof fireBudget>;
+    const capUsd = money.maxUsd;
+    if (v2) setTryAllowance(v2.tryId, capUsd);
+    if (v2 && money.wait) {
+      finishTry(v2.tryId, { reason: 'budget', outcome: 'could-not', capHit: 'usd', costUsd: 0, steps: 0, toolCalls: 0, summary: 'It reached the spending limit you set before this part started.' });
+      // a repeating follow-up whose total allowance is spent stops firing: paused, so the person can resume it
+      if (money.exhausted && task.recur) { try { await deps.memory.pauseScheduled(task.id); } catch { /* */ } log(`· paused (its total spending allowance is used up): ${task.instruction.slice(0, 50)}`); }
+      log(`· not started (its spending limit is used up): ${task.instruction.slice(0, 50)}`);
+      continue;
+    }
     log(`⏰ firing: ${task.instruction.slice(0, 50)}${task.resumeAttempt ? ` (resume ${task.resumeAttempt})` : ''}`);
     // `origin` is honored only when it is a run SANDBOX inside the workspace (outRoot's parent):
     // serve sessions, Telegram chats and mailbox runs all are. `mwa run` is not — it passes the
@@ -327,6 +342,8 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     try { live = liveRuns.start(liveKey, task.task ?? task.instruction, now()); } catch { live = undefined; }
     if (live) liveRuns.record(liveKey, 'run', { runId: live.runId, startedAt: live.startedAt, job: task.id, session: task.notify ?? '' }, now());
     let r; let ranOk = false;
+    // The fire's own ledger: what it spends, live, so a second Try of the job sees it while this one runs.
+    const fireLedger = newLedger();
     try {
       // A resume continues an unfinished run — never re-plan it (it already says "do only the
       // remaining work"). A one-off task plans automatically if complex; a recurring job does not (BL-43 review: a planned fire lost its reading, and BL-40 measured a one-step check split into 3-4 sub-runs).
@@ -339,12 +356,13 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       // dueNow: tell the run the timing is already settled (a resume carries its own framing, and
       // "do only the remaining work" must not be overridden by "do it all now").
       // extraRoots: the folder the task was created in, so a baked-in absolute path still resolves.
-      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt || task.recur ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobAllow: task.allow, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: jobBudget(task, deps), v2JobId: v2?.jobId,
-        onEvent: live ? (type, data) => liveRuns.record(liveKey, type, data ?? {}, now()) : undefined, signal: live?.controller.signal, inbox: live ? () => liveRuns.takeInbox(liveKey) : undefined });
+      if (v2) runningSpend.set(v2.tryId, fireLedger);
+      r = await withLedger(fireLedger, () => run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt || task.recur ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobAllow: task.allow, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: { ...jobBudget(task, deps), ...(capUsd !== undefined ? { maxUsd: capUsd } : {}), ...(money.stepUsd ? { stepUsd: money.stepUsd } : {}), ...(money.finishGrace ? { finishGrace: true } : {}) }, v2JobId: v2?.jobId,
+        onEvent: live ? (type, data) => liveRuns.record(liveKey, type, data ?? {}, now()) : undefined, signal: live?.controller.signal, inbox: live ? () => liveRuns.takeInbox(liveKey) : undefined }));
       ranOk = true;
     } catch (e) {
-      r = { summary: `failed: ${(e as Error).message.slice(0, 120)}`, reason: 'error', steps: 0, toolCalls: 0, costUsd: 0, durationMs: 0 } as any;
-    }
+      r = { summary: `failed: ${(e as Error).message.slice(0, 120)}`, reason: 'error', steps: 0, toolCalls: 0, costUsd: fireLedger.usd, durationMs: 0 } as any;
+    } finally { if (v2) runningSpend.delete(v2.tryId); }
     fired++;
     if (live) { liveRuns.record(liveKey, 'result', { runId: live.runId, job: task.id, reason: r.reason, summary: String(r.summary ?? '').slice(0, 400), steps: r.steps ?? 0, costUsd: r.costUsd ?? 0 }, now()); liveRuns.finish(liveKey); }
     // Persist the new baseline only after a clean run — if the run threw, we WANT the next tick to
@@ -538,7 +556,10 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // Receipts (BL-13): this fire's id, so every channel's record of its result lines up.
     const job = task.resumeOf ?? task.id;
     const fire = `${job.slice(0, 8)}-${now()}`;
-    if (v2) finishTry(v2.tryId, tryEndFromResult({ ...(r as object), outcome, summary: String(summary ?? '') } as Parameters<typeof tryEndFromResult>[0], { runId: live?.runId, pagesRead: (r as { pagesRead?: number }).pagesRead, delivered: deliver, fireId: fire }));
+    if (v2) finishTry(v2.tryId, tryEndFromResult({ ...(r as object), outcome, summary: String(summary ?? '') } as Parameters<typeof tryEndFromResult>[0], { runId: live?.runId, costUsd: Math.max(Number((r as { costUsd?: number }).costUsd) || 0, fireLedger.usd), pagesRead: (r as { pagesRead?: number }).pagesRead, reads: (r as { reads?: number }).reads, delivered: deliver, fireId: fire }));
+    // What the fire spent is its ledger's (every call, also one that landed after the run reported); a call landing
+    // later still (the lesson judge past its timeout) is added to the Try when it lands (A3b re-review).
+    if (v2) { const tryId = v2.tryId; closeLedger(fireLedger, (usd) => addTryCost(tryId, usd)); }
     if (!deliver) {
       const why = outcome === 'could-not' ? `could not finish again (${fails} in a row); told at 1, 3, 7, 15\u2026 in a row`
         : repeat ? 'the same message as its last one' : `told only ${policy === 'never' ? 'if it fails' : 'when something changes'}; this run: ${outcome}`;

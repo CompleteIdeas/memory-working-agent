@@ -142,6 +142,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/jobs/{id}/estimate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** What Continue and Start over would cost and take (about). 409 for a repeating job. */
+        get: operations["estimateJob"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/jobs/{id}/stop": {
         parameters: {
             query?: never;
@@ -172,7 +191,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Finish it from where it stopped (a new try of the same job). 409 when it is already working or continuing, finished, or repeating. */
+        /** Finish it from where it stopped (a new try of the same job), spending at most capUsd. 409 when it is already working or continuing, finished, or repeating; 400 for a bad capUsd. */
         post: operations["continueJob"];
         delete?: never;
         options?: never;
@@ -191,7 +210,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Do it again from the beginning (a new try of the same job). */
+        /** Do it again from the beginning (a new try of the same job), spending at most capUsd. */
         post: operations["startJobOver"];
         delete?: never;
         options?: never;
@@ -603,9 +622,36 @@ export interface components {
             primaryAction?: {
                 /** @enum {string} */
                 action: "stop" | "continue" | "start-over" | "open" | "review" | "resume";
-                /** @description The button: "Finish the last 10 pages", "Continue", "Open". */
+                /** @description The button: "Finish the last 10 pages", "Continue", "Open". A Continue or Start over carries its price: "Finish the last 10 pages · about 3¢". */
                 label: string;
+                estimate?: components["schemas"]["Amount"];
+                /** @description The spending limit this action sets by default ("up to 40¢"); send capUsd to choose another. */
+                limitUsd?: number;
+                /** @description The price rests on the default or a single sample: said as "a first guess, about 30¢". */
+                firstGuess?: boolean;
             };
+        };
+        /** @description An estimate, always "about": dollars rounded the way they are said (whole cents under $1, 5-cent steps above) and milliseconds. */
+        Amount: {
+            usd: number;
+            ms: number;
+        };
+        /** @description What Continue (what is left) and Start over (the whole job) are expected to cost and take, and the evidence:
+         *     `this-job` (its own tries, per unit of progress or per page), `history` (the median per page over earlier runs
+         *     on the same model tier), or `default` (a conservative guess). `continue` is absent when nothing has run yet or
+         *     nothing is left.
+         *      */
+        Estimate: {
+            continue?: components["schemas"]["Amount"];
+            startOver?: components["schemas"]["Amount"];
+            /** @enum {string} */
+            basis: "this-job" | "history" | "default";
+            /** @description How many tries or past runs it rests on. */
+            samples: number;
+        };
+        CapRequest: {
+            /** @description The most the new run may spend, in dollars. Default: twice the estimate, or the estimate plus three of its largest steps and the wrap-up, whichever is more; at least 0.25 (0.50 for a first guess); at most 20. A run that reaches it waits for you. */
+            capUsd?: number;
         };
         Job: {
             id: string;
@@ -630,6 +676,7 @@ export interface components {
                 trust: "high" | "medium" | "untrusted";
             } | null;
             seenAt: number | null;
+            /** @description The most a run of it may spend (since you last said go); at it, it waits for you. */
             capUsd: number | null;
             /** @description Spent over all its tries. */
             costUsd: number;
@@ -642,6 +689,14 @@ export interface components {
             session: string | null;
             /** @description A repeating job's next run. */
             nextRunAt: number | null;
+            /** @description Null for a repeating job. */
+            estimate: components["schemas"]["Estimate"] | null;
+            /** @description Once done: the first estimate it was given against what it cost ("I guessed about $0.35 · it cost $0.41"). */
+            estimateVsActual: {
+                estimatedUsd: number;
+                actualUsd: number;
+                text: string;
+            } | null;
         };
         Try: {
             id: string;
@@ -662,12 +717,13 @@ export interface components {
             costUsd: number | null;
             steps: number | null;
             toolCalls: number | null;
-            /** @description The hard limit that ended it: steps, wall, tokens (usd from A3b). */
+            /** @description The hard limit that ended it: steps, wall, tokens, or usd (the dollar limit you set: it waits for you). */
             capHit: string | null;
             summary: string | null;
             tainted: boolean;
             /** @description Approvals it staged. */
             staged: string[];
+            /** @description What it was expected to cost when it was queued (about). */
             estUsd: number | null;
             estMs: number | null;
             pagesRead: number | null;
@@ -1080,6 +1136,29 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    estimateJob: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The estimates and what they rest on. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Estimate"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     stopJob: {
         parameters: {
             query?: never;
@@ -1116,7 +1195,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CapRequest"];
+            };
+        };
         responses: {
             /** @description The job after the action, and what happened. */
             202: {
@@ -1141,7 +1224,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CapRequest"];
+            };
+        };
         responses: {
             /** @description The job after the action, and what happened. */
             202: {

@@ -85,6 +85,8 @@ import { primeable } from './prime.js';
 import { openTranscript, type Transcript } from './transcript.js';
 import { runLogPath } from './paths.js';
 import { queueContinuation, dropQueuedTry, linkTry, finishTry, tryEndFromResult } from './v2/jobs.js';
+import { usdText, DEFAULT_STEP } from './v2/estimate.js';
+import { metered, newLedger, withLedger, spendLedger, type Ledger } from './spend.js';
 import { normalizeRemaining } from './v2/status.js';
 
 /** A per-step fade factor in (0, 1]; anything else (unset, 0, negative, > 1, not a number) is off. */
@@ -171,6 +173,15 @@ export interface AgentBudget {
   consolidateEvery?: number;
   /** hard cap on total tokens (brain+worker, in+out) — stops a runaway-cost run. 0/undefined = no cap. */
   maxTokens?: number;
+  /** v2 (A3b): the most this run may spend, in dollars — THIS run's own spend, not its provider's lifetime total.
+   *  Reaching it ends the run (reason `budget`, capHit `usd`) with one small wrap-up call at most, and no automatic
+   *  continuation: spending more is the person's decision. 0/undefined = no cap. */
+  maxUsd?: number;
+  /** v2 (A3b review): what one step is expected to cost — the first step is projected with it (else DEFAULT_STEP). */
+  stepUsd?: number;
+  /** v2 (A3b review): at most one unit was left when this run started: at the cap, a last step that needs no more than
+   *  a quarter of the cap may still run, so the job finishes instead of stopping one step short. */
+  finishGrace?: boolean;
 }
 
 /** What a run ACHIEVED, kept separate from `reason` (why its loop ended). A run that did nothing used
@@ -192,8 +203,12 @@ export interface AgentResult {
   progress?: { done: number; total: number; unit: string };
   /** v2 (A3a): what is left, in a short plain sentence, as `done` reported it (or a plan's steps not run). */
   remaining?: string;
-  /** v2 (A3a): which hard limit ended the run, when one did (the dollar cap is slice A3b). */
-  capHit?: 'steps' | 'wall' | 'tokens';
+  /** v2 (A3a): which hard limit ended the run, when one did; `usd` is the person's dollar cap (A3b). */
+  capHit?: 'steps' | 'wall' | 'tokens' | 'usd';
+  /** pages this run fetched (the page budget's count) (A3b). */
+  pagesRead?: number;
+  /** pages this run read, fetched or in the browser — the unit estimates price work by (A3b review). */
+  reads?: number;
   /** v2 (A3a): the Job this run's continuation belongs to (app.db), when it queued one. */
   v2JobId?: string;
   /** what the run found in the files: its last folder listing (list_files, as the model saw it) and the files it
@@ -660,6 +675,9 @@ function readFileInDir(dir: string, rel: string): string {
 }
 
 /** Append one line to the run log (JSONL) — the record reviewed to iterate on quality. */
+/** The ledger of each run (keyed by its options object, which runAgent's own re-entries share). */
+const runLedgers = new WeakMap<object, Ledger>();
+
 function appendRunLog(entry: Record<string, unknown>): void {
   try {
     const p = runLogPath();
@@ -792,12 +810,18 @@ export async function runAgent(opts: {
    *  replace the built-in summary (scripts/measure-topic-switch.mts). */
   compaction?: Compaction;
 }): Promise<AgentResult> {
-  const { instruction, dir, memory, brain, worker } = opts;
+  const { instruction, dir, memory } = opts;
+  // v2 (A3b review, H1): every model call this run makes is priced as it returns and added to the run's ledger
+  // (src/spend.ts) — the worker, sampled drafts, the boss's escalation, compaction and the lesson judge included.
+  const brain = metered(opts.brain), worker = metered(opts.worker);
   // Cost (2026-10-23): a run nobody is watching makes its model calls as background calls, so an OpenAI model
   // answers on the half-price flex tier (provider.ts openRouterRouting). Planned sub-runs inherit it.
   if (opts.interactive === false && backgroundCalls.getStore() !== true) return backgroundCalls.run(true, () => runAgent(opts));
   // the token log (provider.ts) tags each model call with the run it belongs to
   if (!callTags.getStore()) return callTags.run({ session: opts.session, job: opts.jobId?.slice(0, 8) }, () => runAgent(opts));
+  // One ledger per run (a plan's steps get their own, under the plan's): what this run spends, and its cap.
+  if (!runLedgers.has(opts)) { const l = newLedger({ cap: opts.budget?.maxUsd }); runLedgers.set(opts, l); return withLedger(l, () => runAgent(opts)); }
+  const ledger = runLedgers.get(opts)!;
   const now = opts.now ?? (() => Date.now());
   const emit = opts.onEvent ?? (() => {});
   const persona = personaFor(opts.style); // appended to every user-facing system prompt
@@ -868,6 +892,19 @@ export async function runAgent(opts: {
   const domainContext = domainPack ? buildDomainContext(domainPack, instruction) : '';
 
   const usage = { brainIn: 0, brainOut: 0, workerIn: 0, workerOut: 0, cacheRead: 0, cacheWrite: 0 };
+  // v2 (A3b): this run's own spend (its ledger), for the dollar cap and the run's cost.
+  const runSpent = () => ledger.usd;
+  const maxUsd = opts.budget?.maxUsd && opts.budget.maxUsd > 0 ? opts.budget.maxUsd : 0;
+  const stepGuess = opts.budget?.stepUsd && opts.budget.stepUsd > 0 ? opts.budget.stepUsd : DEFAULT_STEP.usd;
+  /** what one more model call is likely to cost: this run's own average so far, else the step guess */
+  const callGuess = () => (ledger.calls ? ledger.usd / ledger.calls : stepGuess);
+  /** the person's dollar cap leaves room for one more optional call (a post-run pass, an extra draft) */
+  // what the run has spent plus what it handed to follow-ups it scheduled (their allowance comes out of its cap)
+  const committed = () => ledger.usd + ledger.reserved;
+  const canAfford = () => !maxUsd || maxUsd - committed() >= callGuess();
+  let graceUsed = false; // finish grace is one last step, not every step up to 1.25x (A3b re-review)
+  let spentAtStep = 0; // the spend when the last step began (its cost is the next step's likely cost)
+  let tierAtStep: string | null = null; // the brain's tier when that step ran (an escalation changes the price)
   const history: string[] = [];
   let folded = 0; // BL-30: history lines already handed to opts.compaction.fold
   let dispatches = 0, toolCalls = 0, reRecalls = 0, supersedes = 0, consolidations = 0;
@@ -972,7 +1009,7 @@ export async function runAgent(opts: {
         return {
           outcome: 'changed', reason: 'done', summary: text, steps: 0, dispatches: 0, toolCalls: 0,
           reRecalls: 0, supersedes: 0, consolidations: 0, durationMs: now() - start,
-          usage, costUsd: brain instanceof RoutedProvider ? brain.spentUsd() : 0,
+          usage, costUsd: Number(ledger.usd.toFixed(6)),
           history: ['fast-path: conversational reply'],
         };
       }
@@ -1041,6 +1078,7 @@ export async function runAgent(opts: {
   let wroteSomething = false;
   let budgetRefusal: string | undefined; // BL-05: a follow-up job the fan-out budget refused
   let pagesRead = 0; // cost: pages this run fetched (page budget, src/trim.ts)
+  let browserReads = 0; // pages read in the browser — units for estimates only, not the page budget (A3b review)
   let resumeQueued = false; // BL-71b
   let progress: AgentResult['progress']; // v2 A3a: from done
   let remaining: string | undefined; // v2 A3a: from done
@@ -1357,6 +1395,28 @@ export async function runAgent(opts: {
     if (now() - start > maxWallMs) { reason = 'budget'; capHit = 'wall'; finalSummary = 'wall-clock budget reached'; break; }
     if (maxTokens && usage.brainIn + usage.brainOut + usage.workerIn + usage.workerOut >= maxTokens) {
       reason = 'budget'; capHit = 'tokens'; finalSummary = 'token budget reached'; break;
+    }
+    // v2 (A3b): the person's dollar cap. Checked before a step starts: at the cap, or when another step like the last
+    // one would pass it — the cap is a ceiling, so a run stops short of it rather than over it.
+    if (maxUsd > 0) {
+      const spentNow = runSpent();
+      // The next step is projected: like the last one (at the strong tier's price after an escalation), or for the
+      // first step, what a step of this job is expected to cost (review M4: the first step always ran).
+      let next = steps > 0 ? Math.max(0, spentNow - spentAtStep) : stepGuess;
+      const tier = brain instanceof RoutedProvider ? brain.getTier() : null;
+      if (steps > 0 && brain instanceof RoutedProvider && tierAtStep && tier !== tierAtStep) next *= brain.priceRatio(tierAtStep as 'fetch' | 'reason', tier as 'fetch' | 'reason');
+      // One unit left when it started, and the last step fits in a quarter of the cap: let that ONE step run (policy).
+      const used = committed();
+      const graceOk = !!opts.budget?.finishGrace && !graceUsed && next <= 0.25 * maxUsd + 1e-9;
+      const ceiling = graceOk ? 1.25 * maxUsd : maxUsd;
+      if (used >= ceiling - 1e-9 || used + next > ceiling + 1e-9) { // (cents in floating point)
+        reason = 'budget'; capHit = 'usd'; finalSummary = steps === 0 ? 'It reached the spending limit before it started.' : 'spending limit reached';
+        if (steps === 0) modelAnswered = true; // no wrap-up: there is nothing to wrap up, and no call is allowed
+        history.push(`(the spending limit of ${usdText(maxUsd)} was reached after step ${steps}: ${usdText(spentNow)} spent)`); emit('cap', { usd: maxUsd, spent: spentNow });
+        break;
+      }
+      if (used + next > maxUsd + 1e-9) graceUsed = true; // this step runs only because of the grace
+      spentAtStep = spentNow; tierAtStep = tier;
     }
 
     // Escalate the BRAIN when it's struggling (looping / no progress) — the stronger
@@ -1728,6 +1788,7 @@ export async function runAgent(opts: {
         sampled = true;
         const drafts = [summ];
         for (let k = 1; k < answerSamples(); k++) {
+          if (!canAfford()) { history.push('(no more drafts: the spending limit)'); break; } // A3b review M5
           try {
             const d = await brain.chat({ system: runSystem, messages: [{ role: 'user', content: `${prompt}\n\nWrite your final answer now as plain text, no tool call.` }], maxTokens: 800, cache: true });
             usage.brainIn += d.usage.input; usage.brainOut += d.usage.output;
@@ -1735,7 +1796,7 @@ export async function runAgent(opts: {
             if (t.length >= 40 && !/^\s*\{/.test(t)) drafts.push(t);
           } catch { /* a missing draft is one fewer to merge */ }
         }
-        if (drafts.length >= 2) {
+        if (drafts.length >= 2 && canAfford()) {
           try {
             const m = await brain.chat({ system: MERGE_SYSTEM + persona + personBlock, messages: [{ role: 'user', content: mergePrompt(requestOf(claimRequest), drafts) }], maxTokens: 1500 });
             usage.brainIn += m.usage.input; usage.brainOut += m.usage.output;
@@ -2211,6 +2272,7 @@ export async function runAgent(opts: {
       const pageNo = !draftNo && pageCall && opts.interactive === false && pagesRead >= pageBudget()
         ? `(page budget reached: this job has read ${pagesRead} pages, the most a background job may. Write the result from what you have, and say in it what you could not check.)` : null;
       if (pageCall && !pageNo && !draftNo) pagesRead++;
+      if (/^browser_(?:open|page)$/.test(action.action)) browserReads++; // A3b review: estimates count browser pages
       if (pageNo) gatesFired.push('page-budget');
       // Interface replay 2026-10-26 (U02): a resumed background job checked its folder with python and PowerShell,
       // and in Assistant mode each such command became a card for the person — two "check-script" decisions beside
@@ -2410,6 +2472,12 @@ export async function runAgent(opts: {
   // honest "couldn't find it + next step". The difference between a dead end and help.
   // The merged draft stands when a hand-off after sampling ended without a later answer.
   if (!modelAnswered && sampledAnswer && reason !== 'paused') { finalSummary = sampledAnswer; modelAnswered = true; history.push('(the merged draft stands — the run ended without a later answer)'); }
+  // A3b re-review: part of this run's cap went to follow-ups it scheduled, so the one small wrap-up call allowed past
+  // the cap would take the run and its follow-ups together past it: no wrap-up then — the terse summary stands.
+  if (!modelAnswered && capHit === 'usd' && ledger.reserved > 0 && committed() + callGuess() > maxUsd + 1e-9) {
+    modelAnswered = true;
+    finalSummary = `I stopped at the ${usdText(maxUsd)} spending limit set for this; part of it is set aside for the follow-up${ledger.reserved > 0 ? 's' : ''} I scheduled.`;
+  }
   if (!modelAnswered && reason !== 'paused') {
     // F4: gauge how well-grounded the wrap-up actually is (from the trust+score of recalled facts)
     // and steer the phrasing so a weak/untrusted basis is hedged + offered for verification, never
@@ -2420,15 +2488,30 @@ export async function runAgent(opts: {
     const honestyHint = conf === 'sure' ? ''
       : conf === 'likely' ? ' Your grounding is partial — phrase this as a considered inference, not a settled fact.'
       : ' Your grounding is weak or untrusted — do NOT assert; state what you found, flag the uncertainty, and offer to verify.';
+    // v2 (A3b): at the dollar cap this is the one small call allowed past it, and it also asks how far the work got
+    // and what is left (the PROGRESS / REMAINING lines below, taken off the answer), so "Finish the last 10 pages?" can
+    // be asked and priced.
+    const atCap = capHit === 'usd';
     try {
       const fin = await brain.chat({
-        system: 'You are wrapping up a task. Using ONLY what was found below, give a brief, direct answer to their request. If something could not be found or finished, say so honestly in one line and suggest a sensible next step.' + honestyHint + persona + personBlock,
+        system: 'You are wrapping up a task. Using ONLY what was found below, give a brief, direct answer to their request. If something could not be found or finished, say so honestly in one line and suggest a sensible next step.' + honestyHint + persona + personBlock
+          + (atCap ? ' The work stopped at the spending limit the person set, before it was finished: say what was done so far. Then end with two lines exactly: "PROGRESS: <done> of <total> <unit>" (numbers; write PROGRESS: unknown if there is no count) and "REMAINING: <what is left, in one short sentence>".' : ''),
         messages: [{ role: 'user', content: `THEIR REQUEST: ${instruction}\n\nWHAT I DID / FOUND (most recent last):\n${history.slice(-24).join('\n')}\n\nWrite the answer now.` }],
         maxTokens: 400,
       });
       usage.brainIn += fin.usage.input; usage.brainOut += fin.usage.output;
-      if (fin.text?.trim()) finalSummary = fin.text.trim();
+      let text = fin.text?.trim() ?? '';
+      if (atCap && text) {
+        const pm = /^\s*PROGRESS:\s*(\d+(?:\.\d+)?)\s*(?:of|\/)\s*(\d+(?:\.\d+)?)\s*([^\n]*)$/im.exec(text);
+        if (pm && !progress) progress = readProgress({ done: Number(pm[1]), total: Number(pm[2]), unit: pm[3].trim().replace(/[.\s]+$/, '') || 'parts' });
+        const rm = /^\s*REMAINING:\s*(.+)$/im.exec(text);
+        if (rm && !remaining) remaining = normalizeRemaining(rm[1])?.slice(0, 300) ?? undefined;
+        text = text.replace(/^\s*(?:PROGRESS|REMAINING):.*$/gim, '').trim();
+      }
+      if (text) finalSummary = text;
     } catch { /* keep the terse summary */ }
+    // A plan step says nothing of the limit: the plan says it once, with the plan's own limit.
+    if (atCap && !opts.planStep) finalSummary = `${finalSummary}\n\n(I stopped at the ${usdText(maxUsd)} spending limit set for this. Continue it when you want me to finish.)`;
   }
 
   // BL-68: an outcome marker in a job's final answer — done's summary, or the wrap-up above, which has no outcome
@@ -2474,7 +2557,7 @@ export async function runAgent(opts: {
   // record of something that happened: superseding one wrote world facts under "agent run: …" and "action: …"
   // names, which then outranked the facts themselves (BL-54, from the BL-53 second pass).
   const factPriors = recalled.filter((m) => !/^(?:agent run|agent step|action|scheduled|observed|session):/i.test(m.concept)).slice(0, 8);
-  if (memory.enabled && !askedUser && factPriors.length > 0 && (toolCalls > 0 || modelAnswered)) {
+  if (memory.enabled && !askedUser && factPriors.length > 0 && (toolCalls > 0 || modelAnswered) && canAfford()) {
     try {
       const priors = factPriors.map((m, i) => `${i + 1}.${m.trust === 'untrusted' ? ' ⚠UNTRUSTED' : ''} [${m.concept}] ${m.content}`).join('\n');
       const tr = await brain.chat({
@@ -2513,7 +2596,7 @@ export async function runAgent(opts: {
   // it is tainted — stamp `ingested` provenance (untrusted trust tier, so recall flags it and it can't
   // be obeyed as instruction) and DON'T force it canonical (no source-of-truth / hive-shared status for
   // model-laundered untrusted text). Also skip the whole learn suite on a security-PAUSED run.
-  if (memory.enabled && toolCalls > 0 && !askedUser && reason !== 'paused') {
+  if (memory.enabled && toolCalls > 0 && !askedUser && reason !== 'paused' && canAfford()) {
     // DETERMINISTIC TEACH capture — the user EXPLICITLY handed over facts ("remember ...: A; B; C").
     // Store the full taught clause VERBATIM as one engram before the LLM extraction runs: the
     // extractor's "fewer is better" bias is right for normal runs but lossy for enumerated
@@ -2570,7 +2653,7 @@ export async function runAgent(opts: {
   // BL-17 keeps the lesson but marks it: untrusted provenance (flagged when recalled), not canonical,
   // and never auto-primed (`primeable`). Open questions are the exception — see below.
   const learnOpts = { canonical: !(sawUntrustedRead || readingsShown) && !sawLocalRead, untrusted: (sawUntrustedRead || readingsShown) };
-  if (memory.enabled && (dispatches > 0 || toolCalls >= 3) && !askedUser) {
+  if (memory.enabled && (dispatches > 0 || toolCalls >= 3) && !askedUser && canAfford()) {
     try {
       const sk = await brain.chat({
         system: 'A task was just completed using tools. If it followed a REPEATABLE procedure that would help on similar future requests, output ONLY JSON {"name":"short skill name (e.g. \'triage scouting inbox\')","steps":"numbered how-to a future run can follow"}. If it was a trivial one-off, output exactly {}.'
@@ -2588,7 +2671,7 @@ export async function runAgent(opts: {
         // study found is after a refusal).
         let skillOpts: { canonical?: boolean; untrusted?: boolean } = learnOpts;
         if (checkRefused || approvalRefused || reason === 'paused') {
-          const judge = opts.lessonJudge !== undefined ? opts.lessonJudge : lessonJudge();
+          const judge = metered(opts.lessonJudge !== undefined ? opts.lessonJudge : lessonJudge());
           // The whole skill, not a prefix: one too long to judge comes back "not judged" and is kept unconfirmed,
           // so no unread tail is ever saved trusted after a refusal.
           const verdict = judge ? await judgeLesson(`${String(s.name).slice(0, 72)}: ${String(s.steps)}`, judge) : null;
@@ -2610,7 +2693,7 @@ export async function runAgent(opts: {
   // run that read nothing but the person's own words — not even a local file (a planted file is how
   // the measured injection arrived).
   if ((sawUntrustedRead || sawLocalRead) && toolCalls > 0) history.push('(no open questions saved: this run read content beyond the request)');
-  if (memory.enabled && !sawUntrustedRead && !sawLocalRead && toolCalls > 0 && !askedUser) {
+  if (memory.enabled && !sawUntrustedRead && !sawLocalRead && toolCalls > 0 && !askedUser && canAfford()) {
     try {
       const q = await brain.chat({
         system: 'Based on the work below, list UNKNOWNS this task surfaced that are worth answering LATER — missing info, things you could not find, useful follow-ups. Output ONLY JSON {"questions":["short specific question", ...]} with 0 to 3 items. Output {"questions":[]} if nothing is open.',
@@ -2637,7 +2720,7 @@ export async function runAgent(opts: {
   // never changes the live loop's dynamics (the lesson from the plan-and-execute regression).
   const failedRun = reason === 'stuck' || reason === 'error' || reason === 'budget' || unbacked.length > 0
     || /refused|could ?n.?t|couldn|unable|\bfail|\berror\b|not found|no files|gave up/i.test(history.slice(-20).join('\n'));
-  if (memory.enabled && toolCalls > 0 && !askedUser && failedRun) {
+  if (memory.enabled && toolCalls > 0 && !askedUser && failedRun && canAfford()) {
     try {
       const refl = await brain.chat({
         // The rule after the first sentence is BL-35's fix at the source: after a refusal this prompt wrote a
@@ -2655,7 +2738,7 @@ export async function runAgent(opts: {
         const refusedRun = checkRefused || approvalRefused || reason === 'paused';
         // Exactly the text that is judged is the text that is saved (review: a judged prefix let a tail through).
         const lessonText = String(r.lesson).trim().slice(0, MAX_LESSON_CHARS);
-        const judge = opts.lessonJudge !== undefined ? opts.lessonJudge : lessonJudge();
+        const judge = metered(opts.lessonJudge !== undefined ? opts.lessonJudge : lessonJudge());
         // The topic is saved too (in the concept), so it is judged with the lesson.
         const verdict = judge ? await judgeLesson(`${String(r.topic).slice(0, 72)}: ${lessonText}`, judge) : null;
         const disposition = lessonDisposition(verdict, refusedRun);
@@ -2784,7 +2867,8 @@ export async function runAgent(opts: {
   const attempt = opts.resumeAttempt ?? 0;
   // Not a recurring job's fire (BL-46): its next fire does the same work, and in BL-40 a broken price watch's
   // resumes cost as much as its fires — like an interrupted recurring job (BL-10), it is left to the next fire.
-  if (memory.enabled && !opts.subRun && !askedUser && !opts.jobRecur && (reason === 'budget' || reason === 'stuck') && (toolCalls > 0 || dispatches > 0) && attempt < MAX_RESUMES) {
+  // Not at the person's dollar cap (A3b): that run waits for them — spending more is theirs to decide.
+  if (memory.enabled && !opts.subRun && !askedUser && !opts.jobRecur && capHit !== 'usd' && (reason === 'budget' || reason === 'stuck') && (toolCalls > 0 || dispatches > 0) && attempt < MAX_RESUMES) {
     const cont = `Resume and finish this task — an earlier attempt ran out of time before completing it (resume ${attempt + 1} of ${MAX_RESUMES}). FIRST recall what you already did and check the files already in the working folder (with list_files and read_file, not a shell command); then do ONLY the remaining work and finish. Do not start over.\n\nTHE TASK: ${instruction}`;
     const dueMs = now() + RESUME_DELAY_MS;
     // person: a resume inherits the owner of the run it continues. Without it the resumed run is
@@ -2830,8 +2914,9 @@ export async function runAgent(opts: {
     } catch { /* best-effort */ }
   }
 
-  const brainCost = brain instanceof RoutedProvider ? brain.spentUsd() : (usage.brainIn / PRICE_DIV) * brain.price[0] + (usage.brainOut / PRICE_DIV) * brain.price[1];
-  const workerCost = worker instanceof RoutedProvider ? worker.spentUsd() : (usage.workerIn / PRICE_DIV) * worker.price[0] + (usage.workerOut / PRICE_DIV) * worker.price[1];
+  // This run's own spend (A3b: per run, whatever else the providers served meanwhile).
+  const brainCost = ledger.usd;
+  const workerCost = 0; // the ledger holds both: each call counted once, as it returned
 
   // OUTCOME — runtime evidence beats the model's own claim (second-model challenge, BL-02): a run
   // whose tools genuinely failed with nothing achieved cannot report "no-change" and go quiet.
@@ -2893,7 +2978,8 @@ export async function runAgent(opts: {
     ...(droppedLesson ? { droppedLesson } : {}),
     ...(folded > 0 ? { compaction: { folds: builtInCompaction?.folds() ?? null, failures: compactionFailures, fenced: builtInCompaction?.tainted() ?? null } } : {}),
     learned: learnedFacts, skills: skillsDerived, questions: openQuestions, frictions: frictionsLearned, policies: policiesLearned, transitions: transitionsRecorded,
-    tokens: { in: usage.brainIn + usage.workerIn, out: usage.brainOut + usage.workerOut, cached: usage.cacheRead }, pagesRead, // cost (2026-10-23)
+    tokens: { in: usage.brainIn + usage.workerIn, out: usage.brainOut + usage.workerOut, cached: usage.cacheRead }, pagesRead, reads: pagesRead + browserReads, // cost (2026-10-23)
+    ...(capHit ? { capHit } : {}), ...(maxUsd ? { maxUsd } : {}),
     durationMs: now() - start, costUsd: Number((brainCost + workerCost).toFixed(4)), summary: finalSummary.slice(0, 200),
   });
   emit('end', { reason, steps, dispatches, durationMs: now() - start });
@@ -2906,6 +2992,8 @@ export async function runAgent(opts: {
     ...(progress ? { progress } : {}),
     ...(remaining ? { remaining } : {}),
     ...(capHit ? { capHit } : {}),
+    ...(pagesRead ? { pagesRead } : {}),
+    ...(pagesRead + browserReads ? { reads: pagesRead + browserReads } : {}),
     ...(v2 ? { v2JobId: v2.jobId } : {}),
     ...(doneOutcome !== undefined && doneOutcome === outcome ? { outcomeDeclared: true } : {}),
     ...(staged.length ? { staged } : {}),
@@ -2938,7 +3026,10 @@ export async function runAgent(opts: {
  */
 async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentResult> {
   let planValue: string | undefined, planActions = 0, planLocal = 0; // BL-44: what the steps read and did, for the job record
-  const { instruction, dir, memory, brain } = opts;
+  const { instruction, dir, memory } = opts;
+  const brain = metered(opts.brain);
+  // The plan's ledger (runAgent made it for these options): the planner, every step, its retry and the synthesis.
+  const ledger = runLedgers.get(opts) ?? spendLedger.getStore() ?? newLedger();
   const now = opts.now ?? (() => Date.now());
   const emit = opts.onEvent ?? (() => {});
   const persona = personaFor(opts.style); // applied to the user-facing synthesis below
@@ -2976,10 +3067,20 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
       .filter((s) => s && typeof s.task === 'string' && s.task.trim().length > 4)
       .map((s) => ({ task: String(s.task).trim(), done_when: s.done_when ? String(s.done_when).trim() : undefined }));
   } catch { /* fall through to direct run */ }
-  if (brain instanceof RoutedProvider) costUsd += brain.spentUsd();
+  // v2 (A3b): the person's dollar cap covers the whole plan — the planning call, every step and its retry. Each step
+  // runs with what is left; the plan stops at the cap, and does not queue a resume (that is the person's decision).
+  const maxUsd = opts.budget?.maxUsd && opts.budget.maxUsd > 0 ? opts.budget.maxUsd : 0;
+  const capLeft = () => maxUsd - ledger.usd - ledger.reserved;
+  // a step is not started on less than one step's worth (review M4: a 0.01¢ allowance still started a run)
+  const minStep = Math.max(0.01, opts.budget?.stepUsd ?? DEFAULT_STEP.usd);
+  let cappedUsd = false;
 
   // Not worth decomposing (planner returned 0–1 step) → just run the proven loop directly.
-  if (steps.length < 2) return runAgent({ ...opts, subRun: true, plan: false, capturePolicy: true, userMessage: opts.userMessage ?? opts.instruction });
+  if (steps.length < 2) {
+    // the planner's call is this run's cost too (review M5: it was dropped)
+    const direct = await runAgent({ ...opts, subRun: true, plan: false, capturePolicy: true, userMessage: opts.userMessage ?? opts.instruction, ...(maxUsd ? { budget: { ...opts.budget, maxUsd: Math.max(0.0001, capLeft()) } } : {}) });
+    return { ...direct, costUsd: Number(ledger.usd.toFixed(6)) };
+  }
   steps = steps.slice(0, 6);
   emit('plan', { steps: steps.map((s) => s.task.slice(0, 90)) });
   history.push(`planned ${steps.length} steps: ${steps.map((s) => s.task.slice(0, 40)).join(' | ')}`);
@@ -3010,7 +3111,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     ? `\n\nFILES THE EARLIER STEPS ALREADY FOUND: ${found.listing ? 'their folder listing is in the fenced earlier-steps context below — do not call list_files for the same folders again; go straight to read_file on the ones you need. A file an earlier step saved since is named in what it produced, not in the listing' : 'go straight to read_file on the ones you need'}${found.read.size ? `; already read by an earlier step: ${[...found.read].slice(-12).join(', ')}` : ''}.`
     : '';
   const filesBlock = () => found.listing ? `FOLDER LISTING the earlier steps saw (file names only):\n${found.listing}` : '';
-  let aggSteps = 0, aggDispatches = 0, aggToolCalls = 0;
+  let aggSteps = 0, aggDispatches = 0, aggToolCalls = 0, aggPages = 0, aggReads = 0;
   let allDone = true;
   const stepOutcomes: (RunOutcome | undefined)[] = [];
   // BL-08: a plan's outcome counts as declared only when EVERY step declared its own — the combination
@@ -3023,6 +3124,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   for (let i = 0; i < steps.length; i++) {
     if (opts.signal?.aborted) { allDone = false; stoppedByPerson = true; history.push(`(stopped by the person before step ${i + 1})`); break; }
     if (now() - start > maxWallMs) { allDone = false; history.push(`(out of time before step ${i + 1})`); break; }
+    if (maxUsd && capLeft() < minStep) { allDone = false; cappedUsd = true; history.push(`(the spending limit was reached before step ${i + 1})`); break; }
     const s = steps[i];
     emit('plan_step', { n: i + 1, total: steps.length, task: s.task.slice(0, 90) });
     // Hand this step the actual output of the steps before it (most recent first, capped),
@@ -3032,7 +3134,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
       : '';
     const stepCtx = () => `${s.task}${s.done_when ? `\n\nDone when: ${s.done_when}` : ''}${chainTainted ? '' : prior}${filesNote()}\n\n(This is step ${i + 1} of ${steps.length} of a larger task: "${instruction.slice(0, 140)}". The working folder is shared across all steps — read files an earlier step saved there, and save any substantial output you produce (a draft, a list, a report) to a file so the next step can use it verbatim. Do ONLY this step, then call done.)`;
     const remainWall = Math.max(60_000, maxWallMs - (now() - start));
-    const subBudget = { maxSteps: perStepBudget, maxWallMs: remainWall, consolidateEvery: 50 };
+    const subBudget = { maxSteps: perStepBudget, maxWallMs: remainWall, consolidateEvery: 50, ...(maxUsd ? { maxUsd: capLeft() } : {}), ...(opts.budget?.stepUsd ? { stepUsd: opts.budget.stepUsd } : {}) };
     // The caller's carried context (a tainted earlier chat turn) plus, once the chain is tainted, the
     // earlier steps' output. Dropping the caller's half lost the conversation for every step.
     // The file names found always go the fenced way, as the earlier steps' output does once the chain is tainted.
@@ -3041,7 +3143,13 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     const takeFiles = (r: AgentResult) => { if (r.filesFound) { if (r.filesFound.listing) found.listing = r.filesFound.listing; for (const f of r.filesFound.read) found.read.add(f); } };
     let sub = await runAgent({ ...opts, ...stepWords, instruction: stepCtx(), subRun: true, plan: false, budget: subBudget, now: opts.now, onEvent: emit, startTainted: chainTainted, carried: carriedNow() });
     let attemptTainted = sub.tainted === true;
-    if (sub.reason !== 'done' && now() - start < maxWallMs) {
+    // Both attempts of a step are paid for (the ledger counts both; the tokens are added here).
+    const firstUsage = sub.usage;
+    let retried = false;
+    if (sub.capHit === 'usd') cappedUsd = true;
+    // Not when the person stopped it: a stopped step is not retried, and the plan ends there (A3b re-review).
+    if (sub.reason === 'stopped' || opts.signal?.aborted) stoppedByPerson = true;
+    if (sub.reason !== 'done' && !stoppedByPerson && now() - start < maxWallMs && !cappedUsd && !(maxUsd && capLeft() < minStep)) {
       // localized replanning: retry THIS step once (its friction memory auto-primes the retry). What the first
       // attempt found in the files is kept for it (audit 2026-10-26), so it does not list the folder again.
       takeFiles(sub);
@@ -3050,12 +3158,15 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
       // A tainted first attempt still tainted the shared folder — don't lose it when the retry replaces `sub`.
       if (sub.staged) stagedAll.push(...sub.staged); // the first attempt's approvals still wait — keep offering them
       // ...and a retry doesn't propose the same standing preference a second time.
-      sub = await runAgent({ ...opts, ...stepWords, capturePolicy: false, instruction: retryCtx, subRun: true, plan: false, budget: subBudget, now: opts.now, onEvent: emit, startTainted: chainTainted || attemptTainted, carried: carriedNow() });
+      sub = await runAgent({ ...opts, ...stepWords, capturePolicy: false, instruction: retryCtx, subRun: true, plan: false, budget: { ...subBudget, ...(maxUsd ? { maxUsd: capLeft() } : {}) }, now: opts.now, onEvent: emit, startTainted: chainTainted || attemptTainted, carried: carriedNow() });
       attemptTainted = attemptTainted || sub.tainted === true;
+      retried = true;
+      if (sub.capHit === 'usd') cappedUsd = true;
     }
+    if (retried) { usage.brainIn += firstUsage.brainIn; usage.brainOut += firstUsage.brainOut; usage.workerIn += firstUsage.workerIn; usage.workerOut += firstUsage.workerOut; }
     usage.brainIn += sub.usage.brainIn; usage.brainOut += sub.usage.brainOut;
     usage.workerIn += sub.usage.workerIn; usage.workerOut += sub.usage.workerOut;
-    costUsd += sub.costUsd; aggSteps += sub.steps; aggDispatches += sub.dispatches; aggToolCalls += sub.toolCalls;
+    aggSteps += sub.steps; aggDispatches += sub.dispatches; aggToolCalls += sub.toolCalls; aggPages += sub.pagesRead ?? 0; aggReads += sub.reads ?? 0;
     if (sub.reason !== 'done') allDone = false;
     stepOutcomes.push(sub.outcome);
     if (sub.outcomeDeclared !== true) allStepsDeclared = false;
@@ -3073,13 +3184,17 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     // Persist for cross-SESSION durability (a fuller slice than before, so a later session's
     // recall isn't lossy — within THIS plan the chain[] threading above is the live bridge).
     await memory.write(`plan step ${i + 1}: ${s.task.slice(0, 50)}`, `For task "${instruction.slice(0, 70)}", step ${i + 1} ("${s.task.slice(0, 90)}") → ${out.slice(0, 600)}`, ['topic=plan-step', 'intent=decision', 'confidence_level=verified'], { eventType: 'decision', ...(attemptTainted || chainTainted ? { provenance: 'ingested' as const, canonical: false } : {}) });
+    if (stoppedByPerson) { allDone = false; history.push(`(stopped by the person in step ${i + 1})`); break; }
+    if (cappedUsd) { allDone = false; history.push(`(the spending limit was reached in step ${i + 1})`); break; }
   }
 
   // 3) SYNTHESIZE — one plain answer from the step results (strong tier, isolated cost).
   const synFence = newFenceCode();
   let finalSummary = '';
   if (brain instanceof RoutedProvider) brain.reset('reason');
-  try {
+  // At the dollar cap the step that hit it already made the one small call allowed past it (its wrap-up): no synthesis.
+  if (cappedUsd || stoppedByPerson) finalSummary = stepResults.join('\n'); // no synthesis call after the cap or a Stop
+  else try {
     const syn = await brain.chat({
       system: 'Combine the sub-task results into ONE clear, direct answer to the user\'s ORIGINAL request. Lead with the answer; be concise — no preamble, no step-by-step narration. If a part could not be completed, say so honestly in one line and suggest a sensible next step.' + persona + personBlock,
       messages: [{ role: 'user', content: chainTainted
@@ -3090,7 +3205,8 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     usage.brainIn += syn.usage.input; usage.brainOut += syn.usage.output;
     finalSummary = syn.text?.trim() || stepResults.join('\n');
   } catch { finalSummary = stepResults.join('\n'); }
-  if (brain instanceof RoutedProvider) costUsd += brain.spentUsd();
+  costUsd = ledger.usd; // every call of the plan, counted once as it returned (A3b review, H1)
+  if (cappedUsd && !stoppedByPerson) finalSummary = `${finalSummary}\n\n(I stopped at the ${usdText(maxUsd)} spending limit set for this. Continue it when you want me to finish.)`;
 
   const reason: AgentResult['reason'] = stoppedByPerson ? 'stopped' : allDone ? 'done' : 'budget';
   if (stoppedByPerson) finalSummary = `Stopped after ${stepOutcomes.length} of ${steps.length} planned steps.${stepResults.length ? ` So far: ${stepResults.map((x) => x.slice(0, 200)).join(' | ')}` : ''}`;
@@ -3101,7 +3217,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   let planResumeQueued = false;
   let v2: ReturnType<typeof continuationTry> = null;
   const planAttempt = opts.resumeAttempt ?? 0;
-  if (!allDone && !stoppedByPerson && opts.memory.enabled && !opts.subRun && !opts.jobRecur && aggToolCalls > 0 && planAttempt < 2) {
+  if (!allDone && !stoppedByPerson && !cappedUsd && opts.memory.enabled && !opts.subRun && !opts.jobRecur && aggToolCalls > 0 && planAttempt < 2) {
     const plan = steps.map((s, i) => `${i + 1}. ${s.task}${i < stepOutcomes.length ? ' (ran)' : ' (not started)'}`).join('\n');
     const cont = `Resume and finish this task — an earlier attempt ran out of room before completing it (resume ${planAttempt + 1} of 2). It was planned as:\n${plan}\nFIRST recall what you already did and check the files already in the working folder (with list_files and read_file, not a shell command); then do ONLY the remaining steps and finish. Do not start over.\n\nTHE TASK: ${instruction}`;
     const dueMs = now() + 60_000;
@@ -3120,6 +3236,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     ts: start, session: opts.session ?? '', instruction: instruction.slice(0, 160), reason,
     steps: aggSteps, dispatches: aggDispatches, toolCalls: aggToolCalls, reRecalls: 0, supersedes: 0, consolidations: 0,
     planned: steps.length, durationMs: now() - start, costUsd: Number(costUsd.toFixed(4)), summary: finalSummary.slice(0, 200),
+    ...(cappedUsd ? { capHit: 'usd', maxUsd } : {}),
   });
   emit('end', { reason, steps: aggSteps, dispatches: aggDispatches, durationMs: now() - start, planned: steps.length });
   // A planned run's outcome: unfinished → could-not; the LAST step's complete passes through (the plan
@@ -3136,7 +3253,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     outcome: planOutcome,
     ...(steps.length > 1 ? { progress: { done: stepsDone, total: steps.length, unit: 'steps' } } : {}),
     ...(!allDone && left.length ? { remaining: left.map(({ s, i }) => `step ${i + 1} (${s.task.replace(/\s+/g, ' ').slice(0, 60)})`).join('; ').slice(0, 300) } : {}),
-    ...(!allDone && !stoppedByPerson && now() - start > maxWallMs ? { capHit: 'wall' as const } : {}),
+    ...(cappedUsd && !stoppedByPerson ? { capHit: 'usd' as const } : !allDone && !stoppedByPerson && now() - start > maxWallMs ? { capHit: 'wall' as const } : {}),
     ...(v2 ? { v2JobId: v2.jobId } : {}),
     ...(allDone && allStepsDeclared && stepOutcomes.length > 0 ? { outcomeDeclared: true } : {}),
     tainted: chainTainted,
@@ -3145,6 +3262,8 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     ...(planActions ? { actionsTaken: planActions } : {}),
     ...(planLocal ? { localActions: planLocal } : {}),
     ...(planResumeQueued ? { resumeQueued: true } : {}),
+    ...(aggPages ? { pagesRead: aggPages } : {}),
+    ...(aggReads ? { reads: aggReads } : {}),
     reason, summary: finalSummary, steps: aggSteps, dispatches: aggDispatches, toolCalls: aggToolCalls,
     reRecalls: 0, supersedes: 0, consolidations: 0, durationMs: now() - start, usage, costUsd: Number(costUsd.toFixed(6)), history,
   };
@@ -3157,7 +3276,9 @@ function readProgress(v: unknown): AgentResult['progress'] {
   if (!v || typeof v !== 'object') return undefined;
   const o = v as Record<string, unknown>;
   const done = Number(o.done), total = Number(o.total);
-  if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0 || done < 0) return undefined;
+  // A total past 10,000 is not a count anyone means (review of A3b: an injected "1 of 1000000"); estimates hold
+  // totals to a tighter ceiling of their own (src/v2/estimate.ts SANE_TOTAL).
+  if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0 || done < 0 || total > 10_000) return undefined;
   const unit = typeof o.unit === 'string' && o.unit.trim() ? o.unit.replace(/\s+/g, ' ').trim().slice(0, 30) : 'parts';
   return { done: Math.min(done, total), total, unit };
 }

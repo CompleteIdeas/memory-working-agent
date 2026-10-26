@@ -125,10 +125,40 @@ components:
           additionalProperties: false
           properties:
             action: { type: string, enum: [stop, continue, start-over, open, review, resume] }
-            label: { type: string, description: 'The button: "Finish the last 10 pages", "Continue", "Open".' }
+            label: { type: string, description: 'The button: "Finish the last 10 pages", "Continue", "Open". A Continue or Start over carries its price: "Finish the last 10 pages · about 3¢".' }
+            estimate: { $ref: '#/components/schemas/Amount' }
+            limitUsd: { type: number, description: 'The spending limit this action sets by default ("up to 40¢"); send capUsd to choose another.' }
+            firstGuess: { type: boolean, description: 'The price rests on the default or a single sample: said as "a first guess, about 30¢".' }
+    Amount:
+      type: object
+      description: 'An estimate, always "about": dollars rounded the way they are said (whole cents under $1, 5-cent steps above) and milliseconds.'
+      required: [usd, ms]
+      additionalProperties: false
+      properties:
+        usd: { type: number, minimum: 0 }
+        ms: { type: integer, minimum: 0 }
+    Estimate:
+      type: object
+      description: |
+        What Continue (what is left) and Start over (the whole job) are expected to cost and take, and the evidence:
+        `this-job` (its own tries, per unit of progress or per page), `history` (the median per page over earlier runs
+        on the same model tier), or `default` (a conservative guess). `continue` is absent when nothing has run yet or
+        nothing is left.
+      required: [basis, samples]
+      additionalProperties: false
+      properties:
+        continue: { $ref: '#/components/schemas/Amount' }
+        startOver: { $ref: '#/components/schemas/Amount' }
+        basis: { type: string, enum: [this-job, history, default] }
+        samples: { type: integer, minimum: 0, description: 'How many tries or past runs it rests on.' }
+    CapRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        capUsd: { type: number, exclusiveMinimum: 0, maximum: 20, description: 'The most the new run may spend, in dollars. Default: twice the estimate, or the estimate plus three of its largest steps and the wrap-up, whichever is more; at least 0.25 (0.50 for a first guess); at most 20. A run that reaches it waits for you.' }
     Job:
       type: object
-      required: [id, kind, title, request, projectId, createdAt, updatedSeq, status, lifecycle, progress, remaining, whereItStands, seenAt, capUsd, costUsd, tries, archived, scheduleId, goalId, session, nextRunAt]
+      required: [id, kind, title, request, projectId, createdAt, updatedSeq, status, lifecycle, progress, remaining, whereItStands, seenAt, capUsd, costUsd, tries, archived, scheduleId, goalId, session, nextRunAt, estimate, estimateVsActual]
       additionalProperties: false
       properties:
         id: { type: string }
@@ -150,7 +180,7 @@ components:
             text: { type: string }
             trust: { type: string, enum: [high, medium, untrusted] }
         seenAt: { type: [integer, 'null'] }
-        capUsd: { type: [number, 'null'] }
+        capUsd: { type: [number, 'null'], description: 'The most a run of it may spend (since you last said go); at it, it waits for you.' }
         costUsd: { type: number, description: 'Spent over all its tries.' }
         tries: { type: integer, description: 'How many tries it has.' }
         archived: { type: boolean }
@@ -158,6 +188,20 @@ components:
         goalId: { type: [string, 'null'] }
         session: { type: [string, 'null'], description: 'The conversation it reports to.' }
         nextRunAt: { type: [integer, 'null'], description: "A repeating job's next run." }
+        estimate:
+          oneOf:
+            - { $ref: '#/components/schemas/Estimate' }
+            - { type: 'null' }
+          description: 'Null for a repeating job.'
+        estimateVsActual:
+          type: [object, 'null']
+          description: 'Once done: the first estimate it was given against what it cost ("I guessed about $0.35 · it cost $0.41").'
+          required: [estimatedUsd, actualUsd, text]
+          additionalProperties: false
+          properties:
+            estimatedUsd: { type: number }
+            actualUsd: { type: number }
+            text: { type: string }
     Try:
       type: object
       required: [id, n, trigger, state, dueAt, startedAt, endedAt, reason, outcome, progress, remaining, costUsd, steps, toolCalls, capHit, summary, tainted, staged, estUsd, estMs, pagesRead, endedBy, delivered]
@@ -177,11 +221,11 @@ components:
         costUsd: { type: [number, 'null'] }
         steps: { type: [integer, 'null'] }
         toolCalls: { type: [integer, 'null'] }
-        capHit: { type: [string, 'null'], description: 'The hard limit that ended it: steps, wall, tokens (usd from A3b).' }
+        capHit: { type: [string, 'null'], description: 'The hard limit that ended it: steps, wall, tokens, or usd (the dollar limit you set: it waits for you).' }
         summary: { type: [string, 'null'] }
         tainted: { type: boolean }
         staged: { type: array, items: { type: string }, description: 'Approvals it staged.' }
-        estUsd: { type: [number, 'null'] }
+        estUsd: { type: [number, 'null'], description: 'What it was expected to cost when it was queued (about).' }
         estMs: { type: [integer, 'null'] }
         pagesRead: { type: [integer, 'null'] }
         endedBy: { type: [string, 'null'], enum: [person, cancel, self, goal-done, reaper, duplicate, null], description: 'Who ended it when its own run did not: the person, a cancel, the job itself, its goal being marked done, or the reaper (its process stopped).' }
@@ -495,6 +539,19 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/JobDetail' }
         default: { $ref: '#/components/responses/Error' }
+  /jobs/{id}/estimate:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: estimateJob
+      summary: 'What Continue and Start over would cost and take (about). 409 for a repeating job.'
+      responses:
+        '200':
+          description: The estimates and what they rest on.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Estimate' }
+        default: { $ref: '#/components/responses/Error' }
   /jobs/{id}/stop:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
@@ -515,7 +572,12 @@ paths:
       - { name: id, in: path, required: true, schema: { type: string } }
     post:
       operationId: continueJob
-      summary: 'Finish it from where it stopped (a new try of the same job). 409 when it is already working or continuing, finished, or repeating.'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CapRequest' }
+      summary: 'Finish it from where it stopped (a new try of the same job), spending at most capUsd. 409 when it is already working or continuing, finished, or repeating; 400 for a bad capUsd.'
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
@@ -530,7 +592,12 @@ paths:
       - { name: id, in: path, required: true, schema: { type: string } }
     post:
       operationId: startJobOver
-      summary: 'Do it again from the beginning (a new try of the same job).'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CapRequest' }
+      summary: 'Do it again from the beginning (a new try of the same job), spending at most capUsd.'
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:

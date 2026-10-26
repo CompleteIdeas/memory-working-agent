@@ -22,7 +22,12 @@
  *
  * A Try marked `running` whose claimer is gone (a crash) and that is not live here is read as cut off — never as
  * "working" forever (review H1). "Result ready" comes only from a result that was delivered (review M5).
+ *
+ * Slice A3b: a Continue or Start over button carries its price when the caller knows it (`ctx.estimates`, from
+ * src/v2/estimate.ts): "Finish the last 10 pages · about 3¢", "Start over · about 90¢". At the dollar limit the job
+ * waits for the person — it never continues by itself, because spending more is theirs to decide.
  */
+import { aboutUsd, usdText, firstGuess, type Amount, type Basis } from './estimate.js';
 
 export type JobState = 'working' | 'waiting' | 'continuing' | 'stopped_by_you' | 'partly_done' | 'stopped' | 'scheduled' | 'done';
 export const JOB_STATES: readonly JobState[] = ['working', 'waiting', 'continuing', 'stopped_by_you', 'partly_done', 'stopped', 'scheduled', 'done'];
@@ -34,7 +39,8 @@ export interface JobStatus {
   label: string;
   /** one plain sentence: why, and what is left */
   detail: string;
-  primaryAction?: { action: JobActionName; label: string };
+  /** the main button; a Continue or Start over carries what it is expected to cost (`estimate`, and in the label) */
+  primaryAction?: { action: JobActionName; label: string; estimate?: Amount; limitUsd?: number; firstGuess?: boolean };
   /** a delivered result the person has not opened since it arrived */
   resultReady?: boolean;
 }
@@ -85,6 +91,8 @@ export interface StatusCtx {
   now?: number;
   /** whether the process that claimed a Try is still alive (its heartbeat); absent = trust the row */
   claimerAlive?: (claimer: string) => boolean;
+  /** what Continue and Start over are expected to cost (slice A3b); without them the buttons carry no price */
+  estimates?: { continue?: Amount; startOver?: Amount; basis?: Basis; samples?: number; continueCap?: number; startOverCap?: number };
 }
 
 const AUTO = new Set(['auto-continue', 'resume-after-restart']);
@@ -120,10 +128,26 @@ function leftOf(t: StatusTry | undefined, job: StatusJob): { done: number; total
   const unit = (t.progress_unit ?? job.progress_unit ?? 'parts').trim() || 'parts';
   return { done: t.progress_done, total: t.progress_total, left: Math.max(0, t.progress_total - t.progress_done), unit };
 }
+/** "the last step", not "the last 1 steps": a plural unit made singular for one. */
+const one = (unit: string) => unit.replace(/(?<![su])s$/i, '');
 function finishLabel(l: ReturnType<typeof leftOf>): string {
-  return l && l.left > 0 ? `Finish the last ${num(l.left)} ${l.unit}` : 'Finish the rest';
+  return l && l.left > 0 ? (l.left === 1 ? `Finish the last ${one(l.unit)}` : `Finish the last ${num(l.left)} ${l.unit}`) : 'Finish the rest';
 }
 const CUT_OFF = 'It was cut off when the helper stopped.';
+
+/** A Continue or Start over button with its price, when known: "Finish the last 10 pages · about 3¢". */
+/** The price as said: "about 16¢", or "a first guess, about 30¢" when it rests on the default or a single sample. */
+function said(ctx: StatusCtx, usd: number): string {
+  const guess = ctx.estimates?.basis !== undefined && firstGuess({ basis: ctx.estimates.basis, samples: ctx.estimates.samples ?? 0 });
+  return `${guess ? 'a first guess, ' : ''}${aboutUsd(usd)}`;
+}
+function priced(action: 'continue' | 'start-over', label: string, ctx: StatusCtx): { action: JobActionName; label: string; estimate?: Amount; limitUsd?: number; firstGuess?: boolean } {
+  const e = action === 'continue' ? ctx.estimates?.continue : ctx.estimates?.startOver;
+  if (!e) return { action, label };
+  const limit = action === 'continue' ? ctx.estimates?.continueCap : ctx.estimates?.startOverCap;
+  const guess = ctx.estimates?.basis !== undefined && firstGuess({ basis: ctx.estimates.basis, samples: ctx.estimates.samples ?? 0 });
+  return { action, label: `${label} · ${said(ctx, e.usd)}${limit ? `, up to ${usdText(limit)}` : ''}`, estimate: e, ...(limit ? { limitUsd: limit } : {}), ...(ctx.estimates?.basis !== undefined ? { firstGuess: guess } : {}) };
+}
 
 export function jobStatus(job: StatusJob, input: StatusTry[], ctx: StatusCtx): JobStatus {
   const now = ctx.now ?? Date.now();
@@ -163,9 +187,10 @@ export function jobStatus(job: StatusJob, input: StatusTry[], ctx: StatusCtx): J
   }
   if (last?.cap_hit === 'usd' && !recurring && !queued.some((t) => !AUTO.has(t.trigger))) {
     const cap = job.cap_usd != null ? `the ${money(job.cap_usd)} limit you set` : 'the spending limit you set';
-    const ask = lastLeft && lastLeft.left > 0 ? ` Finish the last ${num(lastLeft.left)} ${lastLeft.unit}?` : ' Finish the rest?';
-    const about = last.est_usd != null ? ` About ${money(last.est_usd)}.` : '';
-    return { state: 'waiting', label: 'Waiting for you', detail: `It reached ${cap}.${ask}${about}`, primaryAction: { action: 'continue', label: finishLabel(lastLeft) } };
+    const ask = lastLeft && lastLeft.left > 0 ? ` ${finishLabel(lastLeft)}?` : ' Finish the rest?';
+    const e = ctx.estimates?.continue;
+    const about = e ? ` ${said(ctx, e.usd).replace(/^a/, 'A')}.` : '';
+    return { state: 'waiting', label: 'Waiting for you', detail: `It reached ${cap}.${ask}${about}`, primaryAction: priced('continue', finishLabel(lastLeft), ctx) };
   }
 
   // 5. continuing: an automatic continuation is queued. Whatever the last Try's reason, this is never "failed".
@@ -203,7 +228,7 @@ export function jobStatus(job: StatusJob, input: StatusTry[], ctx: StatusCtx): J
   }
   if (last?.ended_by === 'self') return { state: 'stopped', label: 'Stopped itself', detail: last.summary ? `It stopped itself: ${firstSentence(last.summary)}` : 'It stopped itself.' };
   if (last?.reason === 'stopped' || last?.ended_by === 'person' || last?.ended_by === 'cancel') {
-    return { state: 'stopped_by_you', label: 'Stopped by you', detail: lastLeft && lastLeft.done > 0 ? `Kept ${num(lastLeft.done)} ${lastLeft.unit}.` : 'Kept what it had so far.', primaryAction: { action: 'continue', label: 'Continue' } };
+    return { state: 'stopped_by_you', label: 'Stopped by you', detail: lastLeft && lastLeft.done > 0 ? `Kept ${num(lastLeft.done)} ${lastLeft.unit}.` : 'Kept what it had so far.', primaryAction: priced('continue', 'Continue', ctx) };
   }
 
   // Nothing has finished yet, and nothing is running or due.
@@ -216,14 +241,14 @@ export function jobStatus(job: StatusJob, input: StatusTry[], ctx: StatusCtx): J
   if (remaining || short || outOfRoom) {
     const got = lastLeft ? `Got through ${num(lastLeft.done)} of ${num(lastLeft.total)} ${lastLeft.unit}.` : outOfRoom ? 'It ran out of room before it finished.' : 'Not everything got done.';
     const rest = remaining ? ` Still to do: ${remaining.replace(/[.\s]+$/, '')}.` : '';
-    return { state: 'partly_done', label: 'Partly done', detail: `${got}${rest}`, primaryAction: { action: 'continue', label: finishLabel(lastLeft) } };
+    return { state: 'partly_done', label: 'Partly done', detail: `${got}${rest}`, primaryAction: priced('continue', finishLabel(lastLeft), ctx) };
   }
 
   // 10. stopped: it could not do it, and it made no progress. A crash is said as such, and picked up with Continue.
   if (last.outcome === 'could-not' && !(lastLeft && lastLeft.done > 0)) {
-    if (last.ended_by === 'reaper' || last.summary === CUT_OFF) return { state: 'stopped', label: 'Stopped', detail: CUT_OFF, primaryAction: { action: 'continue', label: 'Continue' } };
+    if (last.ended_by === 'reaper' || last.summary === CUT_OFF) return { state: 'stopped', label: 'Stopped', detail: CUT_OFF, primaryAction: priced('continue', 'Continue', ctx) };
     const why = firstSentence(last.summary);
-    return { state: 'stopped', label: 'Stopped', detail: why ? `It couldn't finish: ${why}` : "It couldn't finish.", primaryAction: { action: 'start-over', label: 'Try again' } };
+    return { state: 'stopped', label: 'Stopped', detail: why ? `It couldn't finish: ${why}` : "It couldn't finish.", primaryAction: priced('start-over', 'Try again', ctx) };
   }
 
   // 11. done — and a result is ready until the person opens it.
