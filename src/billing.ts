@@ -35,19 +35,23 @@ export function tokenLogPath(env: NodeJS.ProcessEnv = process.env): string {
 const MAX_READ = 16 * 1024 * 1024; // the log only grows: the last 16 MB is months of calls
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0);
 
-/** The calls logged since `sinceMs`, oldest first. A line that is not JSON is skipped. */
-export function readCalls(path = tokenLogPath(), sinceMs = 0): Call[] {
-  if (!existsSync(path)) return [];
-  let text: string;
+/** The last `max` bytes of a log that only grows, whole lines only; null when it is missing or unreadable.
+ *  (Shared with v2/estimate.ts, which reads runs.jsonl and tokens.jsonl the same way.) */
+export function readTail(path: string, max = MAX_READ): string | null {
+  if (!existsSync(path)) return null;
   try {
     const size = statSync(path).size;
-    if (size <= MAX_READ) text = readFileSync(path, 'utf8');
-    else {
-      const fd = openSync(path, 'r');
-      try { const buf = Buffer.alloc(MAX_READ); readSync(fd, buf, 0, MAX_READ, size - MAX_READ); text = buf.toString('utf8'); text = text.slice(text.indexOf('\n') + 1); }
-      finally { closeSync(fd); }
-    }
-  } catch { return []; }
+    if (size <= max) return readFileSync(path, 'utf8');
+    const fd = openSync(path, 'r');
+    try { const buf = Buffer.alloc(max); readSync(fd, buf, 0, max, size - max); const text = buf.toString('utf8'); return text.slice(text.indexOf('\n') + 1); }
+    finally { closeSync(fd); }
+  } catch { return null; }
+}
+
+/** The calls logged since `sinceMs`, oldest first. A line that is not JSON is skipped. */
+export function readCalls(path = tokenLogPath(), sinceMs = 0): Call[] {
+  const text = readTail(path);
+  if (text === null) return [];
   const out: Call[] = [];
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;

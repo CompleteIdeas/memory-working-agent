@@ -27,6 +27,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { appDb, registerMigrations, recordEvent, type AppDb, type Migration } from './db.js';
 import { storeHooks, type ScheduleOpts, type ScheduledTask, type GoalStatus } from '../awm.js';
 import { jobStatus, normalizeRemaining, type JobStatus } from './status.js';
+import { estimateJob, estimateForTrigger, type JobEstimate } from './estimate.js';
 import { INSTANCE, instanceAlive, startHeartbeat, transcriptsDir } from '../transcript.js';
 
 export type JobKind = 'background' | 'recurring' | 'reminder' | 'plan' | 'live';
@@ -140,7 +141,17 @@ export const JOBS_FIX_MIGRATION: Migration = {
       WHERE schedule_id IS NOT NULL AND due_at IS NOT NULL AND (ended_by IS NULL OR ended_by NOT IN ('reaper','duplicate'));
     CREATE TABLE IF NOT EXISTS job_locks (job_id TEXT PRIMARY KEY, holder TEXT NOT NULL, at INTEGER NOT NULL);`,
 };
-registerMigrations([JOBS_MIGRATION, JOBS_FIX_MIGRATION]);
+/**
+ * Slice A3b: the first estimate a job was given when it started, so a finished job can say "I guessed about $0.35 ·
+ * it cost $0.41". (004 and 005 are the calendar and mail slices' steps.)
+ */
+export const ESTIMATES_MIGRATION: Migration = {
+  name: '006-estimates',
+  sql: `
+    ALTER TABLE jobs ADD COLUMN est_usd_first REAL;
+    ALTER TABLE jobs ADD COLUMN est_ms_first INTEGER;`,
+};
+registerMigrations([JOBS_MIGRATION, JOBS_FIX_MIGRATION, ESTIMATES_MIGRATION]);
 
 export interface JobRow {
   id: string; project_id: string | null; kind: JobKind; title: string; request: string | null; person: string | null;
@@ -150,6 +161,7 @@ export interface JobRow {
   result_ref: string | null; seen_at: number | null; status: JobLifecycle; archived: number;
   session: string | null; dir: string | null; legacy_key: string | null;
   next_due_at: number | null; stopped_by: string | null; schedule_prefix: string | null;
+  est_usd_first: number | null; est_ms_first: number | null;
 }
 export interface TryRow {
   id: string; job_id: string; n: number; trigger: TryTrigger; run_id: string | null; live_key: string | null;
@@ -318,6 +330,8 @@ export function linkTry(tryId: string, scheduleId: string, dueAt: number | undef
     if (job && !job.schedule_id && job.kind !== 'recurring') d.prepare('UPDATE jobs SET schedule_id = ? WHERE id = ?').run(scheduleId, job.id);
     bumpTry(d, tryId, t.job_id);
   }).immediate();
+  const t = getTry(tryId, d);
+  if (t) stampEstimates(t.job_id, d);
 }
 
 /** Claim a queued Try for this process: `UPDATE … WHERE state='queued' RETURNING`. Null when someone else has it. */
@@ -382,7 +396,7 @@ export function endScheduleTries(scheduleId: string, by: EndedBy, summary: strin
 }
 
 /** Set some of a Job's own fields (seen_at, lifecycle, where it stands…). */
-export function updateJob(jobId: string, f: Partial<Pick<JobRow, 'seen_at' | 'status' | 'where_it_stands' | 'stands_trust' | 'archived' | 'schedule_id' | 'session' | 'dir' | 'result_ref' | 'cap_usd' | 'next_due_at' | 'stopped_by'>>, d: AppDb = appDb()): JobRow | undefined {
+export function updateJob(jobId: string, f: Partial<Pick<JobRow, 'seen_at' | 'status' | 'where_it_stands' | 'stands_trust' | 'archived' | 'schedule_id' | 'session' | 'dir' | 'result_ref' | 'cap_usd' | 'next_due_at' | 'stopped_by' | 'model_tier'>>, d: AppDb = appDb()): JobRow | undefined {
   const keys = Object.keys(f).filter((k) => (f as Record<string, unknown>)[k] !== undefined);
   if (!keys.length) return getJob(jobId, d);
   return d.transaction(() => {
@@ -423,6 +437,64 @@ export function jobLocked(jobId: string, d: AppDb = appDb()): boolean {
   return !!lock && Date.now() - lock.at < LOCK_STALE_MS;
 }
 
+// ── Estimates and the dollar cap (slice A3b) ────────────────────────────────────────────────────────────────────
+
+/**
+ * Stamp the Tries of a Job that have not run to the end and carry no estimate yet with what they are expected to cost
+ * (est_usd, est_ms: a fresh start the whole job, anything else what is left), and give a Job that is only now starting
+ * its first estimate (est_usd_first), kept for "I guessed about $0.35 · it cost $0.41". Best-effort: an estimate never
+ * blocks the work it describes.
+ */
+export function stampEstimates(jobId: string, d: AppDb = appDb()): void {
+  try {
+    const job = getJob(jobId, d);
+    if (!job) return;
+    const tries = triesOf(jobId, d);
+    const open = tries.filter((t) => t.state !== 'ended' && t.est_usd == null);
+    if (!open.length) return;
+    const e = estimateJob(job, tries);
+    d.transaction(() => {
+      for (const t of open) {
+        const a = estimateForTrigger(e, t.trigger);
+        if (!a) continue;
+        d.prepare('UPDATE tries SET est_usd = ?, est_ms = ? WHERE id = ? AND est_usd IS NULL').run(a.usd, a.ms, t.id);
+        bumpTry(d, t.id, jobId);
+      }
+      // The first estimate: a one-off job starting (nothing has ended yet). A repeating job has no "whole job" to guess.
+      const first = open[0];
+      const a = estimateForTrigger(e, first.trigger);
+      if (a && job.est_usd_first == null && job.kind !== 'recurring' && job.kind !== 'reminder' && !tries.some((t) => t.state === 'ended')) {
+        d.prepare('UPDATE jobs SET est_usd_first = ?, est_ms_first = ? WHERE id = ? AND est_usd_first IS NULL').run(a.usd, a.ms, jobId);
+        bumpJob(d, jobId);
+      }
+    }).immediate();
+  } catch (e) { console.error('[v2] could not estimate a job:', (e as Error).message.slice(0, 160)); }
+}
+
+/** Who authorises spending: the person's own start (first, continue, start over) or a scheduled fire. An automatic
+ *  continuation or a resume after a restart spends from the same authorisation. */
+const AUTHORISING = new Set<TryTrigger>(['first', 'continue', 'start-over', 'fire']);
+
+/**
+ * The dollar cap for a Try's run: the Job's `cap_usd` less what the Tries since the person last said go have spent —
+ * so a job capped at 15¢ that ran out of steps at 11¢ continues automatically with 4¢, not another 15¢. Undefined:
+ * no cap. 0: nothing is left to spend (the caller does not start the run).
+ */
+export function runCapUsd(jobId: string, tryId: string | undefined, d: AppDb = appDb()): number | undefined {
+  try {
+    const job = getJob(jobId, d);
+    if (!job || job.cap_usd == null || !(job.cap_usd > 0)) return undefined;
+    const tries = triesOf(jobId, d);
+    const me = tryId ? tries.find((t) => t.id === tryId) : undefined;
+    const upTo = me ? me.n : Infinity;
+    const before = tries.filter((t) => t.n < upTo);
+    const auth = me && AUTHORISING.has(me.trigger) ? me : [...before].reverse().find((t) => AUTHORISING.has(t.trigger));
+    const since = before.filter((t) => t.state === 'ended' && (!auth || t.n >= auth.n));
+    const spent = since.reduce((s, t) => s + (t.cost_usd ?? 0), 0);
+    return Math.max(0, Math.round((job.cap_usd - spent) * 1e6) / 1e6);
+  } catch { return undefined; }
+}
+
 // ── The scheduler's side ────────────────────────────────────────────────────────────────────────────────────────
 
 /** A scheduled task's Job kind. */
@@ -455,7 +527,7 @@ export function startFire(task: ScheduledTask, o: { liveKey: string; runId?: str
   try {
     const db = d ?? appDb();
     startHeartbeat();
-    return db.transaction((): { jobId: string; tryId: string; n: number } | 'taken' => {
+    const out = db.transaction((): { jobId: string; tryId: string; n: number } | 'taken' => {
       const claim = (t: TryRow): { jobId: string; tryId: string; n: number } | 'taken' => {
         // another Try of this same fire (not reaped) means it is someone else's, or already done
         const other = db.prepare(`SELECT 1 FROM tries WHERE schedule_id = ? AND due_at = ? AND id != ? AND (ended_by IS NULL OR ended_by NOT IN ('reaper','duplicate'))`).get(task.id, task.due, t.id);
@@ -483,6 +555,8 @@ export function startFire(task: ScheduledTask, o: { liveKey: string; runId?: str
       const t = insertTry(db, job.id, { trigger, state: 'queued', dueAt: task.due, scheduleId: task.id, liveKey: o.liveKey });
       return claim(t);
     }).immediate();
+    if (out !== 'taken') stampEstimates(out.jobId, db);
+    return out;
   } catch (e) {
     console.error('[v2] could not claim a try:', (e as Error).message.slice(0, 160));
     return null;
@@ -671,7 +745,11 @@ export function onGoalStatus(goalId: string, status: GoalStatus, d: AppDb = appD
   }).immediate();
 }
 
-storeHooks.scheduled = (id, instruction, due, opts) => onScheduled(id, instruction, due, opts);
+storeHooks.scheduled = (id, instruction, due, opts) => {
+  onScheduled(id, instruction, due, opts);
+  const job = jobBySchedule(id);
+  if (job) stampEstimates(job.id);
+};
 storeHooks.scheduleChanged = (id, change, due) => onScheduleChanged(id, change, due);
 storeHooks.goalRecord = (goalId, rec) => onGoalRecord(goalId, rec);
 storeHooks.goalStatus = (goalId, status) => onGoalStatus(goalId, status);
@@ -692,20 +770,26 @@ export function ownerOwns(person: string | null | undefined, env: NodeJS.Process
 
 // ── Reading a Job with its status ───────────────────────────────────────────────────────────────────────────────
 
-export interface JobView { job: JobRow; tries: TryRow[]; status: JobStatus }
+export interface JobView { job: JobRow; tries: TryRow[]; status: JobStatus; estimate: JobEstimate | null }
 export interface ViewCtx { running: Set<string>; pending: Set<string>; now?: number }
 
-function statusOf(job: JobRow, tries: TryRow[], ctx: ViewCtx): JobStatus {
+function statusOf(job: JobRow, tries: TryRow[], ctx: ViewCtx, estimate: JobEstimate | null): JobStatus {
   const staged = tries.flatMap((t) => { try { return t.staged ? (JSON.parse(t.staged) as string[]) : []; } catch { return []; } });
   const pendingApprovals = staged.filter((s) => ctx.pending.has(s)).length;
   const alive = new Map<string, boolean>();
   const claimerAliveCached = (c: string) => { if (!alive.has(c)) alive.set(c, claimerAlive(c, ctx.now)); return alive.get(c)!; };
-  return jobStatus(job, tries, { running: ctx.running, pendingApprovals, now: ctx.now, claimerAlive: claimerAliveCached });
+  return jobStatus(job, tries, { running: ctx.running, pendingApprovals, now: ctx.now, claimerAlive: claimerAliveCached, ...(estimate ? { estimates: estimate } : {}) });
+}
+/** A Job's estimates (null for a repeating job, or when they cannot be made). */
+function estimateOf(job: JobRow, tries: TryRow[]): JobEstimate | null {
+  if (job.kind === 'recurring' || job.kind === 'reminder') return null;
+  try { return estimateJob(job, tries); } catch { return null; }
 }
 /** A Job, its Tries and its status. `running`: the live keys of runs going now; `pending`: approvals still waiting. */
 export function viewJob(job: JobRow, ctx: ViewCtx, d: AppDb = appDb()): JobView {
   const tries = triesOf(job.id, d);
-  return { job, tries, status: statusOf(job, tries, ctx) };
+  const estimate = estimateOf(job, tries);
+  return { job, tries, status: statusOf(job, tries, ctx, estimate), estimate };
 }
 /** Many Jobs at once: one query for all their Tries (no N+1). */
 export function viewJobs(jobs: JobRow[], ctx: ViewCtx, d: AppDb = appDb()): JobView[] {
@@ -716,5 +800,5 @@ export function viewJobs(jobs: JobRow[], ctx: ViewCtx, d: AppDb = appDb()): JobV
     const chunk = ids.slice(i, i + 500);
     for (const t of d.prepare(`SELECT * FROM tries WHERE job_id IN (${chunk.map(() => '?').join(',')}) ORDER BY job_id, n`).all(...chunk) as TryRow[]) byJob.get(t.job_id)!.push(t);
   }
-  return jobs.map((job) => { const tries = byJob.get(job.id) ?? []; return { job, tries, status: statusOf(job, tries, ctx) }; });
+  return jobs.map((job) => { const tries = byJob.get(job.id) ?? []; const estimate = estimateOf(job, tries); return { job, tries, status: statusOf(job, tries, ctx, estimate), estimate }; });
 }

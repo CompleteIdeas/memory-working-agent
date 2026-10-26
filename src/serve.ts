@@ -1203,7 +1203,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
           // The turns before it: "look those up and write it up" needs them (BL-71 review). Fenced if any read outside content.
           const recent = (sessions.get(session)?.history ?? []).slice(-3);
           const context = recent.length ? { text: recent.map((h, i) => `(${i + 1}) ${h.instruction.slice(0, 400)} → ${h.summary.slice(0, 600)}`).join('\n'), tainted: recent.some((h) => h.tainted) } : undefined;
-          const started = await startBackgroundWork(memory, { message, session, personId, workspace: cfg.workspace ?? './mwa-workspace', context });
+          // v2 (A3b): an optional spending limit for the hand-off (the "cap" in its Details): above 0, at most $20.
+          const capRaw = typeof b.capUsd === 'number' ? b.capUsd : undefined;
+          if (capRaw !== undefined && !(Number.isFinite(capRaw) && capRaw > 0 && capRaw <= 20)) { res.end(JSON.stringify({ ok: false, message: 'A spending limit must be above $0 and at most $20.' })); return; }
+          const started = await startBackgroundWork(memory, { message, session, personId, workspace: cfg.workspace ?? './mwa-workspace', context, ...(capRaw !== undefined ? { capUsd: capRaw } : {}) });
           if (started) answerOffer(session, 'background', started.goalId.slice(0, 8), undefined, undefined, message); // the offer turn now says so, on every device
           res.end(JSON.stringify(started
             ? { ok: true, goal: started.goalId.slice(0, 8), message: "On it. I'll work on this in the background and post the result here when it's done. You can close this page." }

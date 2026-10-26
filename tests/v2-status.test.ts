@@ -2,13 +2,13 @@
 // The baseline findings it fixes: SR-F02 (FAILED while a continuation ran), SR-F05 (no Continue after a budget end),
 // SR-F16 (DONE while incomplete), SR-F03 (a result arrived silently: "result ready" until opened).
 import { describe, it, expect } from 'vitest';
-import { jobStatus, money, type StatusTry, type StatusJob, type JobState } from '../src/v2/status.js';
+import { jobStatus, money, type StatusTry, type StatusJob, type JobState, type StatusCtx } from '../src/v2/status.js';
 
 const T = (n: number, o: Partial<StatusTry>): StatusTry => ({ n, trigger: n === 1 ? 'first' : 'auto-continue', state: 'ended', ended_at: 1000 + n, ...o });
 const bg: StatusJob = { kind: 'background', status: 'active', seen_at: null };
 const ctx = { running: new Set<string>(), pendingApprovals: 0, now: 10_000 };
 
-type Row = { name: string; job?: Partial<StatusJob>; tries: StatusTry[]; ctx?: Partial<typeof ctx>; state: JobState; label: string; detail: RegExp; action?: string; actionLabel?: string; ready?: boolean };
+type Row = { name: string; job?: Partial<StatusJob>; tries: StatusTry[]; ctx?: Partial<StatusCtx>; state: JobState; label: string; detail: RegExp; action?: string; actionLabel?: string; ready?: boolean };
 const rows: Row[] = [
   // 1. working
   { name: 'a running Try', tries: [T(1, { state: 'running', live_key: 'job_a' })], state: 'working', label: 'Working', detail: /Working on it now/, action: 'stop' },
@@ -18,8 +18,11 @@ const rows: Row[] = [
   { name: 'running shows how far the last Try got', tries: [T(1, { reason: 'budget', progress_done: 3, progress_total: 5, progress_unit: 'stories' }), T(2, { state: 'running' })], state: 'working', label: 'Working', detail: /3 of 5 stories done so far/ },
   // 2. waiting for you
   { name: 'an approval a Try staged', tries: [T(1, { reason: 'done', outcome: 'blocked' })], ctx: { pendingApprovals: 1 }, state: 'waiting', label: 'Waiting for you', detail: /needs your OK/, action: 'review', actionLabel: 'Review' },
-  { name: 'the dollar limit (N06: 63 of 73 pages at 15¢, about 3¢ more)', job: { cap_usd: 0.15 }, tries: [T(1, { reason: 'budget', cap_hit: 'usd', progress_done: 63, progress_total: 73, progress_unit: 'pages', est_usd: 0.03 })],
-    state: 'waiting', label: 'Waiting for you', detail: /^It reached the 15¢ limit you set\. Finish the last 10 pages\? About 3¢\.$/, action: 'continue', actionLabel: 'Finish the last 10 pages' },
+  { name: 'the dollar limit (N06: 63 of 73 pages at 15¢, about 3¢ more)', job: { cap_usd: 0.15 }, tries: [T(1, { reason: 'budget', cap_hit: 'usd', progress_done: 63, progress_total: 73, progress_unit: 'pages' })],
+    ctx: { estimates: { continue: { usd: 0.03, ms: 120_000 }, startOver: { usd: 0.2, ms: 900_000 } } },
+    state: 'waiting', label: 'Waiting for you', detail: /^It reached the 15¢ limit you set\. Finish the last 10 pages\? About 3¢\.$/, action: 'continue', actionLabel: 'Finish the last 10 pages · about 3¢' },
+  { name: 'the dollar limit with no estimate yet: no price, never a guess', job: { cap_usd: 0.15 }, tries: [T(1, { reason: 'budget', cap_hit: 'usd', progress_done: 63, progress_total: 73, progress_unit: 'pages', est_usd: 0.4 })],
+    state: 'waiting', label: 'Waiting for you', detail: /^It reached the 15¢ limit you set\. Finish the last 10 pages\?$/, action: 'continue', actionLabel: 'Finish the last 10 pages' },
   { name: 'the dollar limit beats a queued continuation', job: { cap_usd: 0.15 }, tries: [T(1, { reason: 'budget', cap_hit: 'usd' }), T(2, { state: 'queued', due_at: 99_999 })], state: 'waiting', label: 'Waiting for you', detail: /15¢ limit/, action: 'continue', actionLabel: 'Finish the rest' },
   // 3. continuing — never failed
   { name: 'budget + queued auto-continue = continuing, never failed', tries: [T(1, { reason: 'budget', outcome: 'could-not', cap_hit: 'steps' }), T(2, { state: 'queued', trigger: 'auto-continue', due_at: 70_000 })],
@@ -75,6 +78,13 @@ describe('jobStatus truth table (first match wins)', () => {
   });
   it('covers all eight states', () => {
     expect(new Set(rows.map((r) => r.state))).toEqual(new Set(['working', 'waiting', 'continuing', 'stopped_by_you', 'partly_done', 'stopped', 'scheduled', 'done']));
+  });
+  it('one left reads as one ("Finish the last step", never "the last 1 steps")', () => {
+    const s = jobStatus(bg, [T(1, { reason: 'done', outcome: 'changed', progress_done: 1, progress_total: 2, progress_unit: 'steps' })], ctx);
+    expect(s.primaryAction?.label).toBe('Finish the last step');
+    const capped = jobStatus({ ...bg, cap_usd: 0.12 }, [T(1, { reason: 'budget', cap_hit: 'usd', progress_done: 72, progress_total: 73, progress_unit: 'pages' })], { ...ctx, estimates: { continue: { usd: 0.02, ms: 1000 } } });
+    expect(capped.detail).toBe('It reached the 12¢ limit you set. Finish the last page? About 2¢.');
+    expect(capped.primaryAction?.label).toBe('Finish the last page · about 2¢');
   });
   it('money reads as the prototype does', () => {
     expect([money(0.15), money(0.03), money(1.2), money(0.004)]).toEqual(['15¢', '3¢', '$1.20', '0¢']);

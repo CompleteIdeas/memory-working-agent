@@ -4,7 +4,12 @@
  * Status comes from the server (src/v2/status.ts), never from a client's guess. The actions are the ones the approved
  * design offers: Stop, Continue ("Finish the last 10 pages"), Start over, Open (a result is "ready" until opened), and
  * for a recurring job Pause, Resume and Cancel through the existing schedule control (the same ownership and timing
- * rules as the model's tools). Estimates (est_usd) and the dollar cap are slice A3b.
+ * rules as the model's tools).
+ *
+ * Slice A3b: every job carries its estimates (Continue = what is left x its rate, Start over = the whole job; see
+ * src/v2/estimate.ts) and, once done, what was guessed against what it cost. Continue and Start over take an optional
+ * `capUsd` - the most the new run may spend (default twice the estimate, at least 5 cents; at most $20). A run that
+ * reaches it waits for the person; it never continues by itself.
  *
  * Review of A3a: every caller of /api/v1 is the owner (the password session, this machine, or a device paired by the
  * owner), so a caller sees and acts on the owner's jobs only — another person's (a Telegram contact's) are "No such
@@ -14,10 +19,11 @@
 import { ApiError, type Route, type RouteCtx } from '../router.js';
 import {
   getJob, listJobs, viewJob, viewJobs, addTry, linkTry, dropQueuedTry, endQueued, updateJob, reserveJob, releaseJob,
-  ownerOwns, claimerAlive, personAction, CLAIMER,
+  ownerOwns, claimerAlive, personAction, stampEstimates, CLAIMER,
   type JobRow, type TryRow, type JobView, type ViewCtx,
 } from '../../v2/jobs.js';
 import { JOB_STATES, type JobState } from '../../v2/status.js';
+import { aboutUsd, usdText, roundUsd, type JobEstimate } from '../../v2/estimate.js';
 import type { MwaMemory } from '../../awm.js';
 
 /** What the job routes need from the running server. serve.ts sets it; tests set fakes. */
@@ -58,6 +64,18 @@ export function apiTry(t: TryRow) {
     staged, estUsd: t.est_usd, estMs: t.est_ms, pagesRead: t.pages_read, endedBy: t.ended_by, delivered: t.delivered == null ? null : t.delivered === 1,
   };
 }
+/** The estimates as the API gives them (null for a repeating job). */
+export function apiEstimate(e: JobEstimate | null) {
+  if (!e) return null;
+  return { ...(e.continue ? { continue: e.continue } : {}), ...(e.startOver ? { startOver: e.startOver } : {}), basis: e.basis, samples: e.samples };
+}
+/** A finished job: its first guess against what it cost - "I guessed about $0.35 · it cost $0.41". */
+export function estimateVsActual(v: JobView, spent: number) {
+  const j = v.job;
+  if (v.status.state !== 'done' || j.est_usd_first == null) return null;
+  const actual = Math.round(spent * 10_000) / 10_000;
+  return { estimatedUsd: j.est_usd_first, actualUsd: actual, text: `I guessed ${aboutUsd(j.est_usd_first)} · it cost ${usdText(actual)}` };
+}
 export function apiJob(v: JobView) {
   const j = v.job;
   const spent = v.tries.reduce((s, t) => s + (t.cost_usd ?? 0), 0);
@@ -67,6 +85,7 @@ export function apiJob(v: JobView) {
     whereItStands: j.where_it_stands ? { text: j.where_it_stands, trust: j.stands_trust ?? 'high' } : null,
     seenAt: j.seen_at, capUsd: j.cap_usd, costUsd: Math.round(spent * 10_000) / 10_000, tries: v.tries.length, archived: j.archived === 1,
     scheduleId: j.schedule_id, goalId: j.legacy_goal_id, session: j.session, nextRunAt: j.next_due_at,
+    estimate: apiEstimate(v.estimate), estimateVsActual: estimateVsActual(v, spent),
   };
 }
 
@@ -145,6 +164,23 @@ async function withReservation<T>(v: JobView, fn: () => Promise<T>): Promise<T> 
   try { return await fn(); } finally { releaseJob(v.job.id, holder); }
 }
 
+export const CAP_MAX_USD = 20;
+export const CAP_MIN_DEFAULT_USD = 0.05;
+/** The `capUsd` of a Continue or Start over: given (above 0, at most $20), else twice the estimate, at least 5 cents. */
+export function capFor(body: unknown, estimateUsd: number | undefined): number {
+  const raw = body && typeof body === 'object' ? (body as Record<string, unknown>).capUsd : undefined;
+  if (raw === undefined || raw === null) return Math.max(CAP_MIN_DEFAULT_USD, roundUsd(2 * (estimateUsd ?? 0)));
+  const n = typeof raw === 'number' ? raw : Number.NaN;
+  if (!Number.isFinite(n) || n <= 0 || n > CAP_MAX_USD) throw new ApiError(400, 'bad_cap', `capUsd must be a number of dollars above 0 and at most ${CAP_MAX_USD}.`);
+  return Math.round(n * 10_000) / 10_000;
+}
+/** Set the job's cap for the run about to be queued; returns a function that puts the old one back. */
+function setCap(job: JobRow, capUsd: number): () => void {
+  const before = job.cap_usd;
+  updateJob(job.id, { cap_usd: capUsd });
+  return () => { try { updateJob(job.id, { cap_usd: before }); } catch { /* */ } };
+}
+
 const LIST_MAX = 200;
 export const jobRoutes: Route[] = [
   {
@@ -180,6 +216,16 @@ export const jobRoutes: Route[] = [
     handler: (ctx) => ({ body: full(load(ctx)) }),
   },
   {
+    // What Continue and Start over would cost and take - "about", from this job's own tries, history, or a default.
+    method: 'GET', path: '/jobs/{id}/estimate', scope: 'read',
+    handler: (ctx) => {
+      const v = load(ctx);
+      const e = v.estimate;
+      if (!e) throw new ApiError(409, 'not_estimable', 'A repeating job is not estimated as a whole; each run is capped on its own.');
+      return { body: { ...(e.continue && v.status.state !== 'done' ? { continue: e.continue } : {}), ...(e.startOver ? { startOver: e.startOver } : {}), basis: e.basis, samples: e.samples } };
+    },
+  },
+  {
     method: 'POST', path: '/jobs/{id}/stop', scope: 'act',
     handler: async (ctx) => {
       const v = load(ctx);
@@ -209,17 +255,22 @@ export const jobRoutes: Route[] = [
     handler: async (ctx) => {
       const v = load(ctx);
       if (RECURRING.has(v.job.kind)) throw new ApiError(409, 'not_continuable', 'A repeating job runs again on its own schedule.');
+      const cap = capFor(ctx.body, v.estimate?.continue?.usd ?? v.estimate?.startOver?.usd);
       return withReservation(v, async () => {
         if (v.status.state === 'done') throw new ApiError(409, 'nothing_left', 'It is finished. Start over to do it again.');
         const d = need();
-        if (v.job.legacy_goal_id && d.continueGoal) {
-          // A goal's Job continues the goal's way (its note, its conversation's folder): a Try of this same Job.
-          const m = d.memory();
-          try { const g = await m.getGoal(v.job.legacy_goal_id).catch(() => null); if (g?.status === 'done') await m.setGoalStatus(g.id, 'in_progress'); } finally { m.close?.(); }
-          const c = await d.continueGoal(v.job.legacy_goal_id, actingPerson(v.job));
-          if (!c) throw new ApiError(409, 'refused', 'That could not be picked up. Its goal may belong to someone else.');
-        } else await queueRun(v, 'continue');
-        return { status: 202, body: { ...full(view(getJob(v.job.id)!)), message: 'Picking it up where it stopped.' } };
+        const undoCap = setCap(v.job, cap);
+        try {
+          if (v.job.legacy_goal_id && d.continueGoal) {
+            // A goal's Job continues the goal's way (its note, its conversation's folder): a Try of this same Job.
+            const m = d.memory();
+            try { const g = await m.getGoal(v.job.legacy_goal_id).catch(() => null); if (g?.status === 'done') await m.setGoalStatus(g.id, 'in_progress'); } finally { m.close?.(); }
+            const c = await d.continueGoal(v.job.legacy_goal_id, actingPerson(v.job));
+            if (!c) throw new ApiError(409, 'refused', 'That could not be picked up. Its goal may belong to someone else.');
+            stampEstimates(v.job.id);
+          } else await queueRun(v, 'continue');
+        } catch (e) { undoCap(); throw e; }
+        return { status: 202, body: { ...full(view(getJob(v.job.id)!)), message: `Picking it up where it stopped (up to ${usdText(cap)}).` } };
       });
     },
   },
@@ -228,9 +279,11 @@ export const jobRoutes: Route[] = [
     handler: async (ctx) => {
       const v = load(ctx);
       if (RECURRING.has(v.job.kind)) throw new ApiError(409, 'not_continuable', 'A repeating job runs again on its own schedule.');
+      const cap = capFor(ctx.body, v.estimate?.startOver?.usd);
       return withReservation(v, async () => {
-        await queueRun(v, 'start-over');
-        return { status: 202, body: { ...full(view(getJob(v.job.id)!)), message: 'Starting it over from the beginning.' } };
+        const undoCap = setCap(v.job, cap);
+        try { await queueRun(v, 'start-over'); } catch (e) { undoCap(); throw e; }
+        return { status: 202, body: { ...full(view(getJob(v.job.id)!)), message: `Starting it over from the beginning (up to ${usdText(cap)}).` } };
       });
     },
   },

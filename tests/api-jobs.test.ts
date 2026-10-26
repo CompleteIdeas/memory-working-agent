@@ -53,7 +53,9 @@ describe('POST /jobs/{id}/continue', () => {
   it('queues a Try of the same Job, framed to finish what is left, and a replay acts once', async () => {
     const id = partlyDone();
     const before = await j(await fetch(`${base}/jobs/${id}`));
-    expect(before.body.job.status).toMatchObject({ state: 'partly_done', label: 'Partly done', primaryAction: { action: 'continue', label: 'Finish the last 10 pages' } });
+    // A3b: the button carries its price, from this job's own spend (15¢ for 63 pages → about 2¢ for the last 10)
+    expect(before.body.job.status).toMatchObject({ state: 'partly_done', label: 'Partly done', primaryAction: { action: 'continue', label: 'Finish the last 10 pages · about 2¢', estimate: { usd: 0.02 } } });
+    expect(before.body.job.estimate).toMatchObject({ basis: 'this-job', samples: 1, continue: { usd: 0.02 }, startOver: { usd: 0.17 } });
 
     const r = await j(await post(`/jobs/${id}/continue`, 'continue-key-1'));
     expect(r.status).toBe(202);

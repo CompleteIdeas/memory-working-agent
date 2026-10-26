@@ -22,7 +22,7 @@ import { budgetHold } from './billing.js';
 import { claimInterrupted, describeSteps, startHeartbeat, STALE_MS } from './transcript.js';
 import { configuredWatchGate, SAME_THRESHOLD, type WatchGate } from './watch-gate.js';
 import { liveRuns } from './live-runs.js';
-import { startFire, finishTry, tryEndFromResult, restartCutOff, queueContinuation, linkTry, dropQueuedTry, endScheduleTries, reapDeadTries } from './v2/jobs.js';
+import { startFire, finishTry, tryEndFromResult, restartCutOff, queueContinuation, linkTry, dropQueuedTry, endScheduleTries, reapDeadTries, runCapUsd } from './v2/jobs.js';
 
 export interface InterruptedRun { runId: string; instruction: string; session?: string; personId?: string; jobId?: string; recurring: boolean; resumed: boolean; steps: number; unfinished: number }
 
@@ -309,6 +309,14 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
     // between the claim and the task moving on (review H1). A crash inside it leaves a Try the reaper frees.
     if (task.recur) await deps.memory.rescheduleTask(task.id, nextRecur(task.recur, now()));
     else await deps.memory.completeScheduled(task.id);
+    // v2 (A3b): the job's dollar cap, less what its Tries have spent since the person last said go. Nothing left to
+    // spend (an automatic continuation of a run that used it up): the Try ends at the cap, waiting for the person.
+    const capUsd = v2 ? runCapUsd(v2.jobId, v2.tryId) : undefined;
+    if (v2 && capUsd === 0) {
+      finishTry(v2.tryId, { reason: 'budget', outcome: 'could-not', capHit: 'usd', costUsd: 0, steps: 0, toolCalls: 0, summary: 'It reached the spending limit you set before this part started.' });
+      log(`· not started (its spending limit is used up): ${task.instruction.slice(0, 50)}`);
+      continue;
+    }
     log(`⏰ firing: ${task.instruction.slice(0, 50)}${task.resumeAttempt ? ` (resume ${task.resumeAttempt})` : ''}`);
     // `origin` is honored only when it is a run SANDBOX inside the workspace (outRoot's parent):
     // serve sessions, Telegram chats and mailbox runs all are. `mwa run` is not — it passes the
@@ -339,7 +347,7 @@ export async function tickScheduler(deps: SchedulerDeps): Promise<number> {
       // dueNow: tell the run the timing is already settled (a resume carries its own framing, and
       // "do only the remaining work" must not be overridden by "do it all now").
       // extraRoots: the folder the task was created in, so a baked-in absolute path still resolves.
-      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt || task.recur ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobAllow: task.allow, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: jobBudget(task, deps), v2JobId: v2?.jobId,
+      r = await run({ instruction: task.instruction, dir, memory: deps.agentMemory ?? deps.memory, brain: deps.brain, worker: deps.worker, tools: deps.tools, session: task.notify, personId: task.person, resumeAttempt: task.resumeAttempt, plan: task.resumeAttempt || task.recur ? false : undefined, interactive: false, dueNow: !task.resumeAttempt, startTainted: task.tainted === true, jobId: task.id, jobUntil: task.until, jobLimits: task.limits, jobDeliver: task.deliver, jobAllow: task.allow, jobSettingsTainted: task.tainted === true, jobDepth: task.depth ?? 0, jobGoal: task.goal, jobLineage: task.resumeOf ?? task.id, jobUrgent: task.urgent === true, jobTask: task.task, jobRecur: task.recur, jobRequest: task.request, jobLastRun: task.resumeAttempt ? undefined : task.lastRun, extraRoots: origin ? [origin] : undefined, transcript: true, budget: { ...jobBudget(task, deps), ...(capUsd !== undefined ? { maxUsd: capUsd } : {}) }, v2JobId: v2?.jobId,
         onEvent: live ? (type, data) => liveRuns.record(liveKey, type, data ?? {}, now()) : undefined, signal: live?.controller.signal, inbox: live ? () => liveRuns.takeInbox(liveKey) : undefined });
       ranOk = true;
     } catch (e) {

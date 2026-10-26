@@ -146,7 +146,7 @@ export async function continueGoal(memory: MwaMemory, o: { goalId: string; perso
 }
 
 /** Start the background work: a goal, and a one-shot job due now in the chat's folder. */
-export async function startBackgroundWork(memory: MwaMemory, o: { message: string; session: string; personId: string; workspace: string; context?: { text: string; tainted: boolean } }): Promise<{ goalId: string; jobId: string; v2JobId?: string } | null> {
+export async function startBackgroundWork(memory: MwaMemory, o: { message: string; session: string; personId: string; workspace: string; context?: { text: string; tainted: boolean }; /** v2 (A3b): the most it may spend before it waits for the person */ capUsd?: number }): Promise<{ goalId: string; jobId: string; v2JobId?: string } | null> {
   const message = o.message.trim();
   if (!message) return null;
   const goalId = await memory.addGoal(goalTitle(ownText(message) || message), ownText(message).slice(0, 600) || message.slice(0, 600), 'medium', o.personId);
@@ -163,7 +163,7 @@ export async function startBackgroundWork(memory: MwaMemory, o: { message: strin
   let v2: { jobId: string; tryId: string } | null = null;
   try {
     const made = createJob({ kind: 'background', title: goalTitle(ownText(message) || message), request: message, person: o.personId, legacyGoalId: goalId,
-      session: o.session, dir, legacyKey: `goal:${goalId}` }, { trigger: 'first', dueAt: now });
+      session: o.session, dir, legacyKey: `goal:${goalId}`, ...(o.capUsd && o.capUsd > 0 ? { capUsd: o.capUsd } : {}) }, { trigger: 'first', dueAt: now });
     v2 = made.try ? { jobId: made.job.id, tryId: made.try.id } : null;
   } catch { v2 = null; }
   const jobId = await memory.addScheduledTask(instruction, now, {
