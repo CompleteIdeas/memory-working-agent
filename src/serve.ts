@@ -102,7 +102,10 @@ import { offersBackground, OFFER_TEXT, startBackgroundWork, continueGoal, resume
 import { scheduleRows, scheduleControl, type ScheduleAction } from './schedule-api.js';
 import { liveRuns, FINAL_EVENTS } from './live-runs.js';
 import { resolvePersonId } from './person.js';
-import { appendTurn, answerOffer, readConversation, listConversations } from './conversations.js';
+import { appendTurn, answerOffer, readConversation, listConversations, conversationsPath } from './conversations.js';
+import { GENERAL, getProject, sessionOf, projectOfSession, crossTalk, type Provenance } from './v2/projects.js';
+import { migrateConversationsOnce, describeConversationsReport } from './v2/migrate-conversations.js';
+import { setProjectRouteDeps, type ChatStart } from './api/routes/projects.js';
 import { readCalls, billingSummary, callsCsv, setMonthlyBudget, providerBalance, monthStart, budgetHold } from './billing.js';
 import { thinkMode, thinkDue, thinkOnce, thinkEveryMs, thinkDailyUsd, readThoughts, latestThoughts } from './thinking.js';
 import { exportDoc, exportFormats } from './doc-export.js';
@@ -424,48 +427,91 @@ async function workNote(memory: MwaMemory, sessionId: string, person: string | n
   } catch { return ''; }
 }
 
+/** Where a chat's events go: an SSE response (/api/chat), or the v1 send that answers as soon as the run starts. */
+interface ChatSink { write(type: string, data: Record<string, unknown>): void; ping(): void; end(): void; onClose(fn: () => void): void }
+interface ChatParams { message: string; sessionId: string; resumeParam: string; stay: boolean; person: string | null }
+
 /** Stream one runAgent over SSE: every onEvent becomes an SSE event for the spine. */
 async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-  const message = (url.searchParams.get('message') ?? '').trim();
-  const sessionId = url.searchParams.get('session') || 'default';
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-  const send = (type: string, data: Record<string, unknown>) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
-  if (!message) { send('error', { message: 'empty message' }); res.end(); return; }
+  const sink: ChatSink = {
+    write: (type, data) => { try { res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* gone */ } },
+    ping: () => { try { res.write(': keepalive\n\n'); } catch { /* */ } },
+    end: () => res.end(),
+    onClose: (fn) => { req.on('close', fn); },
+  };
+  // A5: `projectId` sends it into that project's thread (session p-<id>); without it, the session as before (kept in General).
+  let sessionId = url.searchParams.get('session') || 'default';
+  const projectParam = url.searchParams.get('projectId');
+  if (projectParam) {
+    const p = getProject(projectParam);
+    if (!p || p.archived) { sink.write('error', { message: p ? `${p.name} is archived. Restore it first.` : 'No such project.' }); sink.end(); return; }
+    sessionId = sessionOf(p.id);
+  }
+  await runChat({ message: (url.searchParams.get('message') ?? '').trim(), sessionId, resumeParam: url.searchParams.get('resume') ?? '', stay: url.searchParams.get('stay') === '1', person: url.searchParams.get('person') }, sink);
+}
+
+/** A5: a message sent into a project from /api/v1: the same run as /api/chat, answered once it has started (or offered,
+ *  or refused as busy). Its progress goes out on /stream; its answer lands in the thread. */
+function startProjectChat(projectId: string, text: string, o: { stay?: boolean; person?: string }): Promise<ChatStart> {
+  return new Promise((done) => {
+    let settled = false;
+    const settle = (v: ChatStart) => { if (!settled) { settled = true; done(v); } };
+    const sink: ChatSink = {
+      write: (type, data) => {
+        if (type === 'run') settle({ state: 'started', runId: String(data.runId), ...(data.turn ? { turnId: String(data.turn) } : {}) });
+        else if (type === 'result' && data.reason === 'offer') settle({ state: 'offer', message: String(data.summary ?? OFFER_TEXT), ...(data.turn ? { turnId: String(data.turn) } : {}) });
+        else if (type === 'busy') settle({ state: 'busy', message: 'An answer is still being written in this project. Wait for it, or add to it.' });
+        else if (type === 'error') settle({ state: 'busy', message: String(data.message ?? 'That could not start just now. Try again in a moment.') });
+      },
+      ping: () => { /* */ },
+      end: () => settle({ state: 'busy', message: 'That could not start just now. Try again in a moment.' }),
+      onClose: () => { /* nobody to detach: the run is followed on /stream */ },
+    };
+    void runChat({ message: text, sessionId: sessionOf(projectId), resumeParam: '', stay: o.stay === true, person: o.person ?? null }, sink)
+      .catch((e) => settle({ state: 'busy', message: (e as Error).message.slice(0, 200) }));
+  });
+}
+
+async function runChat(p: ChatParams, sink: ChatSink): Promise<void> {
+  const { message, sessionId } = p;
+  const send = (type: string, data: Record<string, unknown>) => sink.write(type, data);
+  if (!message) { send('error', { message: 'empty message' }); sink.end(); return; }
   // 3b (pending list 2026-10-26): "Continue from where it stopped" — the run the person stopped is picked up from
   // its own words, framed as a resume (resumeInstruction), not re-read from the page's title. Never offered to the
   // background (the task's words could match the offer test) and never put to the continuity classifier.
-  const resumeParam = url.searchParams.get('resume') ?? '';
+  const resumeParam = p.resumeParam;
   const resume = resumeParam !== '' && resumeParam !== '0';
   const resumeTs = /^\d{6,}$/.test(resumeParam) ? Number(resumeParam) : undefined; // the card's own stopped turn, when the page names it
   // BL-71b: a request that researches and writes something up is offered to the background first; the
   // person picks. "Stay here" sends it again with stay=1, and it runs in the chat as before.
-  if (!resume && url.searchParams.get('stay') !== '1' && process.env.MWA_OFFER_BACKGROUND !== '0' && offersBackground(message)) {
-    send('result', { reason: 'offer', summary: OFFER_TEXT, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0, offer: { kind: 'start', message } });
-    appendTurn({ ts: Date.now(), session: sessionId, message, reply: OFFER_TEXT, reason: 'offer', kind: 'offer' });
-    res.end(); return;
+  if (!resume && !p.stay && process.env.MWA_OFFER_BACKGROUND !== '0' && offersBackground(message)) {
+    const turn = appendTurn({ ts: Date.now(), session: sessionId, message, reply: OFFER_TEXT, reason: 'offer', kind: 'offer' });
+    send('result', { reason: 'offer', summary: OFFER_TEXT, steps: 0, dispatches: 0, toolCalls: 0, costUsd: 0, offer: { kind: 'start', message }, ...(turn ? { turn } : {}) });
+    sink.end(); return;
   }
   // F08 (usability review 2026-10-24): one live run per conversation. A message sent while one is going is not a
   // second run: the page hears `busy` and offers to add it to the running task (/api/chat/steer), send it
   // separately (a new conversation) or stop the run (/api/chat/stop) and send it.
   const busy = liveRuns.describe(sessionId);
-  if (busy) { send('busy', busy); res.end(); return; }
+  if (busy) { send('busy', busy as unknown as Record<string, unknown>); sink.end(); return; }
   // "do it here": the offer with these words records the choice — only once the run really starts (audit 2026-10-26)
-  if (url.searchParams.get('stay') === '1') answerOffer(sessionId, 'now', undefined, undefined, undefined, message);
+  if (p.stay) answerOffer(sessionId, 'now', undefined, undefined, undefined, message);
   // Concurrency cap — reserve the slot ATOMICALLY (before any await) so a burst of near-simultaneous
   // chats can't all pass the gate during the classifyContinuity / preparePersonTurn round-trips.
-  if (activeRuns >= MAX_CONCURRENT) { send('error', { message: "I'm at capacity right now (too many chats running) — try again in a moment." }); res.end(); return; }
+  if (activeRuns >= MAX_CONCURRENT) { send('error', { message: "I'm at capacity right now (too many chats running) — try again in a moment." }); sink.end(); return; }
   activeRuns++;
   // The live run: its events are kept and handed to every reader attached to this conversation — this response
   // first, and any page that re-attaches after a reload (F09). Its abort handle is the person's Stop (F06).
   const run = liveRuns.start(sessionId, message);
-  const off = liveRuns.attach(sessionId, (e) => { res.write(`event: ${e.type}\ndata: ${JSON.stringify(e.data)}\n\n`); });
+  const off = liveRuns.attach(sessionId, (e) => sink.write(e.type, e.data as Record<string, unknown>));
   const emitLive = (type: string, data: Record<string, unknown>) => liveRuns.record(sessionId, type, data);
-  appendTurn({ ts: run.startedAt, session: sessionId, message, reply: '', kind: 'running', runId: run.runId });
-  emitLive('run', { runId: run.runId, startedAt: run.startedAt });
+  const runningTurn = appendTurn({ ts: run.startedAt, session: sessionId, message, reply: '', kind: 'running', runId: run.runId });
+  emitLive('run', { runId: run.runId, startedAt: run.startedAt, ...(runningTurn ? { turn: runningTurn } : {}) });
   // Heartbeat: keep the SSE stream alive during slow steps so proxies/browsers don't drop it mid-run.
-  const hb = setInterval(() => { try { res.write(': keepalive\n\n'); } catch { /* */ } }, 15_000);
+  const hb = setInterval(() => sink.ping(), 15_000);
   // The page going away does not stop the run (it re-attaches); only its reader is detached.
-  req.on('close', () => { clearInterval(hb); off?.(); });
+  sink.onClose(() => { clearInterval(hb); off?.(); });
 
   // Hoisted so the finally can always release them even if setup (buildRegistry etc.) throws.
   let memory: MwaMemory | undefined;
@@ -503,11 +549,11 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     const added = uploadsIn(resolve(cfg.workspace ?? './mwa-workspace'), sessionFolder(sessionId));
     const filesNote = `\n\n(Files you write here are saved for the person and appear in their Files tab; when you mention one, link it by its path, e.g. [the notes](notes.md). Files from their earlier chats and jobs are theirs too: list_files with \`search\` finds one by name, and read_file opens it by that full path.${added.length ? ` Files they added to this chat: ${added.join(', ')}.` : ''})`;
     const asked = resumed?.instruction ?? message; // a resume runs the stopped task's own words, framed; the person's words stay the turn
-    const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${asked}` : asked) + askNote + filesNote + await workNote(memory, sessionId, url.searchParams.get('person'), resumed?.stopped.message ?? message);
+    const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${asked}` : asked) + askNote + filesNote + await workNote(memory, sessionId, p.person, resumed?.stopped.message ?? message);
 
     // Per-person Profile (S1–S6): resolve who's talking, build their prompt context (identity guard +
     // primer + intake hint, with PII redacted on an identity mismatch). Off-switch MWA_PERSON_PROFILE=0.
-    const personName = (url.searchParams.get('person') ?? '').trim() || undefined;
+    const personName = (p.person ?? '').trim() || undefined;
     const prepared = await preparePersonTurn(memory, { channel: 'web', name: personName }, message);
     const personContext = prepared.personContext;
     emitLive('person', { id: prepared.personId, notes: prepared.notes }); // Glass-Box: who + how much we know
@@ -535,13 +581,16 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     const summary = (r.resumeQueued ? `${r.summary}\n\nI ran out of room in this chat, so I'm continuing in the background. The result will appear here when it's done.` : r.summary)
       + (hold.held ? `\n\n(This month's model spend has reached the $${hold.budgetUsd} budget — $${hold.usedUsd} so far. Scheduled jobs wait until next month or a higher budget in Settings › Billing; chats still run.)` : '');
     const turnTs = Date.now();
-    appendTurn({ ts: turnTs, session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat', tainted: r.tainted === true, runId: run.runId, ...(resumed?.stopped.ts !== undefined ? { resumes: resumed.stopped.ts } : {}) }); // BL-71d; the runId retires the `running` turn (F09); `resumes` keeps the task's own words reachable (3b)
+    // A5: the other projects whose memories this answer used ("using what I know from Eventing").
+    const provenance = crossTalkFor(sessionId, await memory.usedMemories(r.summary).catch(() => []));
+    const turnId = appendTurn({ ts: turnTs, session: sessionId, message, reply: summary, reason: r.reason, kind: 'chat', tainted: r.tainted === true, runId: run.runId, ...(provenance.length ? { provenance } : {}), ...(resumed?.stopped.ts !== undefined ? { resumes: resumed.stopped.ts } : {}) }); // BL-71d; the runId retires the `running` turn (F09); `resumes` keeps the task's own words reachable (3b)
     // S3/S5 — LEARN durable facts about this person + recompress their dossier (suppressed for the
     // shared 'unknown' profile and on an identity mismatch). Before the result closes the stream, so an attached
     // page hears it too; it is quick and runs on the reply, not the person's wait.
     const learned = r.tainted || MEMORY_OFF ? 0 : await learnFromTurn(brain, memory, prepared, message, r.summary);
     if (learned) emitLive('learned', { about: prepared.personId, count: learned });
-    emitLive('result', { reason: r.reason, summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)), runId: run.runId, turnId: turnTs, elapsedMs: turnTs - run.startedAt, ...(r.staged?.length ? { staged: r.staged } : {}), ...(r.v2JobId ? { job: r.v2JobId } : {}) });
+    emitLive('result', { reason: r.reason, summary, steps: r.steps, dispatches: r.dispatches, toolCalls: r.toolCalls, costUsd: Number(r.costUsd.toFixed(4)), runId: run.runId, turnId: turnTs, elapsedMs: turnTs - run.startedAt,
+      ...(turnId ? { turn: turnId } : {}), ...(provenance.length ? { provenance: provenance.map((x) => ({ ...x, name: getProject(x.projectId)?.name ?? x.projectId })) } : {}), ...(r.staged?.length ? { staged: r.staged } : {}), ...(r.v2JobId ? { job: r.v2JobId } : {}) });
   } catch (e) {
     logger.error('chat', 'agent run failed', { session: sessionId, error: (e as Error).message.slice(0, 200) });
     emitLive('error', { message: (e as Error).message, runId: run.runId });
@@ -551,8 +600,14 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     liveRuns.finish(sessionId); off?.();
     if (close) await close();
     memory?.close();
-    res.end();
+    sink.end();
   }
+}
+
+/** A5: a run's used memories as cross-talk provenance — the projects other than this thread's (General for an older
+ *  conversation's session). Never fails the chat. */
+function crossTalkFor(sessionId: string, used: { id: string; session?: string }[]): Provenance[] {
+  try { return crossTalk(used, projectOfSession(sessionId) ?? GENERAL); } catch { return []; }
 }
 
 /** BL-70: a document converted for download (web page, Word or PDF), always as an attachment. */
@@ -645,6 +700,18 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       const m = new MwaMemory(SERVE_AGENT, dbFile(), loadConfig().awm.workspace);
       try { return await continueGoal(m, { goalId, personId, workspace: loadConfig().workspace ?? './mwa-workspace', holdsReservation: true }); } finally { m.close(); }
     },
+  });
+  // v2 (A5): the conversations kept before Projects move into General's thread, once, before anything is answered
+  // (synchronous: a turn written meanwhile would land beside them). The old log is only read.
+  try {
+    const conv = migrateConversationsOnce({ file: conversationsPath() });
+    if (conv) logger.info('v2', describeConversationsReport(conv));
+  } catch (e) { logger.error('v2', 'conversations migration failed (it is tried again at the next start)', { error: (e as Error).message.slice(0, 200) }); }
+  setProjectRouteDeps({
+    workspace: () => resolve(loadConfig().workspace ?? './mwa-workspace'),
+    startChat: startProjectChat,
+    // what the server carried for both threads is read again from the table on their next run
+    onTurnMoved: (from, to) => { sessions.delete(sessionOf(from)); sessions.delete(sessionOf(to)); },
   });
   // v2 (A4): the live stream and /sync compute job views with the same running runs and waiting approvals.
   setStreamDeps({ running: () => new Set(liveRuns.all().map((r) => r.session)), pending: () => new Set(listPendingActions().map((a) => a.id)) });

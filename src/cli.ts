@@ -210,6 +210,10 @@ async function main(): Promise<void> {
       }
       const report = await migrateV2(m, { notifyFile: notifyPath(), runsFile: runLogPath(), dryRun });
       console.log(describeReport(report));
+      // A5: the conversations kept before Projects, into General's thread (idempotent; the log is only read)
+      const { migrateConversations, describeConversationsReport } = await import('./v2/migrate-conversations.js');
+      const { conversationsPath } = await import('./conversations.js');
+      console.log(describeConversationsReport(migrateConversations({ file: conversationsPath(), dryRun })));
     } finally { m.close(); }
     return;
   }

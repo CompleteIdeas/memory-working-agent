@@ -20,6 +20,10 @@
  *
  * Mail (A8): /sync's 'mail' collection carries headers only — bodies are never synced. On the stream a mail change is
  * a notice without data (catch up with /sync?collections=mail).
+ *
+ * Projects (A5): a project or a thread's turn changing is sent with its current shape; /sync has 'projects' (all of
+ * them, archived included, so an archive reaches the phone) and 'turns' (a snapshot holds each active project's latest
+ * 50; a delta holds every turn changed since the cursor, a moved one included with its new project).
  */
 import type { ServerResponse, IncomingMessage } from 'node:http';
 import { ApiError, type Route } from '../router.js';
@@ -30,6 +34,7 @@ import { liveRuns, type LiveEvent } from '../../live-runs.js';
 import type { Caller } from '../auth.js';
 import { calendarItemById, calendarItems } from '../../v2/calendar.js';
 import { mailSnapshot, mailDelta } from '../../v2/mail.js';
+import { apiProject, apiTurn, getProject, getTurn, listProjects, recentTurns } from '../../v2/projects.js';
 
 export const EVENT_RETENTION_MS = 7 * 24 * 3_600_000;
 const POLL_MS = 1_000, KEEPALIVE_MS = 15_000, BATCH = 500, STEP_EVERY_MS = 1_000;
@@ -85,12 +90,22 @@ function present(rows: EventRow[], who: Caller | null) {
   // calendar (A7): an event or a draft changing sends the item as it is now (or its deletion), once per batch
   const lastForCal = new Map<string, number>();
   rows.forEach((e, i) => { if (CAL_ENTITIES.has(e.entity)) lastForCal.set(e.entity_id, i); });
+  const lastForProject = new Map<string, number>(), lastForTurn = new Map<string, number>();
+  rows.forEach((e, i) => { if (e.entity === 'project') lastForProject.set(e.entity_id, i); else if (e.entity === 'turn') lastForTurn.set(e.entity_id, i); });
   rows.forEach((e, i) => {
     if (e.entity === 'device' && !who?.scopes.has('admin')) return;
     if (CAL_ENTITIES.has(e.entity)) {
       if (lastForCal.get(e.entity_id) !== i) return;
       const data = e.op === 'delete' ? null : calendarItemById(e.entity_id);
       out.push({ seq: e.seq, entity: 'calendar', id: e.entity_id, op: data ? 'upsert' : 'delete', ...(data ? { data } : {}) });
+      return;
+    }
+    if (e.entity === 'project' || e.entity === 'turn') {
+      const last = e.entity === 'project' ? lastForProject : lastForTurn;
+      if (last.get(e.entity_id) !== i) return; // one message per project or turn per batch: as it is now
+      const data = e.op === 'delete' ? null : e.entity === 'project' ? (() => { const p = getProject(e.entity_id); return p ? apiProject(p) : null; })()
+        : (() => { const t = getTurn(e.entity_id); return t ? apiTurn(t) : null; })();
+      out.push({ seq: e.seq, entity: e.entity, id: e.entity_id, op: data ? 'upsert' : 'delete', ...(data ? { data } : {}) });
       return;
     }
     const j = jobIdOf(e);
@@ -110,7 +125,7 @@ function present(rows: EventRow[], who: Caller | null) {
 const CAL_ENTITIES = new Set(['cal_event', 'cal_draft']);
 /** The calendar collection's full snapshot: every cached event and every draft not removed. */
 const calendarSnapshot = () => calendarItems('0000-01-01T00:00:00.000Z', '9999-12-31T23:59:59.999Z');
-const COLLECTIONS = ['jobs', 'calendar', 'mail'];
+const COLLECTIONS = ['jobs', 'calendar', 'mail', 'projects', 'turns'];
 
 function parseCursor(v: string | null | undefined): number {
   if (v === null || v === undefined || v === '') return 0;
@@ -179,17 +194,21 @@ export const streamRoutes: Route[] = [
         if (want.has('jobs')) { upserts.jobs = viewJobs(listJobs({}).filter(visibleJob), c).map(apiJob); deletes.jobs = []; }
         if (want.has('calendar')) { upserts.calendar = calendarSnapshot(); deletes.calendar = []; }
         if (want.has('mail')) { upserts.mail = mailSnapshot(); deletes.mail = []; }
+        if (want.has('projects')) { upserts.projects = listProjects({ archived: true }).map(apiProject); deletes.projects = []; }
+        if (want.has('turns')) { upserts.turns = recentTurns(50).map((t) => apiTurn(t)); deletes.turns = []; }
         return { body: { cursor, reset: true, upserts, deletes } };
       }
       const rows = appDb().prepare('SELECT seq, ts, entity, entity_id, op, payload FROM events WHERE seq > ? AND seq <= ? ORDER BY seq').all(since, cursor) as EventRow[];
-      const ups = { jobs: new Map<string, unknown>(), calendar: new Map<string, unknown>() };
-      const dels = { jobs: new Set<string>(), calendar: new Set<string>() };
+      const KEYS = ['jobs', 'calendar', 'projects', 'turns'] as const;
+      const COLL: Record<string, (typeof KEYS)[number]> = { job: 'jobs', calendar: 'calendar', project: 'projects', turn: 'turns' };
+      const ups = Object.fromEntries(KEYS.map((k) => [k, new Map<string, unknown>()])) as Record<(typeof KEYS)[number], Map<string, unknown>>;
+      const dels = Object.fromEntries(KEYS.map((k) => [k, new Set<string>()])) as Record<(typeof KEYS)[number], Set<string>>;
       for (const m of present(rows, who)) {
-        const k = m.entity === 'job' ? 'jobs' : m.entity === 'calendar' ? 'calendar' : null;
+        const k = COLL[m.entity];
         if (!k || !want.has(k)) continue;
         if (m.op === 'delete') { dels[k].add(m.id); ups[k].delete(m.id); } else { ups[k].set(m.id, m.data); dels[k].delete(m.id); }
       }
-      for (const k of ['jobs', 'calendar'] as const) if (want.has(k)) { upserts[k] = [...ups[k].values()]; deletes[k] = [...dels[k]]; }
+      for (const k of KEYS) if (want.has(k)) { upserts[k] = [...ups[k].values()]; deletes[k] = [...dels[k]]; }
       if (want.has('mail')) { const d = mailDelta(rows); upserts.mail = d.upserts; deletes.mail = d.deletes; }
       return { body: { cursor, reset: false, upserts, deletes } };
     },

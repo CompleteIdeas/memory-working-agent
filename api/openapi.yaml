@@ -48,7 +48,7 @@ components:
           required: [code, message]
           additionalProperties: false
           properties:
-            code: { type: string, description: 'Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again.' }
+            code: { type: string, description: 'Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again.' }
             message: { type: string, description: Plain words for a person. }
     Scope:
       type: string
@@ -360,6 +360,96 @@ components:
         done: { type: boolean }
         accounts: { type: array, items: { $ref: '#/components/schemas/MailAccount' } }
         message: { type: string }
+    Project:
+      type: object
+      description: One of the person's groupings (Eventing, Family & school…), with one continuous thread. General always exists and cannot be archived.
+      required: [id, name, icon, createdAt, sort, archived, general, updatedSeq]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        name: { type: string }
+        icon: { type: ['string', 'null'], description: 'A short icon name (letters, digits, dashes): horse, home, spark.' }
+        createdAt: { type: integer }
+        sort: { type: integer }
+        archived: { type: boolean }
+        general: { type: boolean, description: 'True for General, where a message with no clear project goes.' }
+        updatedSeq: { type: integer }
+    ProjectOut:
+      type: object
+      required: [project]
+      additionalProperties: false
+      properties:
+        project: { $ref: '#/components/schemas/Project' }
+    Turn:
+      type: object
+      description: |
+        One entry of a project's thread. A `chat` turn holds the person's message and the answer (moving it moves both);
+        `running` is a message whose answer is being written (the same turn fills in when it is done); `offer` is the
+        offer to work on it in the background; `result` is a job's result posted into the thread; `divider` heads a
+        conversation from before projects ("Conversation from Oct 22: …").
+      required: [id, projectId, kind, ts, message, reply, reason, tainted, runId, tryId, about, provenance, offer, legacySession, movedFrom, updatedSeq]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        projectId: { type: string }
+        kind: { type: string, enum: [chat, result, offer, running, divider] }
+        ts: { type: integer }
+        message: { type: string }
+        reply: { type: string }
+        reason: { type: ['string', 'null'] }
+        tainted: { type: ['boolean', 'null'], description: 'True when the answer read outside content; null when not recorded (older turns).' }
+        runId: { type: ['string', 'null'] }
+        tryId: { type: ['string', 'null'] }
+        about:
+          type: ['object', 'null']
+          required: [kind, id]
+          additionalProperties: false
+          properties:
+            kind: { type: string }
+            id: { type: string }
+        provenance:
+          type: array
+          description: 'Other projects whose memories this answer used: show "using what I know from <name>".'
+          items:
+            type: object
+            required: [projectId, name, n]
+            additionalProperties: false
+            properties:
+              projectId: { type: string }
+              name: { type: string }
+              n: { type: integer, minimum: 1 }
+        offer:
+          type: ['object', 'null']
+          required: [answered, at]
+          additionalProperties: false
+          properties:
+            answered: { type: string, enum: [background, now] }
+            goal: { type: string }
+            at: { type: integer }
+        legacySession: { type: ['string', 'null'], description: 'The conversation it came from before projects (its files stay in that folder).' }
+        movedFrom: { type: ['string', 'null'], description: 'The project it was last moved out of.' }
+        updatedSeq: { type: integer }
+    Suggestion:
+      type: object
+      description: |
+        Where a message should go. Inside a project: that project ("this project"), and at most one alternative — a hint
+        to offer, never a switch. From Now/Today or General: the best project ("suggested"), or General ("not sure") with
+        the closest projects as alternatives.
+      required: [projectId, confidence, alternatives]
+      additionalProperties: false
+      properties:
+        projectId: { type: string }
+        confidence: { type: string, enum: [suggested, not sure, this project] }
+        alternatives:
+          type: array
+          items:
+            type: object
+            required: [projectId, name, score]
+            additionalProperties: false
+            properties:
+              projectId: { type: string }
+              name: { type: string }
+              score: { type: number }
   responses:
     Error:
       description: An error.
@@ -623,7 +713,7 @@ paths:
       summary: What changed since a cursor, as current objects and deletions (the phone's offline catch-up).
       parameters:
         - { name: since, in: query, required: false, schema: { type: string, pattern: '^[0-9]{1,15}$' } }
-        - { name: collections, in: query, required: false, description: 'Comma-separated: jobs, calendar, mail (mail is headers only).', schema: { type: string, default: jobs } }
+        - { name: collections, in: query, required: false, description: 'Comma-separated: jobs, calendar, mail (mail is headers only), projects (archived included), turns (a snapshot holds each active project''s latest 50).', schema: { type: string, default: jobs } }
       responses:
         '200':
           description: Changes. `reset` true means a full snapshot (no since, or too old).
@@ -642,12 +732,16 @@ paths:
                       jobs: { type: array, items: { $ref: '#/components/schemas/Job' } }
                       calendar: { type: array, items: { $ref: '#/components/schemas/CalendarItem' } }
                       mail: { type: array, items: { $ref: '#/components/schemas/MailHeader' } }
+                      projects: { type: array, items: { $ref: '#/components/schemas/Project' } }
+                      turns: { type: array, items: { $ref: '#/components/schemas/Turn' } }
                   deletes:
                     type: object
                     properties:
                       jobs: { type: array, items: { type: string } }
                       calendar: { type: array, items: { type: string } }
                       mail: { type: array, items: { type: string } }
+                      projects: { type: array, items: { type: string } }
+                      turns: { type: array, items: { type: string } }
         default: { $ref: '#/components/responses/Error' }
   /calendar:
     get:
@@ -852,4 +946,221 @@ paths:
                   to: { type: array, items: { $ref: '#/components/schemas/MailFrom' }, description: 'Who the draft is addressed to.' }
                   replyGoesElsewhere: { type: boolean }
                   replyNote: { type: ['string', 'null'] }
+        default: { $ref: '#/components/responses/Error' }
+  /projects:
+    get:
+      operationId: listProjects
+      summary: The person's projects in their order, General first.
+      parameters:
+        - { name: archived, in: query, required: false, description: '1 includes archived projects.', schema: { type: string, enum: ['0', '1'] } }
+      responses:
+        '200':
+          description: The projects.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [projects]
+                additionalProperties: false
+                properties:
+                  projects: { type: array, items: { $ref: '#/components/schemas/Project' } }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      operationId: createProject
+      summary: 'A new project with an empty thread. 409 name_taken when an active project has that name.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 60 }
+                icon: { type: ['string', 'null'] }
+      responses:
+        '201':
+          description: The project.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectOut' }
+        default: { $ref: '#/components/responses/Error' }
+  /projects/suggest:
+    get:
+      operationId: suggestProject
+      summary: 'Where a message should go, before it is sent (no model call: the recall embedding model and the threads'' own words).'
+      parameters:
+        - { name: text, in: query, required: true, schema: { type: string, minLength: 1, maxLength: 2000 } }
+        - { name: from, in: query, required: false, description: 'The project the person is in (leave out from Now/Today).', schema: { type: string } }
+      responses:
+        '200':
+          description: The suggestion.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Suggestion' }
+        default: { $ref: '#/components/responses/Error' }
+  /projects/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    patch:
+      operationId: updateProject
+      summary: 'Rename, change the icon, archive or restore, or reorder. General cannot be archived (409 general).'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string, minLength: 1, maxLength: 60 }
+                icon: { type: ['string', 'null'] }
+                archived: { type: boolean }
+                sort: { type: integer }
+      responses:
+        '200':
+          description: The project after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectOut' }
+        default: { $ref: '#/components/responses/Error' }
+  /projects/{id}/thread:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getProjectThread
+      summary: A project's thread, oldest first, a page at a time (the latest page without `before`).
+      parameters:
+        - { name: before, in: query, required: false, description: 'The `next` of the previous page (a turn id).', schema: { type: string } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200':
+          description: The page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [project, turns, next]
+                additionalProperties: false
+                properties:
+                  project: { $ref: '#/components/schemas/Project' }
+                  turns: { type: array, items: { $ref: '#/components/schemas/Turn' } }
+                  next: { type: ['string', 'null'], description: 'Pass as `before` for the page before; null at the start of the thread.' }
+        default: { $ref: '#/components/responses/Error' }
+  /projects/{id}/messages:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: sendProjectMessage
+      summary: 'Send a message into a project''s thread. Answers once the run has started (follow it on /stream: `live` for its progress, `change` for the turn) or when it is offered to the background. 409 busy while an answer is being written there.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, minLength: 1, maxLength: 8000 }
+                stay: { type: boolean, description: 'Do it here, not in the background (the answer to an offer).' }
+      responses:
+        '202':
+          description: Started, or offered to the background.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session, state]
+                additionalProperties: false
+                properties:
+                  session: { type: string, description: 'The thread''s live key on /stream (p-<project id>).' }
+                  state: { type: string, enum: [started, offer] }
+                  runId: { type: string }
+                  turnId: { type: string }
+                  message: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /projects/{id}/work:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getProjectWork
+      summary: The jobs working for a project, most recently changed first (General also lists jobs no project claims).
+      responses:
+        '200':
+          description: The jobs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobs]
+                additionalProperties: false
+                properties:
+                  jobs: { type: array, items: { $ref: '#/components/schemas/Job' } }
+        default: { $ref: '#/components/responses/Error' }
+  /projects/{id}/files:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getProjectFiles
+      summary: 'A project''s files: its thread''s folder, and the folders of the older conversations its turns came from. Open one with /api/files/raw?path=.'
+      responses:
+        '200':
+          description: The files, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [files, folder]
+                additionalProperties: false
+                properties:
+                  folder: { type: string, description: 'Where its new files go (relative to the workspace).' }
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      required: [path, size, mtime]
+                      additionalProperties: false
+                      properties:
+                        path: { type: string }
+                        size: { type: integer }
+                        mtime: { type: number }
+        default: { $ref: '#/components/responses/Error' }
+  /turns/{id}/move:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: moveTurn
+      summary: 'Move a message and its answer to another project. Undo is a move back to `undo.projectId`. 409 running while its answer is being written.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [projectId]
+              properties:
+                projectId: { type: string }
+      responses:
+        '200':
+          description: The turn where it is now.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [turn, from, message, undo]
+                additionalProperties: false
+                properties:
+                  turn: { $ref: '#/components/schemas/Turn' }
+                  from: { type: string }
+                  message: { type: string }
+                  undo:
+                    type: object
+                    required: [projectId]
+                    additionalProperties: false
+                    properties:
+                      projectId: { type: string }
         default: { $ref: '#/components/responses/Error' }

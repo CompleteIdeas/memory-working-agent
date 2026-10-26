@@ -530,13 +530,162 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The person's projects in their order, General first. */
+        get: operations["listProjects"];
+        put?: never;
+        /** A new project with an empty thread. 409 name_taken when an active project has that name. */
+        post: operations["createProject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/suggest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Where a message should go, before it is sent (no model call: the recall embedding model and the threads' own words). */
+        get: operations["suggestProject"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Rename, change the icon, archive or restore, or reorder. General cannot be archived (409 general). */
+        patch: operations["updateProject"];
+        trace?: never;
+    };
+    "/projects/{id}/thread": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** A project's thread, oldest first, a page at a time (the latest page without `before`). */
+        get: operations["getProjectThread"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send a message into a project's thread. Answers once the run has started (follow it on /stream: `live` for its progress, `change` for the turn) or when it is offered to the background. 409 busy while an answer is being written there. */
+        post: operations["sendProjectMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/work": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** The jobs working for a project, most recently changed first (General also lists jobs no project claims). */
+        get: operations["getProjectWork"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** A project's files: its thread's folder, and the folders of the older conversations its turns came from. Open one with /api/files/raw?path=. */
+        get: operations["getProjectFiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/turns/{id}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Move a message and its answer to another project. Undo is a move back to `undo.projectId`. 409 running while its answer is being written. */
+        post: operations["moveTurn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         Error: {
             error: {
-                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
+                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
                 code: string;
                 /** @description Plain words for a person. */
                 message: string;
@@ -859,6 +1008,76 @@ export interface components {
             done: boolean;
             accounts: components["schemas"]["MailAccount"][];
             message: string;
+        };
+        /** @description One of the person's groupings (Eventing, Family & school…), with one continuous thread. General always exists and cannot be archived. */
+        Project: {
+            id: string;
+            name: string;
+            /** @description A short icon name (letters, digits, dashes): horse, home, spark. */
+            icon: string | null;
+            createdAt: number;
+            sort: number;
+            archived: boolean;
+            /** @description True for General, where a message with no clear project goes. */
+            general: boolean;
+            updatedSeq: number;
+        };
+        ProjectOut: {
+            project: components["schemas"]["Project"];
+        };
+        /** @description One entry of a project's thread. A `chat` turn holds the person's message and the answer (moving it moves both);
+         *     `running` is a message whose answer is being written (the same turn fills in when it is done); `offer` is the
+         *     offer to work on it in the background; `result` is a job's result posted into the thread; `divider` heads a
+         *     conversation from before projects ("Conversation from Oct 22: …").
+         *      */
+        Turn: {
+            id: string;
+            projectId: string;
+            /** @enum {string} */
+            kind: "chat" | "result" | "offer" | "running" | "divider";
+            ts: number;
+            message: string;
+            reply: string;
+            reason: string | null;
+            /** @description True when the answer read outside content; null when not recorded (older turns). */
+            tainted: boolean | null;
+            runId: string | null;
+            tryId: string | null;
+            about: {
+                kind: string;
+                id: string;
+            } | null;
+            /** @description Other projects whose memories this answer used: show "using what I know from <name>". */
+            provenance: {
+                projectId: string;
+                name: string;
+                n: number;
+            }[];
+            offer: {
+                /** @enum {string} */
+                answered: "background" | "now";
+                goal?: string;
+                at: number;
+            } | null;
+            /** @description The conversation it came from before projects (its files stay in that folder). */
+            legacySession: string | null;
+            /** @description The project it was last moved out of. */
+            movedFrom: string | null;
+            updatedSeq: number;
+        };
+        /** @description Where a message should go. Inside a project: that project ("this project"), and at most one alternative — a hint
+         *     to offer, never a switch. From Now/Today or General: the best project ("suggested"), or General ("not sure") with
+         *     the closest projects as alternatives.
+         *      */
+        Suggestion: {
+            projectId: string;
+            /** @enum {string} */
+            confidence: "suggested" | "not sure" | "this project";
+            alternatives: {
+                projectId: string;
+                name: string;
+                score: number;
+            }[];
         };
     };
     responses: {
@@ -1284,7 +1503,7 @@ export interface operations {
         parameters: {
             query?: {
                 since?: string;
-                /** @description Comma-separated: jobs, calendar, mail (mail is headers only). */
+                /** @description Comma-separated: jobs, calendar, mail (mail is headers only), projects (archived included), turns (a snapshot holds each active project's latest 50). */
                 collections?: string;
             };
             header?: never;
@@ -1306,11 +1525,15 @@ export interface operations {
                             jobs?: components["schemas"]["Job"][];
                             calendar?: components["schemas"]["CalendarItem"][];
                             mail?: components["schemas"]["MailHeader"][];
+                            projects?: components["schemas"]["Project"][];
+                            turns?: components["schemas"]["Turn"][];
                         };
                         deletes: {
                             jobs?: string[];
                             calendar?: string[];
                             mail?: string[];
+                            projects?: string[];
+                            turns?: string[];
                         };
                     };
                 };
@@ -1670,6 +1893,288 @@ export interface operations {
                         to: components["schemas"]["MailFrom"][];
                         replyGoesElsewhere: boolean;
                         replyNote: string | null;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listProjects: {
+        parameters: {
+            query?: {
+                /** @description 1 includes archived projects. */
+                archived?: "0" | "1";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The projects. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        projects: components["schemas"]["Project"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createProject: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                    icon?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description The project. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectOut"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    suggestProject: {
+        parameters: {
+            query: {
+                text: string;
+                /** @description The project the person is in (leave out from Now/Today). */
+                from?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The suggestion. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Suggestion"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateProject: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name?: string;
+                    icon?: string | null;
+                    archived?: boolean;
+                    sort?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description The project after the change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectOut"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getProjectThread: {
+        parameters: {
+            query?: {
+                /** @description The `next` of the previous page (a turn id). */
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        project: components["schemas"]["Project"];
+                        turns: components["schemas"]["Turn"][];
+                        /** @description Pass as `before` for the page before; null at the start of the thread. */
+                        next: string | null;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    sendProjectMessage: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    text: string;
+                    /** @description Do it here, not in the background (the answer to an offer). */
+                    stay?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Started, or offered to the background. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description The thread's live key on /stream (p-<project id>). */
+                        session: string;
+                        /** @enum {string} */
+                        state: "started" | "offer";
+                        runId?: string;
+                        turnId?: string;
+                        message?: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getProjectWork: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The jobs. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        jobs: components["schemas"]["Job"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getProjectFiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The files, newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Where its new files go (relative to the workspace). */
+                        folder: string;
+                        files: {
+                            path: string;
+                            size: number;
+                            mtime: number;
+                        }[];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    moveTurn: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    projectId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The turn where it is now. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        turn: components["schemas"]["Turn"];
+                        from: string;
+                        message: string;
+                        undo: {
+                            projectId: string;
+                        };
                     };
                 };
             };

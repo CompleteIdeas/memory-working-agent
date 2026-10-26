@@ -166,6 +166,8 @@ export interface NewJob {
   kind: JobKind; title: string; request?: string; person?: string; createdAt?: number; scheduleId?: string;
   legacyGoalId?: string; capUsd?: number; session?: string; dir?: string; legacyKey?: string; status?: JobLifecycle;
   whereItStands?: string; standsTrust?: string; nextDueAt?: number;
+  /** the project it works for; left out, a `p-<id>` session names it (A5) */
+  projectId?: string | null;
 }
 export interface NewTry {
   trigger: TryTrigger; state?: TryState; dueAt?: number; scheduleId?: string; liveKey?: string; runId?: string;
@@ -246,6 +248,11 @@ export function listJobs(o: { archived?: boolean; limit?: number; before?: numbe
   return d.prepare(`SELECT * FROM jobs ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY updated_seq DESC ${o.limit ? 'LIMIT @limit' : ''}`)
     .all({ ...(o.before != null ? { before: o.before } : {}), ...(o.limit ? { limit: o.limit } : {}) }) as JobRow[];
 }
+/** A project's jobs, most recently changed first (A5). General also holds the jobs no project claims. */
+export function projectJobs(projectId: string, o: { limit?: number } = {}, d: AppDb = appDb()): JobRow[] {
+  return d.prepare(`SELECT * FROM jobs WHERE archived = 0 AND (project_id = @p OR (@p = 'general' AND project_id IS NULL)) ORDER BY updated_seq DESC LIMIT @limit`)
+    .all({ p: projectId, limit: Math.max(1, Math.min(500, o.limit ?? 100)) }) as JobRow[];
+}
 export function jobByGoal(goalId: string, d: AppDb = appDb()): JobRow | undefined {
   return d.prepare('SELECT * FROM jobs WHERE legacy_goal_id = ? ORDER BY created_at LIMIT 1').get(goalId) as JobRow | undefined;
 }
@@ -265,8 +272,10 @@ export function jobByPrefix(prefix: string, d: AppDb = appDb()): JobRow | undefi
 
 function insertJob(d: AppDb, j: NewJob): JobRow {
   const id = newId('j');
-  d.prepare(`INSERT INTO jobs (id, kind, title, request, person, created_at, schedule_id, legacy_goal_id, cap_usd, session, dir, legacy_key, status, where_it_stands, stands_trust, next_due_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, j.kind, j.title.slice(0, 300), j.request?.slice(0, 4000) ?? null, j.person ?? null,
+  // A5: a Job made from a project's thread (its session is `p-<project id>`) works for that project.
+  const projectId = j.projectId ?? (j.session && j.session.startsWith('p-') && j.session.length > 2 ? j.session.slice(2) : null);
+  d.prepare(`INSERT INTO jobs (id, project_id, kind, title, request, person, created_at, schedule_id, legacy_goal_id, cap_usd, session, dir, legacy_key, status, where_it_stands, stands_trust, next_due_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, projectId, j.kind, j.title.slice(0, 300), j.request?.slice(0, 4000) ?? null, j.person ?? null,
     j.createdAt ?? Date.now(), j.scheduleId ?? null, j.legacyGoalId ?? null, j.capUsd ?? null, j.session ?? null, j.dir ?? null,
     j.legacyKey ?? null, j.status ?? 'active', j.whereItStands ?? null, j.standsTrust ?? null, j.nextDueAt ?? null);
   bumpJob(d, id, j.person);

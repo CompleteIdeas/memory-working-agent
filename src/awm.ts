@@ -15,7 +15,7 @@
  * "decision continuity" thesis — which is what the benchmark measures.)
  */
 // AWM's internals come through one file (BL-11): an AWM upgrade that moves them breaks awm-api.ts only.
-import { loadEngines, loadSqliteStore, loadPGliteStore, loadPostgresStore, loadConflictOrder, type AwmEngines } from './awm-api.js';
+import { loadEngines, loadSqliteStore, loadPGliteStore, loadPostgresStore, loadConflictOrder, loadImplicitFeedback, type AwmEngines } from './awm-api.js';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isReservedConcept, unreservedConcept } from './reserved-concept.js';
@@ -466,7 +466,10 @@ export class MwaMemory implements Memory {
       // Nor does the ACTION LOG (BL-54): it is the "what I did" record, read by recentActions. Recalled, each entry
       // is a snapshot of a tool's output — twelve copies of a flight page's old 10:15 outranked the job that saw
       // it move to 8:40 (BL-53 second pass).
-      return kept(rows).slice(0, want).map((r: any) => ({
+      const out = kept(rows).slice(0, want);
+      // A5: what this memory handed out, so the memories an answer used can be named afterwards (usedMemories).
+      if (!(opts.internal ?? false)) this.noteRecalled(out.map((r: any) => r.engram));
+      return out.map((r: any) => ({
         id: r.engram.id,
         concept: r.engram.concept,
         content: opts.full ? r.engram.content : (r.summary ?? r.engram.content),
@@ -1578,8 +1581,35 @@ export class MwaMemory implements Memory {
     } catch (err) { console.error('[awm] listPeople error:', (err as Error).message); return []; }
   }
 
+  // ── A5: which memories a run used, and where they came from ──────────────────────────────────────────────────
+  // Every recall this handle returned (the last 40), and the memories noteUse found used. A memory counts as used by
+  // AWM's own rule (core/implicit-feedback matchUses): its id, or two of its distinctive tokens, appear in the text.
+  private recalledLog: { eventId: string; at: number; agentId: string; engrams: { id: string; concept: string; content: string; tags: string[] }[] }[] = [];
+  private used = new Map<string, string | undefined>();
+  private noteRecalled(engrams: any[]): void {
+    if (!engrams.length) return;
+    this.recalledLog.push({ eventId: `r${this.recalledLog.length}`, at: Date.now(), agentId: this.agentId,
+      engrams: engrams.map((e) => ({ id: String(e.id), concept: String(e.concept ?? ''), content: String(e.content ?? ''), tags: this.parseTags(e.tags) })) });
+    if (this.recalledLog.length > 40) this.recalledLog.splice(0, this.recalledLog.length - 40);
+  }
+  /** The memories recalled through this handle that `text` shows were used, each with the `session=` its writer had. */
+  async usedMemories(text?: string): Promise<{ id: string; session?: string }[]> {
+    if (text) {
+      try {
+        const { matchUses } = await loadImplicitFeedback();
+        const byId = new Map(this.recalledLog.flatMap((r) => r.engrams.map((e) => [e.id, e] as const)));
+        for (const u of matchUses(this.recalledLog, text, { windowMs: 6 * 3_600_000 })) {
+          const e = byId.get(u.engramId);
+          this.used.set(u.engramId, e?.tags.find((t) => t.startsWith('session='))?.slice(8));
+        }
+      } catch { /* the module is missing: what noteUse already found */ }
+    }
+    return [...this.used.entries()].map(([id, session]) => ({ id, ...(session ? { session } : {}) }));
+  }
+
   /** AWM 0.20 implicit feedback (ActivationEngine.noteImplicitUse); a no-op on an older engine. */
   async noteUse(text: string, source: string): Promise<number> {
+    await this.usedMemories(text); // A5: remember which ones, for the answer's provenance
     try {
       const a = this.activation as { noteImplicitUse?: (t: string, s: string) => Promise<number> } | undefined;
       return a?.noteImplicitUse ? await a.noteImplicitUse(text, source) : 0;
