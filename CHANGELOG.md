@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.1 (2026-10-27) — reading documents, and knowing what it costs
+
+- **The document reader reads by page and reads on.** `read_document` takes `pages` ("3-5", "7", "4-") and heads
+  each page "[page n of N]"; `read_document`, `read_file` and `http_request` say how to read on (`offset`) instead of
+  giving the same opening again. Parsed pages are cached (a 73-page rulebook read page by page: 56 s → 4 s).
+- **`document_look` shows the model a page.** A PDF page or an image file, rendered in process (no shell, no
+  poppler) and attached to the next step like `browser_look`; vision models only, `MWA_DOCUMENT_LOOKS` (6) a run.
+  Measured on the USEA ICP Eventing Handbook (76 pages) and the USEF eventing rules (73 pages): "learn everything"
+  read both in one chat run and one background resume ($0.82), and twelve graded questions were answered correctly
+  with page citations.
+- **Billing and tokens in Settings.** The month's model spend, tokens in / cached / out, by model, the costliest
+  conversations and jobs, 30 days by day, the OpenRouter balance, a CSV of the calls; a monthly budget
+  (`MWA_MONTHLY_BUDGET_USD` or the Settings field) warns at 80% and holds scheduled jobs at 100% while chats still
+  run and say so. `/api/billing`, `/api/billing.csv`, `/api/billing/budget`.
+- **docs/reviews/production-review-2026-10-27.md**: what was tried on the hosted instance and the gaps that are
+  next on the list.
+
 ## 0.9.0 (2026-10-27) — the pending list worked through: background work, the browser, the prime
 
 Thirteen commits over the list in `docs/pending-2026-10-26.md`, each cluster read by fresh-context reviewers
