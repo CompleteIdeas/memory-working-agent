@@ -151,6 +151,9 @@ export interface AgentResult {
   outcomeDeclared?: boolean;
   /** BL-71b: the run ran out of room and queued a resume that continues it in the background. */
   resumeQueued?: boolean;
+  /** what the run found in the files: its last folder listing (list_files, as the model saw it) and the files it
+   *  read — handed to the next step of a plan so it does not list the folder again (pending list 2026-10-26, 3c). */
+  filesFound?: { listing?: string; read: string[] };
   /** true when this run read external content (H-3). A plan step's output is the NEXT step's
    *  instruction, so the chain needs to know — otherwise taint dies at every step boundary. */
   tainted?: boolean;
@@ -829,6 +832,8 @@ export async function runAgent(opts: {
   const draftToolsOk = new Set<string>(); // email tools that ran successfully this run
   const guardOnly = new Set<string>(); // email tools only ever refused by the guard this run
   const writtenPaths = new Set<string>(); // files this run wrote: read back, they are not a source of addresses
+  let folderListing: string | undefined; // 3c: the last list_files result, handed to a plan's next step
+  const filesRead = new Set<string>(); // 3c: files this run read (read_file paths that existed)
   const normPath = (p: string) => p.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
   let repeatDraftRefusals = 0;
   const calendarSeen = new Map<string, string[]>(); // BL-73: event titles already checked against the inbox this run
@@ -2118,6 +2123,10 @@ export async function runAgent(opts: {
       else if (!called.failed) {
         if (isDraft) { draftedTo.add(draftKey(args as Record<string, unknown>, action.action)); draftToolsOk.add(action.action); guardOnly.delete(action.action); }
         if (action.action === 'write_file' && typeof (args as Record<string, unknown>).path === 'string') writtenPaths.add(normPath(String((args as Record<string, unknown>).path)));
+        // 3c (pending list 2026-10-26): what this run found in the files goes to the next step of a plan, so a
+        // planned task over a folder does not list it again per step (pilot: 50–80 list_files calls a question).
+        if (action.action === 'list_files' && !(args as Record<string, unknown>).search && !/^\(/.test(result.trimStart())) folderListing = result.slice(0, 2500);
+        if (action.action === 'read_file' && typeof (args as Record<string, unknown>).path === 'string' && !/^\((?:no such file|could not read)/.test(result.trimStart())) filesRead.add(String((args as Record<string, unknown>).path));
         // An address the call itself carried and the result merely echoes ("No messages matched to:x@y") is not
         // evidence of it (BL-54 review: a search for a guessed address made it "seen") — unless the result shows it
         // as a real sender or recipient ("Dana <dana@…>", "From: dana@…"). A file this run wrote is not a source.
@@ -2770,6 +2779,7 @@ export async function runAgent(opts: {
     ...(staged.length ? { staged } : {}),
     ...(budgetRefusal ? { budgetRefusal } : {}),
     ...(resumeQueued ? { resumeQueued } : {}),
+    ...(folderListing || filesRead.size ? { filesFound: { ...(folderListing ? { listing: folderListing } : {}), read: [...filesRead] } } : {}),
     ...(watchValue ? { watchValue } : {}),
     ...(runActions.length ? { actionsTaken: runActions.length } : {}),
     ...(runActions.some((a) => a.effect !== 'external') ? { localActions: runActions.filter((a) => a.effect !== 'external').length } : {}),
@@ -2855,6 +2865,12 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
   // taint flag. Without carrying it, a step that read a poisoned page hands its text to the next
   // step as clean instructions (H-3 review). Once tainted, the rest of the chain starts tainted.
   let chainTainted = opts.startTainted === true;
+  // 3c: the files the earlier steps found — the folder listing as they saw it and what they read — so a step does
+  // not list the folder again (the pilot's planned tasks over a folder re-listed it in every sub-run).
+  const found: { listing?: string; read: Set<string> } = { read: new Set() };
+  const filesBlock = () => found.listing || found.read.size
+    ? `\n\nFILES THE EARLIER STEPS ALREADY FOUND (${found.listing ? 'the folder listing as they saw it — do not call list_files for the same folders again; go straight to read_file on the ones you need. A file an earlier step saved since is named in what it produced, above, not here' : 'go straight to read_file on the ones you need'}${found.read.size ? `; already read by an earlier step: ${[...found.read].slice(-12).join(', ')}` : ''}):${found.listing ? `\n${found.listing}` : ''}`
+    : '';
   let aggSteps = 0, aggDispatches = 0, aggToolCalls = 0;
   let allDone = true;
   const stepOutcomes: (RunOutcome | undefined)[] = [];
@@ -2873,12 +2889,13 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     const prior = chain.length
       ? `\n\nWHAT THE EARLIER STEPS ALREADY PRODUCED (build directly on this — do NOT redo this work; if you need an earlier step's exact text, draft, list, or number, use it from here, and check the working folder for any file it saved):\n${chain.slice(-3).join('\n\n')}`
       : '';
-    const ctx = `${s.task}${s.done_when ? `\n\nDone when: ${s.done_when}` : ''}${chainTainted ? '' : prior}\n\n(This is step ${i + 1} of ${steps.length} of a larger task: "${instruction.slice(0, 140)}". The working folder is shared across all steps — read files an earlier step saved there, and save any substantial output you produce (a draft, a list, a report) to a file so the next step can use it verbatim. Do ONLY this step, then call done.)`;
+    const ctx = `${s.task}${s.done_when ? `\n\nDone when: ${s.done_when}` : ''}${chainTainted ? '' : prior + filesBlock()}\n\n(This is step ${i + 1} of ${steps.length} of a larger task: "${instruction.slice(0, 140)}". The working folder is shared across all steps — read files an earlier step saved there, and save any substantial output you produce (a draft, a list, a report) to a file so the next step can use it verbatim. Do ONLY this step, then call done.)`;
     const remainWall = Math.max(60_000, maxWallMs - (now() - start));
     const subBudget = { maxSteps: perStepBudget, maxWallMs: remainWall, consolidateEvery: 50 };
     // The caller's carried context (a tainted earlier chat turn) plus, once the chain is tainted, the
     // earlier steps' output. Dropping the caller's half lost the conversation for every step.
-    const carried = [opts.carried, chainTainted && chain.length ? chain.slice(-3).join('\n\n') : ''].filter(Boolean).join('\n\n') || undefined;
+    // Once the chain is tainted the file names found go the same fenced way as the earlier steps' output.
+    const carried = [opts.carried, chainTainted && chain.length ? chain.slice(-3).join('\n\n') : '', chainTainted ? filesBlock().trim() : ''].filter(Boolean).join('\n\n') || undefined;
     const stepWords = { userMessage: opts.userMessage ?? opts.instruction, capturePolicy: i === 0, rootRunId: planRunId, planStep: true };
     let sub = await runAgent({ ...opts, ...stepWords, instruction: ctx, subRun: true, plan: false, budget: subBudget, now: opts.now, onEvent: emit, startTainted: chainTainted, carried });
     let attemptTainted = sub.tainted === true;
@@ -2903,6 +2920,7 @@ async function runPlanned(opts: Parameters<typeof runAgent>[0]): Promise<AgentRe
     planActions += sub.actionsTaken ?? 0;
     planLocal += sub.localActions ?? 0;
     if (attemptTainted) chainTainted = true;
+    if (sub.filesFound) { if (sub.filesFound.listing) found.listing = sub.filesFound.listing; for (const f of sub.filesFound.read) found.read.add(f); }
     const out = sub.summary.trim();
     // Plain here; once the chain is tainted, later steps receive it via `carried`, fenced with THEIR code.
     chain.push(`Step ${i + 1} (${s.task.slice(0, 70)}) produced:\n${out.slice(0, 1500)}`);

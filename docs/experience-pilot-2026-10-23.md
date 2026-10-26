@@ -254,8 +254,9 @@ with their values rather than add memories beside them.
 ## Open items
 
 - Luna's plan-and-execute path on judgment questions over files: ten sub-runs that each re-list the folder.
-  *Resolved for questions (2026-10-25): a question is no longer planned (`wantsPlan`).* A planned task over a
-  folder still re-lists it per step; passing the files already found to the next step remains open.
+  *Resolved for questions (2026-10-25): a question is no longer planned (`wantsPlan`).* *Resolved for planned
+  tasks (2026-10-26): each step now receives the folder listing the earlier steps saw and the files they read,
+  and is told to go straight to `read_file`.*
 - Study granularity and coverage: a code word or a single sentence inside a document is still not stored, and
   which measured numbers a pass records varies between passes (4 to 12 facts per document is a sample). *Tried
   (2026-10-25): a second, numbers-only pass per section, first as section lists, then as groups named by subject.
