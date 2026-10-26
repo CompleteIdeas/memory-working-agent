@@ -441,3 +441,48 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/JobDetail' }
         default: { $ref: '#/components/responses/Error' }
+  /stream:
+    get:
+      operationId: openStream
+      summary: Live updates (server-sent events), resumable from a cursor.
+      description: |
+        Events: `hello` {cursor, head}; `change` {seq, entity, id, op, data?} with `id: <seq>` (a job's change carries
+        its current view in `data`); `live` {session, type, stage, at} — a running try's progress, at most once a
+        second per run; `reset` {cursor, reason} — the cursor was older than what is kept: call /sync without
+        `since`. A comment every 15 s keeps the connection open. Reconnect with Last-Event-ID (EventSource does it).
+      parameters:
+        - { name: cursor, in: query, required: false, schema: { type: string, pattern: '^[0-9]{1,15}$' } }
+        - { name: Last-Event-ID, in: header, required: false, schema: { type: string, pattern: '^[0-9]{1,15}$' } }
+      responses:
+        '200':
+          description: An event stream.
+          content: { text/event-stream: { schema: { type: string } } }
+        default: { $ref: '#/components/responses/Error' }
+  /sync:
+    get:
+      operationId: syncChanges
+      summary: What changed since a cursor, as current objects and deletions (the phone's offline catch-up).
+      parameters:
+        - { name: since, in: query, required: false, schema: { type: string, pattern: '^[0-9]{1,15}$' } }
+        - { name: collections, in: query, required: false, schema: { type: string, default: jobs } }
+      responses:
+        '200':
+          description: Changes. `reset` true means a full snapshot (no since, or too old).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cursor, reset, upserts, deletes]
+                additionalProperties: false
+                properties:
+                  cursor: { type: integer }
+                  reset: { type: boolean }
+                  upserts:
+                    type: object
+                    properties:
+                      jobs: { type: array, items: { $ref: '#/components/schemas/Job' } }
+                  deletes:
+                    type: object
+                    properties:
+                      jobs: { type: array, items: { type: string } }
+        default: { $ref: '#/components/responses/Error' }

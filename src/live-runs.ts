@@ -23,6 +23,11 @@ export const FINAL_EVENTS = new Set(['result', 'error']);
 
 export class LiveRuns {
   private runs = new Map<string, LiveRun>();
+  /** v2 (A4): watchers of every run's events — the app's live stream forwards progress from them. */
+  private taps = new Set<(session: string, e: LiveEvent) => void>();
+
+  /** Follow every run's events (not replayed). Returns the unsubscribe function. */
+  tap(fn: (session: string, e: LiveEvent) => void): () => void { this.taps.add(fn); return () => { this.taps.delete(fn); }; }
 
   get(session: string): LiveRun | undefined { return this.runs.get(session); }
   /** A view with no handles — what `busy` and the list carry. */
@@ -49,6 +54,7 @@ export class LiveRuns {
     r.events.push(e);
     if (r.events.length > RING) r.events.splice(0, r.events.length - RING);
     for (const fn of [...r.listeners]) { try { fn(e); } catch { r.listeners.delete(fn); } }
+    for (const fn of [...this.taps]) { try { fn(session, e); } catch { this.taps.delete(fn); } }
   }
 
   /** Replay what has happened so far, then follow along. Returns the detach function. */

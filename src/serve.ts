@@ -62,6 +62,7 @@ import { logger, readLogs, type LogLevel } from './logger.js';
 import { createV1Handler } from './api/v1.js';
 import { makeAuthenticate } from './api/auth.js';
 import { setJobRouteDeps } from './api/routes/jobs.js';
+import { setStreamDeps } from './api/routes/stream.js';
 import { migrateV2Once, describeReport } from './v2/migrate.js';
 import { reapDeadTries, personAction } from './v2/jobs.js';
 import { runAgent } from './agent.js';
@@ -642,6 +643,8 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       try { return await continueGoal(m, { goalId, personId, workspace: loadConfig().workspace ?? './mwa-workspace', holdsReservation: true }); } finally { m.close(); }
     },
   });
+  // v2 (A4): the live stream and /sync compute job views with the same running runs and waiting approvals.
+  setStreamDeps({ running: () => new Set(liveRuns.all().map((r) => r.session)), pending: () => new Set(listPendingActions().map((a) => a.id)) });
   // v1 answers for itself: the password session, this machine (no password), or a paired device (src/api/auth.ts).
   // v2 (A3a review): existing goals, scheduled tasks and results become Jobs and Tries once, at server start, with or
   // without a model (the scheduler starts only with one), and Tries a crashed process left running are reaped. The
