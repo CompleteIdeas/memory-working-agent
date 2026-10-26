@@ -32,6 +32,8 @@ export interface Reply {
   status?: number; body?: unknown; headers?: Record<string, string>;
   /** A GET that streams (server-sent events): the router writes the SSE headers and hands the response over. */
   stream?: (res: ServerResponse, req: IncomingMessage) => void;
+  /** A GET whose answer is not JSON (a calendar file): sent as-is with this content type. */
+  raw?: { contentType: string; body: string | Buffer };
 }
 export type Handler = (ctx: RouteCtx) => Promise<Reply> | Reply;
 export interface Route { method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'; path: string; scope: Scope; handler: Handler }
@@ -205,6 +207,11 @@ export function createV1(routes: Route[], deps: RouterDeps): (req: IncomingMessa
         res.writeHead(status, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no', connection: 'keep-alive', ...out.headers });
         if (head) { res.end(); return true; }
         out.stream(res, req);
+        return true;
+      }
+      if (out.raw && !write) {
+        res.writeHead(status, { 'content-type': out.raw.contentType, 'cache-control': 'no-store', ...out.headers });
+        res.end(head ? undefined : out.raw.body);
         return true;
       }
       const text = JSON.stringify(out.body === undefined ? null : out.body); // throws before anything is sent
