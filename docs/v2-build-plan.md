@@ -29,8 +29,8 @@ from a code-grounded plan (2026-10-26); file:line references there were checked 
 ## Slices (S/M/L) — status
 | ID | Slice | Size | Depends | Status |
 |---|---|---|---|---|
-| A0 | Foundations: app.db, router, /api/v1/meta, createHandler export, connector helper exports, token paths under dataDir | M | – | in progress |
-| A1 | OpenAPI contract scaffold + generated types + contract tests | M | A0 | |
+| A0 | Foundations: app.db, router, /api/v1/meta, connector helper exports, token paths beside agent.db | M | – | done d84f9cc |
+| A1 | OpenAPI contract scaffold + generated types + contract tests | M | A0 | done d84f9cc |
 | A2 | Device auth and pairing, scopes, open-tailnet gap closed | M | A0 | |
 | A3a | Jobs and Tries: data, status function, agent/scheduler/serve wiring, migration (mwa migrate-v2) | L | A0 | |
 | A3b | Dollar cap (AgentBudget.maxUsd), estimates, job actions | M | A3a | |
@@ -67,3 +67,16 @@ the real model, each capped at $1.
    Google Cloud project must be "In production" or refresh tokens expire after 7 days.
 3. Tailscale HTTPS: enable MagicDNS + HTTPS certificates in the tailnet admin (cert names appear in public CT logs).
 4. A test Gmail and Outlook.com account for the live checklist.
+
+## Notes from the A2 security review (2026-10-26)
+- "This machine" = loopback socket AND a local Host (localhost / 127.0.0.1 / [::1]) AND no forwarding header. A
+  loopback socket alone is not enough: the Docker entrypoint's `tailscaled --tun=userspace-networking`, `tailscale
+  serve --tcp`, ssh/socat/portproxy forwarders and nginx without X-Forwarded-For all arrive from 127.0.0.1. The Host
+  rule also stops DNS rebinding.
+- So in Docker (and any relayed setup) with NO password, v1 trusts nobody but paired devices, and nobody can make the
+  first pairing code: set MWA_ACCESS_PASSWORD for any networked install (sign in, then pair the phone).
+- The legacy /api routes are unchanged: with no password they remain open to the network (pre-existing).
+- W5 must let the app shell and /pair load under a password (today the legacy gate serves the login page for `/`).
+- An event feed (A4) must not show other devices' names to a device without admin.
+- Clear-Site-Data does not include "cookies" (on *.ts.net that could clear the whole tailnet domain); "Sign out this
+  phone" revokes the device server-side, which is what matters.

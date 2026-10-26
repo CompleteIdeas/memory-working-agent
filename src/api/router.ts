@@ -14,6 +14,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createHash } from 'node:crypto';
 import { appDb } from '../v2/db.js';
 import { logger } from '../logger.js';
+import type { Caller } from './auth.js';
 
 export type Scope = 'public' | 'read' | 'act' | 'approve' | 'admin';
 
@@ -22,16 +23,18 @@ export interface RouteCtx {
   url: URL;
   params: Record<string, string>;
   body: unknown;
-  /** who is calling: 'session' (the password session / local no-gate), later a device id */
+  /** the key space for idempotency: 'session', 'local' or 'device:<id>' */
   caller: string;
+  /** who is calling (null on a public route with nobody signed in) */
+  who: Caller | null;
 }
 export interface Reply { status?: number; body?: unknown; headers?: Record<string, string> }
 export type Handler = (ctx: RouteCtx) => Promise<Reply> | Reply;
 export interface Route { method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'; path: string; scope: Scope; handler: Handler }
 
 export interface RouterDeps {
-  /** true when the request carries a valid session (or no gate is configured) */
-  authed: (req: IncomingMessage) => boolean;
+  /** who is calling, or null when nobody valid is (src/api/auth.ts makeAuthenticate) */
+  authenticate: (req: IncomingMessage) => Caller | null;
   /** true when the request is same-origin (no Origin, or Origin/Sec-Fetch-Site agree with Host) */
   sameOrigin: (req: IncomingMessage) => boolean;
 }
@@ -145,6 +148,8 @@ export function createV1(routes: Route[], deps: RouterDeps): (req: IncomingMessa
     let reserved: { key: string; caller: string } | null = null;
     try {
       const hits = table.map((r) => ({ r, params: r.match(sub) })).filter((h) => h.params);
+      // nobody signed in: only a public route answers anything but 401 (no route map for strangers — review of A2)
+      if (!hits.some((h) => h.r.scope === 'public') && !deps.authenticate(req)) throw new ApiError(401, 'locked', 'Sign in to continue.');
       if (!hits.length) throw new ApiError(404, 'not_found', 'No such endpoint.');
       const hit = hits.find((h) => h.r.method === (head ? 'GET' : method));
       if (!hit) {
@@ -158,11 +163,18 @@ export function createV1(routes: Route[], deps: RouterDeps): (req: IncomingMessa
       const cv = /^[a-z]+\/(\d+(?:\.\d+){0,2})(?:[-+][\w.-]*)?$/i.exec(String(req.headers['x-mwa-client'] ?? ''))?.[1];
       if (cv && cmpVersion(cv, MIN_CLIENT) < 0) throw new ApiError(426, 'client_too_old', 'A newer version of the app is needed. Reload to update.');
 
-      if (r.scope !== 'public' && !deps.authed(req)) throw new ApiError(401, 'locked', 'Sign in to continue.');
+      const who = deps.authenticate(req);
+      if (r.scope !== 'public') {
+        if (!who) throw new ApiError(401, 'locked', 'Sign in to continue.');
+        if (!who.scopes.has(r.scope)) throw new ApiError(403, 'forbidden', 'This device is not allowed to do that. Use the app on your computer, or sign in with the password.');
+      }
       const write = r.method !== 'GET';
-      if (write && !deps.sameOrigin(req)) throw new ApiError(403, 'cross_origin', 'Cross-site requests are blocked.');
+      // CSRF: only a bearer token cannot be sent by another site's page. A cookie rides along, and so does the trust
+      // given to "this machine" (any page open in the owner's browser reaches 127.0.0.1) — review of A2.
+      const bearerCall = who?.kind === 'device' && !who.viaCookie;
+      if (write && !bearerCall && !deps.sameOrigin(req)) throw new ApiError(403, 'cross_origin', 'Cross-site requests are blocked.');
 
-      const caller = 'session'; // device tokens (slice A2) give each device its own key space
+      const caller = who ? (who.kind === 'device' ? `device:${who.id}` : who.id) : 'anonymous'; // each device: its own key space
       const raw = write ? await readRaw(req) : Buffer.alloc(0);
       const body = write ? parseJson(raw) : undefined;
       if (write && r.scope !== 'public') {
@@ -179,7 +191,7 @@ export function createV1(routes: Route[], deps: RouterDeps): (req: IncomingMessa
 
       let status: number, out: Reply;
       try {
-        out = await r.handler({ req, url, params, body, caller });
+        out = await r.handler({ req, url, params, body, caller, who });
         status = out.status ?? 200;
       } catch (e) {
         if (!(e instanceof ApiError) || e.status >= 500) throw e;

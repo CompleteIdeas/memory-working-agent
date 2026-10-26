@@ -7,6 +7,8 @@ import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { appDb, resetAppDb, migrate, recordEvent, appDbPath, type Migration } from '../src/v2/db.js';
 import { createV1, cmpVersion, MIN_CLIENT, type Route } from '../src/api/router.js';
+import { ALL_SCOPES, type Caller } from '../src/api/auth.js';
+const TEST_CALLER: Caller = { kind: 'session', id: 'session', scopes: new Set(ALL_SCOPES), viaCookie: true };
 import { v1Routes, secureContext } from '../src/api/v1.js';
 import { connectorTokenPath } from '../src/paths.js';
 
@@ -48,7 +50,7 @@ const testRoutes: Route[] = [
   { method: 'POST', path: '/boom', scope: 'act', handler: () => { throw new Error('kaboom'); } },
 ];
 async function start(): Promise<void> {
-  const v1 = createV1(testRoutes, { authed: () => state.authed, sameOrigin: () => state.sameOrigin });
+  const v1 = createV1(testRoutes, { authenticate: () => (state.authed ? TEST_CALLER : null), sameOrigin: () => state.sameOrigin });
   server = createServer(async (req, res) => { if (!(await v1(req, res))) { res.writeHead(418); res.end('legacy'); } });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -154,7 +156,7 @@ describe('review findings', () => {
   beforeEach(async () => {
     resetAppDb(':memory:'); st.calls = 0; st.gate = null;
     if (!srv) {
-      const v1 = createV1(routes, { authed: () => true, sameOrigin: () => true });
+      const v1 = createV1(routes, { authenticate: () => TEST_CALLER, sameOrigin: () => true });
       srv = createServer(async (req, res) => { if (!(await v1(req, res))) { res.writeHead(418); res.end(); } });
       await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
       b = `http://127.0.0.1:${(srv.address() as { port: number }).port}/api/v1`;

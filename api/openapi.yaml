@@ -21,7 +21,16 @@ components:
       type: apiKey
       in: cookie
       name: mwa_session
-      description: The password session (MWA_ACCESS_PASSWORD). With no password configured, the local server is open.
+      description: The password session (MWA_ACCESS_PASSWORD). With no password configured, only requests made on the server's own machine are trusted without a device.
+    device:
+      type: apiKey
+      in: cookie
+      name: mwa_device
+      description: A paired device, as an HttpOnly cookie (the installed web app).
+    bearer:
+      type: http
+      scheme: bearer
+      description: A paired device's token (a phone app). Not subject to the cross-site check.
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -39,8 +48,46 @@ components:
           required: [code, message]
           additionalProperties: false
           properties:
-            code: { type: string, description: 'Stable, machine-readable: locked, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, client_too_old, bad_json, too_large, internal' }
+            code: { type: string, description: 'Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal' }
             message: { type: string, description: Plain words for a person. }
+    Scope:
+      type: string
+      enum: [read, act, approve, admin]
+    PairCode:
+      type: object
+      required: [code, expiresAt, pairUrl, scopes]
+      additionalProperties: false
+      properties:
+        code: { type: string, pattern: '^[A-Z2-9]{4}-[A-Z2-9]{4}$', description: One-time, valid 10 minutes. }
+        expiresAt: { type: integer }
+        pairUrl: { type: string, description: 'Show as a QR code: <origin>/pair#c=CODE (the fragment never reaches a server).' }
+        scopes: { type: array, items: { $ref: '#/components/schemas/Scope' } }
+    PairResult:
+      type: object
+      required: [deviceId, scopes]
+      additionalProperties: false
+      properties:
+        deviceId: { type: string }
+        scopes: { type: array, items: { $ref: '#/components/schemas/Scope' } }
+        token: { type: string, description: 'Only when the request asked for it (cookie false): keep it secret; it is shown once.' }
+    Device:
+      type: object
+      required: [id, name, platform, scopes, createdAt, lastSeen, revokedAt]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        name: { type: string }
+        platform: { type: ['string', 'null'] }
+        scopes: { type: array, items: { type: string } }
+        createdAt: { type: integer }
+        lastSeen: { type: ['integer', 'null'] }
+        revokedAt: { type: ['integer', 'null'] }
+    Revoked:
+      type: object
+      required: [revoked]
+      additionalProperties: false
+      properties:
+        revoked: { type: string }
     Meta:
       type: object
       required: [api, server, minClient, secure, features]
@@ -59,6 +106,8 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
 security:
   - session: []
+  - device: []
+  - bearer: []
 paths:
   /meta:
     get:
@@ -71,4 +120,74 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Meta' }
+        default: { $ref: '#/components/responses/Error' }
+  /pair/codes:
+    post:
+      operationId: createPairCode
+      summary: Make a one-time code to pair a phone (admin).
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '201':
+          description: The code; show pairUrl as a QR.
+          content: { application/json: { schema: { $ref: '#/components/schemas/PairCode' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /pair:
+    post:
+      operationId: pairDevice
+      summary: A phone spends a one-time code and becomes a paired device.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+                name: { type: string, maxLength: 60 }
+                platform: { type: string, maxLength: 30 }
+                cookie: { type: boolean, default: true, description: 'true: set the mwa_device cookie (web app); false: return the token (phone app).' }
+      responses:
+        '201':
+          description: Paired. Sets the mwa_device cookie unless cookie was false.
+          content: { application/json: { schema: { $ref: '#/components/schemas/PairResult' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /devices:
+    get:
+      operationId: listDevices
+      summary: The paired devices (admin).
+      responses:
+        '200':
+          description: Devices, newest first, revoked ones included.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                additionalProperties: false
+                properties:
+                  devices: { type: array, items: { $ref: '#/components/schemas/Device' } }
+        default: { $ref: '#/components/responses/Error' }
+  /devices/{id}:
+    delete:
+      operationId: revokeDevice
+      summary: Remove a device; its next request is refused (admin).
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Revoked.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Revoked' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /devices/me/sign-out:
+    post:
+      operationId: signOutThisDevice
+      summary: This device signs itself out; the browser is told to clear this site's cache and storage.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Signed out (Clear-Site-Data sent).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Revoked' } } }
         default: { $ref: '#/components/responses/Error' }

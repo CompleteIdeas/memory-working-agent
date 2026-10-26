@@ -8,6 +8,8 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 import { v1Routes } from '../src/api/v1.js';
 import { createV1 } from '../src/api/router.js';
+import { ALL_SCOPES, type Caller } from '../src/api/auth.js';
+const TEST_CALLER: Caller = { kind: 'session', id: 'session', scopes: new Set(ALL_SCOPES), viaCookie: true };
 import { resetAppDb } from '../src/v2/db.js';
 
 const spec = parse(readFileSync(new URL('../api/openapi.yaml', import.meta.url), 'utf8'));
@@ -58,7 +60,7 @@ describe('the contract and the route table agree', () => {
 let server: Server, base = '';
 beforeAll(async () => {
   resetAppDb(':memory:');
-  const v1 = createV1(v1Routes(), { authed: () => true, sameOrigin: () => true });
+  const v1 = createV1(v1Routes(), { authenticate: () => TEST_CALLER, sameOrigin: () => true });
   server = createServer(async (req, res) => { if (!(await v1(req, res))) { res.writeHead(404); res.end(); } });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
@@ -69,6 +71,11 @@ afterAll(() => server?.close());
 const CASES: { op: string; path: string; init?: RequestInit; status: number }[] = [
   { op: 'GET /meta', path: '/meta', status: 200 },
   { op: 'GET /meta', path: '/meta', init: { method: 'POST' }, status: 405 },
+  { op: 'POST /pair/codes', path: '/pair/codes', init: { method: 'POST', headers: { 'idempotency-key': 'contract-pair-01' } }, status: 201 },
+  { op: 'POST /pair', path: '/pair', init: { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: 'AAAA-AAAA' }) }, status: 400 },
+  { op: 'GET /devices', path: '/devices', status: 200 },
+  { op: 'DELETE /devices/{id}', path: '/devices/dev_nope', init: { method: 'DELETE', headers: { 'idempotency-key': 'contract-del-001' } }, status: 404 },
+  { op: 'POST /devices/me/sign-out', path: '/devices/me/sign-out', init: { method: 'POST', headers: { 'idempotency-key': 'contract-out-001' } }, status: 400 },
 ];
 
 describe('responses match the contract', () => {

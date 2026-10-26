@@ -21,17 +21,130 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/pair/codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Make a one-time code to pair a phone (admin). */
+        post: operations["createPairCode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/pair": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** A phone spends a one-time code and becomes a paired device. */
+        post: operations["pairDevice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The paired devices (admin). */
+        get: operations["listDevices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/devices/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove a device; its next request is refused (admin). */
+        delete: operations["revokeDevice"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/devices/me/sign-out": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** This device signs itself out; the browser is told to clear this site's cache and storage. */
+        post: operations["signOutThisDevice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         Error: {
             error: {
-                /** @description Stable, machine-readable: locked, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, client_too_old, bad_json, too_large, internal */
+                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal */
                 code: string;
                 /** @description Plain words for a person. */
                 message: string;
             };
+        };
+        /** @enum {string} */
+        Scope: "read" | "act" | "approve" | "admin";
+        PairCode: {
+            /** @description One-time */
+            code: string;
+            expiresAt: number;
+            /** @description Show as a QR code: <origin>/pair#c=CODE (the fragment never reaches a server). */
+            pairUrl: string;
+            scopes: components["schemas"]["Scope"][];
+        };
+        PairResult: {
+            deviceId: string;
+            scopes: components["schemas"]["Scope"][];
+            /** @description Only when the request asked for it (cookie false): keep it secret; it is shown once. */
+            token?: string;
+        };
+        Device: {
+            id: string;
+            name: string;
+            platform: string | null;
+            scopes: string[];
+            createdAt: number;
+            lastSeen: number | null;
+            revokedAt: number | null;
+        };
+        Revoked: {
+            revoked: string;
         };
         Meta: {
             /** @constant */
@@ -81,6 +194,134 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Meta"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createPairCode: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The code; show pairUrl as a QR. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PairCode"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    pairDevice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    code: string;
+                    name?: string;
+                    platform?: string;
+                    /**
+                     * @description true: set the mwa_device cookie (web app); false: return the token (phone app).
+                     * @default true
+                     */
+                    cookie?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Paired. Sets the mwa_device cookie unless cookie was false. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PairResult"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listDevices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Devices, newest first, revoked ones included. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        devices: components["schemas"]["Device"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    revokeDevice: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Revoked"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    signOutThisDevice: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed out (Clear-Site-Data sent). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Revoked"];
                 };
             };
             default: components["responses"]["Error"];
