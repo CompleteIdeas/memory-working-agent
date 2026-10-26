@@ -291,7 +291,7 @@ export class FixtureServer {
 
 // ---------- shapes ----------
 function turn(p: Partial<Turn> & Pick<Turn, 'id' | 'projectId' | 'ts' | 'message' | 'reply'>): Turn {
-  return { kind: 'chat', truncated: false, reason: null, tainted: false, runId: null, tryId: null, about: null, provenance: [], offer: null, legacySession: null, movedFrom: null, updatedSeq: 0, ...p };
+  return { kind: 'chat', truncated: false, reason: null, tainted: false, runId: null, tryId: null, about: null, provenance: [], offer: null, legacySession: null, movedFrom: null, updatedSeq: 0, ...p, source: p.source ?? 'typed' };
 }
 function summary(t: Turn | undefined): Turn | undefined {
   if (!t) return t;

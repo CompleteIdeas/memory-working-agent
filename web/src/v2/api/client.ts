@@ -39,6 +39,15 @@ type Json<P extends keyof paths, M extends 'get' | 'post' | 'patch' | 'delete', 
   paths[P][M] extends { responses: { [K in S]: { content: { 'application/json': infer T } } } } ? T : never;
 export type SyncResult = Json<'/sync', 'get', 200>;
 export type MailList = Json<'/mail', 'get', 200>;
+type Body<P extends keyof paths, M extends 'post'> =
+  paths[P][M] extends { requestBody?: { content: { 'application/json': infer T } } } ? T : never;
+export type AskBody = Body<'/ask', 'post'>;
+export type AskChoice = Body<'/ask/{id}/choose', 'post'>;
+export type AskStart = Schemas['AskStart'];
+export type AskChosen = Schemas['AskChosen'];
+export type AsksAbout = Json<'/ask', 'get', 200>;
+export type AskSuggestions = Json<'/ask/suggestions', 'get', 200>;
+export type AskView = Json<'/ask/{id}', 'get', 200>;
 export type ImportantGroup = 'today' | 'week' | 'earlier';
 export type ImportantList = Schemas['ImportantList'];
 export type SkippedList = Json<'/items/skipped', 'get', 200>;
@@ -249,6 +258,13 @@ export class MwaClient {
   /** The project's live run as server-sent events (opened with EventSource by a screen that follows an answer). */
   projectLiveUrl(id: string) { return this.url('/projects/{id}/live', { path: { id } }); }
   acceptProjectOffer(id: string, body: { message?: string } = {}, o: { key?: string } = {}) { return this.post<{ goal: string; message: string }>('/projects/{id}/offer/accept', { path: { id }, body, key: o.key }); }
+
+  // ---- Ask (A6) ----
+  ask(body: AskBody, o: { key?: string } = {}) { return this.post<AskStart>('/ask', { body, key: o.key }); }
+  listAsksAbout(about: string) { return this.get<AsksAbout>('/ask', { query: { about } }); }
+  askSuggestions(about: string) { return this.get<AskSuggestions>('/ask/suggestions', { query: { about } }); }
+  getAsk(id: string) { return this.get<AskView>('/ask/{id}', { path: { id } }); }
+  chooseAsk(id: string, body: AskChoice, o: { key?: string } = {}) { return this.post<AskChosen>('/ask/{id}/choose', { path: { id }, body, key: o.key }); }
 
   // ---- the Important list (A9) ----
   listImportant(q: { state?: 'open' | 'handled' | 'not-important'; group?: ImportantGroup } = {}) { return this.get<ImportantList>('/items', { query: q }); }
