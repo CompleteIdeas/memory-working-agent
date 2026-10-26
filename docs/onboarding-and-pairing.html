@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MWA Onboarding and Pairing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--onsig:#ffffff;--bone:#e8e6e1;--surface:#f6f4f0;--card:#ffffff;--ink:#1e2127;--dim:#57554f;--line:#d6d3cb;--signal:#b3380b;--accent:#ec4a18;--ok:#2c6435;--okbg:#e4efe4;--warnbg:#fbe9e1;--blue:#2f5d8a}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--onsig:#16181c;--bone:#16181c;--surface:#1c1f24;--card:#22262c;--ink:#e8e6e1;--dim:#a9a79f;--line:#343841;--signal:#ff8a5c;--accent:#ff6a33;--ok:#8fd19c;--okbg:#1f3324;--warnbg:#3a2219;--blue:#8db8e6}}
+:root[data-theme=dark]{--onsig:#16181c;--bone:#16181c;--surface:#1c1f24;--card:#22262c;--ink:#e8e6e1;--dim:#a9a79f;--line:#343841;--signal:#ff8a5c;--accent:#ff6a33;--ok:#8fd19c;--okbg:#1f3324;--warnbg:#3a2219;--blue:#8db8e6}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bone);color:var(--ink);font:16px/1.6 Archivo,system-ui,sans-serif}
+main{max-width:980px;margin:0 auto;padding:28px 16px 80px}
+h1{font-size:34px;line-height:1.15;letter-spacing:-.01em;margin:6px 0 10px}
+h2{font-size:24px;margin:52px 0 10px;padding-top:14px;border-top:1px solid var(--line)}
+h3{font-size:18px;margin:26px 0 6px}
+p,li{max-width:72ch}
+.kicker,.label{font:500 12px/1.4 'IBM Plex Mono',monospace;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+.lede{font-size:18px;color:var(--dim);max-width:66ch}
+a{color:var(--signal)}
+nav.toc{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:14px;margin:18px 0 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+.card h3{margin-top:0}
+.pick{border:2px solid var(--signal)}
+.tag{display:inline-block;font:500 11px 'IBM Plex Mono',monospace;letter-spacing:.06em;text-transform:uppercase;border:1px solid var(--line);border-radius:4px;padding:1px 7px;color:var(--dim);white-space:nowrap}
+.tag.ok{border-color:var(--ok);color:var(--ok)}
+.tag.todo{border-color:var(--signal);color:var(--signal)}
+table{border-collapse:collapse;width:100%;font-size:15px;margin:10px 0}
+th,td{border-bottom:1px solid var(--line);padding:9px 10px;text-align:left;vertical-align:top}
+th{font:500 12px 'IBM Plex Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
+.wrap{overflow-x:auto}
+.steps{counter-reset:s;list-style:none;padding:0;margin:0}
+.steps>li{counter-increment:s;position:relative;padding:0 0 22px 52px;max-width:none}
+.steps>li::before{content:counter(s);position:absolute;left:0;top:0;width:34px;height:34px;border-radius:50%;background:var(--ink);color:var(--bone);display:grid;place-items:center;font:600 15px 'IBM Plex Mono',monospace}
+.steps>li::after{content:"";position:absolute;left:16px;top:38px;bottom:4px;width:2px;background:var(--line)}
+.steps>li:last-child::after{display:none}
+.where{font-size:13px;color:var(--dim)}
+.phase{display:grid;grid-template-columns:minmax(0,1fr) 230px;gap:22px;align-items:start;margin:8px 0 6px}
+.phone{width:230px;border:8px solid var(--ink);border-radius:30px;background:var(--surface);padding:14px 12px 16px;min-height:420px;box-shadow:0 10px 30px rgba(0,0,0,.12);font-size:13.5px;line-height:1.45}
+.phone .bar{display:flex;justify-content:space-between;font:500 10px 'IBM Plex Mono',monospace;color:var(--dim);margin-bottom:12px}
+.phone h4{font-size:18px;margin:4px 0 8px;line-height:1.2}
+.phone .btn{display:block;text-align:center;border-radius:8px;padding:9px;margin-top:8px;border:1px solid var(--line);background:var(--card);font-weight:600}
+.phone .btn.p{background:var(--signal);border-color:var(--signal);color:var(--onsig)}
+.phone .note{font-size:12px;color:var(--dim)}
+.phone .qr{width:120px;height:120px;margin:10px auto;background:
+  conic-gradient(from 90deg at 25% 25%,var(--ink) 25%,transparent 0) 0 0/24px 24px,var(--card);border:6px solid var(--card);outline:1px solid var(--line)}
+.phone .field{border:1px solid var(--line);border-radius:6px;padding:7px 9px;background:var(--card);margin:6px 0}
+.callout{background:var(--card);border-left:4px solid var(--accent);border-radius:6px;padding:12px 16px;margin:16px 0}
+.callout.ok{border-left-color:var(--ok)}
+.layers svg{width:100%;height:auto;max-width:860px;display:block}
+.small{font-size:14px;color:var(--dim)}
+.faq dt{font-weight:600;margin-top:16px}
+.faq dd{margin:4px 0 0}
+@media (max-width:760px){.grid2{grid-template-columns:1fr}.phase{grid-template-columns:1fr}.phone{margin:0 auto}h1{font-size:28px}}
+</style>
+</head>
+<body>
+<main>
+<p class="kicker">MWA · how you set it up and pair your phone · 26 October 2026</p>
+<h1>From "install" to "it's on my phone and only I can reach it"</h1>
+<p class="lede">MWA lives in one place: your computer, or your Railway account. Your phone and your computer reach it through a private network that only your own devices can join. MWA is never just a website on the open internet. On top of that, each phone gets its own key, and you can take that key away at any time.</p>
+<nav class="toc" aria-label="Sections"><a href="#short">The short version</a><a href="#where">Where MWA lives</a><a href="#box">The secure box</a><a href="#journey">Onboarding, step by step</a><a href="#everyday">Everyday use and what-ifs</a><a href="#built">Built vs to build</a><a href="#decide">Decisions for you</a></nav>
+
+<h2 id="short">The short version</h2>
+<ol>
+  <li><b>Pick a home for MWA.</b> Your computer is free and keeps your data at home, but it only answers while the computer is on. Railway is always on, for a few dollars a month.</li>
+  <li><b>Put it in the box.</b> Install <a href="https://tailscale.com">Tailscale</a> on that home and on your phone, and sign both into the same account. Now only your devices can even see MWA. There's no public web address to attack.</li>
+  <li><b>Pair your phone.</b> MWA on your computer shows a QR code. Scan it with the phone, tap <i>Pair</i>, tap <i>Install</i>. MWA is on your home screen.</li>
+  <li><b>Connect your calendar and email</b> from the phone or the computer, or skip that for now.</li>
+</ol>
+<p>After that you just open the MWA icon, anywhere you have signal. That works whenever your computer is awake, or any time if MWA lives on Railway.</p>
+
+<h2 id="where">Where MWA lives</h2>
+<div class="grid2">
+  <div class="card">
+    <h3>On your computer</h3>
+    <p class="small">MWA runs quietly in the background on your Windows PC.</p>
+    <ul>
+      <li><b>Cost:</b> free (you pay only the AI usage).</li>
+      <li><b>Your data</b> stays on your own disk.</li>
+      <li><b>Reachable</b> only while the computer is on and awake. When it isn't, the phone app opens with what it last saw ("updated 7:30 AM · offline"). Anything you do waits and is sent when the computer is back.</li>
+      <li><b>Background jobs</b> (morning check-in, the weekday news watch) only run while the computer is on.</li>
+    </ul>
+  </div>
+  <div class="card pick">
+    <span class="tag ok">recommended for "use it anywhere"</span>
+    <h3>On Railway</h3>
+    <p class="small">MWA runs in your Railway account. Your production copy already does.</p>
+    <ul>
+      <li><b>Cost:</b> a few dollars a month for hosting, plus AI usage.</li>
+      <li><b>Always on.</b> Check-ins and watches run at night too, and your phone always reaches it.</li>
+      <li><b>Your data</b> sits on Railway's private storage volume, not on a public server.</li>
+      <li><b>Made private:</b> it joins your Tailscale network, and its public web address is <b>switched off</b>. So it is reachable only from your devices, exactly like the computer option.</li>
+    </ul>
+  </div>
+</div>
+<p class="small">You can start on the computer and move to Railway later. Moving means copying the data folder: memory, settings, sign-ins and the app database.</p>
+
+<h2 id="box">The secure box: five locks, not one</h2>
+<p>You asked for a secure box, not just a web page someone could try to break into. Here is how the layers stack. An attacker would have to get through every one of them, in order.</p>
+<div class="layers" role="img" aria-label="Five layers: private network, encrypted connection, MWA sign-in and phone keys, approvals for anything outward, and limited data on the phone">
+<svg viewBox="0 0 860 330" xmlns="http://www.w3.org/2000/svg">
+  <style>.t{font:600 15px Archivo,system-ui,sans-serif;fill:var(--ink)}.s{font:13px Archivo,system-ui,sans-serif;fill:var(--dim)}.n{font:600 12px 'IBM Plex Mono',monospace;fill:var(--signal)}</style>
+  <rect style="fill:var(--card);stroke:var(--line)" x="10" y="10" width="840" height="310" rx="18"/>
+  <text x="34" y="40" class="n">1 · PRIVATE NETWORK (TAILSCALE)</text>
+  <text x="34" y="60" class="s">Only devices signed into your Tailscale account can even see MWA. No public address, no open port.</text>
+  <rect style="fill:var(--surface);stroke:var(--line)" x="40" y="76" width="780" height="232" rx="14"/>
+  <text x="62" y="104" class="n">2 · ENCRYPTED, VERIFIED CONNECTION (HTTPS)</text>
+  <text x="62" y="124" class="s">https://mwa.&lt;your-tailnet&gt;.ts.net, which is also what lets the phone install the app.</text>
+  <rect style="fill:var(--card);stroke:var(--line)" x="70" y="140" width="720" height="158" rx="12"/>
+  <text x="92" y="166" class="n">3 · MWA SIGN-IN AND PHONE KEYS</text>
+  <text x="92" y="186" class="s">Your password (or a passkey) for admin. Each phone has its own key, which you can remove at any time.</text>
+  <rect style="fill:var(--surface);stroke:var(--line)" x="100" y="200" width="660" height="88" rx="10"/>
+  <text x="122" y="226" class="n">4 · YOUR OK FOR ANYTHING OUTWARD</text>
+  <text x="122" y="246" class="s">Email and calendar are drafts only; sending, paying or deleting waits for you.</text>
+  <text x="122" y="272" class="n">5 · LITTLE ON THE PHONE: NO EMAIL BODIES; SIGN-OUT WIPES IT</text>
+</svg>
+</div>
+<div class="wrap" tabindex="0" role="region" aria-label="Table, scrolls sideways on small screens"><table>
+<thead><tr><th>Layer</th><th>What it stops</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td><b>1 Private network</b>: Tailscale on the host and your phone. Optionally Tailscale's "device approval" and access rules, so a new device needs your OK even inside your account.</td><td>Anyone on the internet finding and attacking the app. There is nothing for them to connect to.</td><td><span class="tag ok">works today</span> in Docker/Railway (join with an auth key). <span class="tag todo">to build</span> one-click setup on the computer</td></tr>
+<tr><td><b>2 HTTPS</b> through <code>tailscale serve</code> (a certificate for your private address)</td><td>Eavesdropping. It's also what phones require before they'll install an app, store data offline or show notifications.</td><td><span class="tag todo">to build</span> (MWA already tells the phone whether its connection is secure)</td></tr>
+<tr><td><b>3 Sign-in and phone keys.</b> Your password for admin. Each phone gets its own revocable key with limited powers: read, act and approve, but not change connections, keys or budget.</td><td>Someone who somehow got onto your network, or a lost phone (remove it and it's refused on its next request).</td><td><span class="tag ok">built and security-reviewed</span> (server side). <span class="tag todo">to build</span> the screens. Passkey optional</td></tr>
+<tr><td><b>4 Approvals.</b> Email and calendar changes are drafts you confirm; anything that sends, pays, deletes or shares asks you first.</td><td>A mistake, or a trick hidden in an email or web page, turning into a real action.</td><td><span class="tag ok">works today</span></td></tr>
+<tr><td><b>5 Little on the phone.</b> The phone keeps today's view, your Important list and your calendar for offline use, but never email bodies or saved logins. "Sign out this phone" wipes it.</td><td>A lost or stolen phone exposing your mail.</td><td><span class="tag ok">sign-out built</span> <span class="tag todo">offline storage to build</span></td></tr>
+</tbody></table></div>
+<div class="callout"><b>Why not just a password on a public website?</b> That's how the current Railway copy works. It's the common approach, but the login page is visible to the whole internet, so anyone can try passwords or look for a weakness. With layer 1 there is no login page to find: a stranger's connection never reaches MWA at all. The password and phone keys stay as the second lock, in case a device inside your network is compromised.</div>
+
+<h2 id="journey">Onboarding, step by step</h2>
+<p class="small">What you'd see, in order. The phone frames show the screens; each step says where it happens. Steps in grey italics are one-time technical chores that a setup helper will do for you where it can.</p>
+
+<h3>Part A: set up the home (once, about 10 minutes)</h3>
+<div class="phase">
+<ol class="steps">
+  <li><b>Install MWA.</b> <span class="where">Computer:</span> run the MWA installer; it starts quietly at login. <span class="where">Railway:</span> deploy the MWA template into your account; it creates the service and a private storage volume.</li>
+  <li><b>Open the setup page once.</b> <span class="where">Computer:</span> it opens by itself at <code>http://localhost</code>, which only that computer can reach. <span class="where">Railway:</span> a temporary setup link from the Railway dashboard, valid until step 5.</li>
+  <li><b>Create your password</b> (or a passkey, so your fingerprint or face signs you in), and add your AI key. The key is saved in MWA's vault; the AI never sees it.</li>
+  <li><b>Put it in the box: connect Tailscale.</b> MWA asks you to sign into Tailscale. <span class="where">Computer:</span> install the Tailscale app and sign in. <span class="where">Railway:</span> paste a Tailscale auth key into the setup page; MWA joins your network as <code>mwa</code>. <i class="small">In your Tailscale admin page, switch on MagicDNS and HTTPS certificates (MWA links you straight to the right page).</i></li>
+  <li><b>MWA checks the box is closed.</b> It shows its private address, <code>https://mwa.&lt;your-tailnet&gt;.ts.net</code>, and runs three checks: the address works, HTTPS works, and no public address is still open. On Railway, it tells you to remove the public domain from the service and re-checks until you have. From then on, that private address is the only door.</li>
+</ol>
+<div class="phone" aria-hidden="true"><div class="bar"><span>Computer · setup</span><span>●●●</span></div>
+<h4>Your MWA is private</h4>
+<div class="field">✓ Reachable at https://mwa.tail1a2b.ts.net</div>
+<div class="field">✓ Secure connection (HTTPS)</div>
+<div class="field">✓ No public address open</div>
+<p class="note">Only devices signed into your Tailscale account can reach it.</p>
+<span class="btn p">Next: put MWA on your phone</span></div>
+</div>
+
+<h3>Part B: pair your phone (about 3 minutes)</h3>
+<div class="phase">
+<ol class="steps">
+  <li><b>On the phone, install Tailscale</b> from the Play Store or App Store and sign in with the same account. Leave it switched on; it uses very little battery. <span class="where">Once per phone.</span></li>
+  <li><b>On the computer: Settings › Put MWA on your phone.</b> MWA shows a QR code, good for 10 minutes and one phone. <span class="where">Pairing codes can only be made by you: signed in with your password, or on the host computer itself.</span></li>
+  <li><b>Scan it with the phone's camera.</b> It opens your private address with a page that says <i>"Pair this phone with MWA?"</i> and a name to change ("Robert's Pixel"). Tap <b>Pair</b>. The phone now holds its own key in a place web pages can't read.</li>
+  <li><b>Tap Install.</b> Android: Chrome offers <i>Install app</i>. iPhone: <i>Share › Add to Home Screen</i>; MWA shows a two-picture guide. The MWA icon is now on your home screen and opens full-screen like any app.</li>
+  <li><b>Allow notifications.</b> MWA asks once, explaining what it will send: things that need you, and jobs that finish. Never ads, and it respects your quiet hours.</li>
+</ol>
+<div class="phone" aria-hidden="true"><div class="bar"><span>Phone · camera link</span><span>10:12</span></div>
+<h4>Pair this phone with MWA?</h4>
+<p class="note">mwa.tail1a2b.ts.net · private to your devices</p>
+<div class="field">Name: Robert's Pixel</div>
+<p class="note">This phone will be able to read your day, act on it (mark handled, confirm, save drafts) and approve things. It can't change connections or keys. You can remove it in Settings at any time.</p>
+<span class="btn p">Pair</span><span class="btn">Not now</span></div>
+</div>
+
+<h3>Part C: connect your things (about 2 minutes, skippable)</h3>
+<div class="phase">
+<ol class="steps">
+  <li><b>"Connect your calendar and email so I can keep an eye on your day."</b> Two big buttons, <b>Google</b> and <b>Outlook</b>, each with one sentence of what it allows ("reads your mail and calendar, writes drafts; never sends"), plus <b>Skip for now</b>.</li>
+  <li><b>Sign in on Google's or Microsoft's own page.</b> MWA never sees your password, and the sign-in is kept on MWA's home, not on the phone. Works from the phone or the computer.</li>
+  <li><b>Today fills in:</b> your next events, what's worth a look, and a line saying what MWA will do overnight. Skipped? Today shows an example day, and MWA offers to connect when you ask for something that needs it ("Which calendar do you use?").</li>
+</ol>
+<div class="phone" aria-hidden="true"><div class="bar"><span>MWA app</span><span>●</span></div>
+<h4>Connect your calendar and email</h4>
+<p class="note">So I can keep an eye on your day.</p>
+<span class="btn">Google: mail and calendar</span>
+<span class="btn">Outlook: mail and calendar</span>
+<p class="note">Reads and writes drafts. Never sends, never deletes.</p>
+<span class="btn">Skip for now</span></div>
+</div>
+
+<h2 id="everyday">Everyday use and what-ifs</h2>
+<dl class="faq">
+  <dt>Every day</dt><dd>Tap the MWA icon. Today, Calendar, Important and Projects open straight away, from the phone's stored copy, then refresh. Notifications bring you to what needs you.</dd>
+  <dt>"Can't reach MWA"</dt><dd>The app says why in plain words and still shows the last saved view: <i>Tailscale is off on this phone</i> (one tap to open it), or <i>your computer is asleep or off</i> (things you do will be sent when it's back), or <i>no signal</i>.</dd>
+  <dt>I lost my phone</dt><dd>On the computer: Settings › Devices › <b>Remove</b> next to that phone. Its key stops working on its very next request. Also remove the phone in your Tailscale admin page, which takes it off your private network entirely. Its stored copy holds no email bodies or logins.</dd>
+  <dt>New phone</dt><dd>Install Tailscale, then Settings › Put MWA on your phone, scan, Pair, Install. About 3 minutes. Remove the old one from the list.</dd>
+  <dt>A second person, or a tablet</dt><dd>Pair it the same way; each device has its own key and shows up in the list with when it was last used.</dd>
+  <dt>Using it away from home</dt><dd>Works anywhere your phone has signal, as long as Tailscale is on: hotel Wi-Fi, mobile data, abroad. Your connection to MWA is encrypted end to end inside the private network, whatever network you're on.</dd>
+  <dt>The computer option and sleep</dt><dd>Set the computer to stay awake when plugged in, or accept that MWA pauses while it sleeps. Jobs due while it was off run when it wakes, and MWA tells you they were late.</dd>
+</dl>
+
+<h2 id="built">What's built and what's still to build</h2>
+<div class="wrap" tabindex="0" role="region" aria-label="Table, scrolls sideways on small screens"><table>
+<thead><tr><th>Piece</th><th>Status</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Phone keys: one-time codes, per-phone keys, limited powers, remove at any time, "sign out this phone"</td><td><span class="tag ok">built</span></td><td>Server side, committed on the v2 branch, attack-reviewed; 59 automated tests.</td></tr>
+<tr><td>"Only this computer" trust rules (no relay or proxy counts as the computer)</td><td><span class="tag ok">built</span></td><td>Closes the hole where, with no password, any device on your tailnet had full access to the new API.</td></tr>
+<tr><td>MWA telling the phone whether its connection is secure</td><td><span class="tag ok">built</span></td><td>Used by the install step to explain "use your https address".</td></tr>
+<tr><td>Railway or Docker joining your Tailscale network</td><td><span class="tag ok">exists</span></td><td>Auth key in the setup page or as <code>TAILSCALE_AUTHKEY</code>; no public port needed.</td></tr>
+<tr><td>HTTPS on the private address (<code>tailscale serve</code>) and the three "box is closed" checks</td><td><span class="tag todo">to build</span></td><td>Part of the installable-app slice.</td></tr>
+<tr><td>The pairing screens: QR in Settings, the "Pair this phone?" page, install guide, device list</td><td><span class="tag todo">to build</span></td><td>Part of the new interface (Settings and first run).</td></tr>
+<tr><td>Installable app with offline copy and notifications</td><td><span class="tag todo">to build</span></td><td>Phone app slices: install, offline data, push.</td></tr>
+<tr><td>Google and Outlook sign-in that works from a phone</td><td><span class="tag todo">to build</span></td><td>Needs the two decisions below.</td></tr>
+<tr><td>Passkey sign-in (fingerprint or face instead of a password)</td><td><span class="tag todo">proposed</span></td><td>Optional, recommended: it can't be phished or guessed.</td></tr>
+</tbody></table></div>
+
+<h2 id="decide">Decisions for you</h2>
+<ol>
+  <li><b>Where should MWA live?</b> My recommendation: <b>Railway, private</b> (Tailscale on, public address off), because you want it reachable anywhere and always running. Your production copy is on Railway today, but public.</li>
+  <li><b>Tailscale on your phone:</b> OK to require it? It's the piece that makes MWA invisible to the internet. Without it, MWA has to be a public website protected only by sign-in.</li>
+  <li><b>Passkey:</b> add fingerprint or face sign-in for admin, alongside the password?</li>
+  <li><b>Tailscale admin settings:</b> switch on MagicDNS and HTTPS certificates. (Your machine's private name appears in a public certificate log; the address still can't be reached by anyone outside your tailnet.)</li>
+  <li><b>Google and Microsoft sign-in from a phone:</b> a Google sign-in client set up for the web (published "In production", so sign-ins don't expire every 7 days), and a registered Microsoft app for one-tap Outlook, or keep Outlook as "advanced" for now.</li>
+</ol>
+<p class="small">Source: the v2 build plan (<code>docs/v2-build-plan.md</code>) and its security-review notes; the pairing code in <code>src/api/auth.ts</code> and <code>src/api/routes/devices.ts</code>; Tailscale support in <code>docker-entrypoint.sh</code>.</p>
+</main>
+</body>
+</html>

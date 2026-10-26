@@ -31,7 +31,7 @@ from a code-grounded plan (2026-10-26); file:line references there were checked 
 |---|---|---|---|---|
 | A0 | Foundations: app.db, router, /api/v1/meta, connector helper exports, token paths beside agent.db | M | – | done d84f9cc |
 | A1 | OpenAPI contract scaffold + generated types + contract tests | M | A0 | done d84f9cc |
-| A2 | Device auth and pairing, scopes, open-tailnet gap closed | M | A0 | |
+| A2 | Device auth and pairing, scopes, open-tailnet gap closed | M | A0 | done (see git log) |
 | A3a | Jobs and Tries: data, status function, agent/scheduler/serve wiring, migration (mwa migrate-v2) | L | A0 | |
 | A3b | Dollar cap (AgentBudget.maxUsd), estimates, job actions | M | A3a | |
 | A4 | Event log, /stream SSE with cursor, /sync | M | A0 | |
