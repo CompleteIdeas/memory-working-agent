@@ -2083,9 +2083,9 @@ export async function runAgent(opts: {
       if (pageNo) gatesFired.push('page-budget');
       // Interface replay 2026-10-26 (U02): a resumed background job checked its folder with python and PowerShell,
       // and in Assistant mode each such command became a card for the person — two "check-script" decisions beside
-      // a finished file. Listing and checking files has tools that need no approval; an unattended shell command
-      // that only does that is sent back to them instead of staged.
-      const shellNo = !draftNo && !pageNo && action.action === 'run_command' && opts.interactive === false && FILE_CHECK_CMD.test(String(args.command ?? ''))
+      // a finished file; in a chat the same checks were "exploratory reads staged as decisions" (F19). Listing and
+      // checking files has tools that need no approval; a shell command that only does that is sent to them instead.
+      const shellNo = !draftNo && !pageNo && action.action === 'run_command' && FILE_CHECK_CMD.test(String(args.command ?? ''))
         ? '(not run: to list or check files in the working folder use list_files and read_file — they need no approval, while a shell command would wait for the person)' : null;
       if (shellNo) gatesFired.push('shell-check');
       // BL-10: intent BEFORE the step, result after — a crash in between leaves an intent with no result.

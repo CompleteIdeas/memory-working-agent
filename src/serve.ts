@@ -56,6 +56,7 @@ import { setTranscriptProducer, stopHeartbeat } from './transcript.js';
 import { scanSources } from './onboard.js';
 import { buildRegistry } from './tools/build.js';
 import { AGENT_BROWSER_HEADER } from './tools/browser.js';
+import { goalsMentioned, WORK_NOTE_HEAD } from './work-note.js';
 import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, runApproved, recentApprovalOutcomes, recentAutoApproved } from './tools/approval.js';
 import { logger, readLogs, type LogLevel } from './logger.js';
 import { runAgent } from './agent.js';
@@ -390,20 +391,24 @@ async function deliverStepUpCode(personId: string, code: string): Promise<boolea
  *  newsletter's own conversation asked the person to upload it — the job had paused before writing it, and the
  *  chat had no idea there was a goal. Titles are the person's own words; a state noted after outside content is
  *  left out (the Work tab shows it). At most five, kept short. */
-async function workNote(memory: MwaMemory, sessionId: string, person: string | null): Promise<string> {
+async function workNote(memory: MwaMemory, sessionId: string, person: string | null, message: string): Promise<string> {
   try {
     const me = resolvePersonId({ channel: 'web', name: (person ?? '').trim() || undefined });
     const [goals, records, jobs] = await Promise.all([memory.listGoals(), memory.listGoalRecords(), memory.pendingScheduled()]);
     const open = goals.filter((g) => g.status !== 'done' && (!g.person || g.person === me)).slice(0, 5);
     if (!open.length) return '';
-    const lines = open.map((g) => {
+    // Only the goals this message is about (interface slice replay 2026-10-26: told about every goal with "offer to
+    // continue it", a run answered "write me an informal note" by writing the board briefing instead).
+    const about = goalsMentioned(message, open.map((g) => ({ ...g, fromHere: records.find((r) => r.goalId === g.id)?.conv === sessionId })));
+    if (!about.length) return '';
+    const lines = about.map((g) => {
       const rec = records.find((r) => r.goalId === g.id);
       const state = !rec ? 'no note yet' : rec.trust === 'untrusted' ? 'see the Work tab' : (rec.text.split('\n')[0] ?? '').replace(/^Where we are on "[^"]*" \(goal [^)]*\): /, '').slice(0, 160);
       const here = rec?.conv === sessionId ? ' (from this conversation)' : '';
       const running = jobs.some((t) => t.goal === g.id && !t.recur) ? '; a background job is on it' : '';
       return `- goal ${g.id.slice(0, 8)} "${g.title.slice(0, 90)}"${here}: ${g.status.replace('_', ' ')}${running}; ${state}`;
     });
-    return `\n\n(Work you are doing for the person — they see it in the Work tab. If they ask about one of these, say where it stands; if it stopped partway, offer to continue it rather than asking them for files:\n${lines.join('\n')})`;
+    return `\n\n${WORK_NOTE_HEAD}\n${lines.join('\n')})`;
   } catch { return ''; }
 }
 
@@ -476,7 +481,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, url: URL): Promis
     // BL-70: the person sees this chat's folder in the Files tab, and a link by file name opens it there.
     const added = uploadsIn(resolve(cfg.workspace ?? './mwa-workspace'), sessionFolder(sessionId));
     const filesNote = `\n\n(Files you write here are saved for the person and appear in their Files tab; when you mention one, link it by its path, e.g. [the notes](notes.md). Files from their earlier chats and jobs are theirs too: list_files with \`search\` finds one by name, and read_file opens it by that full path.${added.length ? ` Files they added to this chat: ${added.join(', ')}.` : ''})`;
-    const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${message}` : message) + askNote + filesNote + await workNote(memory, sessionId, url.searchParams.get('person'));
+    const instruction = (ctx && !ctxTainted ? `Recent conversation so far:\n${ctx}\n\nNew request: ${message}` : message) + askNote + filesNote + await workNote(memory, sessionId, url.searchParams.get('person'), message);
 
     // Per-person Profile (S1–S6): resolve who's talking, build their prompt context (identity guard +
     // primer + intake hint, with PII redacted on an identity mismatch). Off-switch MWA_PERSON_PROFILE=0.
