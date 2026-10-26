@@ -12,6 +12,9 @@ MWA drives Chromium through Playwright (`src/tools/browser.ts`). The agent has s
 - `browser_type` types into a field by its number.
 - `browser_select` chooses an option in a dropdown.
 - `browser_scroll` scrolls a screen down or up and reads what is there, so long and lazy-loaded pages can be read.
+- `browser_find` lists the lines of the page that hold some words (with their neighbours) and scrolls to the first, for a long page.
+- `browser_back` goes back to the page before; when a click opened a new tab, it closes that tab and returns to the page it came from. A new tab a click opens becomes the page the conversation reads, and the description says so.
+- A file a site offers (a PDF, a CSV) is saved into the conversation's folder under the site's name (never overwriting), and the next description names it; `read_file` opens it and it can be linked for the person.
 - `browser_screenshot` saves a picture of the page for you.
 
 **It stays signed in.** Each person has their own browser profile on the machine (`MWA_BROWSER_DIR`, `/data/browser` in Docker). Sign in to a site once, and later visits are already signed in.

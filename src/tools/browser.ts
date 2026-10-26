@@ -24,7 +24,7 @@
  *
  * playwright-core is loaded on first use, so MWA runs without it; the tools then say the browser isn't installed.
  */
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { RegisteredTool, ToolContext, JobAllow } from './registry.js';
 import { ToolRefusal } from './registry.js';
@@ -41,7 +41,9 @@ type Page = {
   locator(s: string): { first(): Locator }; screenshot(o?: object): Promise<Buffer>;
   waitForLoadState(s?: string, o?: object): Promise<void>; waitForTimeout(ms: number): Promise<void>;
   frames(): Frame[]; mainFrame(): Frame; mouse: { wheel(dx: number, dy: number): Promise<void> }; isClosed(): boolean; close(): Promise<void>;
+  on(event: string, handler: (x: never) => void): void; goBack(o?: object): Promise<unknown>;
 };
+type Download = { suggestedFilename(): string; saveAs(path: string): Promise<void> };
 type CdpSession = { send(method: string, params?: object): Promise<unknown>; on(event: string, handler: (ev: never) => void): void };
 type Context = {
   newPage(): Promise<Page>; pages(): Page[]; close(): Promise<void>;
@@ -212,7 +214,7 @@ async function launch(person: string): Promise<Session> {
   mkdirSync(dir, { recursive: true });
   const ctx = await pw.chromium.launchPersistentContext(dir, {
     headless: true, executablePath: process.env.MWA_CHROMIUM_PATH || undefined,
-    viewport: { width: 1280, height: 900 }, acceptDownloads: false, javaScriptEnabled: true,
+    viewport: { width: 1280, height: 900 }, acceptDownloads: true, javaScriptEnabled: true, // 4d: a file a site offers lands in the conversation's folder
     args: ['--disable-dev-shm-usage', '--no-first-run'],
   });
   await ctx.setExtraHTTPHeaders({ [AGENT_BROWSER_HEADER]: '1' });
@@ -240,8 +242,50 @@ async function pageFor(ctx: ToolContext, open: boolean): Promise<Page> {
   }
   const page = await s.ctx.newPage();
   await guardPage(s.ctx, page);
+  adopt(s, key, page, ctx.sandboxDir);
   s.pages.set(key, page);
   return page;
+}
+
+// Pending list 2026-10-26, 4d and 4e: downloads land in the conversation's folder; a new tab a click opens becomes
+// the page the conversation reads (browser_back closes it and returns); notes about either are said with the next
+// page description.
+const notices = new WeakMap<Page, string[]>(); // said once, with the next description
+const pendingDownloads = new WeakMap<Page, Set<Promise<void>>>(); // a description waits for a download that just started
+const openerOf = new WeakMap<Page, Page>(); // a tab a click opened → the page it came from
+const note = (page: Page, text: string) => { const l = notices.get(page) ?? []; l.push(text); notices.set(page, l); };
+/** A file name a site suggests, made safe for the folder and unique in it. */
+function downloadName(dir: string, suggested: string): string {
+  const base = (suggested || 'download').replace(/[^\w.() -]+/g, '_').replace(/^\.+/, '').slice(0, 120) || 'download';
+  let name = base;
+  for (let i = 2; existsSync(join(dir, name)) && i < 100; i++) name = base.replace(/(\.[^.]*)?$/, ` (${i})$1`);
+  return name;
+}
+function adopt(s: Session, key: string, page: Page, dir: string): void {
+  page.on('download', (d: Download) => {
+    const name = downloadName(dir, d.suggestedFilename());
+    const p = d.saveAs(join(dir, name)).then(() => note(page, `(downloaded ${name} to your folder — read_file opens it, and you can link it for the person)`), (e: Error) => note(page, `(a download started but could not be saved: ${String(e.message).slice(0, 80)})`));
+    const set = pendingDownloads.get(page) ?? new Set(); set.add(p); pendingDownloads.set(page, set);
+    void p.finally(() => set.delete(p));
+  });
+  page.on('popup', (popup: Page) => {
+    adopting.set(page, (async () => {
+      try { await guardPage(s.ctx, popup); } catch { try { await popup.close(); } catch { /* */ } return; }
+      openerOf.set(popup, page);
+      adopt(s, key, popup, dir);
+      s.pages.set(key, popup);
+      note(popup, '(a click opened a new tab: this is it, and it is now the page you read; browser_back closes it and returns to the page before)');
+    })());
+  });
+}
+const adopting = new WeakMap<Page, Promise<void>>(); // a new tab being taken over after a click on this page
+/** After a click: a moment for a download or a new tab to announce itself, then the conversation's current page. */
+async function settled(ctx: ToolContext, page: Page): Promise<Page> {
+  await page.waitForTimeout(400);
+  const a = adopting.get(page); if (a) { adopting.delete(page); await Promise.race([a, new Promise((r) => setTimeout(r, 3_000))]); }
+  const s = sessions.get(who(ctx));
+  const now = s?.pages.get(pageKey(ctx));
+  return now && !now.isClosed() ? now : page;
 }
 
 /** The page (or one frame of it) as text with its controls numbered from `start`; the numbers are written onto the
@@ -287,6 +331,9 @@ async function landedBadly(page: Page): Promise<string | null> {
 }
 
 async function describe(page: Page): Promise<string> {
+  // a download the last click started: let it land first, so the description can name the file
+  const dl = pendingDownloads.get(page);
+  if (dl?.size) await Promise.race([Promise.allSettled([...dl]), new Promise((r) => setTimeout(r, 5_000))]);
   const bad = await landedBadly(page);
   if (bad) throw new ToolRefusal(bad);
   const main = page.mainFrame();
@@ -314,8 +361,19 @@ async function describe(page: Page): Promise<string> {
     snap.below > 40 ? `(${Math.round(snap.below)}px more below — browser_scroll to see it)` : '',
     snap.more > 0 ? `(${snap.more} more controls not listed — browser_scroll or click into a section)` : '',
   ].filter(Boolean);
-  return [`Page: ${await page.title()} — ${page.url()}`, '', text, '', 'Controls (use the number with browser_click / browser_type / browser_select):', ...snap.controls, ...frameLines, ...notes].join('\n');
+  const said = notices.get(page) ?? []; notices.delete(page);
+  return [...said, `Page: ${await page.title()} — ${page.url()}`, '', text, '', 'Controls (use the number with browser_click / browser_type / browser_select):', ...snap.controls, ...frameLines, ...notes].join('\n');
 }
+
+/** Lines of the page's text that hold `needle`, with their neighbours, for browser_find. */
+const FIND = `((needle) => {
+  const lines = (document.body ? document.body.innerText : '').split('\\n').map((l) => l.trim()).filter(Boolean);
+  const q = needle.toLowerCase(); const hits = [];
+  for (let i = 0; i < lines.length && hits.length < 8; i++) if (lines[i].toLowerCase().includes(q)) hits.push([lines[i - 1] || '', lines[i], lines[i + 1] || ''].filter(Boolean).join(' / ').slice(0, 300));
+  const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+  let n; while ((n = walker.nextNode())) { if (n.textContent && n.textContent.toLowerCase().includes(q) && n.parentElement) { n.parentElement.scrollIntoView({ block: 'center' }); break; } }
+  return { hits, total: lines.filter((l) => l.toLowerCase().includes(q)).length };
+})`;
 
 /** A navigation error in words the person can act on. */
 const navError = (what: string, e: unknown): string => {
@@ -382,7 +440,7 @@ export function browserTools(): RegisteredTool[] {
         try { await page.waitForLoadState('domcontentloaded', { timeout: NAV_TIMEOUT }); } catch { /* a click that doesn't navigate */ }
         // A click inside a frame navigates the frame, which the page's load state does not report: give it a moment.
         if (frame !== page.mainFrame()) for (let i = 0; i < 20 && !frame.isDetached() && frame.url() === before; i++) await page.waitForTimeout(100);
-        return describe(page);
+        return describe(await settled(ctx, page)); // a download or a new tab the click started is in the description
       },
     },
     {
@@ -421,6 +479,44 @@ export function browserTools(): RegisteredTool[] {
         try { await loc.selectOption({ label: option }, { timeout: 5_000 }); }
         catch { try { await loc.selectOption(option, { timeout: 5_000 }); } catch (e) { return `(couldn't choose "${option}" in [${ref}]: ${(e as Error).message.split('\n')[0].slice(0, 160)})`; } }
         return `Chose "${option}" in [${ref}].`;
+      },
+    },
+    {
+      def: {
+        name: 'browser_back',
+        description: 'Go back to the page before this one (closes a tab a click opened, returning to the page it came from) and read it.',
+        parameters: { type: 'object', properties: {} },
+      },
+      handler: async (_args, ctx) => {
+        const page = await pageFor(ctx, false);
+        const opener = openerOf.get(page);
+        if (opener && !opener.isClosed()) { // a tab a click opened: close it, the page before is current again
+          const s = await launch(who(ctx));
+          s.pages.set(pageKey(ctx), opener);
+          try { await page.close(); } catch { /* */ }
+          note(opener, '(closed the tab the click had opened; this is the page before it)');
+          return describe(opener);
+        }
+        try { await page.goBack({ waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT }); }
+        catch (e) { return navError('go back', e); }
+        return describe(page);
+      },
+    },
+    {
+      def: {
+        name: 'browser_find',
+        description: 'Find words on the open page: the lines that hold them (with their neighbours), scrolled to the first; then the page as it is now. For a long page, instead of scrolling screen by screen.',
+        parameters: { type: 'object', properties: { text: { type: 'string', description: 'the words to find (case does not matter)' } }, required: ['text'] },
+      },
+      handler: async (args, ctx) => {
+        const page = await pageFor(ctx, false);
+        const needle = String(args.text ?? '').trim().slice(0, 200);
+        if (!needle) throw new ToolRefusal('(give the words to find)');
+        let found: { hits: string[]; total: number } = { hits: [], total: 0 };
+        try { found = await page.mainFrame().evaluate<{ hits: string[]; total: number }>(`(${FIND})(${JSON.stringify(needle)})`); } catch { /* a page that will not answer: nothing found */ }
+        if (!found.total) return `(no line on this page holds "${needle}" — it may be further down a page that loads as you scroll, inside a frame, or worded differently)\n\n${await describe(page)}`;
+        const head = `Found "${needle}" in ${found.total} line${found.total === 1 ? '' : 's'}${found.total > found.hits.length ? ` (first ${found.hits.length})` : ''}; scrolled to the first:`;
+        return [head, ...found.hits.map((h) => `- ${h}`), '', await describe(page)].join('\n');
       },
     },
     {

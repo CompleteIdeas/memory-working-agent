@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CONSEQUENTIAL, GO_AHEAD, AGENT_BROWSER_HEADER, BROWSING_GUIDE, browserTools, closeBrowsers } from '../src/tools/browser.js';
@@ -25,6 +25,11 @@ describe('what counts as a consequential click, and as going ahead', () => {
   it('the person\'s go-ahead, in their own words', () => {
     for (const m of ['Yes, submit it', 'go ahead', 'Confirmed — pay it']) expect([m, GO_AHEAD.test(m)]).toEqual([m, true]);
     for (const m of ['Fill out the entry form for Tessa', 'What does the page say?']) expect([m, GO_AHEAD.test(m)]).toEqual([m, false]);
+  });
+  it('finding words and going back read the page: not outward actions against an unattended run\'s three (4e)', async () => {
+    const { countsAsReach, effectOf } = await import('../src/tools/governance.js');
+    for (const t of ['browser_find', 'browser_back', 'browser_open', 'browser_scroll']) expect([t, effectOf(t), countsAsReach(t)]).toEqual([t, 'external', false]);
+    for (const t of ['browser_click', 'browser_type']) expect([t, countsAsReach(t)]).toEqual([t, true]);
   });
 });
 
@@ -80,12 +85,16 @@ describe.skipIf(!hasPlaywright)('in a real browser', () => {
         if (path === '/walled') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(`<html><head><title>Walled</title></head><body><h1>Results are below the notice</h1><p>Fox Run results: Tessa 3rd.</p><iframe src="/consent" style="position:fixed;inset:0;width:100%;height:100%;border:0"></iframe></body></html>`); return; }
         if (path === '/consent') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(`<html><body><p>We use cookies. Terms of Use &amp; Privacy.</p><a role="button" href="/accepted">Accept and Continue</a></body></html>`); return; }
         if (path === '/accepted') { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<html><body><p>Thanks.</p></body></html>'); return; }
+        // 4d: a file the site offers; 4e: a link that opens a new tab
+        if (path === '/entries.csv') { res.writeHead(200, { 'content-type': 'text/csv', 'content-disposition': 'attachment; filename="entries.csv"' }); res.end('name,level\nTessa,Novice\n'); return; }
+        if (path === '/popup') { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<html><head><title>Popup</title></head><body><p>The stabling form.</p><a href="/">Home</a></body></html>'); return; }
         res.writeHead(200, { 'content-type': 'text/html' });
         res.end(`<html><head><title>Entries</title></head><body><h1>Fox Run entries close Nov 13</h1>
           <form method="post" action="/done"><input name="user" placeholder="Username"><input name="pw" type="password" placeholder="Password">
           <button type="submit">Submit entry</button></form><a href="/next">Next page</a>
           <select name="level"><option>Novice</option><option>Training</option><option>Preliminary</option></select>
-          <div style="height:3000px"></div><p>Bottom of the page: stabling closes Nov 10.</p></body></html>`);
+          <div style="height:3000px"></div><p>Bottom of the page: stabling closes Nov 10.</p>
+          <a href="/entries.csv" download>Download the entries CSV</a> <a href="/popup" target="_blank">Stabling form (new tab)</a></body></html>`);
       });
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
@@ -199,6 +208,43 @@ describe.skipIf(!hasPlaywright)('in a real browser', () => {
     expect(await tool('browser_page').handler({}, ctx({ session: 'conv-look', runId: 'look-1' }))).not.toMatch(/__mwa_marks/);
     await tool('browser_type').handler({ ref: 2, text: 'hunter2' }, ctx({ session: 'conv-look', runId: 'look-1' }));
     await expect(tool('browser_look').handler({}, ctx({ session: 'conv-look', runId: 'look-1', brainModel: 'openai/gpt-6.1-sol' }))).rejects.toThrow(/password box on this page holds a value/);
+  }, 60_000);
+
+  // 4d: a file a site offers lands in the conversation's folder, and the next description names it.
+  it('saves a download to the folder and says so', async () => {
+    setPreset('developer');
+    const c = ctx({ session: 'conv-dl', runId: 'dl-1' });
+    const page = await tool('browser_open').handler({ url: `${base}/` }, c) as string;
+    expect(page).toMatch(/\[6\] link "Download the entries CSV"/);
+    const after = await tool('browser_click').handler({ ref: 6 }, c) as string;
+    expect(after).toMatch(/\(downloaded entries\.csv to your folder/);
+    expect(readFileSync(join(cfgDir, 'entries.csv'), 'utf8')).toBe('name,level\nTessa,Novice\n');
+    // the same name again does not overwrite
+    const again = await tool('browser_click').handler({ ref: 6 }, c) as string;
+    expect(again).toMatch(/\(downloaded entries \(2\)\.csv to your folder/);
+  }, 60_000);
+
+  // 4e: a click that opens a new tab, browser_back, and browser_find.
+  it('a new tab becomes the page; back closes it; back otherwise goes to the page before; find scrolls to the words', async () => {
+    setPreset('developer');
+    const c = ctx({ session: 'conv-tabs', runId: 'tabs-1' });
+    await tool('browser_open').handler({ url: `${base}/` }, c);
+    const popup = await tool('browser_click').handler({ ref: 7 }, c) as string;
+    expect(popup).toMatch(/a click opened a new tab: this is it/);
+    expect(popup).toMatch(/Page: Popup/);
+    expect(await tool('browser_page').handler({}, c)).toMatch(/Page: Popup/); // it stays the conversation's page
+    const back = await tool('browser_back').handler({}, c) as string;
+    expect(back).toMatch(/closed the tab the click had opened/);
+    expect(back).toMatch(/Page: Entries/);
+    // an ordinary navigation, then back
+    const next = await tool('browser_click').handler({ ref: 4 }, c) as string;
+    expect(next).toMatch(new RegExp(`${base}/next`));
+    expect(await tool('browser_back').handler({}, c)).toMatch(new RegExp(`Page: Entries — ${base}/\\n`));
+    // find: the line, its neighbours, scrolled there
+    const found = await tool('browser_find').handler({ text: 'STABLING closes' }, c) as string;
+    expect(found).toMatch(/Found "STABLING closes" in 1 line; scrolled to the first:\n- .*Bottom of the page: stabling closes Nov 10\./);
+    expect(found).toMatch(/scrolled \d+px down the page/);
+    expect(await tool('browser_find').handler({ text: 'unicorns' }, c)).toMatch(/no line on this page holds "unicorns"/);
   }, 60_000);
 
   // F05 / F14: dropdowns and long pages.

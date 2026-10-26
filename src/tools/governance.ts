@@ -62,7 +62,7 @@ const TOOL_CATEGORY: Record<string, ActionCategory> = {
   connect_account: 'write-local', connection_status: 'read',
   vault_list: 'read', vault_request: 'write-local', vault_forget: 'write-local',
   // BL-64: the agent browser reaches outside; what a page says is outside content (not listed as own or local below).
-  browser_open: 'external', browser_page: 'external', browser_scroll: 'external', browser_look: 'external', browser_click: 'external', browser_type: 'external', browser_select: 'external', browser_screenshot: 'write-local',
+  browser_open: 'external', browser_page: 'external', browser_scroll: 'external', browser_look: 'external', browser_find: 'external', browser_back: 'external', browser_click: 'external', browser_type: 'external', browser_select: 'external', browser_screenshot: 'write-local',
   // NOTE: MCP-bridged tools are named `<server>__<tool>` at runtime and cannot appear here.
   // Defaulting those to 'external' is deliberate — they run third-party code. The one exception is
   // below: a tool whose server declares it read-only.
@@ -208,7 +208,7 @@ export interface TripwireResult { tripped: boolean; reason?: string }
 /** Hard test 2026-10-23: opening a page in the agent browser is a read, as a fetch is — round 1 paused two research
  *  jobs after three browser_open calls. It stays 'external' for the action log; clicks and typing still count, and
  *  the page budget (MWA_PAGE_BUDGET) is what bounds reading. */
-const BROWSER_READS = new Set(['browser_open', 'browser_page', 'browser_scroll', 'browser_look']); // reading the page, in four ways
+const BROWSER_READS = new Set(['browser_open', 'browser_page', 'browser_scroll', 'browser_look', 'browser_find', 'browser_back']); // reading the page, in six ways
 export function countsAsReach(tool: string): boolean { return effectOf(tool) === 'external' && !BROWSER_READS.has(tool); }
 
 /**
