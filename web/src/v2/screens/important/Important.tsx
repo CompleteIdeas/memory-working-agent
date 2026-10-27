@@ -138,7 +138,7 @@ function ImportantProvider({ children, go, openMail, onGone }: {
 }
 
 /** The groups, the skipped lines, Handled · N and Your rules. `limit`: Today's top N with See all. */
-function ImportantList({ limit, go, idp = '' }: { limit?: number; go?: (v: View) => void; idp?: string }) {
+function ImportantList({ limit, go, idp = '', exclude }: { limit?: number; go?: (v: View) => void; idp?: string; exclude?: ReadonlySet<string> }) {
   const items = useItems();
   const ui = useUi();
   const actions = useItemActions();
@@ -150,7 +150,9 @@ function ImportantList({ limit, go, idp = '' }: { limit?: number; go?: (v: View)
     const away = connection === 'offline' || connection === 'unreachable';
     return <p className="empty" role="status">{items.error ?? (away ? 'I can’t reach your helper right now. Your list will show when you’re back online.' : 'Loading your list…')}</p>;
   }
-  const open = items.groups.flatMap((g) => g.items);
+  // W2: Today leaves out what a Needs-you card already shows (it is not repeated)
+  const shown = (it: ImportantItem) => !exclude?.has(it.id);
+  const open = items.groups.flatMap((g) => g.items).filter(shown);
   const row = (it: ImportantItem) => (
     <ItemRow key={it.id} it={it} now={now} swiped={ui.swiped === it.id} busy={ui.busy(it)}
       onOpen={() => ui.open(it)} onAction={() => ui.run(it)} onSwipe={() => ui.swipe(it.id)} onUnswipe={() => ui.swipe(null)}
@@ -176,7 +178,7 @@ function ImportantList({ limit, go, idp = '' }: { limit?: number; go?: (v: View)
         return (
           <section key={g.group} aria-labelledby={`ig-${g.group}${idp}`}>
             <h2 className="sh" id={`ig-${g.group}${idp}`}>{g.label}</h2>
-            {g.items.length ? <ul className="items panel">{g.items.map(row)}</ul> : <p className="empty" style={{ textAlign: 'left', padding: '6px 4px' }}>All clear.</p>}
+            {g.items.some(shown) ? <ul className="items panel">{g.items.filter(shown).map(row)}</ul> : <p className="empty" style={{ textAlign: 'left', padding: '6px 4px' }}>All clear.</p>}
             {line && (
               <p className="skipline">{line} · <button type="button" className="linkish quietlink" aria-haspopup="dialog" onClick={() => ui.showSkipped(g.group)}>Show them</button></p>
             )}
@@ -206,8 +208,8 @@ function ImportantList({ limit, go, idp = '' }: { limit?: number; go?: (v: View)
 }
 
 /** Today's "Worth a look": the same list (top `limit` on a phone). */
-export function ImportantBody({ go, limit }: { go?: (v: View) => void; limit?: number }) {
-  return <ImportantProvider go={go}><ImportantList go={go} limit={limit} idp="-today" /></ImportantProvider>;
+export function ImportantBody({ go, limit, exclude }: { go?: (v: View) => void; limit?: number; exclude?: ReadonlySet<string> }) {
+  return <ImportantProvider go={go}><ImportantList go={go} limit={limit} idp="-today" exclude={exclude} /></ImportantProvider>;
 }
 
 /** The Important tab. */

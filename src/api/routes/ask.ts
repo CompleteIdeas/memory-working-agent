@@ -27,7 +27,7 @@ import { GENERAL, getProject, suggestProject, getTurn, apiTurn } from '../../v2/
 import { appDb } from '../../v2/db.js';
 import { projectRouteDeps, type ChatExtras, type ChatStart } from './projects.js';
 import { insideRoot } from '../../files.js';
-import { documentSize } from '../../tools/builtins.js';
+import { documentSize, sizeFromBytes } from '../../tools/builtins.js';
 import { aboutTime, aboutUsd, usdText, CAP_MAX_USD } from '../../v2/estimate.js';
 import { appendTurn } from '../../conversations.js';
 import type { HistoryStats } from '../../v2/estimate.js';
@@ -48,6 +48,8 @@ export interface AskRouteDeps {
   now?: () => number;
   tz?: () => string;
   countTimeoutMs?: number;
+  /** tests: how a file is counted (default read_document's documentSize) — e.g. one that never finishes */
+  documentSize?: (src: string, buf: Buffer) => Promise<{ pages: number; reads: number }>;
 }
 let deps: AskRouteDeps | null = null;
 export function setAskRouteDeps(d: AskRouteDeps | null): void { deps = d; }
@@ -76,9 +78,12 @@ async function countFile(root: string, rel: string): Promise<AttachedFile | null
   try { const st = await stat(abs); if (!st.isFile()) return null; size = st.size; } catch { return null; }
   if (size > MAX_FILE_BYTES) throw new ApiError(400, 'file_too_large', `That file is too large to read here: ${basename(rel).slice(0, 80)}`);
   const buf = await readFile(abs);
-  const guess = { pages: Math.max(1, Math.round(size / 25_000)), reads: Math.max(1, Math.round(size / 25_000 * 3000 / 8000)) };
+  // unreadable or too slow: the same size rule either way (sizeFromBytes)
+  const { pages, reads } = sizeFromBytes(size);
+  const guess = { pages, reads };
+  const count = deps?.documentSize ?? documentSize;
   const counted = await Promise.race([
-    documentSize(abs, buf).then((s) => ({ pages: s.pages, reads: s.reads })).catch(() => guess),
+    count(abs, buf).then((s) => ({ pages: s.pages, reads: s.reads })).catch(() => guess),
     new Promise<typeof guess>((r) => { const t = setTimeout(() => r(guess), deps?.countTimeoutMs ?? 15_000); (t as { unref?: () => void }).unref?.(); }),
   ]);
   return { path: rel, name: basename(rel), ...counted };

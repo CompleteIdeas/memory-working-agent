@@ -250,7 +250,7 @@ export class MwaClient {
   getCalendar(q: { from?: string; to?: string } = {}) { return this.get<CalendarView>('/calendar', { query: q }); }
   getCalendarAccounts() { return this.get<CalendarAccounts>('/calendar/accounts'); }
   refreshCalendar(o: { key?: string } = {}) { return this.post<CalendarAccounts>('/calendar/refresh', { key: o.key }); }
-  createCalendarDraft(body: { title: string; start: string; end?: string; allDay?: boolean; location?: string; notes?: string; provider?: 'google' | 'outlook'; projectId?: string }, o: { key?: string } = {}) {
+  createCalendarDraft(body: { title: string; start: string; end?: string; allDay?: boolean; location?: string; notes?: string; provider?: 'google' | 'outlook'; projectId?: string; tz?: string }, o: { key?: string } = {}) {
     return this.post<DraftResult>('/calendar/drafts', { body, key: o.key });
   }
   confirmCalendarDraft(id: string, body: { provider?: 'google' | 'outlook' } = {}, o: { key?: string } = {}) { return this.post<DraftResult>('/calendar/drafts/{id}/confirm', { path: { id }, body, key: o.key }); }
@@ -304,9 +304,11 @@ export class MwaClient {
 
   // ---- Today (A10) ----
   getToday() { return this.get<Today>('/today'); }
-  markTodaySeen(o: { key?: string } = {}) { return this.post<TodaySeen>('/today/seen', { key: o.key }); }
-  finishCheckin(o: { key?: string } = {}) { return this.post<TodayAck>('/today/checkin/done', { key: o.key }); }
-  finishWrap(o: { key?: string } = {}) { return this.post<TodayAck>('/today/wrap/done', { key: o.key }); }
+  /** `seenAt`: the `now` of the Today that was on screen (clamped by the server to [last look, now]). */
+  markTodaySeen(body: { seenAt?: number } = {}, o: { key?: string } = {}) { return this.post<TodaySeen>('/today/seen', { body, key: o.key }); }
+  /** `day`: the local day the tap dismissed — a tap queued yesterday is ignored by the server. */
+  finishCheckin(body: { day?: string } = {}, o: { key?: string } = {}) { return this.post<TodayAck>('/today/checkin/done', { body, key: o.key }); }
+  finishWrap(body: { day?: string } = {}, o: { key?: string } = {}) { return this.post<TodayAck>('/today/wrap/done', { body, key: o.key }); }
   async deleteTriageRule(id: string, o: { key?: string } = {}) { return (await this.call<unknown>('DELETE', '/triage/rules/{id}', { path: { id }, key: o.key })).body; }
 
   // ---- W5: who am I, sign-in, settings, spending, accounts, saved logins, files ----
