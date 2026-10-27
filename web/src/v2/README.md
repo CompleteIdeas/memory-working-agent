@@ -125,8 +125,7 @@ moving a turn, Stop, Steer and the offer.
 
 ## Not yet (later slices)
 
-Reconnecting and connecting a calendar from v2 (W5: Today and the Calendar point to Settings and say so), Ask about an
-event or a Done line answered in place (W4's AskAbout; they open the Ask sheet with a chip meanwhile), rules in Settings (W5; "Your rules" opens
+Reconnecting and connecting a calendar from v2 (W5: Today and the Calendar point to Settings and say so), rules in Settings (W5; "Your rules" opens
 from the bottom of Important until then), the month's spending limit (the API has no spending summary yet: the sheet shows what the jobs cost),
 voice (P4: the mic opens the Ask sheet), an /api/v1 upload (W4 uses the legacy one until W5), sign-in
 and pairing screens (W5: a 401 shows "Sign in to continue"), the service worker's offline shell for v2 (P1/P2).
