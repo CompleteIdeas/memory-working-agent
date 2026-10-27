@@ -455,7 +455,8 @@ describe('accounts and devices', () => {
   it('Connect starts the existing flow: Outlook gives a code; Google without its app needs the setup first', async () => {
     const post = (p: string) => fetch(`${base}/accounts/${p}/connect`, { method: 'POST', headers: { 'idempotency-key': k() } });
     expect((await j(await post('outlook'))).body).toMatchObject({ kind: 'code', provider: 'outlook', code: 'QWER-TY12', url: 'https://microsoft.com/devicelogin', expiresIn: 900 });
-    expect((await j(await post('google'))).body).toMatchObject({ kind: 'setup', provider: 'google', url: '/?ui=v1' });
+    // S3: the setup is Settings › Connections in this app (it was the classic app)
+    expect((await j(await post('google'))).body).toMatchObject({ kind: 'setup', provider: 'google', url: '/?view=connections&at=google' });
   });
   it('a failing flow is a 503 the app can retry with the same key', async () => {
     setSettingsRouteDeps({ passwordSet: () => false, checkPassword: () => false,

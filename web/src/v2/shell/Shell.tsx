@@ -15,7 +15,7 @@ import { applyUpdate, serverTooOld } from '../../pwa/register';
 import { updateWords } from '../../pwa/update';
 import { offlineWords } from '../../pwa/offline';
 import { WorkingSheet, type AskAbout } from './sheets';
-import { Assistant, Calendar, Important, Plugins, Settings, Today, type View } from './screens';
+import { Assistant, Calendar, Connections, Important, Plugins, Settings, Today, type View } from './screens';
 import { AskSheet } from '../screens/ask/AskSheet';
 import { Projects } from '../screens/projects/Projects';
 import { Arrow, Person, Spark, TabCalendar, TabImportant, TabProjects, TabToday, Close } from './icons';
@@ -29,7 +29,7 @@ const TABS: { view: View; label: string; icon: ReactNode }[] = [
   { view: 'inbox', label: 'Important', icon: <TabImportant /> },
   { view: 'projects', label: 'Projects', icon: <TabProjects /> },
 ];
-const SCREENS = { today: Today, calendar: Calendar, inbox: Important, projects: Projects, settings: Settings, plugins: Plugins, assistant: Assistant };
+const SCREENS = { today: Today, calendar: Calendar, inbox: Important, projects: Projects, settings: Settings, plugins: Plugins, assistant: Assistant, connections: Connections };
 
 function useMedia(q: string): boolean {
   const [m, setM] = useState(() => typeof window !== 'undefined' && window.matchMedia(q).matches);

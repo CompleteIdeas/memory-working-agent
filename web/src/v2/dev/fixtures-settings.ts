@@ -10,12 +10,14 @@
  *   unpaired    no password, and this is a phone on the network: pairing only (the code K7PQ-M4XZ works)
  *   phone       signed in as the paired phone "Robert’s Pixel" (read, act, approve; no admin)
  *   first-run   this computer, first-run setup not done yet, nothing connected
+ *   hosted, conn-setup, reconnect: Settings › Connections' scenarios (./fixtures-connections.ts)
  *   (any other) this computer signed in with the password, set up, Google connected
  * EVERYTHING HERE IS EXAMPLE DATA.
  */
 import type { Account, Device, FileRow, HelperSettings, Me, Spending, VaultEntry } from '../api/client';
 import { PluginFixtures } from './fixtures-plugins';
 import { AssistantFixtures } from './fixtures-assistant';
+import { ConnectionFixtures } from './fixtures-connections';
 
 type Resp = { status: number; body: unknown; headers?: Record<string, string> };
 const err = (status: number, code: string, message: string): Resp => ({ status, body: { error: { code, message } } });
@@ -32,11 +34,13 @@ const norm = (c: string) => c.toUpperCase().replace(/[^A-Z0-9]/g, '');
 /** Which requests answer with nobody signed in (the server's public routes). */
 const PUBLIC = new Set(['GET /meta', 'GET /me', 'POST /session', 'POST /pair']);
 /** Which need admin (a paired phone gets 403). */
-const ADMIN: RegExp[] = [/^POST \/session\/sign-out-everywhere$/, /^POST \/pair\/codes$/, /^GET \/devices$/, /^(DELETE|PATCH) \/devices\/[^/]+$/, /^PATCH \/(settings|spending)$/, /^POST \/accounts\/[^/]+\/connect$/, /^GET \/vault$/, /^POST \/vault\/forget$/, /^PATCH \/push\/settings$/,
+const ADMIN: RegExp[] = [/^POST \/session\/sign-out-everywhere$/, /^POST \/pair\/codes$/, /^GET \/devices$/, /^(DELETE|PATCH) \/devices\/[^/]+$/, /^PATCH \/(settings|spending)$/, /^POST \/accounts\/[^/]+\/(connect|cancel)$/, /^GET \/vault$/, /^POST \/vault\/forget$/, /^PATCH \/push\/settings$/,
   // S1: every plug-in change
   /^(POST|PUT|DELETE) \/plugins(\/|$)/,
   // S2: every change to the assistant itself (and its model list, which uses the saved key)
-  /^(POST|PUT|DELETE) \/assistant(\/|$)/];
+  /^(POST|PUT|DELETE) \/assistant(\/|$)/,
+  // S3: every change to a connection
+  /^(POST|PUT|DELETE) \/connections(\/|$)/];
 
 export class SettingsFixtures {
   passwordSet: boolean;
@@ -46,13 +50,16 @@ export class SettingsFixtures {
   devices: Device[];
   settings: HelperSettings;
   spending: Spending;
-  accounts: Account[];
+  /** the Settings "Connected" list, from Settings › Connections' state (./fixtures-connections.ts) */
+  get accounts(): Account[] { return this.connections.accounts(); }
   vault: VaultEntry[];
   files = new Map<string, FileRow[]>();
   /** S1: Settings › Plug-ins (./fixtures-plugins.ts) */
   plugins: PluginFixtures;
   /** S2: Settings › Your assistant (./fixtures-assistant.ts) */
   assistant: AssistantFixtures;
+  /** S3: Settings › Connections (./fixtures-connections.ts) */
+  connections: ConnectionFixtures;
   push = { kinds: { approval: true, waiting: true, result: true, morning: true }, morning: '07:30', timeZone: 'America/New_York', quietHours: { value: '22:00-07:00' as string | null, fixed: false, invalid: false } };
   private codes = new Set<string>([norm(FIXTURE_PAIR_CODE)]);
   private n = 0;
@@ -87,10 +94,7 @@ export class SettingsFixtures {
       background: [{ purpose: 'triage-headers', label: 'Sorting your mail', usd: 0.31, calls: 42 }, { purpose: 'triage-deep-read', label: 'Reading newsletters for dates', usd: 0.08, calls: 3 }],
       defaults: { handoffMaxUsd: 5, continueMaxUsd: 20, perFireUsd: 0.25, perFireFixed: false },
     };
-    this.accounts = [
-      { provider: 'google', label: 'Google', what: 'Calendar and Gmail. I can read them and make drafts. I never send.', connected: !first, needsReconnect: false, method: first ? null : 'sign-in', connect: 'browser' },
-      { provider: 'outlook', label: 'Outlook', what: 'Calendar and mail. I can read them and make drafts. I never send.', connected: false, needsReconnect: false, method: null, connect: 'code' },
-    ];
+    this.connections = new ConnectionFixtures(scenario);
     this.vault = first ? [] : [
       { name: 'Barn booking site', site: 'bookings.example', fields: ['username', 'password'], savedAt: now - 9 * DAY },
       { name: 'USEF', site: 'usef.example', fields: ['member number', 'password'], savedAt: now - 30 * DAY },
@@ -122,10 +126,11 @@ export class SettingsFixtures {
     if (pl) return pl;
     const as = this.assistant.read(path);
     if (as) return as;
+    const cn = this.connections.read(path);
+    if (cn) return cn;
     if (path === '/devices') return { status: 200, body: { devices: this.devices } };
     if (path === '/settings') return { status: 200, body: this.settings };
     if (path === '/spending') return { status: 200, body: this.spending };
-    if (path === '/accounts') return { status: 200, body: { accounts: this.accounts } };
     if (path === '/vault') return { status: 200, body: { entries: this.vault } };
     // P3: notifications (no push service in fixture mode: the list is empty and the settings are kept here)
     if (path === '/push/subscriptions') return { status: 200, body: { vapidPublicKey: FIXTURE_VAPID, keysReset: null, subscriptions: [], settings: this.push } };
@@ -143,6 +148,8 @@ export class SettingsFixtures {
     if (pl) return pl;
     const as = this.assistant.write(method, path, body);
     if (as) return as;
+    const cn = this.connections.write(method, path, body); // S3 (and Connect, from the same state)
+    if (cn) return cn;
     if (method === 'POST' && path === '/session') {
       if (!this.passwordSet) return err(409, 'no_password', 'No password is set on this helper. Pair this device with a code from the computer instead.');
       if (typeof b.password !== 'string' || !b.password) return err(400, 'bad_body', 'Type your password.');
@@ -243,14 +250,6 @@ export class SettingsFixtures {
       }
       this.spending = sp;
       return { status: 200, body: sp };
-    }
-    if (method === 'POST' && (m = /^\/accounts\/([^/]+)\/connect$/.exec(path))) {
-      const p = decodeURIComponent(m[1]);
-      if (p !== 'google' && p !== 'outlook') return err(404, 'not_found', 'Connect Google or Outlook.');
-      // the example world: the sign-in "finishes" at once (nothing really opens)
-      this.accounts = this.accounts.map((a) => (a.provider === p ? { ...a, connected: true, needsReconnect: false, method: 'sign-in' } : a));
-      if (p === 'outlook') return { status: 200, body: { kind: 'code', provider: p, code: 'QWER-TY12', url: 'https://microsoft.com/devicelogin', expiresIn: 900, message: 'Go to microsoft.com/devicelogin and enter the code QWER-TY12. I’ll show Outlook as connected once you finish.' } };
-      return { status: 200, body: { kind: 'browser', provider: p, url: 'https://accounts.google.com/', message: 'Approve access in the Google window that opens, then come back. This works on the computer your helper runs on.' } };
     }
     if (method === 'POST' && path === '/vault/forget') {
       const name = String(b.name ?? '').trim();

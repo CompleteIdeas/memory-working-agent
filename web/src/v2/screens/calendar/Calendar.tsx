@@ -29,6 +29,7 @@ import { Back, Chev, Spark } from '../../shell/icons';
 import { AskAbout } from '../ask/AskAbout';
 import { DayAgenda, EventSheet, Warn } from './Agenda';
 import { useNotNow } from './notnow';
+import { openConnectionsAt } from '../settings/useConnections';
 import './calendar.css';
 
 const DRAFT_NOTE_PREFILL = 'Draft a note asking to move one of them';
@@ -131,8 +132,8 @@ export function Calendar({ desk, go }: ScreenProps) {
     ? <>{honest.note}</>
     : honest.state === 'partial' ? <>Nothing on the calendars I can see.</>
       : cal.loading && !shown.length ? <>Loading…</> : <><span className="big" aria-hidden="true">☀︎</span>Nothing planned. A free day!</>;
-  // W6: opens the classic app for this visit only (`?ui=v1` is not remembered)
-  const offerConnect = () => { store.notice('Connecting a calendar from the new app comes with the next update. Opening the classic app…'); location.assign(`${location.pathname}?ui=v1`); };
+  // S3: connecting (or reconnecting) a calendar is Settings › Connections, at the account that needs it
+  const offerConnect = () => { openConnectionsAt(acc.accounts?.find((a) => a.connected && a.needsReconnect)?.provider ?? null); go('connections'); };
   const pickDay = (d: number) => { setSelected(d); setSay(null); };
   const onKeyStrip = (e: KeyboardEvent<HTMLDivElement>) => {
     const i = days.indexOf(selected);

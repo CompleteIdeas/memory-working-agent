@@ -133,6 +133,15 @@ const CALLS: Record<string, (c: MwaClient) => unknown> = {
   grantFolder: (c) => c.grantFolder('/home/me/Documents'),
   removeFolder: (c) => c.removeFolder('/home/me/Documents'),
   setStyle: (c) => c.setStyle('direct'),
+  // S3
+  getConnections: (c) => c.getConnections(),
+  connectGmailAppPassword: (c) => c.connectGmailAppPassword('you@gmail.com', 'abcd efgh ijkl mnop'),
+  saveGoogleApp: (c) => c.saveGoogleApp('123-abc.apps.googleusercontent.com', 'GOCSPX-x'),
+  saveOutlookApp: (c) => c.saveOutlookApp('11111111-2222-3333-4444-555555555555', 'common'),
+  saveTelegram: (c) => c.saveTelegram('123456789:ABCdefGHIjklMNOpqrSTUvwxYZ0123456789'),
+  saveTailscale: (c) => c.saveTailscale('tskey-auth-example', 'mwa'),
+  disconnect: (c) => c.disconnect('telegram'),
+  cancelConnect: (c) => c.cancelConnect('outlook'),
 };
 const URL_ONLY = new Set(['streamUrl', 'calendarDraftIcsUrl', 'projectLiveUrl']); // GET links opened by EventSource or a download
 

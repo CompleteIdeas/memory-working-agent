@@ -66,4 +66,16 @@ describe.skipIf(!SH)('docker-entrypoint.sh: tailscale serve and MWA_PUBLIC_URL',
     expect(off.calls).not.toMatch(/serve/);
     expect(off.publicUrl).toBe('');
   });
+  // v2 S3 review: the name saved in Settings › Connections is the one Tailscale joins with
+  const upName = (calls: string) => /up .*--hostname=(\S*)/.exec(calls)?.[1];
+  it('the name: the environment wins, then the one saved in /data/.env, then mwa; only letters, digits and dashes', () => {
+    expect(upName(run({ serveOk: true }).calls)).toBe('mwa');
+    expect(upName(run({ serveOk: true, envFile: 'TAILSCALE_HOSTNAME=barn-helper\n' }).calls)).toBe('barn-helper');
+    expect(upName(run({ serveOk: true, envFile: 'TAILSCALE_HOSTNAME="Barn"\n' }).calls)).toBe('barn');
+    expect(upName(run({ serveOk: true, env: { TAILSCALE_HOSTNAME: 'fromenv' }, envFile: 'TAILSCALE_HOSTNAME=barn\n' }).calls)).toBe('fromenv');
+    const odd = run({ serveOk: true, envFile: 'TAILSCALE_HOSTNAME=x$(touch pwned);y --ssh\n' });
+    expect(upName(odd.calls)).toBe('xtouchpwnedy--ssh');
+    expect(odd.calls).not.toMatch(/ --ssh/);
+    expect(run({ serveOk: true, envFile: 'TAILSCALE_HOSTNAME=barn\n' }).out).toMatch(/Tailscale up as 'barn'/);
+  }, 60_000); // six runs of the script: slow when the whole suite runs at once
 });

@@ -119,3 +119,13 @@ select.setinput { appearance: auto; }
 .asfolder .plughead .grow { flex: 1; min-width: 0; }
 .asform { padding: 14px 0 4px; }
 .asform .acts { margin-top: 10px; }
+
+/* S3: Settings › Connections */
+.connsteps { margin: 0 0 6px 20px; padding: 0; list-style: decimal; color: var(--dim); font-size: 15px; }
+.connsteps li { margin: 4px 0; overflow-wrap: anywhere; }
+.connsteps b { color: var(--ink); }
+.connuri { display: block; margin-top: 4px; padding: 6px 8px; border-radius: 6px; background: var(--card-2); user-select: all; }
+.connro { margin-top: 8px; }
+.conncheck { margin-top: 12px; }
+.conncode .paircode { margin: 10px 0; }
+.connpage .setcard > .soft { margin-top: 10px; }

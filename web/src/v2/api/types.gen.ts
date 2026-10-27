@@ -1224,8 +1224,27 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start connecting (or reconnecting) Google or Outlook (admin): a sign-in page to open, a code, or a setup note. */
+        /** Start connecting (or reconnecting) Google or Outlook (admin): a sign-in page to open, a code, or a setup note. S3: method picks Outlook's code or browser sign-in (Google has browser only); readOnly asks for read access only (no drafts). */
         post: operations["connectAccount"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/accounts/{provider}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: "google" | "outlook";
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S3: stop waiting for a sign-in that was started (admin): Outlook's code poller and the browser sign-in's listener. Nothing that finishes later is saved. */
+        post: operations["cancelConnect"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1621,6 +1640,127 @@ export interface paths {
         put: operations["saveAssistantStyle"];
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** S3: Google, Outlook, Telegram and Tailscale: connected or not, how, and which sign-ins work here (read). Never a secret. */
+        get: operations["getConnections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/gmail/app-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S3: check a Gmail address and app password by signing in over IMAP, then save them (admin). 400 check_failed with Gmail's words (the password taken out). The password is write-only. */
+        post: operations["connectGmailAppPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/google/app": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** S3: your own Google sign-in app (admin): the client ID (…apps.googleusercontent.com) and secret. Write-only. */
+        put: operations["saveGoogleApp"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/outlook/app": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** S3: your own Microsoft app (admin): the Application (client) ID, a GUID, and optionally a tenant. */
+        put: operations["saveOutlookApp"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/telegram": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** S3: check a Telegram bot token with Telegram, then save it (admin). 400 check_failed with Telegram's words (the token taken out). Write-only. */
+        put: operations["saveTelegram"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/tailscale": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** S3: a Tailscale auth key (tskey-auth-…) and optionally the name on your tailnet (admin). With a key already saved, the key may be left out to change only the name; an empty name goes back to the default (mwa). Used when the helper next starts. Write-only. */
+        put: operations["saveTailscale"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/{service}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                service: "google" | "outlook" | "telegram" | "tailscale";
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** S3: disconnect (admin). google: the sign-in, the app password and your Google sign-in app are removed, and what was cached from Google Calendar; outlook: the sign-in and your Microsoft app; telegram: the bot token; tailscale: the auth key and name (it leaves the tailnet at the next restart). */
+        delete: operations["disconnectService"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2792,7 +2932,7 @@ export interface components {
             kind: "browser" | "code" | "setup";
             /** @enum {string} */
             provider: "google" | "outlook";
-            /** @description browser: the sign-in page; code: where to type the code; setup: the full settings. */
+            /** @description browser: the sign-in page; code: where to type the code; setup: Settings › Connections in this app (/?view=connections&at=<provider>). */
             url: string;
             /** @description code: what to type. */
             code?: string;
@@ -2960,6 +3100,56 @@ export interface components {
                 /** @description Chat models: whether adding plug-ins from npm would be available with this one as the brain (null for image models). */
                 npmAfter: boolean | null;
             }[];
+        };
+        /** @description S3: Google, Outlook, Telegram and Tailscale: what is connected, how, and which sign-ins work here. Never a key, client secret, app password or token: only whether one is saved. */
+        Connections: {
+            google: {
+                connected: boolean;
+                /** @enum {string|null} */
+                method: "sign-in" | "app-password" | null;
+                /** @description The Gmail address connected with an app password (null otherwise). */
+                address: string | null;
+                /** @description Your own Google sign-in app (client ID and secret) is saved. The values are never sent. */
+                appSaved: boolean;
+                needsReconnect: boolean;
+                /**
+                 * @description Google sign-in in a browser window: ready; needs your own sign-in app first (setup); or cannot finish because the helper runs on a server (server).
+                 * @enum {string}
+                 */
+                signIn: "ready" | "setup" | "server";
+            };
+            outlook: {
+                connected: boolean;
+                /** @description Signing in with a code at microsoft.com/devicelogin works here. */
+                code: boolean;
+                /** @description Your own Microsoft app (client ID) is saved. */
+                appSaved: boolean;
+                tenant: string | null;
+                /** @description The redirect address your own Microsoft app must list. */
+                redirectUri: string;
+                needsReconnect: boolean;
+                /**
+                 * @description Signing in in a browser window, as for Google.
+                 * @enum {string}
+                 */
+                browser: "ready" | "setup" | "server";
+            };
+            telegram: {
+                /** @description A bot token is saved. The token is never sent. */
+                connected: boolean;
+            };
+            tailscale: {
+                /** @description An auth key is saved (used when the helper starts). The key is never sent. */
+                keySaved: boolean;
+                /** @description The name on your tailnet (null: the default, mwa). */
+                hostname: string | null;
+            };
+            hosted: boolean;
+            host: string;
+        };
+        ConnectionChange: {
+            connections: components["schemas"]["Connections"];
+            message: string;
         };
     };
     responses: {
@@ -5098,7 +5288,15 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    method?: "browser" | "code";
+                    readOnly?: boolean;
+                };
+            };
+        };
         responses: {
             /** @description What to do next. */
             200: {
@@ -5107,6 +5305,34 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConnectStart"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    cancelConnect: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                provider: "google" | "outlook";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stopped (or nothing was waiting). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        cancelled: boolean;
+                        message: string;
+                    };
                 };
             };
             default: components["responses"]["Error"];
@@ -5867,6 +6093,203 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AssistantChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The connections. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Connections"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    connectGmailAppPassword: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    address: string;
+                    /** @description 16 letters; spaces are ignored. */
+                    appPassword: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Done. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    saveGoogleApp: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    clientId: string;
+                    clientSecret: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Done. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    saveOutlookApp: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    clientId: string;
+                    tenant?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Done. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    saveTelegram: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    token: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Done. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    saveTailscale: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    authKey?: string;
+                    /** @description Empty: back to the default name (mwa). */
+                    hostname?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Done. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    disconnectService: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                service: "google" | "outlook" | "telegram" | "tailscale";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Disconnected. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionChange"];
                 };
             };
             default: components["responses"]["Error"];

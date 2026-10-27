@@ -31,7 +31,7 @@ export interface StreamMessage { event: string; data: unknown; id?: number }
 type Entity = 'job' | 'calendar' | 'project' | 'turn' | 'mail' | 'item' | 'ask';
 interface Ev { seq: number; entity: Entity; id: string; op: 'upsert' | 'delete' }
 
-export const FIXTURE_SCENARIOS = ['N00', 'N06', 'states', 'old-client', 'sorting', 'thread-long', ...TODAY_SCENARIOS, 'signed-out', 'unpaired', 'phone', 'first-run', 'npm-off', 'model-fixed'] as const;
+export const FIXTURE_SCENARIOS = ['N00', 'N06', 'states', 'old-client', 'sorting', 'thread-long', ...TODAY_SCENARIOS, 'signed-out', 'unpaired', 'phone', 'first-run', 'npm-off', 'model-fixed', 'hosted', 'conn-setup'] as const;
 export type FixtureScenario = (typeof FIXTURE_SCENARIOS)[number];
 export const FIXTURE_SERVER_VERSION = 'fixtures';
 

@@ -27,6 +27,7 @@ import { DayAgenda, EventSheet } from '../calendar/Agenda';
 import { ConflictAskAbout, useDraftNote } from '../calendar/Calendar';
 import { AskAbout } from '../ask/AskAbout';
 import { useNotNow } from '../calendar/notnow';
+import { openConnectionsAt, providerOfAccount } from '../settings/useConnections';
 import './today.css';
 
 const Check = () => (
@@ -94,8 +95,9 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
       case 'calendar': toCalendar(o.date, o.id); return;
       case 'item': if (o.date) toCalendar(o.date); else go('inbox'); return;
       case 'mail': go('inbox'); return; // TODO(W3 follow-up): open this message in the reader directly
+      // S3: reconnecting (or connecting a calendar) is Settings › Connections, at that account
+      case 'reconnect': openConnectionsAt(providerOfAccount(o.id)); go('connections'); return;
       // W6: what the new app can't do yet opens the classic app for this visit only (`?ui=v1` is not remembered)
-      case 'reconnect': say('Reconnecting from the new app comes with the next update. Opening Settings in the classic app…'); location.assign(CLASSIC); return;
       case 'approval': case 'approvals': say('Approvals open in the classic app for now…'); location.assign(CLASSIC); return;
       default: say('That is in your helper’s activity list in the classic app.');
     }

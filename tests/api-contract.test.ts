@@ -40,6 +40,7 @@ import { setPluginRouteDeps } from '../src/api/routes/plugins.js';
 import { addMcpServer } from '../src/connectors/registry.js';
 import { loadConfig } from '../src/config.js';
 import { setAssistantDeps } from '../src/assistant-settings.js';
+import { setConnectionDeps } from '../src/connection-settings.js';
 
 const spec = parse(readFileSync(new URL('../api/openapi.yaml', import.meta.url), 'utf8'));
 const METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
@@ -187,6 +188,12 @@ beforeAll(async () => {
   setAssistantDeps({ testProvider: async (_p, m, k) => (k?.includes('bad') ? { ok: false, message: 'failed: 401' } : { ok: true, message: `${m} works` }),
     listModels: async () => [{ id: 'openai/gpt-6.1-sol', name: 'GPT-6.1 Sol' }], saveEnv: (kv) => { for (const k of Object.keys(kv)) s2Keys.add(k); }, hasEnv: (n) => s2Keys.has(n) });
   ids.folder = mkdtempSync(join(tmpdir(), 'mwa-s2-contract-'));
+  // S3: connections over a map instead of the .env; Gmail's and Telegram's checks pass unless the input says bad
+  const s3Env = new Map<string, string>();
+  setConnectionDeps({ checkGmail: async (_a, p) => (p.includes('bad') ? { ok: false, message: 'Sign-in failed' } : { ok: true, message: 'ok' }),
+    checkTelegram: async (t) => (t.includes('bad') ? { ok: false, message: 'Telegram failed: Unauthorized' } : { ok: true, message: 'Bot @x_bot works ✓' }),
+    saveEnv: (kv) => { for (const [k, v] of Object.entries(kv)) s3Env.set(k, v); }, removeEnv: (ns) => { for (const k of ns) s3Env.delete(k); },
+    forgetGoogle: () => {}, forgetMicrosoft: () => {}, env: (n) => s3Env.get(n), googleSignedIn: () => false, outlookSignedIn: () => false, outlookCodeReady: () => true, cancelGoogle: () => false, cancelOutlook: () => false, fromHost: () => false });
   // P3: a password (so a session cookie names its subscriptions' owner) and a push service that always accepts
   configureSessions({ password: 'contract-push-pw' });
   setPushDeps({ transport: async () => ({ status: 201 }) });
@@ -195,7 +202,7 @@ beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
-afterAll(() => { server?.close(); setSettingsRouteDeps(null); setPluginRouteDeps(null); delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN; delete process.env.TAVILY_API_KEY; configureSessions({ password: '' }); setPushDeps(null); for (const k of ['MWA_CONFIG_PATH', 'MWA_TOKEN_LOG', 'MWA_VAULT_PATH']) delete process.env[k]; setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); setTodayDeps(null); setAssistantDeps(null); });
+afterAll(() => { server?.close(); setSettingsRouteDeps(null); setPluginRouteDeps(null); delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN; delete process.env.TAVILY_API_KEY; configureSessions({ password: '' }); setPushDeps(null); for (const k of ['MWA_CONFIG_PATH', 'MWA_TOKEN_LOG', 'MWA_VAULT_PATH']) delete process.env[k]; setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); setTodayDeps(null); setAssistantDeps(null); setConnectionDeps(null); });
 
 /** One request per operation (and a few error cases). Slices append theirs. */
 const ids: Record<string, string> = {};
@@ -412,6 +419,22 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /assistant/folders/remove', path: '/assistant/folders/remove', init: () => ({ ...post(), body: JSON.stringify({ path: ids.folder }) }), status: 404 },
   { op: 'PUT /assistant/style', path: '/assistant/style', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ style: 'direct' }) }), status: 200 },
   { op: 'PUT /assistant/style', path: '/assistant/style', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ style: 'loud' }) }), status: 400 },
+  // S3: connections
+  { op: 'GET /connections', path: '/connections', status: 200 },
+  { op: 'POST /connections/gmail/app-password', path: '/connections/gmail/app-password', init: () => ({ ...post(), body: JSON.stringify({ address: 'me@gmail.com', appPassword: 'abcd efgh ijkl mnop' }) }), status: 200 },
+  { op: 'POST /connections/gmail/app-password', path: '/connections/gmail/app-password', init: () => ({ ...post(), body: JSON.stringify({ address: 'me@gmail.com', appPassword: 'badbadbadbadbadx' }) }), status: 400 },
+  { op: 'PUT /connections/google/app', path: '/connections/google/app', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ clientId: '123-abc.apps.googleusercontent.com', clientSecret: 'GOCSPX-example' }) }), status: 200 },
+  { op: 'PUT /connections/google/app', path: '/connections/google/app', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ clientId: 'nope', clientSecret: 'x' }) }), status: 400 },
+  { op: 'PUT /connections/outlook/app', path: '/connections/outlook/app', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ clientId: '11111111-2222-3333-4444-555555555555' }) }), status: 200 },
+  { op: 'PUT /connections/outlook/app', path: '/connections/outlook/app', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ clientId: 'nope' }) }), status: 400 },
+  { op: 'PUT /connections/telegram', path: '/connections/telegram', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ token: '123456789:AAHexampleTOKENexampleTOKEN0123456' }) }), status: 200 },
+  { op: 'PUT /connections/telegram', path: '/connections/telegram', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ token: 'nope' }) }), status: 400 },
+  { op: 'PUT /connections/tailscale', path: '/connections/tailscale', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ authKey: 'tskey-auth-example', hostname: 'mwa' }) }), status: 200 },
+  { op: 'PUT /connections/tailscale', path: '/connections/tailscale', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ authKey: 'tskey-api-example' }) }), status: 400 },
+  { op: 'DELETE /connections/{service}', path: '/connections/telegram', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 200 },
+  { op: 'POST /accounts/{provider}/cancel', path: '/accounts/outlook/cancel', init: post, status: 200 },
+  { op: 'POST /accounts/{provider}/cancel', path: '/accounts/nope/cancel', init: post, status: 404 },
+  { op: 'DELETE /connections/{service}', path: '/connections/everything', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 404 },
   { op: 'POST /files', path: () => `/files?projectId=${ids.eventing}&name=notes.txt`, init: () => ({ method: 'POST', headers: { 'idempotency-key': `contract-key-${++keyN}`, 'content-type': 'text/plain' }, body: 'Entries close Friday.' }), status: 201 },
   { op: 'POST /files', path: '/files?projectId=pr_nope&name=notes.txt', init: () => ({ method: 'POST', headers: { 'idempotency-key': `contract-key-${++keyN}`, 'content-type': 'text/plain' }, body: 'x' }), status: 404 },
   { op: 'GET /files', path: () => `/files?projectId=${ids.eventing}`, status: 200 },

@@ -14,13 +14,21 @@ touch "$ENV_FILE"
 if [ -z "${TAILSCALE_AUTHKEY:-}" ] && [ -f "$ENV_FILE" ]; then
   TAILSCALE_AUTHKEY="$(grep -E '^TAILSCALE_AUTHKEY=' "$ENV_FILE" | head -n1 | cut -d= -f2- | tr -d '"' || true)"
 fi
+# The name on the tailnet: the environment wins, then the one Settings › Connections saved in the .env (v2 S3), then
+# "mwa". Only letters, digits and dashes are kept (what Tailscale uses for the MagicDNS name, and what the server's
+# Host check and the settings page expect: <name>.<tailnet>.ts.net).
+if [ -z "${TAILSCALE_HOSTNAME:-}" ] && [ -f "$ENV_FILE" ]; then
+  TAILSCALE_HOSTNAME="$(grep -E '^TAILSCALE_HOSTNAME=' "$ENV_FILE" | head -n1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
+fi
+TS_HOSTNAME="$(printf '%s' "${TAILSCALE_HOSTNAME:-}" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9-' | cut -c1-40)"
+[ -n "$TS_HOSTNAME" ] || TS_HOSTNAME=mwa
 if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
   if command -v tailscaled >/dev/null 2>&1; then
     echo "[mwa] Tailscale: bringing up userspace networking…"
     tailscaled --tun=userspace-networking --state=/data/tailscaled.state --socket=/tmp/tailscaled.sock >/data/tailscaled.log 2>&1 &
     sleep 2
-    if tailscale --socket=/tmp/tailscaled.sock up --authkey="$TAILSCALE_AUTHKEY" --hostname="${TAILSCALE_HOSTNAME:-mwa}" --accept-routes 2>&1; then
-      echo "[mwa] Tailscale up as '${TAILSCALE_HOSTNAME:-mwa}'."
+    if tailscale --socket=/tmp/tailscaled.sock up --authkey="$TAILSCALE_AUTHKEY" --hostname="$TS_HOSTNAME" --accept-routes 2>&1; then
+      echo "[mwa] Tailscale up as '$TS_HOSTNAME'."
       # v2 P1: HTTPS on the private address (https://<name>.<tailnet>.ts.net -> MWA), which phones need to install the
       # app, keep it offline and get notifications. Tailnet only: Funnel (a public address) is never switched on.
       # Needs MagicDNS + HTTPS certificates enabled in the Tailscale admin (https://login.tailscale.com/admin/dns).
