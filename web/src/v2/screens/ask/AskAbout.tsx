@@ -14,6 +14,9 @@
  *             mail reader), which closes once the helper is answering — the answer still shows here, in place
  *   sheetId?  the sheet's id when form is 'sheet' (one per screen place)
  *   open?     start with the questions shown (inline)
+ *   prefill?  open the questions (the sheet) with this question in the box (W3: an item's "Draft the note")
+ *   noAsk?    no "Ask about this" (a phishing message): the earlier answers still show
+ *   taintNote? other words for the tainted label (the mail reader: "Based on what the email says — check before acting")
  *   onAsked?  (askId) after a question is sent
  *
  * It renders `button "Ask about this"`; then the chip, the server's 2–3 questions (GET /ask/suggestions) and a box
@@ -39,14 +42,31 @@ export interface AskAboutProps {
   kind: AboutKind; id: string; label: string;
   item?: { qa: { id: string; a: string | null }[] } | null;
   form?: 'inline' | 'sheet'; sheetId?: string;
-  open?: boolean; onAsked?: (askId: string) => void;
+  open?: boolean; prefill?: string | null; noAsk?: boolean; taintNote?: string; onAsked?: (askId: string) => void;
 }
 
 interface Mine { n: number; text: string; entryId?: string; queued?: string; error?: string }
+/**
+ * The questions asked here that the server's list does not hold yet: one entry per ask id, matched by id and never by
+ * the words (the same question asked twice is two asks). A question not answered by the server yet (offline, or on its
+ * way) has no id and always shows.
+ */
+export function unshown<T>(earlier: { id: string }[], mine: T[], askIdOf: (m: T) => string | undefined): T[] {
+  const ids = new Set(earlier.map((a) => a.id));
+  const seen = new Set<string>();
+  return mine.filter((m) => {
+    const id = askIdOf(m);
+    if (!id) return true;
+    if (ids.has(id) || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 /** How many earlier answers get their provenance looked up (GET /ask/{id} each). */
 export const PROVENANCE_LOOKUPS = 10;
 
-export function AskAbout({ kind, id, label, item, form = 'inline', sheetId, open: startOpen = false, onAsked }: AskAboutProps) {
+export function AskAbout({ kind, id, label, item, form = 'inline', sheetId, open: startOpen = false, prefill, noAsk, taintNote, onAsked }: AskAboutProps) {
   const store = useStore();
   const asks = useAsk();
   const key = `${kind}:${id}`;
@@ -62,6 +82,7 @@ export function AskAbout({ kind, id, label, item, form = 'inline', sheetId, open
   const n = useRef(0);
   const looked = useRef(new Set<string>());
 
+  useEffect(() => { if (prefill) { setText(prefill); setOpen(true); } }, [prefill]);
   const reload = useCallback(() => {
     store.client.listAsksAbout(key).then((r) => { setEarlier(r.asks); setServerLabel(r.about.label); }, () => { /* offline: what is shown stays */ });
   }, [store, key]);
@@ -104,8 +125,7 @@ export function AskAbout({ kind, id, label, item, form = 'inline', sheetId, open
   const submit = async (e: FormEvent) => { e.preventDefault(); const ok = await send(text); if (ok && form === 'sheet') setOpen(false); };
 
   // the questions asked here that the earlier list does not hold yet (one entry per ask id)
-  const shownIds = new Set(earlier.map((a) => a.id));
-  const fresh = mine.filter((m) => { const o = asks.outcome(m.entryId); return !o || !shownIds.has(o.start.askId); });
+  const fresh = unshown(earlier, mine, (m) => asks.outcome(m.entryId)?.start.askId);
   const safe = key.replace(/[^a-z0-9]/gi, '-');
 
   const box = (
@@ -129,7 +149,7 @@ export function AskAbout({ kind, id, label, item, form = 'inline', sheetId, open
 
   return (
     <div className="askabout">
-      {form === 'sheet' ? (
+      {noAsk ? null : form === 'sheet' ? (
         <>
           {button}
           <Sheet id={sheetId ?? `about-${safe}`} titleId={`${sheetId ?? `about-${safe}`}-title`} title="Ask about this" open={open} onClose={() => setOpen(false)}>
@@ -148,12 +168,12 @@ export function AskAbout({ kind, id, label, item, form = 'inline', sheetId, open
                 {a.answer && a.state !== 'running' ? (
                   <div className={`qa-a${a.tainted ? ' tainted' : ''}`}>
                     <div className="who"><Spark size={14} />Your helper</div>
-                    <p><AnswerText text={a.answer} tainted={a.tainted} /></p>
+                    <div className="qa-text"><AnswerText text={a.answer} tainted={a.tainted} note={taintNote} /></div>
                     {line && <p className="cross">{line}</p>}
                   </div>
                 ) : a.state === 'failed' || a.state === 'expired' ? (
                   <p className="ask-note" role="alert">That didn’t get an answer. Ask again.</p>
-                ) : <div className="qa-a qa-live"><LiveAnswer projectId={a.projectId} runId={a.runId} turnId={a.turnId} askId={a.id} showStop={false} /></div>}
+                ) : <div className="qa-a qa-live"><LiveAnswer projectId={a.projectId} runId={a.runId} turnId={a.turnId} askId={a.id} showStop={false} taintNote={taintNote} /></div>}
               </div>
             );
           })}
@@ -166,7 +186,7 @@ export function AskAbout({ kind, id, label, item, form = 'inline', sheetId, open
                 {m.error ? <p className="ask-note error" role="alert">{m.error}</p>
                   : m.queued && !o ? (asks.waiting(m.entryId) ? <p className="ask-note" role="status">Waiting to send. {m.queued}</p>
                     : <p className="ask-note error" role="alert">{refused ? refusalFor(refused.code, refused.message).text : 'That didn’t go through. Ask again.'}</p>)
-                  : o ? <div className="qa-a qa-live"><LiveAnswer projectId={o.start.projectId} runId={o.start.runId} turnId={o.start.turnId} askId={o.start.askId} showStop={false} /></div>
+                  : o ? <div className="qa-a qa-live"><LiveAnswer projectId={o.start.projectId} runId={o.start.runId} turnId={o.start.turnId} askId={o.start.askId} showStop={false} taintNote={taintNote} /></div>
                   : <Typing />}
               </div>
             );

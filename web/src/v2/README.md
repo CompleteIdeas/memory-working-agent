@@ -44,11 +44,19 @@ web/src/v2/
 - **Files**: `upload.ts` posts to the legacy `/api/files/upload` (TODO: an /api/v1 upload) — it works with the
   password sign-in, not yet on a paired phone (which is told so); fixture mode never touches the network.
 - **Voice** is P4: the mic opens the Ask sheet and says so.
-- **"Ask about this"** — `<AskAbout kind id label />` (`screens/ask/AskAbout.tsx`): `kind` is item | mail | event |
-  draft | job | conflict, `id` that thing's id, `label` the chip's words ("About: <label>"); optional `open` and
-  `onAsked(askId)`. It renders the button, then the chip, the server's 2–3 questions (GET /ask/suggestions) and a box
-  of one's own, and under "You asked" the earlier questions and answers (GET /ask?about=kind:id) and a new answer
-  followed live. The Projects tab's Work uses it on each job. W3 has its own for now; keep this API when unifying.
+- **"Ask about this"** — ONE component everywhere: `<AskAbout kind id label … />` (`screens/ask/AskAbout.tsx`), used
+  by a project's Work tab (inline), an Important item's sheet and the mail reader (W3's copy is gone). Props:
+  - `kind` item | mail | event | draft | job | conflict; `id` that thing's id; `label` the chip's words ("About: …")
+    until the server names the thing — the server's label wins;
+  - `item?` an Important item: its answers arrive on the item's own stream (`item.qa`), which reads the asks again;
+  - `form?` `'inline'` (default) or `'sheet'` (questions in a sheet that closes once the helper is answering; the answer
+    still shows in place), `sheetId?` that sheet's id; `open?` start open; `prefill?` open with this question in the box;
+  - `noAsk?` no "Ask about this" (a phishing message) — earlier answers still show; `taintNote?` other words for the
+    tainted label (the mail reader: "Based on what the email says — check before acting"); `onAsked?(askId)`.
+  It shows the chip, the server's 2–3 questions (GET /ask/suggestions) and a box (a second tap while one is on its way
+  does nothing), and under "You asked" every ask about the thing, one per ask id (GET /ask?about=), with its answer
+  followed live (polling capped, only while visible), "using what I know from …" (earlier answers too) and the tainted
+  label. Answers everywhere are plain text with links as hosts (`answerText.tsx`, on `store/text.ts`, the server's rule).
 - **Projects** (`screens/projects/`): the list (icon, what it is doing or its last activity, Working / Waiting badges,
   New project, archived ones under "Archived · N" with Restore); a project (Project options: Rename, Archive — not
   General; "Ask about <name>"; tabs Conversation · Work · Files). The conversation pages back with "Earlier messages"

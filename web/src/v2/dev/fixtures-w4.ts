@@ -198,6 +198,8 @@ export function w4Write(fx: FixtureServer, method: string, path: string, body: u
     const p = fx.projects.get(decodeURIComponent(m[1]));
     if (!p) return err(404, 'not_found', 'No such project.');
     const run = st(fx).runs.get(p.id);
+    // the run the person meant (W4 review): a Stop or a note never lands on a later run
+    if (b.runId !== undefined && b.runId !== null && (!run || run.runId !== b.runId)) return err(409, 'not_running', 'That answer is not being written any more: it already finished.');
     if (m[2] === 'steer') {
       const text = String(b.text ?? '').trim();
       if (!text) return err(400, 'bad_text', 'Nothing to add.');

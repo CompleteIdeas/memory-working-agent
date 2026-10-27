@@ -51,11 +51,15 @@ export function capText(usd: number): string { return usd.toFixed(2); }
 export function parseCap(raw: string): { ok: true; usd: number } | { ok: false; message: string } {
   const t = raw.trim().replace(/^\$/, '');
   if (!t) return { ok: false, message: 'Enter an amount, like 0.50.' };
+  // plain dollars and cents only: not "1e1", "0x10", "1,5" or "Infinity" (Number() would take some of those)
+  if (!/^(\d+(\.\d*)?|\.\d+)$/.test(t)) return { ok: false, message: 'Enter an amount, like 0.50.' };
   const n = Number(t);
   if (!Number.isFinite(n)) return { ok: false, message: 'Enter an amount, like 0.50.' };
   if (n < CAP_MIN) return { ok: false, message: 'The least is 1¢.' };
   if (n > CAP_MAX) return { ok: false, message: `The most is $${CAP_MAX}.` };
-  return { ok: true, usd: Math.round(n * 100) / 100 };
+  const usd = Math.round(n * 100) / 100;
+  if (usd < CAP_MIN) return { ok: false, message: 'The least is 1¢.' };
+  return { ok: true, usd };
 }
 
 /** Where an ask goes, as the sheet says it under the text: "Family & school · suggested". */
@@ -148,4 +152,16 @@ export function capWarning(cap: number | null, estimateUsd: number): string | nu
 export function runActionRefusal(code: string | undefined, message: string, what: 'stop' | 'steer'): string {
   if (code === 'not_running' || code === 'nothing_running') return what === 'stop' ? 'It had already finished.' : 'It had already finished, so I couldn’t add that. Send it as a new message.';
   return message || 'That didn’t work. Try again.';
+}
+
+/**
+ * W4 review: the body of a plan's choice. The limit always goes with it, explicitly: the one set for that option ("Do it
+ * now" has its own, "In the background" its own; a narrower ask runs now, so it takes the now limit). Null when that
+ * option's box does not hold a valid amount (the card then opens Details to say why).
+ */
+export function choiceBody(choice: { mode: 'now' | 'background' } | { narrowIndex: number }, caps: { now: string; background: string }):
+  { mode?: 'now' | 'background'; narrowIndex?: number; capUsd: number } | null {
+  const which = 'mode' in choice ? choice.mode : 'now';
+  const cap = capFor(caps[which]);
+  return cap === null ? null : { ...choice, capUsd: cap };
 }

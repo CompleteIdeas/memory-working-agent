@@ -62,6 +62,7 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
   const [log, setLog] = useState<Exchange[]>([]);
   const [questions, setQuestions] = useState<string[] | null>(null);
   const [formBack, setFormBack] = useState(false);
+  const [pinned, setPinned] = useState<string[]>([]);
   const input = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const n = useRef(0);
@@ -72,7 +73,7 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
   // a fresh sheet each time it opens (or opens about something else)
   useEffect(() => {
     if (!open) return;
-    setText(''); setFiles([]); setFileNote(null); setMicNote(null); setChanging(false); setLog([]); setFormBack(false); setSuggested(null);
+    setText(''); setFiles([]); setFileNote(null); setMicNote(null); setChanging(false); setLog([]); setFormBack(false); setSuggested(null); setPinned([]);
     setChosen(inProject ? { projectId: inProject.id, name: inProject.name, confidence: 'this project' } : null);
     setQuestions(null);
     const t = setTimeout(() => { if (!matchMedia('(pointer: coarse)').matches) input.current?.focus(); }, 30);
@@ -116,7 +117,13 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
   // plans waiting for a choice live in the store: shown again when the sheet opens, once each (not twice when this
   // sheet's own log already holds the same ask)
   const inLog = new Set(log.map((x) => asks.outcome(x.entryId)?.start.askId).filter((x): x is string => !!x));
-  const waitingPlans = aboutThing ? [] : asks.waitingPlans.filter((o) => !inLog.has(o.start.askId));
+  // a waiting plan shown while the sheet is open stays shown after it is chosen (its "You chose…" and what followed)
+  const waitingIds = aboutThing ? '' : asks.waitingPlans.map((o) => o.start.askId).join(',');
+  useEffect(() => {
+    if (!open || !waitingIds) return;
+    setPinned((p) => [...p, ...waitingIds.split(',').filter((id) => !p.includes(id))]);
+  }, [open, waitingIds]);
+  const waitingPlans = pinned.filter((id) => !inLog.has(id)).map((id) => asks.outcomeOfAsk(id)).filter((o): o is NonNullable<typeof o> => !!o && !asks.records[o.start.askId]?.parentId);
 
   const send = async (raw: string) => {
     const words = raw.trim();
@@ -169,7 +176,7 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
   const ctx = aboutThing ? <span className="aboutchip"><Spark size={14} />About: {about!.label}</span>
     : inProject ? <>In {inProject.name}</> : null;
   const starters = aboutThing ? questions ?? [] : inProject ? PROJECT_SUGGESTIONS : DEFAULT_SUGGESTIONS;
-  const showStarters = !log.length && !text && !files.length && starters.length > 0;
+  const showStarters = !log.length && !waitingPlans.length && !text && !files.length && starters.length > 0;
 
   return (
     <Sheet id="ask-dlg" titleId="ask-title" title="Ask your helper" open={open} onClose={onClose}

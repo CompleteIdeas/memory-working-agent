@@ -19,7 +19,7 @@ import type { AskStart, AskChosen, Turn } from '../../api/client';
 import { Spark } from '../../shell/icons';
 import { AnswerText } from './answerText';
 import {
-  capFor, capText, capWarning, jobNote, optionLabel, parseCap, provenanceLine, refusalFor, runActionRefusal, sizeText, stageLine,
+  capFor, capText, capWarning, choiceBody, jobNote, optionLabel, parseCap, provenanceLine, refusalFor, runActionRefusal, sizeText, stageLine,
   type AskPlan, type Refusal,
 } from './logic';
 
@@ -71,7 +71,11 @@ export function useStopRun(projectId: string, runId: string | null | undefined) 
 }
 
 /** An answer being written, followed live until it is there. */
-export function LiveAnswer({ projectId, runId, turnId, askId, showStop = true }: { projectId: string; runId?: string | null; turnId?: string | null; askId?: string | null; showStop?: boolean }) {
+export function LiveAnswer({ projectId, runId, turnId, askId, showStop = true, taintNote }: {
+  projectId: string; runId?: string | null; turnId?: string | null; askId?: string | null; showStop?: boolean;
+  /** other words for the tainted label (the mail reader's) */
+  taintNote?: string;
+}) {
   const { all } = useThread(projectId);
   const store = useStore();
   const asks = useAsk();
@@ -97,11 +101,11 @@ export function LiveAnswer({ projectId, runId, turnId, askId, showStop = true }:
     const prov = provenanceLine(done);
     return (
       <HelperSays tail={prov ? <p className="cross">{prov}</p> : null}>
-        <AnswerText text={done.reply || done.message} tainted={done.tainted} />
+        <AnswerText text={done.reply || done.message} tainted={done.tainted} note={taintNote} />
       </HelperSays>
     );
   }
-  if (failed) return <p className="ask-note error" role="alert">{record?.state === 'expired' ? 'That didn’t get an answer. Ask again.' : <AnswerText text={record?.answer || 'That stopped before it finished. Try asking again.'} tainted={record?.tainted} />}</p>;
+  if (failed) return <div className="ask-note error" role="alert">{record?.state === 'expired' ? 'That didn’t get an answer. Ask again.' : <AnswerText text={record?.answer || 'That stopped before it finished. Try asking again.'} tainted={record?.tainted} note={taintNote} />}</div>;
   // the stream's last word on this project's run, if it is about this run (not one before it)
   const stage = live && running && live.at >= running.ts - 5_000 ? stageLine(live.stage, live.type) : null;
   return (
@@ -199,22 +203,17 @@ export function PlanCard({ askId, plan, projectId, text, onShowWork, onAgain, in
   const msgRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (autoFocus) msgRef.current?.focus({ preventScroll: false }); }, [autoFocus]);
   const expired = record?.state === 'expired' && !chosen;
-  // a choice sent from the outbox and refused there: say why, here, with Ask again
-  const refusedLater = queued ? asks.refused(queued.entryId) : asks.refusedChoice(askId);
-  useEffect(() => {
-    if (!refusedLater || chosen) return;
-    setQueued(null); setPicked(null);
-    setRefusal(shownFor(refusedLater.code, refusedLater.message));
-  }, [refusedLater, chosen]);
+  // a choice sent from the outbox and refused there (this card's, or one made before a reload): why, here, with Ask
+  // again — never the "waiting to be sent" line left behind
+  const refusedLater = chosen ? undefined : (queued?.entryId ? asks.refused(queued.entryId) : undefined) ?? asks.refusedChoice(askId);
 
   const capOf = (m: 'now' | 'background') => capFor(caps[m]);
-  const choose = async (body: { mode?: 'now' | 'background'; narrowIndex?: number }, label: string) => {
+  const choose = async (c: { mode: 'now' | 'background' } | { narrowIndex: number }, label: string) => {
     if (busy) return;
-    const m = body.mode ?? 'now';
-    const capUsd = capOf(m);
-    if (capUsd === null) { setMode('details'); return; }
+    const body = choiceBody(c, caps);
+    if (!body) { setMode('details'); return; }
     setBusy(true); setRefusal(null); setPicked(label);
-    const r = await asks.choose(askId, { ...body, capUsd });
+    const r = await asks.choose(askId, body);
     setBusy(false);
     if (r.ok) return;
     if (r.queued) { setQueued({ entryId: r.entryId, message: r.message }); return; }
@@ -235,7 +234,7 @@ export function PlanCard({ askId, plan, projectId, text, onShowWork, onAgain, in
     );
   }
   const project = projects.find((p) => p.id === projectId);
-  const shownRefusal: Shown | null = refusal ?? (expired ? { ...refusalFor('expired', ''), code: 'expired' } : null);
+  const shownRefusal: Shown | null = refusal ?? (refusedLater ? shownFor(refusedLater.code, refusedLater.message) : null) ?? (expired ? { ...refusalFor('expired', ''), code: 'expired' } : null);
   const size = sizeText(plan);
   const limitLine = (m: 'now' | 'background') => { const c = capOf(m); return c === null ? null : `stops at $${capText(c)}`; };
   const limitField = (m: 'now' | 'background', name: string, estimate: number) => {

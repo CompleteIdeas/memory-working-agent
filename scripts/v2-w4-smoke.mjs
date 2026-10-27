@@ -137,6 +137,16 @@ try {
     const bgBtn = ask.getByRole('button', { name: 'In the background · about 15¢ · ready around 10:10 AM' });
     check(`${L}: N04 both choices with price and time (local)`, await nowBtn.isVisible() && await bgBtn.isVisible());
     check(`${L}: one decision at a time (the text box waits)`, !(await ask.locator('#ask-form').isVisible()));
+    // review p5: focus moves to the plan's message; each option's own limit is said; "Edit my ask" brings the box back
+    check(`${L}: focus moves to the plan`, await page.evaluate(() => !!document.activeElement?.closest('.plancard')));
+    check(`${L}: each option's limit is said ("Do it now stops at $0.50 · In the background stops at $0.30")`, await seen(ask.getByText('Do it now stops at $0.50 · In the background stops at $0.30')));
+    await ask.getByRole('button', { name: 'Edit my ask' }).click();
+    check(`${L}: "Edit my ask" brings the text box back, with the words`, await seen(ask.locator('#ask-form')) && (await ask.getByRole('textbox', { name: 'Message your helper' }).inputValue()) === 'learn everything from these two PDFs');
+    await ask.getByRole('textbox', { name: 'Message your helper' }).fill('');
+    // closed and opened again, the plan is still there, once
+    await closeSheet(page, '#ask-dlg');
+    ask = await openAsk(page);
+    check(`${L}: reopened, the plan waiting for a choice is there once`, await seen(ask.getByText(planMsg)) && (await ask.locator('.plancard').count()) === 1);
     await page.waitForTimeout(250);
     await shot(page, `${L}-03-plan`);
     await axe(page, `${L} plan card`);
@@ -150,8 +160,12 @@ try {
     await axe(page, `${L} narrow`);
     await ask.getByRole('button', { name: 'Back to the full read' }).click();
     await ask.getByRole('button', { name: 'Details' }).click();
-    const limit = ask.getByRole('spinbutton', { name: 'Stop if it costs more than $' });
-    check(`${L}: Details: "Stop if it costs more than $" 0.30`, (await limit.inputValue()) === '0.30');
+    const limit = ask.getByRole('spinbutton', { name: 'In the background: stop if it costs more than $' });
+    const limitNow = ask.getByRole('spinbutton', { name: 'Do it now: stop if it costs more than $' });
+    check(`${L}: Details: each option's own limit (now 0.50, background 0.30)`, (await limit.inputValue()) === '0.30' && (await limitNow.inputValue()) === '0.50');
+    await limitNow.fill('0.10');
+    check(`${L}: a limit below the estimate is warned about`, await seen(ask.getByText('That limit is below the estimate — it will stop partway.')));
+    await limitNow.fill('0.50');
     check(`${L}: Details: the size`, await seen(ask.getByText('Size: 149 pages')));
     await limit.fill('25');
     check(`${L}: a limit over $20 is refused in plain words`, await seen(ask.getByText('The most is $20.')));
@@ -203,12 +217,26 @@ try {
     await noOverflow(page, `${L} thread`);
     // move a message to Eventing, then Undo
     const libq = 'Can Riley go on the Saturday morning library trip?';
-    await page.locator('#main').getByRole('button', { name: `Move to another project: ${libq}` }).click();
+    // review p5: the menu by keyboard — Enter opens it on its first item, ArrowDown moves, Escape goes back to the button
+    const mvBtn = page.locator('#main').getByRole('button', { name: `Move to another project: ${libq}` });
+    await mvBtn.focus();
+    await page.keyboard.press('Enter');
+    const first = await page.evaluate(() => document.activeElement?.getAttribute('role') === 'menuitem' ? document.activeElement.textContent : null);
+    await page.keyboard.press('ArrowDown');
+    const second = await page.evaluate(() => document.activeElement?.textContent);
+    await page.keyboard.press('Escape');
+    const back = await page.evaluate(() => document.activeElement?.getAttribute('aria-label'));
+    check(`${L}: Move… by keyboard (first item, ArrowDown, Escape back to the button)`, !!first && second !== first && back === `Move to another project: ${libq}`, JSON.stringify([first, second, back]));
+    await mvBtn.click();
     await page.locator('#main').getByRole('menu', { name: 'Move to' }).getByRole('menuitem', { name: 'Eventing' }).click();
     check(`${L}: moved: "Moved to Eventing." and it leaves this thread`, await seen(page.locator('.movednote').filter({ hasText: 'Moved to Eventing.' })) && await page.locator('#main').getByText(libq).count() === 0);
     await shot(page, `${L}-11-moved`);
     await page.locator('.movednote').getByRole('button', { name: 'Undo' }).click();
     check(`${L}: Undo moves it back`, await seen(page.locator('#main').getByText(libq)));
+    // review 7: the Ask bar knows the open project
+    await page.getByRole('button', { name: 'Ask, or hand over a job' }).first().click();
+    check(`${L}: the Ask bar in a project asks there ("In Family & school")`, await seen(page.locator('#ask-ctx').filter({ hasText: 'In Family & school' })));
+    await closeSheet(page, '#ask-dlg');
     // the composer: an answer followed live, then Stop on another
     const composer = page.locator('#main').getByRole('textbox', { name: 'Message Family & school' });
     await composer.fill('What’s coming up for Riley?');
@@ -294,6 +322,7 @@ try {
     await askD.locator('#ask-file').setInputFiles([join(FILES, 'icp-eventing-handbook.pdf'), join(FILES, 'usef-eventing-rules-2025.pdf')]);
     await askD.getByRole('textbox', { name: 'Message your helper' }).fill('learn everything from these two PDFs');
     await askD.getByRole('button', { name: 'Send' }).click();
+    await seen(askD.getByRole('button', { name: 'Details' }));
     await seen(askD.getByRole('button', { name: 'Details' }));
     await askD.getByRole('button', { name: 'Details' }).click();
     await pd.waitForTimeout(300);

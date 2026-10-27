@@ -297,6 +297,8 @@ export function useAsk() {
     send: (body: AskBody, label = 'Your question'): Promise<ActResult> => store.act('ask', { payload: body as unknown as Record<string, unknown> }, label, { quiet: true }),
     choose: (askId: string, c: AskChoice): Promise<ActResult> => store.act('ask.choose', { id: askId, payload: c as Record<string, unknown> }, 'Your choice', { quiet: true }),
     outcome: (entryId: string | null | undefined) => (entryId ? outcomes[entryId] : undefined),
+    /** what an ask became, found by its ask id (the first entry that made it) */
+    outcomeOfAsk: (askId: string) => Object.values(outcomes).sort((a, b) => a.at - b.at).find((o) => o.start.askId === askId),
     choice: (askId: string | null | undefined) => (askId ? choices[askId] : undefined),
     ask: (askId: string | null | undefined) => (askId ? asks[askId] : undefined),
     load: (askId: string) => store.loadAsk(askId),
