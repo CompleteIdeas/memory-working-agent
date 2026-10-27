@@ -40,6 +40,9 @@ export class PluginFixtures {
     { id: 'weather-mcp', command: 'npx -y weather-mcp@1.4.0', argsHidden: false, package: 'weather-mcp@1.4.0', envNames: [] },
     { id: 'barn-notes', command: 'node C:\\tools\\barn-notes.mjs --token •••', argsHidden: false, package: null, envNames: ['BARN_NOTES_TOKEN'] },
   ];
+  /** S2: the reviewing model follows the brain picked in Settings › Your assistant (./fixtures-assistant.ts) */
+  reviewer = 'openrouter:openai/gpt-6.1-sol';
+  reviewerCapable = true;
   private reviews = new Map<string, { review: PluginReview; at: number }>();
   constructor(private scenario: string, private clock: () => number) {}
 
@@ -47,9 +50,10 @@ export class PluginFixtures {
     const keys = e.keys.map((k) => ({ ...k, saved: this.saved.has(k.name) }));
     return { ...e, on: this.on.has(e.id), keys, missing: keys.filter((k) => !k.optional && !k.saved).map((k) => k.name) };
   }
-  private npm(): AddFromNpm {
-    if (this.scenario === 'npm-off') return { available: false, reason: 'Installing connectors from outside the library is turned off (installPolicy: off).', reviewer: 'openrouter:openai/gpt-6.1-sol' };
-    return { available: true, reason: 'Connectors from outside the library are reviewed by openrouter:openai/gpt-6.1-sol before you approve them.', reviewer: 'openrouter:openai/gpt-6.1-sol' };
+  npm(): AddFromNpm {
+    if (this.scenario === 'npm-off') return { available: false, reason: 'Installing connectors from outside the library is turned off (installPolicy: off).', reviewer: this.reviewer };
+    if (!this.reviewerCapable) return { available: false, reason: `Installing connectors from outside the library needs a stronger reviewing model than "${this.reviewer}". Connect a capable model — an aggregator like OpenRouter, or an Anthropic/OpenAI key you already have — to enable it.`, reviewer: this.reviewer };
+    return { available: true, reason: `Connectors from outside the library are reviewed by ${this.reviewer} before you approve them.`, reviewer: this.reviewer };
   }
   /** an admin sees each command with its arguments (masked); anyone else the command name only, as on the server */
   list(admin = true) {

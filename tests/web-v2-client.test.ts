@@ -123,6 +123,16 @@ const CALLS: Record<string, (c: MwaClient) => unknown> = {
   clearPluginKey: (c) => c.clearPluginKey('github', 'GITHUB_PERSONAL_ACCESS_TOKEN'),
   reviewPlugin: (c) => c.reviewPlugin('example-mcp'),
   approvePlugin: (c) => c.approvePlugin('example-mcp'),
+  // S2
+  getAssistant: (c) => c.getAssistant(),
+  listModels: (c) => c.listModels({ provider: 'openrouter', kind: 'chat' }),
+  saveBrain: (c) => c.saveBrain({ provider: 'openrouter', model: 'openai/gpt-6.1-sol', key: 'sk-x' }),
+  saveImageModel: (c) => c.saveImageModel({ provider: 'openrouter', model: 'black-forest-labs/flux-2' }),
+  turnOffImages: (c) => c.turnOffImages(),
+  setAccessLevel: (c) => c.setAccessLevel('assistant'),
+  grantFolder: (c) => c.grantFolder('/home/me/Documents'),
+  removeFolder: (c) => c.removeFolder('/home/me/Documents'),
+  setStyle: (c) => c.setStyle('direct'),
 };
 const URL_ONLY = new Set(['streamUrl', 'calendarDraftIcsUrl', 'projectLiveUrl']); // GET links opened by EventSource or a download
 

@@ -39,6 +39,7 @@ import { setPushDeps } from '../src/v2/push.js';
 import { setPluginRouteDeps } from '../src/api/routes/plugins.js';
 import { addMcpServer } from '../src/connectors/registry.js';
 import { loadConfig } from '../src/config.js';
+import { setAssistantDeps } from '../src/assistant-settings.js';
 
 const spec = parse(readFileSync(new URL('../api/openapi.yaml', import.meta.url), 'utf8'));
 const METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
@@ -181,6 +182,11 @@ beforeAll(async () => {
     config: () => { const c = loadConfig(); return { ...c, models: { ...c.models, installer: 'anthropic:claude-sonnet-5' } }; },
     review: async (pkg) => ({ source: pkg, verdict: 'safe', summary: 'A small, well-known server.', capabilities: ['reads web pages'], redFlags: [], analysis: { ok: true, findings: [] }, deepScan: { ran: true, integrityOk: true, filesScanned: 3, findings: [] }, integrity: 'sha512-x', pinnedVersion: '1.2.3', model: 'anthropic:claude-sonnet-5' }) });
   addMcpServer('my-tool', { command: 'node', args: ['tool.mjs', '--api-key', 'abc123'], env: { MY_TOOL_TOKEN: 'secret-value' } });
+  // S2: the assistant's settings in the same scratch config; the live check passes unless the key says bad, keys go to a set
+  const s2Keys = new Set<string>();
+  setAssistantDeps({ testProvider: async (_p, m, k) => (k?.includes('bad') ? { ok: false, message: 'failed: 401' } : { ok: true, message: `${m} works` }),
+    listModels: async () => [{ id: 'openai/gpt-6.1-sol', name: 'GPT-6.1 Sol' }], saveEnv: (kv) => { for (const k of Object.keys(kv)) s2Keys.add(k); }, hasEnv: (n) => s2Keys.has(n) });
+  ids.folder = mkdtempSync(join(tmpdir(), 'mwa-s2-contract-'));
   // P3: a password (so a session cookie names its subscriptions' owner) and a push service that always accepts
   configureSessions({ password: 'contract-push-pw' });
   setPushDeps({ transport: async () => ({ status: 201 }) });
@@ -189,7 +195,7 @@ beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
-afterAll(() => { server?.close(); setSettingsRouteDeps(null); setPluginRouteDeps(null); delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN; delete process.env.TAVILY_API_KEY; configureSessions({ password: '' }); setPushDeps(null); for (const k of ['MWA_CONFIG_PATH', 'MWA_TOKEN_LOG', 'MWA_VAULT_PATH']) delete process.env[k]; setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); setTodayDeps(null); });
+afterAll(() => { server?.close(); setSettingsRouteDeps(null); setPluginRouteDeps(null); delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN; delete process.env.TAVILY_API_KEY; configureSessions({ password: '' }); setPushDeps(null); for (const k of ['MWA_CONFIG_PATH', 'MWA_TOKEN_LOG', 'MWA_VAULT_PATH']) delete process.env[k]; setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); setTodayDeps(null); setAssistantDeps(null); });
 
 /** One request per operation (and a few error cases). Slices append theirs. */
 const ids: Record<string, string> = {};
@@ -389,6 +395,23 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /plugins/review', path: '/plugins/review', init: () => ({ ...post(), body: JSON.stringify({ package: 'example-mcp' }) }), status: 200 },
   { op: 'POST /plugins/review', path: '/plugins/review', init: () => ({ ...post(), body: JSON.stringify({ package: 'not a package' }) }), status: 400 },
   { op: 'POST /plugins/approve', path: '/plugins/approve', init: () => ({ ...post(), body: JSON.stringify({ package: 'example-mcp' }) }), status: 200 },
+  // S2: the assistant itself
+  { op: 'GET /assistant', path: '/assistant', status: 200 },
+  { op: 'POST /assistant/models', path: '/assistant/models', init: () => ({ ...post(), body: JSON.stringify({ provider: 'openrouter' }) }), status: 200 },
+  { op: 'POST /assistant/models', path: '/assistant/models', init: () => ({ ...post(), body: JSON.stringify({ provider: 'nope' }) }), status: 400 },
+  { op: 'PUT /assistant/brain', path: '/assistant/brain', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ provider: 'openrouter', model: 'openai/gpt-6.1-sol', key: 'sk-or-example' }) }), status: 200 },
+  { op: 'PUT /assistant/brain', path: '/assistant/brain', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ provider: 'openrouter', model: 'openai/gpt-6.1-sol', key: 'sk-or-bad' }) }), status: 400 },
+  { op: 'PUT /assistant/image', path: '/assistant/image', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ provider: 'openrouter', model: 'black-forest-labs/flux-2' }) }), status: 200 },
+  { op: 'PUT /assistant/image', path: '/assistant/image', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ provider: 'anthropic', model: 'claude' }) }), status: 400 },
+  { op: 'DELETE /assistant/image', path: '/assistant/image', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 200 },
+  { op: 'PUT /assistant/access', path: '/assistant/access', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ preset: 'assistant' }) }), status: 200 },
+  { op: 'PUT /assistant/access', path: '/assistant/access', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ preset: 'root' }) }), status: 400 },
+  { op: 'POST /assistant/folders', path: '/assistant/folders', init: () => ({ ...post(), body: JSON.stringify({ path: ids.folder }) }), status: 200 },
+  { op: 'POST /assistant/folders', path: '/assistant/folders', init: () => ({ ...post(), body: JSON.stringify({ path: 'relative/folder' }) }), status: 400 },
+  { op: 'POST /assistant/folders/remove', path: '/assistant/folders/remove', init: () => ({ ...post(), body: JSON.stringify({ path: ids.folder }) }), status: 200 },
+  { op: 'POST /assistant/folders/remove', path: '/assistant/folders/remove', init: () => ({ ...post(), body: JSON.stringify({ path: ids.folder }) }), status: 404 },
+  { op: 'PUT /assistant/style', path: '/assistant/style', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ style: 'direct' }) }), status: 200 },
+  { op: 'PUT /assistant/style', path: '/assistant/style', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ style: 'loud' }) }), status: 400 },
   { op: 'POST /files', path: () => `/files?projectId=${ids.eventing}&name=notes.txt`, init: () => ({ method: 'POST', headers: { 'idempotency-key': `contract-key-${++keyN}`, 'content-type': 'text/plain' }, body: 'Entries close Friday.' }), status: 201 },
   { op: 'POST /files', path: '/files?projectId=pr_nope&name=notes.txt', init: () => ({ method: 'POST', headers: { 'idempotency-key': `contract-key-${++keyN}`, 'content-type': 'text/plain' }, body: 'x' }), status: 404 },
   { op: 'GET /files', path: () => `/files?projectId=${ids.eventing}`, status: 200 },

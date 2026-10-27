@@ -104,3 +104,18 @@ select.setinput { appearance: auto; }
 .plugentry { width: 100%; text-align: left; background: none; border: 0; color: inherit; font: inherit; padding: 0; display: flex; align-items: center; gap: 12px; min-height: 56px; }
 .plugentry .grow { flex: 1; min-width: 0; }
 .plugclear { display: flex; }
+
+/* S2: Settings › Your assistant */
+.aschoices { border: 0; padding: 0; margin: 12px 0 0; min-width: 0; }
+.aschoices legend { padding: 0; margin-bottom: 4px; }
+.aschoice { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; min-height: 48px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.aschoice:last-of-type { border-bottom: 0; }
+.aschoice input { width: 20px; height: 20px; flex: none; margin-top: 2px; }
+.aschoice .grow { flex: 1; min-width: 0; }
+.aschoice .rowtitle { display: block; font-weight: 600; }
+.aschoice .s { display: block; color: var(--dim); font-size: 15px; }
+.aschoices:disabled .aschoice { cursor: default; }
+.asfolder .plughead { display: flex; align-items: center; gap: 12px; width: 100%; }
+.asfolder .plughead .grow { flex: 1; min-width: 0; }
+.asform { padding: 14px 0 4px; }
+.asform .acts { margin-top: 10px; }

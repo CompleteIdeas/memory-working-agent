@@ -15,6 +15,7 @@
  */
 import type { Account, Device, FileRow, HelperSettings, Me, Spending, VaultEntry } from '../api/client';
 import { PluginFixtures } from './fixtures-plugins';
+import { AssistantFixtures } from './fixtures-assistant';
 
 type Resp = { status: number; body: unknown; headers?: Record<string, string> };
 const err = (status: number, code: string, message: string): Resp => ({ status, body: { error: { code, message } } });
@@ -33,7 +34,9 @@ const PUBLIC = new Set(['GET /meta', 'GET /me', 'POST /session', 'POST /pair']);
 /** Which need admin (a paired phone gets 403). */
 const ADMIN: RegExp[] = [/^POST \/session\/sign-out-everywhere$/, /^POST \/pair\/codes$/, /^GET \/devices$/, /^(DELETE|PATCH) \/devices\/[^/]+$/, /^PATCH \/(settings|spending)$/, /^POST \/accounts\/[^/]+\/connect$/, /^GET \/vault$/, /^POST \/vault\/forget$/, /^PATCH \/push\/settings$/,
   // S1: every plug-in change
-  /^(POST|PUT|DELETE) \/plugins(\/|$)/];
+  /^(POST|PUT|DELETE) \/plugins(\/|$)/,
+  // S2: every change to the assistant itself (and its model list, which uses the saved key)
+  /^(POST|PUT|DELETE) \/assistant(\/|$)/];
 
 export class SettingsFixtures {
   passwordSet: boolean;
@@ -48,6 +51,8 @@ export class SettingsFixtures {
   files = new Map<string, FileRow[]>();
   /** S1: Settings › Plug-ins (./fixtures-plugins.ts) */
   plugins: PluginFixtures;
+  /** S2: Settings › Your assistant (./fixtures-assistant.ts) */
+  assistant: AssistantFixtures;
   push = { kinds: { approval: true, waiting: true, result: true, morning: true }, morning: '07:30', timeZone: 'America/New_York', quietHours: { value: '22:00-07:00' as string | null, fixed: false, invalid: false } };
   private codes = new Set<string>([norm(FIXTURE_PAIR_CODE)]);
   private n = 0;
@@ -92,6 +97,7 @@ export class SettingsFixtures {
     ];
     this.files.set('general', []);
     this.plugins = new PluginFixtures(scenario, clock);
+    this.assistant = new AssistantFixtures(scenario, this.plugins);
   }
 
   me(): Me {
@@ -114,6 +120,8 @@ export class SettingsFixtures {
     if (path === '/me') return { status: 200, body: this.me() };
     const pl = this.plugins.read(path, this.kind !== 'device');
     if (pl) return pl;
+    const as = this.assistant.read(path);
+    if (as) return as;
     if (path === '/devices') return { status: 200, body: { devices: this.devices } };
     if (path === '/settings') return { status: 200, body: this.settings };
     if (path === '/spending') return { status: 200, body: this.spending };
@@ -133,6 +141,8 @@ export class SettingsFixtures {
     let m: RegExpExecArray | null;
     const pl = this.plugins.write(method, path, body);
     if (pl) return pl;
+    const as = this.assistant.write(method, path, body);
+    if (as) return as;
     if (method === 'POST' && path === '/session') {
       if (!this.passwordSet) return err(409, 'no_password', 'No password is set on this helper. Pair this device with a code from the computer instead.');
       if (typeof b.password !== 'string' || !b.password) return err(400, 'bad_body', 'Type your password.');

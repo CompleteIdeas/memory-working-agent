@@ -97,6 +97,11 @@ export type PluginChange = Schemas['PluginChange'];
 export type PluginReview = Schemas['PluginReview'];
 export type PluginRemoved = Json<'/plugins/{id}', 'delete', 200>;
 export type PluginInstalled = Json<'/plugins/approve', 'post', 200>;
+export type AssistantSettings = Schemas['AssistantSettings'];
+export type AssistantChange = Schemas['AssistantChange'];
+export type ModelChoices = Schemas['ModelChoices'];
+export type AccessPreset = AssistantSettings['access']['preset'];
+export type InteractionStyle = AssistantSettings['style'];
 export type PushList = Json<'/push/subscriptions', 'get', 200>;
 export type PushTestResult = Json<'/push/test', 'post', 200>;
 export type PushKindName = 'approval' | 'waiting' | 'result' | 'morning';
@@ -366,6 +371,18 @@ export class MwaClient {
   async removePlugin(id: string, o: { key?: string } = {}) { return (await this.call<PluginRemoved>('DELETE', '/plugins/{id}', { path: { id }, key: o.key })).body; }
   reviewPlugin(pkg: string, o: { key?: string } = {}) { return this.post<{ review: PluginReview }>('/plugins/review', { body: { package: pkg }, key: o.key }); }
   approvePlugin(pkg: string, acceptRisk = false, o: { key?: string } = {}) { return this.post<PluginInstalled>('/plugins/approve', { body: acceptRisk ? { package: pkg, acceptRisk: true } : { package: pkg }, key: o.key }); }
+  // ---- S2: the assistant itself (brain, images, what it can touch, how it works with you) ----
+  getAssistant() { return this.get<AssistantSettings>('/assistant'); }
+  /** A key typed now is used for this one listing and not saved. */
+  listModels(body: { provider: string; kind?: 'chat' | 'image'; key?: string }, o: { key?: string } = {}) { return this.post<ModelChoices>('/assistant/models', { body, key: o.key }); }
+  /** Write-only key: it goes to the server and never comes back. */
+  async saveBrain(body: { provider: string; model: string; key?: string }, o: { key?: string } = {}) { return (await this.call<AssistantChange>('PUT', '/assistant/brain', { body, key: o.key })).body; }
+  async saveImageModel(body: { provider: string; model: string; key?: string }, o: { key?: string } = {}) { return (await this.call<AssistantChange>('PUT', '/assistant/image', { body, key: o.key })).body; }
+  async turnOffImages(o: { key?: string } = {}) { return (await this.call<AssistantChange>('DELETE', '/assistant/image', { key: o.key })).body; }
+  async setAccessLevel(preset: AccessPreset, o: { key?: string } = {}) { return (await this.call<AssistantChange>('PUT', '/assistant/access', { body: { preset }, key: o.key })).body; }
+  grantFolder(path: string, o: { key?: string } = {}) { return this.post<AssistantChange>('/assistant/folders', { body: { path }, key: o.key }); }
+  removeFolder(path: string, o: { key?: string } = {}) { return this.post<AssistantChange>('/assistant/folders/remove', { body: { path }, key: o.key }); }
+  async setStyle(style: InteractionStyle, o: { key?: string } = {}) { return (await this.call<AssistantChange>('PUT', '/assistant/style', { body: { style }, key: o.key })).body; }
 }
 
 function toError(status: number, body: unknown): ApiError {
