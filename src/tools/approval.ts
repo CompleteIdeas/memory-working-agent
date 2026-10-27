@@ -44,6 +44,7 @@ import Database from 'better-sqlite3';
 import { ToolRefusal, toolText, type RegisteredTool, type ToolContext } from './registry.js';
 import { isStepUpSatisfied } from '../step-up.js';
 import { dbFile } from '../paths.js';
+import { recordAction } from '../v2/actions.js';
 
 export type ApprovalKind = 'tool' | 'captured-policy';
 export type ApprovalStatus = 'pending' | 'executing' | 'done' | 'failed' | 'cancelled' | 'expired';
@@ -382,7 +383,7 @@ export function recentApprovalOutcomes(): { id: string; tool: string; status: Ap
   return rows.map((r) => { const a = toAction(r); return { id: r.id, tool: r.tool, status: r.status as ApprovalStatus, owner: ownerLabel(r.owner), summary: r.summary, kind: a.kind ?? 'tool', ...(a.session ? { session: a.session } : {}), ...(r.result ? { result: r.result.slice(0, 300) } : {}), at: r.updated_at, createdAt: r.created_at }; });
 }
 
-export interface PendingView { id: string; tool: string; summary: string; expiresInSec: number; expiresAt: number; tainted: boolean; readLocal: boolean; kind: ApprovalKind; session?: string; runId?: string; /** when it was staged, so the app can place the card in the task that raised it */ createdAt: number; }
+export interface PendingView { id: string; tool: string; summary: string; expiresInSec: number; expiresAt: number; tainted: boolean; readLocal: boolean; kind: ApprovalKind; session?: string; runId?: string; /** who it was staged for (v2 A10: Today shows the owner's only) */ personId?: string; /** when it was staged, so the app can place the card in the task that raised it */ createdAt: number; }
 
 /** List pending actions, newest first. With `scope`, only those from that session or person — the
  *  model's own list/cancel tools are scoped (BL-03 review); the person's app lists everything. */
@@ -392,7 +393,7 @@ export function listPendingActions(scope?: { session?: string; personId?: string
   const rows = store().prepare(`SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at DESC`).all() as Row[];
   return rows.map(toAction)
     .filter((a) => !scope || inScope(a, scope))
-    .map((a) => ({ id: a.id, tool: a.tool, summary: a.summary, expiresInSec: Math.max(0, Math.round((a.expiresAt - now) / 1000)), expiresAt: a.expiresAt, tainted: a.tainted === true, readLocal: a.readLocal === true, kind: a.kind ?? 'tool', session: a.session, ...(a.runId ? { runId: a.runId } : {}), createdAt: a.createdAt }));
+    .map((a) => ({ id: a.id, tool: a.tool, summary: a.summary, expiresInSec: Math.max(0, Math.round((a.expiresAt - now) / 1000)), expiresAt: a.expiresAt, tainted: a.tainted === true, readLocal: a.readLocal === true, kind: a.kind ?? 'tool', session: a.session, ...(a.runId ? { runId: a.runId } : {}), ...(a.personId ? { personId: a.personId } : {}), createdAt: a.createdAt }));
 }
 
 /** Confirm + execute a pending action by id (omit id → the single most recent). Called only by
@@ -465,6 +466,8 @@ async function runClaimed(row: Row): Promise<{ ok: boolean; result: string }> {
     if (!closure && !exec) throw new Error(`this app has no way to run "${row.tool}"`);
     const result = String(closure ? await closure(stagedCtx) : await exec!(parse<Record<string, unknown>>(row.args, {}), stagedCtx));
     s.prepare(`UPDATE approvals SET status = 'done', result = ?, args = '{}', updated_at = ? WHERE id = ?`).run(tail(result), Date.now(), row.id);
+    // it happened now, approved by the person: it counts as done (v2 A10 review H1; staging it was not logged)
+    if (!/^\s*\((refused|blocked)/.test(result)) recordAction({ tool: row.tool, person: stagedCtx.personId, session: stagedCtx.session, runId: stagedCtx.runId, via: 'approval' });
     return { ok: true, result };
   } catch (e) {
     const msg = (e as Error).message ?? String(e);

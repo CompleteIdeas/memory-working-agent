@@ -25,6 +25,7 @@ import { localDate, addDays } from '../src/sync/tz.js';
 import { setProjectRouteDeps } from '../src/api/routes/projects.js';
 import { createProject, setEmbedder } from '../src/v2/projects.js';
 import { appendTurn } from '../src/conversations.js';
+import { setTodayDeps } from '../src/v2/today.js';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { setAskRouteDeps } from '../src/api/routes/ask.js';
 import { insertAsk, buildPlan } from '../src/v2/ask.js';
@@ -139,6 +140,8 @@ beforeAll(async () => {
   const family = createProject({ name: 'Family & school' });
   const turn = appendTurn({ ts: Date.now(), session: `p-${eventing.id}`, message: 'When do entries close?', reply: 'Friday at 5pm.', kind: 'chat' })!;
   Object.assign(ids, { eventing: eventing.id, family: family.id, turn });
+  // A10: Today reads everything above; no approvals store and no token log here
+  setTodayDeps({ pendingApprovals: () => [], month: () => ({ usedUsd: 1.29, limitUsd: 20, state: 'ok' }), greetingName: () => 'Robert' });
   // A6: asks — a workspace with one long uploaded file, a fake background hand-off, no history (the default rate)
   const askWs = mkdtempSync(join(tmpdir(), 'mwa-a6-ws-'));
   mkdirSync(join(askWs, 'serve', 'p-general', 'uploads'), { recursive: true });
@@ -158,7 +161,7 @@ beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
-afterAll(() => { server?.close(); setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); });
+afterAll(() => { server?.close(); setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); setTodayDeps(null); });
 
 /** One request per operation (and a few error cases). Slices append theirs. */
 const ids: Record<string, string> = {};
@@ -301,6 +304,15 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /ask/{id}/choose', path: () => `/ask/${ids.plannedAsk}/choose`, init: post, status: 400 },
   { op: 'GET /sync', path: '/sync?collections=projects,turns', status: 200 },
   { op: 'GET /sync', path: '/sync?since=1&collections=projects,turns,jobs', status: 200 },
+  // A10 Today
+  { op: 'GET /today', path: '/today', status: 200 },
+  { op: 'POST /today/seen', path: '/today/seen', init: post, status: 200 },
+  { op: 'POST /today/seen', path: '/today/seen', init: () => ({ ...post(), body: '[1]' }), status: 400 },
+  { op: 'GET /today', path: '/today', status: 200 },
+  { op: 'POST /today/checkin/done', path: '/today/checkin/done', init: post, status: 200 },
+  { op: 'POST /today/wrap/done', path: '/today/wrap/done', init: post, status: 200 },
+  { op: 'GET /sync', path: '/sync?collections=today', status: 200 },
+  { op: 'GET /sync', path: '/sync?since=1&collections=today,jobs,important', status: 200 },
 ];
 
 describe('responses match the contract', () => {

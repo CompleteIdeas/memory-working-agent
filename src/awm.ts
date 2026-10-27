@@ -124,6 +124,8 @@ export interface ActionRecord {
   effect: 'external' | 'local' | 'read';
   tool?: string;
   undo?: string;
+  /** when it was logged (ms); v2 A10: Today's "Done for you" and weekly counts read it */
+  at?: number;
 }
 
 export interface Memory {
@@ -1263,6 +1265,7 @@ export class MwaMemory implements Memory {
           effect: (eff === 'external' || eff === 'read' ? eff : 'local') as 'external' | 'local' | 'read',
           tool: get('tool='),
           undo: get('undo='),
+          ...(e.createdAt ? { at: new Date(e.createdAt).getTime() } : {}),
         };
       });
     } catch { return []; }

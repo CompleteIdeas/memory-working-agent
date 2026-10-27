@@ -255,3 +255,7 @@ export function jobStatus(job: StatusJob, input: StatusTry[], ctx: StatusCtx): J
   const what = firstSentence(last.summary);
   return { state: 'done', label: resultReady ? 'Result ready' : 'Done', detail: what || 'Finished.', resultReady, primaryAction: { action: 'open', label: 'Open' } };
 }
+
+
+// The status pill lives in ./pill.ts (no imports), which the web app imports too: one computation everywhere.
+export { statusPill, type StatusPill, type PillTone } from './pill.js';

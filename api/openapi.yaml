@@ -868,6 +868,195 @@ components:
             note: { type: string }
             suggested: { type: string }
         updatedSeq: { type: integer }
+    TodayOpen:
+      type: object
+      description: 'Where a card or line opens, in place: a job, the waiting jobs, an approval, the approvals, a calendar item (on `date`), an Important item, an account to reconnect, an action in the activity log.'
+      required: [kind, id]
+      additionalProperties: false
+      properties:
+        kind: { type: string, enum: [job, jobs, approval, approvals, calendar, item, reconnect, activity, mail] }
+        id: { type: ['string', 'null'], description: 'The thing''s id (a job, approval, calendar item, Important item, account or action); "waiting" for jobs; null for all approvals.' }
+        date: { type: string, description: 'calendar and item: the local day to open (YYYY-MM-DD).' }
+        resource: { type: string, enum: [calendar, mail], description: 'reconnect: which part of the account.' }
+    TodayNeed:
+      type: object
+      description: |
+        One "Needs you" card. At most one per kind — approvals, jobs waiting for you, the next double-booking, an
+        account to reconnect — with `count` when there are more. Never made from mail, so a phishing-flagged message is
+        never one. A card shown here is not repeated in `worthALook`. Titles that came from outside (an invite, a staged
+        action) are `trust: untrusted`: plain text, auto-linking off.
+      required: [id, kind, count, title, text, action, open, itemId, trust]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [approval, job, conflict, reconnect] }
+        count: { type: integer, minimum: 1 }
+        title: { type: string, description: '"Thursday at 4 is double-booked", "Google Calendar needs to be reconnected".' }
+        text: { type: string }
+        action:
+          type: ['object', 'null']
+          required: [kind, label]
+          additionalProperties: false
+          properties:
+            kind: { type: string, description: 'review-approval, a job action (continue, review…), draft-note (only when the double-booking has its Important item; otherwise the card has no action and only opens the day), reconnect.' }
+            label: { type: string, description: '"Review", "Finish the last 10 pages · about 3¢", "Draft the note", "Reconnect".' }
+        open: { $ref: '#/components/schemas/TodayOpen' }
+        itemId: { type: ['string', 'null'], description: 'The Important item this card stands for, when there is one (its action runs through POST /items/{id}/action).' }
+        trust: { type: string, enum: [trusted, untrusted] }
+    TodayEvent:
+      type: object
+      description: 'Next up: one of today''s remaining timed events (on the calendar; open drafts are not plans).'
+      required: [id, kind, title, start, end, location, startLabel, soon]
+      additionalProperties: false
+      properties:
+        id: { type: string, description: A CalendarItem id. }
+        kind: { type: string, enum: [event, draft] }
+        title: { type: string }
+        start: { type: string, description: UTC instant. }
+        end: { type: string, description: UTC instant. }
+        location: { type: ['string', 'null'] }
+        startLabel: { type: string, description: '"8:15 AM" in the person''s zone.' }
+        soon: { type: ['string', 'null'], description: '"Now", "in 25 min" (within the hour), else null.' }
+    TodayDone:
+      type: object
+      description: 'One "Done for you" line: something the helper did since this caller last looked, in plain words, opening the thing in place.'
+      required: [id, kind, text, at, open, trust]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [draft-event, event-added, job-finished, reminder, reply-drafted, email-sent, file-saved, preference] }
+        text: { type: string, description: '"I added “Riley’s dentist” on Wed Nov 11 at 3:30pm as a draft. Confirm it when you see it."' }
+        at: { type: integer }
+        open: { $ref: '#/components/schemas/TodayOpen' }
+        trust: { type: string, enum: [trusted, untrusted] }
+    Today:
+      type: object
+      description: |
+        Everything the Today screen needs, in one read, for the person's day in their own time zone (day boundaries are
+        real local midnights). Read-only: no model call is made. The phone shows greeting, Needs you, Next up, Done for
+        you, Worth a look and the week line; the desktop puts `worthALook` (the Important list) on the left and `agenda`
+        on the right. When `freshness.calendar` is not_connected or not_synced, `nextUp` is empty because the day is
+        UNKNOWN, not free: show `freshness.calendarNote` instead of "Nothing else today".
+      required: [id, date, weekday, dateLabel, tz, now, greetingName, greeting, part, checkin, wrap, needsYou, nextUp, nextUpMore, agenda, doneForYou, doneMore, doneSince, worthALook, worthALookTotal, weekLine, month, status, freshness]
+      additionalProperties: false
+      properties:
+        id: { type: string, const: today, description: 'The one document of the /sync `today` collection.' }
+        date: { type: string, description: 'The local date (YYYY-MM-DD).' }
+        weekday: { type: string, description: '"Monday".' }
+        dateLabel: { type: string, description: '"Monday, November 9".' }
+        tz: { type: string, description: 'The person''s IANA zone.' }
+        now: { type: integer, description: 'The server''s now (ms) this was computed at.' }
+        greetingName: { type: ['string', 'null'] }
+        greeting: { type: string, description: '"Good morning, Robert".' }
+        part: { type: string, enum: [morning, afternoon, evening, night] }
+        checkin:
+          type: ['object', 'null']
+          description: 'The morning check-in, 5:00 until noon local, until the person taps "Done — show my day" (POST /today/checkin/done). Counts only: each thing appears once, in its own card below.'
+          required: [title, text, spoken, trust, counts]
+          additionalProperties: false
+          properties:
+            title: { type: string }
+            text: { type: string, description: '"Here’s your Monday: 5 things on your calendar, 1 thing needs you, and I did 3 things overnight. It’s all below." Events still ahead (or all day) count.' }
+            spoken: { type: string, description: 'For "Read it to me": the counts, the first thing''s time, and the first card in the helper''s own words ("Something needs your OK.") — never an event title or a staged action''s summary.' }
+            trust: { type: string, enum: [trusted, untrusted], description: 'Whether text holds anything that came from outside (it does not: counts only).' }
+            counts:
+              type: object
+              required: [events, needsYou, overnight]
+              additionalProperties: false
+              properties:
+                events: { type: integer }
+                needsYou: { type: integer }
+                overnight: { type: integer }
+        wrap:
+          type: ['object', 'null']
+          description: 'The evening wrap, from 17:00 local when the day had activity, until "Good night" (POST /today/wrap/done).'
+          required: [title, lines, spoken, trust, counts]
+          additionalProperties: false
+          properties:
+            title: { type: string, description: '"That’s Monday".' }
+            lines: { type: array, items: { type: string }, description: 'What got done today; how tomorrow starts ("Tomorrow starts at 8:15 AM with an event called “School drop-off”" — a title is quoted, filtered and at most 60 characters).' }
+            spoken: { type: string, description: 'For "Read it to me": the same, with times only — no titles.' }
+            trust: { type: string, enum: [trusted, untrusted], description: 'untrusted when `lines` quote an event title (it came from the calendar, perhaps from an invitation): plain text, auto-linking off.' }
+            counts:
+              type: object
+              required: [eventsConfirmed, repliesDrafted, jobsFinished, doneToday]
+              additionalProperties: false
+              properties:
+                eventsConfirmed: { type: integer }
+                repliesDrafted: { type: integer }
+                jobsFinished: { type: integer }
+                doneToday: { type: integer }
+        needsYou: { type: array, items: { $ref: '#/components/schemas/TodayNeed' }, maxItems: 4 }
+        nextUp: { type: array, items: { $ref: '#/components/schemas/TodayEvent' }, maxItems: 3 }
+        nextUpMore: { type: integer, description: 'More events later today than nextUp shows ("See your whole day").' }
+        agenda: { type: array, items: { $ref: '#/components/schemas/CalendarItem' }, description: 'The whole local day: events and drafts (the desktop''s right-hand column).' }
+        doneForYou: { type: array, items: { $ref: '#/components/schemas/TodayDone' }, maxItems: 3 }
+        doneMore: { type: integer, description: '"and N more earlier".' }
+        doneSince: { type: integer, description: 'Done for you lists what happened after this (ms): when this caller last looked, at most a week back; a day back for a first look.' }
+        worthALook: { type: array, items: { $ref: '#/components/schemas/ImportantItem' }, maxItems: 3, description: 'The top open Important items, minus what a Needs-you card shows.' }
+        worthALookTotal: { type: integer, description: '"See all (N)": every open item on the Important list.' }
+        weekLine:
+          type: object
+          required: [text, counts]
+          additionalProperties: false
+          properties:
+            text: { type: string, description: '"In the last 7 days: 6 replies drafted, 4 events added, 2 documents learned." Counts only.' }
+            counts:
+              type: object
+              required: [repliesDrafted, eventsAdded, documentsLearned, jobsFinished]
+              additionalProperties: false
+              properties:
+                repliesDrafted: { type: integer }
+                eventsAdded: { type: integer, description: 'Drafts confirmed onto a calendar.' }
+                documentsLearned: { type: integer, description: 'Finished jobs that worked through a document page by page.' }
+                jobsFinished: { type: integer }
+        month:
+          type: object
+          required: [usedUsd, limitUsd, state]
+          additionalProperties: false
+          properties:
+            usedUsd: { type: number }
+            limitUsd: { type: ['number', 'null'] }
+            state: { type: string, enum: [none, ok, warn, over] }
+        status:
+          type: object
+          description: 'The status pill: the same computation everywhere (src/v2/status.ts statusPill).'
+          required: [text, tone, working, waiting, ready]
+          additionalProperties: false
+          properties:
+            text: { type: string, description: '"Working on 1 thing", "Working on 1 · 1 waiting for you", "Helper is resting".' }
+            tone: { type: string, enum: [needs, working, resting] }
+            working: { type: integer }
+            waiting: { type: integer }
+            ready: { type: integer }
+        freshness:
+          type: object
+          required: [calendarAsOf, mailAsOf, calendar, mail, calendarNote, mailNote, needsReconnect]
+          additionalProperties: false
+          properties:
+            calendarAsOf: { type: ['integer', 'null'], description: 'The oldest last successful calendar sync among connected calendars (ms).' }
+            mailAsOf: { type: ['integer', 'null'] }
+            calendar: { type: string, enum: [ok, stale, partial, not_synced, reconnect, not_connected], description: 'partial: one calendar synced and another never has (named in calendarNote); the day shown is incomplete.' }
+            mail: { type: string, enum: [ok, stale, partial, not_synced, reconnect, not_connected] }
+            calendarNote: { type: ['string', 'null'], description: 'Say this when the calendar is not ok: "Your calendar hasn''t synced yet, so I can''t tell what''s next."' }
+            mailNote: { type: ['string', 'null'] }
+            needsReconnect:
+              type: array
+              items:
+                type: object
+                required: [account, resource, label]
+                additionalProperties: false
+                properties:
+                  account: { type: string }
+                  resource: { type: string, enum: [calendar, mail] }
+                  label: { type: string }
+    TodayAck:
+      type: object
+      required: [message, today]
+      additionalProperties: false
+      properties:
+        message: { type: string, description: '"Morning check-in done. Have a good Monday.", "See you in the morning."' }
+        today: { $ref: '#/components/schemas/Today' }
   responses:
     Error:
       description: An error.
@@ -1139,7 +1328,10 @@ paths:
         Events: `hello` {cursor, head}; `change` {seq, entity, id, op, data?} with `id: <seq>` (a job's change carries
         its current view in `data`); `live` {session, type, stage, at} — a running try's progress, at most once a
         second per run; `reset` {cursor, reason} — the cursor was older than what is kept: call /sync without
-        `since`. A comment every 15 s keeps the connection open. Reconnect with Last-Event-ID (EventSource does it).
+        `since`. A `change` with entity `today` and no data (at most every 5 s) means Today changed (a job,
+        calendar, item or action changed, an approval or a sync's state moved, or the day passed midnight, 05:00, noon
+        or 17:00):
+        GET /today again. A comment every 15 s keeps the connection open. Reconnect with Last-Event-ID (EventSource does it).
       parameters:
         - { name: cursor, in: query, required: false, schema: { type: string, pattern: '^[0-9]{1,15}$' } }
         - { name: Last-Event-ID, in: header, required: false, schema: { type: string, pattern: '^[0-9]{1,15}$' } }
@@ -1159,7 +1351,7 @@ paths:
         each active project's latest 50.
       parameters:
         - { name: since, in: query, required: false, schema: { type: string, pattern: '^[0-9]{1,15}$' } }
-        - { name: collections, in: query, required: false, description: 'Comma-separated: jobs, calendar, mail (mail is headers only), projects (archived included), turns (a snapshot holds each active project''s latest 50), important (the Important list; handled items for 30 days).', schema: { type: string, default: jobs } }
+        - { name: collections, in: query, required: false, description: 'Comma-separated: jobs, calendar, mail (mail is headers only), projects (archived included), turns (a snapshot holds each active project''s latest 50), important (the Important list; handled items for 30 days), today (one document: the Today composite for this caller; a delta holds it only when something it is made of changed).', schema: { type: string, default: jobs } }
       responses:
         '200':
           description: Changes. `reset` true means a full snapshot (no since, or too old).
@@ -1182,6 +1374,7 @@ paths:
                       projects: { type: array, items: { $ref: '#/components/schemas/Project' } }
                       turns: { type: array, items: { $ref: '#/components/schemas/Turn' } }
                       important: { type: array, items: { $ref: '#/components/schemas/ImportantItem' } }
+                      today: { type: array, items: { $ref: '#/components/schemas/Today' }, maxItems: 1 }
                   deletes:
                     type: object
                     properties:
@@ -1191,6 +1384,7 @@ paths:
                       projects: { type: array, items: { type: string } }
                       turns: { type: array, items: { type: string } }
                       important: { type: array, items: { type: string } }
+                      today: { type: array, items: { type: string } }
         default: { $ref: '#/components/responses/Error' }
   /calendar:
     get:
@@ -2002,4 +2196,50 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AskChosen' }
+        default: { $ref: '#/components/responses/Error' }
+  /today:
+    get:
+      operationId: getToday
+      summary: 'The Today screen in one read: Needs you, Next up, Done for you, Worth a look, the check-in or the wrap, the week line, the month and the status pill.'
+      responses:
+        '200':
+          description: Today for this caller.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Today' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /today/seen:
+    post:
+      operationId: markTodaySeen
+      summary: 'This caller looked at Today: Done for you lists only what comes after. Per caller (each device keeps its own).'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [seenAt]
+                additionalProperties: false
+                properties:
+                  seenAt: { type: integer }
+        default: { $ref: '#/components/responses/Error' }
+  /today/checkin/done:
+    post:
+      operationId: finishCheckin
+      summary: '"Done — show my day": the morning check-in is gone for today, on every device.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Done, with Today as it is now.
+          content: { application/json: { schema: { $ref: '#/components/schemas/TodayAck' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /today/wrap/done:
+    post:
+      operationId: finishWrap
+      summary: '"Good night": the evening wrap is gone for today, on every device.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Done, with Today as it is now.
+          content: { application/json: { schema: { $ref: '#/components/schemas/TodayAck' } } }
         default: { $ref: '#/components/responses/Error' }

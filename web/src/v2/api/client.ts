@@ -66,6 +66,9 @@ export type MessageSent = Json<'/projects/{id}/messages', 'post', 202>;
 export type ProjectFiles = Json<'/projects/{id}/files', 'get', 200>;
 export type TurnMoved = Json<'/turns/{id}/move', 'post', 200>;
 export type JobList = Schemas['JobList'];
+export type Today = Schemas['Today'];
+export type TodayAck = Schemas['TodayAck'];
+export type TodaySeen = Json<'/today/seen', 'post', 200>;
 export type SyncCollection = 'jobs' | 'calendar' | 'mail' | 'projects' | 'turns' | 'important';
 
 /** The version this build reports; set by vite.config.ts from web/package.json. */
@@ -279,6 +282,12 @@ export class MwaClient {
   runItemAction(id: string, o: { key?: string } = {}) { return this.post<ItemActionResult>('/items/{id}/action', { path: { id }, key: o.key }); }
   refreshImportant(o: { key?: string } = {}) { return this.post<ImportantRefresh>('/important/refresh', { key: o.key }); }
   listTriageRules() { return this.get<TriageRules>('/triage/rules'); }
+
+  // ---- Today (A10) ----
+  getToday() { return this.get<Today>('/today'); }
+  markTodaySeen(o: { key?: string } = {}) { return this.post<TodaySeen>('/today/seen', { key: o.key }); }
+  finishCheckin(o: { key?: string } = {}) { return this.post<TodayAck>('/today/checkin/done', { key: o.key }); }
+  finishWrap(o: { key?: string } = {}) { return this.post<TodayAck>('/today/wrap/done', { key: o.key }); }
   async deleteTriageRule(id: string, o: { key?: string } = {}) { return (await this.call<unknown>('DELETE', '/triage/rules/{id}', { path: { id }, key: o.key })).body; }
 }
 
