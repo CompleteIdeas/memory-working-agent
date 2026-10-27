@@ -652,7 +652,7 @@ function serveStatic(res: ServerResponse, dir: string, pathname: string): void {
   // SPA: unknown non-asset routes fall back to index.html (client-side routing).
   let rel = normalize(pathname).replace(/^(\.\.[/\\])+/, '').replace(/^[/\\]+/, '');
   let file = join(dir, rel);
-  // P1/P2 (review): the install icons are files or nothing — no folder stripping, no SPA fallback under /pwa/
+  // P1/P2 (review): /pwa/ and /assets/ are files or nothing — no folder stripping, no SPA fallback (src/pwa.ts)
   if (pwaFileOnly(rel)) {
     if (!existsSync(file) || statSync(file).isDirectory()) { res.writeHead(404, { 'cache-control': 'no-cache' }); res.end('not found'); return; }
     res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream', 'cache-control': uiCacheControl(relative(dir, file)) });

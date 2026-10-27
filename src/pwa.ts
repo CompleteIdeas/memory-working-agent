@@ -14,7 +14,7 @@
  * came back as the sign-in page and the app could not be installed. W5's signedOutPageAllowed (src/api/legacy.ts)
  * already lets in single files at the root and a ?ui=v2 page (the worker precaches the shell as index.html?ui=v2);
  * this adds the icons under /pwa/. Nothing here is secret: it is the same code /assets/ serves. Unknown paths under
- * /pwa/ are 404s, never the SPA fallback (pwaFileOnly).
+ * /pwa/ and /assets/ (both public signed out) are 404s, never the SPA fallback (pwaFileOnly).
  */
 import type { IncomingMessage } from 'node:http';
 
@@ -24,10 +24,11 @@ const PUBLIC_FILES = new Set(['/sw.js', '/manifest.webmanifest', '/manifest-v2.w
 /** An install icon: one file name directly under /pwa/ (no folders, no "..", only images). */
 const PWA_ICON = /^\/pwa\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.(?:png|svg)$/;
 
-/** True for a path under /pwa/ that must be a real file there: a missing one is a 404, never index.html (review of
- *  P1/P2: /pwa/x/y/z and /pwa/index.html came back as the app's page through the SPA fallback). */
+/** True for a path under /pwa/ or /assets/ that must be a real file there: a missing one is a 404, never index.html
+ *  (review of P1/P2: /pwa/x/y/z, /pwa/index.html and /assets/index.html came back as the app's page, signed out,
+ *  through the SPA fallback and its folder stripping). A share page's s/assets/… still strips to assets/… first. */
 export function pwaFileOnly(rel: string): boolean {
-  return /^pwa[\\/]/.test(rel.replace(/^[\\/]+/, ''));
+  return /^(pwa|assets)[\\/]/.test(rel.replace(/^[\\/]+/, ''));
 }
 
 /** Cache-Control for a file of the built UI, by its path relative to dist-ui ("assets/index-AbC.js", "index.html"). */

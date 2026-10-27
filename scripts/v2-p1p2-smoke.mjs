@@ -137,6 +137,11 @@ try {
   console.log('building A (web 1.0.0)…');
   const A = build('1.0.0');
   srv = await startServer(PORT);
+  // W5's first run would stand in front of the app on a fresh helper: mark it done (this machine is admin)
+  {
+    const r = await fetch(`${BASE}/api/v1/settings`, { method: 'PATCH', headers: { ...H, 'content-type': 'application/json', 'idempotency-key': `p1p2-${Date.now()}`, origin: BASE }, body: JSON.stringify({ firstRunDone: true }) });
+    check('setup: first run marked done on the fresh helper', r.ok, `${r.status} ${await r.text()}`);
+  }
 
   // ---------- 1. headers ----------
   {
@@ -166,7 +171,7 @@ try {
     const spoof = await (await get('/index.html', { 'x-mwa-sw': 'precache' })).text();
     check('the old x-mwa-sw header opens nothing any more', spoof.includes('/api/login'));
     check('behind a password: the API is still locked', (await get('/api/v1/projects', H)).status === 401);
-    for (const p of ['/pwa/x/y/z', '/pwa/index.html', '/pwa/anything']) {
+    for (const p of ['/pwa/x/y/z', '/pwa/index.html', '/pwa/anything', '/assets/index.html', '/assets/x/y']) {
       const open = await fetch(`${BASE}${p}`); const ot = await open.text();
       check(`fix 3: ${p} is a 404 (never the app's page through the SPA fallback)`, open.status === 404 && !ot.includes('assets/index-'), `${open.status}`);
       check(`fix 3: behind a password, ${p} is the sign-in page (not public, not the app)`, !(await (await get(p)).text()).includes('assets/index-'));
@@ -225,7 +230,7 @@ try {
     const p2 = await ic.newPage();
     await p2.goto(`http://mwa-insecure.test:${PORT}/?fixtures=1&view=settings`);
     const t = await p2.locator('#install-card').innerText({ timeout: 15_000 }).catch(() => '');
-    check('insecure address: "Your phone needs the secure address to install — open https://…ts.net"', t.includes('Your phone needs the secure address to install — open https://<your-helper>.<your-tailnet>.ts.net'), t);
+    check('insecure address: "Your phone needs the secure address to install — open https://…ts.net"', /Your phone needs the secure address to install — open https:\/\/\S+\.ts\.net/.test(t), t);
     check('insecure address: no worker registered', !(await p2.evaluate(() => navigator.serviceWorker ? navigator.serviceWorker.getRegistrations().then((r) => r.length) : 0)));
     await shot(p2, '02-insecure-install');
     await ic.close();
@@ -347,11 +352,14 @@ try {
 
   // ---------- fix 7: a 401 clears the phone's copy ----------
   {
-    await page.route('**/api/v1/**', (r) => r.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { code: 'locked', message: 'Sign in to continue.' } }) }));
+    // a revoked phone: every route but the public ones (/meta, /me) answers 401
+    await page.route('**/api/v1/**', (r) => (/\/api\/v1\/(meta|me)(\?|$)/.test(r.request().url()) ? r.continue()
+      : r.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { code: 'locked', message: 'Sign in to continue.' } }) })));
     await page.reload();
-    const signin = page.getByRole('heading', { name: 'Sign in to continue' });
-    check('fix 7: a 401 shows the sign-in screen', await seen(signin, 15_000));
-    check('fix 7: and says "Signed out — this phone’s copy was cleared"', await seen(page.getByText('Signed out — this phone’s copy was cleared'), 5_000));
+    // W5's start screen: "Sign in to your helper" with a password set, "Pair this device first" without one (this run)
+    const signin = page.getByRole('heading', { name: /Sign in to your helper|Pair this device first/ });
+    check('fix 7: says "Signed out — this phone’s copy was cleared"', await seen(page.locator('#toasts').getByText('Signed out — this phone’s copy was cleared'), 10_000));
+    check('fix 7: a 401 shows the sign-in / pairing screen', await seen(signin, 15_000));
     await page.waitForTimeout(500);
     const wiped = await idb(page);
     check('fix 7: IndexedDB is empty (Today, the outbox)', wiped.today === 0 && wiped.outbox.length === 0 && !wiped.updatedAt, JSON.stringify(wiped));
@@ -361,10 +369,11 @@ try {
     await dark(ctx);
     await page.unroute('**/api/v1/**');
     await page.reload();
-    check('fix 7: offline after a sign-out: the sign-in screen, no cached Today', await seen(signin, 15_000) && !(await page.locator('#offlinebar').isVisible().catch(() => false)));
+    const startHead = page.getByRole('heading', { name: /Sign in to your helper|Pair this device first|Can’t reach your helper/ });
+    check('fix 7: offline after a sign-out: the sign-in (or cannot-reach) screen, no cached Today', await seen(startHead, 15_000) && !(await page.locator('#offlinebar').isVisible().catch(() => false)) && !(await page.locator('#tabbar').isVisible().catch(() => false)));
     await light(ctx);
     await page.reload();
-    check('fix 7: signed in again (a good connect): the app is back', await seen(page.locator('#main h1').filter({ hasNotText: 'Sign in to continue' }), 20_000));
+    check('fix 7: signed in again (a good connect): the app is back', await seen(page.locator('#tabbar'), 20_000));
   }
 
   // ---------- 7. v1 ----------

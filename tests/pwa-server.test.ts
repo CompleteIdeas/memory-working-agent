@@ -42,7 +42,9 @@ describe('public behind the password', () => {
     }
     expect(pwaFileOnly('pwa/x/y/z')).toBe(true);
     expect(pwaFileOnly(String.raw`pwa\index.html`)).toBe(true); // Windows path.normalize
-    expect(pwaFileOnly('assets/index-AbCd1234.js')).toBe(false);
+    expect(pwaFileOnly('assets/index.html')).toBe(true); // /assets/ is public signed out too: no SPA fallback there
+    expect(pwaFileOnly('s/assets/index-AbCd1234.js')).toBe(false); // a share page's assets still strip to assets/
+    expect(pwaFileOnly('index.html')).toBe(false);
     expect(pwaFileOnly('')).toBe(false);
   });
 });
