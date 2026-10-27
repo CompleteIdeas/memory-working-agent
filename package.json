@@ -59,6 +59,7 @@
     "staleness": "tsx src/staleness.ts",
     "contextswitch": "tsx src/contextswitch.ts",
     "test": "vitest run",
+    "test:perf": "vitest run tests/today-perf.test.ts",
     "eval:design": "vitest run tests/design-conformance.test.ts",
     "prepublishOnly": "npm run build",
     "api:types": "openapi-typescript api/openapi.yaml -o src/api/types.gen.ts && openapi-typescript api/openapi.yaml -o web/src/v2/api/types.gen.ts"

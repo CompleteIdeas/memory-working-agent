@@ -86,6 +86,10 @@ const CALLS: Record<string, (c: MwaClient) => unknown> = {
   markMailImportant: (c) => c.markMailImportant('m1'),
   runItemAction: (c) => c.runItemAction('i1'),
   refreshImportant: (c) => c.refreshImportant(),
+  getToday: (c) => c.getToday(),
+  markTodaySeen: (c) => c.markTodaySeen(),
+  finishCheckin: (c) => c.finishCheckin(),
+  finishWrap: (c) => c.finishWrap(),
   listTriageRules: (c) => c.listTriageRules(),
   deleteTriageRule: (c) => c.deleteTriageRule('r1'),
 };

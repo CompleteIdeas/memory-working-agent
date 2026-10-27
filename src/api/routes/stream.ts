@@ -27,6 +27,11 @@
  * Projects (A5): a project or a thread's turn changing is sent with its current shape; /sync has 'projects' (all of
  * them, archived included, so an archive reaches the phone) and 'turns' (a snapshot holds each active project's latest
  * 50; a delta holds every turn changed since the cursor, a moved one included with its new project).
+ * Today (A10): /sync has a 'today' collection — one document, the Today composite for this caller (a snapshot always
+ * holds it; a delta holds it when anything Today is made of changed). On the stream, a coarse notice without data
+ * (entity 'today') when a job, try, calendar event or draft, item or action changed — or, checked every 5 s, an
+ * approval, a sync's state or the part of the day (midnight, 05:00, noon, 17:00) — at most once every 5 s; the
+ * person's own check-in and wrap marks are sent as they happen.
  *
  * Asks (A6): an ask changing (planned, chosen, answered) is sent as entity 'ask' with its current shape; its run's
  * progress is the project's `live` events and its answer the thread's turn.
@@ -43,10 +48,13 @@ import { mailSnapshot, mailDelta } from '../../v2/mail.js';
 import { importantSnapshot, itemForStream } from '../../v2/important.js';
 import { triageNow, triageTz } from '../../v2/triage.js';
 import { apiProject, apiTurn, getProject, getTurn, listProjects, recentTurns } from '../../v2/projects.js';
+import { buildToday, todaySignature, TODAY_SOURCES } from '../../v2/today.js';
 import { apiAsk, getAsk } from '../../v2/ask.js';
 
 export const EVENT_RETENTION_MS = 7 * 24 * 3_600_000;
 const POLL_MS = 1_000, KEEPALIVE_MS = 15_000, BATCH = 500, STEP_EVERY_MS = 1_000;
+/** The coarse "today changed" notice: at most one per this many ms per stream. */
+export const TODAY_NOTICE_EVERY_MS = 5_000;
 
 export interface StreamDeps {
   running: () => Set<string>;
@@ -150,7 +158,7 @@ function present(rows: EventRow[], who: Caller | null) {
 const CAL_ENTITIES = new Set(['cal_event', 'cal_draft']);
 /** The calendar collection's full snapshot: every cached event and every draft not removed. */
 const calendarSnapshot = () => calendarItems('0000-01-01T00:00:00.000Z', '9999-12-31T23:59:59.999Z');
-const COLLECTIONS = ['jobs', 'calendar', 'mail', 'projects', 'turns', 'important'];
+const COLLECTIONS = ['jobs', 'calendar', 'mail', 'projects', 'turns', 'important', 'today'];
 /** A /sync delta answers at most this many events, and stops early near this many bytes (`more: true`). */
 export const SYNC_PAGE = 500;
 export const SYNC_MAX_BYTES = 5 * 1024 * 1024;
@@ -163,6 +171,9 @@ function parseCursor(v: string | null | undefined): number {
 
 function openStream(res: ServerResponse, req: IncomingMessage, start: number, who: Caller | null): void {
   let cursor = start, closed = false, lastSent = Date.now();
+  // Today (A10): a change to what Today is made of marks it dirty; the notice goes out at most every 5 s
+  let todayDirty = 0, todaySentAt = 0, todaySig = '', todaySigAt = 0;
+  try { todaySig = todaySignature(); } catch { /* checked again on the timer */ }
   const write = (chunk: string) => { if (closed) return; try { res.write(chunk); lastSent = Date.now(); } catch { close(); } };
   const send = (event: string, data: unknown, id?: number) => write(`${id !== undefined ? `id: ${id}\n` : ''}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   const lastStep = new Map<string, number>();
@@ -182,8 +193,17 @@ function openStream(res: ServerResponse, req: IncomingMessage, start: number, wh
         if (!rows.length) break;
         for (const m of present(rows, who)) send('change', m, m.seq);
         cursor = rows[rows.length - 1].seq;
+        if (rows.some((e) => TODAY_SOURCES.has(e.entity))) todayDirty = cursor;
         write(`id: ${cursor}\n\n`); // an id with no data: the client's Last-Event-ID advances past events it may not see
         if (rows.length < BATCH) break;
+      }
+      if (Date.now() - todaySigAt >= TODAY_NOTICE_EVERY_MS) {
+        todaySigAt = Date.now();
+        try { const sig = todaySignature(); if (sig !== todaySig) { todaySig = sig; todayDirty = todayDirty || Math.max(cursor, 1); } } catch { /* next tick */ }
+      }
+      if (todayDirty && Date.now() - todaySentAt >= TODAY_NOTICE_EVERY_MS) {
+        send('change', { seq: todayDirty, entity: 'today', id: 'today', op: 'upsert' });
+        todayDirty = 0; todaySentAt = Date.now();
       }
       if (Date.now() - lastSent >= KEEPALIVE_MS) write(': keepalive\n\n');
     } catch { /* the database is busy: try again next tick */ }
@@ -208,7 +228,7 @@ export const streamRoutes: Route[] = [
   },
   {
     method: 'GET', path: '/sync', scope: 'read',
-    handler: ({ url, who }) => {
+    handler: async ({ url, who, caller }) => {
       trimEvents();
       const since = parseCursor(url.searchParams.get('since'));
       const wanted = (url.searchParams.get('collections') ?? 'jobs').split(',').map((s) => s.trim()).filter(Boolean);
@@ -225,6 +245,7 @@ export const streamRoutes: Route[] = [
         if (want.has('projects')) { upserts.projects = listProjects({ archived: true }).map(apiProject); deletes.projects = []; }
         if (want.has('turns')) { upserts.turns = recentTurns(50).map((t) => apiTurn(t, undefined, { summary: true })); deletes.turns = []; }
         if (want.has('important')) { upserts.important = importantSnapshot(triageNow(), triageTz()); deletes.important = []; }
+        if (want.has('today')) { upserts.today = [await buildToday(caller)]; deletes.today = []; }
         return { body: { cursor: head, reset: true, more: false, upserts, deletes } };
       }
       // A page of at most SYNC_PAGE events and about SYNC_MAX_BYTES of answer (review of A5: a delta across the
@@ -254,6 +275,7 @@ export const streamRoutes: Route[] = [
       }
       for (const k of KEYS) if (want.has(k)) { upserts[k] = [...ups[k].values()]; deletes[k] = [...dels[k]]; }
       if (want.has('mail')) { const d = mailDelta(rows); upserts.mail = d.upserts; deletes.mail = d.deletes; }
+      if (want.has('today')) { upserts.today = rows.some((e) => TODAY_SOURCES.has(e.entity) || e.entity === 'today') ? [await buildToday(caller)] : []; deletes.today = []; }
       return { body: { cursor, reset: false, more, upserts, deletes } };
     },
   },

@@ -821,7 +821,9 @@ export function onScheduled(id: string, instruction: string, dueMs: number, opts
     }
     if (opts.recur || opts.kind === 'reminder') {
       const job = insertJob(d, { kind: kindOfTask(opts), title: titleOf(opts.request ?? opts.task ?? instruction), request: opts.request ?? opts.task ?? instruction,
-        person: opts.person, scheduleId: id, session: opts.notify, dir: opts.dir, legacyKey: `sched:${id}`, ...(opts.recur ? { nextDueAt: dueMs } : {}) });
+        person: opts.person, scheduleId: id, session: opts.notify, dir: opts.dir, legacyKey: `sched:${id}`, ...(opts.recur ? { nextDueAt: dueMs } : {}),
+        // set up from outside content (a reminder made from an email): its words are not the person's (A10 review)
+        ...(opts.tainted ? { standsTrust: 'untrusted' } : {}) });
       if (!opts.recur) insertTry(d, job.id, { trigger: 'first', state: 'queued', dueAt: dueMs, scheduleId: id });
       return;
     }
