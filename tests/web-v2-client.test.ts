@@ -114,6 +114,14 @@ const CALLS: Record<string, (c: MwaClient) => unknown> = {
   forgetVaultEntry: (c) => c.forgetVaultEntry('Bank'),
   listFiles: (c) => c.listFiles({ projectId: 'general' }),
   uploadFile: (c) => c.uploadFile(new Blob(['x']), { name: 'a.txt', projectId: 'general' }),
+  // S1
+  listPlugins: (c) => c.listPlugins(),
+  enablePlugin: (c) => c.enablePlugin('github'),
+  disablePlugin: (c) => c.disablePlugin('github'),
+  savePluginKeys: (c) => c.savePluginKeys('github', { GITHUB_PERSONAL_ACCESS_TOKEN: 'x' }),
+  removePlugin: (c) => c.removePlugin('my-tool'),
+  reviewPlugin: (c) => c.reviewPlugin('example-mcp'),
+  approvePlugin: (c) => c.approvePlugin('example-mcp'),
 };
 const URL_ONLY = new Set(['streamUrl', 'calendarDraftIcsUrl', 'projectLiveUrl']); // GET links opened by EventSource or a download
 

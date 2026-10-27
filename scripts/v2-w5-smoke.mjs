@@ -199,7 +199,8 @@ try {
       await page.getByRole('button', { name: 'Settings' }).first().click();
       const main = page.locator('#main');
       check(`${L}: Settings opens from the avatar`, await visible(main.getByRole('heading', { name: 'Settings', level: 1 })));
-      const want = ['Connected', 'This month', 'Devices', 'Your rules', 'Your helper', 'What I keep up to date', 'Saved logins', 'Notifications', 'Look', 'About'];
+      await visible(main.getByRole('heading', { name: 'About', level: 2 })); // the sections come after /me and /settings load
+      const want = ['Connected', 'Plug-ins', 'This month', 'Devices', 'Your rules', 'Your helper', 'What I keep up to date', 'Saved logins', 'Notifications', 'Look', 'About'];
       const have = await main.getByRole('heading', { level: 2 }).allTextContents();
       check(`${L}: every section`, want.every((w) => have.includes(w)), JSON.stringify(have));
       check(`${L}: Google connected, Outlook offers "Connect Outlook"`, await visible(main.getByText('· connected')) && await main.getByRole('button', { name: 'Connect Outlook' }).isVisible());

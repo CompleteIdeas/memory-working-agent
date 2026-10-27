@@ -87,6 +87,16 @@ export type SpendingPatch = { monthlyUsd?: number | null; perFireUsd?: number | 
 // P3: web push
 export type PushSubscriptionView = Schemas['PushSubscription'];
 export type PushSettings = Schemas['PushSettings'];
+// S1: plug-ins (MCP servers)
+export type Plugin = Schemas['Plugin'];
+export type PluginKey = Schemas['PluginKey'];
+export type CustomPlugin = Schemas['CustomPlugin'];
+export type AddFromNpm = Schemas['AddFromNpm'];
+export type PluginList = Schemas['PluginList'];
+export type PluginChange = Schemas['PluginChange'];
+export type PluginReview = Schemas['PluginReview'];
+export type PluginRemoved = Json<'/plugins/{id}', 'delete', 200>;
+export type PluginInstalled = Json<'/plugins/approve', 'post', 200>;
 export type PushList = Json<'/push/subscriptions', 'get', 200>;
 export type PushTestResult = Json<'/push/test', 'post', 200>;
 export type PushKindName = 'approval' | 'waiting' | 'result' | 'morning';
@@ -141,7 +151,7 @@ export function newKey(now = Date.now()): string {
 
 // ---------- the transport ----------
 
-type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE';
+type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 /** A path template from the spec, e.g. '/jobs/{id}/stop'. */
 export type ApiPath = keyof paths;
 export interface CallOpts {
@@ -345,6 +355,16 @@ export class MwaClient {
   async removePushSubscription(id: string, o: { key?: string } = {}) { return (await this.call<{ removed: string }>('DELETE', '/push/subscriptions/{id}', { path: { id }, key: o.key })).body; }
   async updatePushSettings(body: PushSettingsPatch, o: { key?: string } = {}) { return (await this.call<PushSettings>('PATCH', '/push/settings', { body, key: o.key })).body; }
   sendPushTest(o: { key?: string } = {}) { return this.post<PushTestResult>('/push/test', { key: o.key }); }
+
+  // ---- S1: plug-ins ----
+  listPlugins() { return this.get<PluginList>('/plugins'); }
+  enablePlugin(id: string, o: { key?: string } = {}) { return this.post<PluginChange>('/plugins/{id}/enable', { path: { id }, key: o.key }); }
+  disablePlugin(id: string, o: { key?: string } = {}) { return this.post<PluginChange>('/plugins/{id}/disable', { path: { id }, key: o.key }); }
+  /** Write-only: the values go to the server and never come back. */
+  async savePluginKeys(id: string, keys: Record<string, string>, o: { key?: string } = {}) { return (await this.call<PluginChange>('PUT', '/plugins/{id}/keys', { path: { id }, body: { keys }, key: o.key })).body; }
+  async removePlugin(id: string, o: { key?: string } = {}) { return (await this.call<PluginRemoved>('DELETE', '/plugins/{id}', { path: { id }, key: o.key })).body; }
+  reviewPlugin(pkg: string, o: { key?: string } = {}) { return this.post<{ review: PluginReview }>('/plugins/review', { body: { package: pkg }, key: o.key }); }
+  approvePlugin(pkg: string, acceptRisk = false, o: { key?: string } = {}) { return this.post<PluginInstalled>('/plugins/approve', { body: acceptRisk ? { package: pkg, acceptRisk: true } : { package: pkg }, key: o.key }); }
 }
 
 function toError(status: number, body: unknown): ApiError {

@@ -1353,6 +1353,125 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/plugins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** S1: plug-ins (MCP servers): the library with on/off, what each can touch and which keys are saved (names only), the owner's own, and whether adding from npm is available. */
+        get: operations["listPlugins"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugins/{id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S1: turn a library plug-in on (admin). 409 needs_keys while a required key is missing. Takes effect on the next message. */
+        post: operations["enablePlugin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugins/{id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S1: turn a library plug-in off (admin). Takes effect on the next message. */
+        post: operations["disablePlugin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugins/{id}/keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** S1: save a library plug-in's keys (admin, write-only). Only the key names that plug-in declares (400 unknown_key otherwise); values are never sent back. */
+        put: operations["savePluginKeys"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugins/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** S1: remove one of the owner's own plug-ins (admin). A library plug-in is turned off instead (400 library_plugin). */
+        delete: operations["removePlugin"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugins/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S1: the safety review of an npm package by the reviewing model (admin). Installs nothing. 409 npm_unavailable (with the reason) when adding from npm is off. */
+        post: operations["reviewPlugin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugins/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S1: install a package this server reviewed in the last 30 minutes, at the reviewed version (admin). 409 review_first without one; a dangerous verdict needs acceptRisk true (409 risky). */
+        post: operations["approvePlugin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2552,6 +2671,74 @@ export interface components {
             name: string;
             size: number;
             mtime: number;
+        };
+        PluginKey: {
+            /** @description The key's name (an environment variable). Its value is never sent. */
+            name: string;
+            label: string;
+            help: string | null;
+            optional: boolean;
+            /** @description A value is saved on the server. */
+            saved: boolean;
+        };
+        /** @description S1: a plug-in from the curated library. */
+        Plugin: {
+            id: string;
+            name: string;
+            category: string;
+            description: string;
+            /** @description What it can touch */
+            access: string;
+            /** @enum {string} */
+            tier: "curated" | "known" | "arbitrary";
+            source: string | null;
+            on: boolean;
+            keys: components["schemas"]["PluginKey"][];
+            /** @description Names of required keys not saved yet. */
+            missing: string[];
+        };
+        /** @description S1: a plug-in the owner added (by hand, or from npm). Env values are never sent, and arguments that look like secrets are shown as •••. */
+        CustomPlugin: {
+            id: string;
+            command: string;
+            package: string | null;
+            envNames: string[];
+        };
+        AddFromNpm: {
+            available: boolean;
+            /** @description Why it is off */
+            reason: string;
+            reviewer: string | null;
+        };
+        PluginList: {
+            plugins: components["schemas"]["Plugin"][];
+            custom: components["schemas"]["CustomPlugin"][];
+            addFromNpm: components["schemas"]["AddFromNpm"];
+            applies: string;
+        };
+        PluginChange: {
+            plugin: components["schemas"]["Plugin"];
+            message: string;
+        };
+        PluginReview: {
+            package: string;
+            /** @description The version reviewed; approving installs exactly this one. */
+            version: string | null;
+            /** @enum {string} */
+            verdict: "safe" | "caution" | "dangerous";
+            summary: string;
+            capabilities: string[];
+            redFlags: string[];
+            scan: {
+                ran: boolean;
+                files: number | null;
+                /** @enum {string} */
+                checksum: "verified" | "mismatch" | "unknown";
+                note: string | null;
+            };
+            reviewer: string;
+            /** @description Approve before this time (ms) */
+            expiresAt: number;
         };
     };
     responses: {
@@ -4977,6 +5164,202 @@ export interface operations {
                             outcome: "accepted" | "gone" | "retry" | "failed";
                             status: number;
                         }[];
+                        message: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listPlugins: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The plug-ins. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginList"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    enablePlugin: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description On. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    disablePlugin: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Off. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    savePluginKeys: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    keys: {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description Saved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    removePlugin: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        removed: string;
+                        message: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    reviewPlugin: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    package: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The review. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        review: components["schemas"]["PluginReview"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    approvePlugin: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    package: string;
+                    acceptRisk?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Installed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        plugin: components["schemas"]["CustomPlugin"] | null;
                         message: string;
                     };
                 };

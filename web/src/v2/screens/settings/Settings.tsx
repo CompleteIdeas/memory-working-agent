@@ -10,7 +10,7 @@ import { useMeta, useRules, useItemActions, useStore, useNow } from '../../store
 import { ruleEffectLine, ruleLine } from '../../store/important';
 import type { Account, ConnectStart, Device, PairCode } from '../../api/client';
 import { WEB_VERSION } from '../../api/client';
-import { Back } from '../../shell/icons';
+import { Back, Chev } from '../../shell/icons';
 import type { ScreenProps } from '../../shell/screens';
 import { PairCodeCard } from './PairNewDevice';
 import { InstallCard } from './InstallCard';
@@ -20,14 +20,14 @@ import { VoiceSettings } from '../ask/voice/VoiceSettings';
 import { NotificationsCard } from './Notifications';
 import './settings.css';
 
-type Said = { text: string; error: boolean } | null;
-function Note({ said }: { said: Said }) {
+export type Said = { text: string; error: boolean } | null;
+export function Note({ said }: { said: Said }) {
   if (!said) return null;
   return <p className={said.error ? 'setnote error' : 'setnote'} role={said.error ? 'alert' : 'status'}>{said.text}</p>;
 }
-const said = (o: ActOutcome, okText?: string): Said => (o.ok ? { text: o.message ?? okText ?? 'Saved.', error: false } : { text: o.message, error: true });
+export const said = (o: ActOutcome, okText?: string): Said => (o.ok ? { text: o.message ?? okText ?? 'Saved.', error: false } : { text: o.message, error: true });
 
-function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
+export function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return <section aria-labelledby={`set-${id}`} id={`sec-${id}`} className="setsec"><h2 className="sh" id={`set-${id}`}>{title}</h2>{children}</section>;
 }
 
@@ -67,6 +67,18 @@ export function Settings({ go }: ScreenProps) {
             </p>
           )}
           <Accounts data={data} admin={admin} />
+          {/* S1: plug-ins have their own screen */}
+          <Section id="plugins" title="Plug-ins">
+            <div className="card setcard">
+              <button type="button" className="plugentry" id="open-plugins" onClick={() => go('plugins')}>
+                <span className="grow">
+                  <span className="rowtitle">Extra skills</span>
+                  <span className="s">{admin ? 'Web search, GitHub, Notion and more. Turn them on, add keys, or add your own.' : 'Web search, GitHub, Notion and more. See what’s on and what each can touch.'}</span>
+                </span>
+                <Chev />
+              </button>
+            </div>
+          </Section>
           <SpendingSection data={data} admin={admin} />
           <Devices data={data} admin={admin} />
           {/* P1: install on this phone (the browser's Install, iPhone's Add to Home Screen, or the secure address) */}
