@@ -1,6 +1,6 @@
 /**
  * Settings (v2 build, slice W5), from the avatar: Accounts, Spending, Devices, Your rules, Helper, What I keep up to
- * date, Saved logins, Notifications, Look and About — in plain words, as the approved prototype's Settings and the
+ * date, Saved logins, Notifications, Voice (P4), Look and About — in plain words, as the approved prototype's Settings and the
  * onboarding-and-pairing explanation say them. Changing connections, limits, devices and the helper is for admin
  * (this computer, or signed in with the password); a paired phone sees the same page with those parts read-only and
  * one line that says why.
@@ -16,6 +16,7 @@ import { PairCodeCard } from './PairNewDevice';
 import { InstallCard } from './InstallCard';
 import { START_CHECK_EVENT } from '../start/events';
 import { accountLine, activeDevices, backgroundLine, lastUsed, money, spendLine, useSettingsData, type ActOutcome } from './useSettings';
+import { VoiceSettings } from '../ask/voice/VoiceSettings';
 import './settings.css';
 
 type Said = { text: string; error: boolean } | null;
@@ -71,6 +72,7 @@ export function Settings({ go }: ScreenProps) {
           <Section id="notify" title="Notifications">
             <div className="card"><p><b>Coming soon.</b> I’ll be able to tell you on this phone when something needs you or a job is finished. Never ads, and I’ll respect your quiet hours.</p></div>
           </Section>
+          <VoiceSettings />
           <Look />
           <About serverVersion={meta?.server ?? null} minClient={meta?.minClient ?? null} admin={admin} restart={() => data.updateSettings({ firstRunDone: false })} />
         </>

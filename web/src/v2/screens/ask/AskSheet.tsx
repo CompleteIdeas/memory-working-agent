@@ -12,16 +12,20 @@
  *   - Opened about one thing (`about.kind` + `about.id`: a job from the working sheet…), it shows the chip and the
  *     server's 2–3 questions for it; the ask carries `about` and the answer shows here.
  *   - Files: POST /api/v1/files (see ./upload.ts), from the computer or a paired phone.
- *   - The mic: real voice is P4; until then it says so and puts the cursor in the text box (N08: the mic opens Ask).
+ *   - The mic (P4, ./voice): tap to talk and tap again to stop, or hold and let go; the words land in the text box
+ *     for the person to check and Send (never sent by themselves), and the ask goes with `source: 'voice'`. The shell
+ *     owns the one Dictation (the dock's mic starts it as it opens this sheet); closing the sheet stops it.
  */
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { useAsk, useMeta, useProjects, useStore } from '../../store/react';
 import type { AskBody } from '../../api/client';
 import { Sheet } from '../../shell/sheets';
-import { Close, Mic, Spark } from '../../shell/icons';
+import { Close, Spark } from '../../shell/icons';
 import { AskOutcomeView, Typing, Who } from './AskOutcome';
 import { refusalFor, routeHow, type Refusal } from './logic';
 import { MAX_FILES, MAX_UPLOAD_BYTES, uploadFile } from './upload';
+import { MIC_HINT, MicButton, VoicePanel } from './voice/Mic';
+import { useDictation, useVoiceDraft, voiceSource, type DictationApi } from './voice/useDictation';
 import './ask.css';
 
 /** What the sheet is opened for. W1's shape ({label, projectId}) plus, for "Ask about this", the thing's kind and id. */
@@ -40,7 +44,7 @@ interface Picked { file: File; name: string; key: number }
 const DEFAULT_SUGGESTIONS = ['What’s on today?', 'Add a reminder'];
 const PROJECT_SUGGESTIONS = ['What’s coming up?', 'Take notes'];
 
-export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; about: AskContext | null; onClose: () => void; onShowWork?: () => void }) {
+export function AskSheet({ open, about, onClose, onShowWork, dictation }: { open: boolean; about: AskContext | null; onClose: () => void; onShowWork?: () => void; dictation?: DictationApi }) {
   const store = useStore();
   const projects = useProjects();
   const { fixtures } = useMeta();
@@ -55,7 +59,6 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
   const [fileNote, setFileNote] = useState<string | null>(null);
-  const [micNote, setMicNote] = useState<string | null>(null);
   const [chosen, setChosen] = useState<RouteChoice | null>(null);
   const [suggested, setSuggested] = useState<RouteChoice | null>(null);
   const [changing, setChanging] = useState(false);
@@ -63,23 +66,34 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
   const [questions, setQuestions] = useState<string[] | null>(null);
   const [formBack, setFormBack] = useState(false);
   const [pinned, setPinned] = useState<string[]>([]);
-  const input = useRef<HTMLInputElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const n = useRef(0);
   const fileKey = useRef(0);
   const suggestSeq = useRef(0);
   const logRef = useRef<HTMLDivElement>(null);
+  const own = useDictation();
+  const voice = dictation ?? own;
+  const listening = voice.listening;
+  const textRef = useRef(text);
+  textRef.current = text;
+  const stopRef = useRef<HTMLButtonElement>(null);
 
   // a fresh sheet each time it opens (or opens about something else)
   useEffect(() => {
     if (!open) return;
-    setText(''); setFiles([]); setFileNote(null); setMicNote(null); setChanging(false); setLog([]); setFormBack(false); setSuggested(null); setPinned([]);
+    setText(''); textRef.current = ''; setFiles([]); setFileNote(null); setChanging(false); setLog([]); setFormBack(false); setSuggested(null); setPinned([]);
     setChosen(inProject ? { projectId: inProject.id, name: inProject.name, confidence: 'this project' } : null);
     setQuestions(null);
-    const t = setTimeout(() => { if (!matchMedia('(pointer: coarse)').matches) input.current?.focus(); }, 30);
+    // listening already (the dock's mic): Stop is where the keyboard lands; otherwise the text box (not on a phone)
+    const t = setTimeout(() => { if (stopRef.current) stopRef.current.focus(); else if (!matchMedia('(pointer: coarse)').matches) input.current?.focus(); }, 30);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, about?.label, about?.kind, about?.id, about?.projectId]);
+
+  // the words heard go in the text box (after what was typed); closing the sheet stops listening
+  const spoken = useVoiceDraft(voice, textRef, setText, text);
+  useEffect(() => { if (!open) { voice.cancel(); voice.clearError(); } }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // the questions specific to the thing it is about (no model call on the server)
   useEffect(() => {
@@ -106,6 +120,8 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
   }, [text, open, chosen, aboutThing, projects, store]);
 
   useEffect(() => { const l = logRef.current; if (l) l.scrollTop = l.scrollHeight; }, [log, asks]);
+  // the box grows with its words, up to about five lines
+  useEffect(() => { const el = input.current; if (!el) return; el.style.height = 'auto'; if (el.scrollHeight > el.clientHeight + 1 || /\n/.test(text)) el.style.height = `${Math.min(el.scrollHeight + 3, 150)}px`; }, [text, open]);
 
   const route = chosen ?? suggested;
   const target = route?.projectId ?? projects.find((p) => p.general)?.id ?? null;
@@ -127,7 +143,7 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
 
   const send = async (raw: string) => {
     const words = raw.trim();
-    if ((!words && !files.length) || sendingRef.current) return;
+    if ((!words && !files.length) || sendingRef.current || listening) return;
     sendingRef.current = true; setSending(true);
     try {
       const said = words || 'Here are some files.';
@@ -144,13 +160,14 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
       }
       const body: AskBody = {
         text: said,
+        ...voiceSource(spoken.spoken, words),
         ...(aboutThing ? { about: aboutThing } : {}),
         ...(!aboutThing && chosen ? { projectId: chosen.projectId } : {}),
         ...(paths.length ? { files: paths } : {}),
       };
       const id = ++n.current;
       setLog((l) => [...l, { n: id, text: said, files: files.map((f) => f.name), sending: true }]);
-      setText(''); setFiles([]); setFileNote(null); setMicNote(null); setFormBack(false);
+      setText(''); setFiles([]); setFileNote(null); setFormBack(false); spoken.reset(); voice.clearError();
       const r = await asks.send(body, said.slice(0, 60));
       setLog((l) => l.map((x) => (x.n !== id ? x : {
         ...x, sending: false, entryId: r.entryId,
@@ -176,7 +193,8 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
   const ctx = aboutThing ? <span className="aboutchip"><Spark size={14} />About: {about!.label}</span>
     : inProject ? <>In {inProject.name}</> : null;
   const starters = aboutThing ? questions ?? [] : inProject ? PROJECT_SUGGESTIONS : DEFAULT_SUGGESTIONS;
-  const showStarters = !log.length && !waitingPlans.length && !text && !files.length && starters.length > 0;
+  const showStarters = !log.length && !waitingPlans.length && !text && !files.length && !listening && starters.length > 0;
+  const hasDraft = !!text.trim() || files.length > 0;
 
   return (
     <Sheet id="ask-dlg" titleId="ask-title" title="Ask your helper" open={open} onClose={onClose}
@@ -228,7 +246,8 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
             ))}
           </div>
         )}
-        {(fileNote || micNote || uploading) && <p className="ask-note" role="status">{uploading ? 'Adding your files…' : fileNote ?? micNote}</p>}
+        {(fileNote || uploading) && <p className="ask-note" role="status">{uploading ? 'Adding your files…' : fileNote}</p>}
+        {voice.available && <VoicePanel d={voice} stopRef={stopRef} />}
         <div className="ask-row">
           {!aboutThing && (
             <button type="button" className="iconbtn attach" aria-label="Add files" disabled={uploading} onClick={() => fileInput.current?.click()}>
@@ -237,17 +256,19 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
           )}
           <input ref={fileInput} type="file" id="ask-file" className="sr-only" multiple accept=".pdf,.txt,.md,.docx,.csv,.html" tabIndex={-1} aria-label="Choose files" onChange={addFiles} />
           <label htmlFor="ask-input" className="sr-only">Message your helper</label>
-          <input ref={input} id="ask-input" className="ask-input" type="text" placeholder={aboutThing ? 'Ask about this…' : 'Ask anything…'} enterKeyHint="send"
-            value={text} onChange={(e) => { setText(e.target.value); setMicNote(null); }} />
-          {!text.trim() && !files.length ? (
-            <button type="button" className="micbtn" aria-label="Hold to talk" aria-describedby="mic-hint"
-              onClick={() => { setMicNote('Talking to your helper comes in a later update. Type it for now.'); input.current?.focus(); }}><Mic size={22} /></button>
-          ) : (
+          {/* P4: a box that grows to show a whole spoken ask for checking (Enter sends, Shift+Enter is a new line) */}
+          <textarea ref={input} id="ask-input" className="ask-input" rows={1} placeholder={aboutThing ? 'Ask about this…' : 'Ask anything…'} enterKeyHint="send"
+            readOnly={listening} value={text} onChange={(e) => { setText(e.target.value); voice.clearError(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (hasDraft && !listening) void send(text); } }} />
+          {/* the mic while there is nothing to send (as the prototype), and beside Send after talking, to say more; the
+              person checks the words and taps Send */}
+          {voice.available && (listening || !hasDraft || spoken.spoken) && <MicButton d={voice} className="micbtn" id="mic-btn" describedBy="mic-hint" />}
+          {hasDraft && !listening && (
             <button type="submit" className="sendbtn" id="send-btn" aria-label="Send" disabled={uploading || sending}>
               <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" /></svg>
             </button>
           )}
-          <span className="sr-only" id="mic-hint">Voice comes in a later update.</span>
+          {voice.available && <span className="sr-only" id="mic-hint">{MIC_HINT}</span>}
         </div>
         {!aboutThing && (route || changing) && (
           <div className="routeline" id="ask-route">

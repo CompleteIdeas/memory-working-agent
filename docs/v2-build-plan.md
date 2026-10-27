@@ -47,7 +47,7 @@ from a code-grounded plan (2026-10-26); file:line references there were checked 
 | P1 | Installable PWA + secure context (tailscale serve, manifest, install UX) | M | W1 | built on v2-p1 with P2 (not merged); phone test needs Robert's tailnet |
 | P2 | Offline data, outbox, update prompt, clear on revoke | L | P1, A4 | built on v2-p1 (not merged); clear on revoke is W5's sign-out (the worker caches only the public shell) |
 | P3 | Web push | M | P2, A4 | |
-| P4 | Voice (browser speech) | S | W4 | |
+| P4 | Voice (browser speech) | S | W4 | built on v2-p4 (not merged) |
 
 Parallel without shared files: {A1, A2, A3a, A4, A7, A8} after A0; {W2..W5}; {P1, A9}. In order: A3a → A5 → A6;
 A7 before A9.
@@ -122,4 +122,17 @@ the real model, each capped at $1.
 - Sessions are pruned at start and daily (expired ones; revoked ones that could not be adopted again).
 - Device, helper and owner names lose `<` and `>` on the server.
 - `MWA_TRUSTED_PROXY` takes CIDR ranges (node:net BlockList).
+
+## Notes from P4 (voice, 2026-10-26), on v2-p4
+- Browser speech only (web/src/v2/screens/ask/voice): the browser turns speech into text and MWA receives the text,
+  sent with `source: 'voice'` (A6 records it). Server speech (`POST /speech`) stays a later flag.
+- Tap the mic to talk and tap again (or Stop) to stop; or press and hold and let go. The words land in the Ask box to
+  check and Send; nothing is ever sent by itself. Space/Enter toggles; `aria-pressed` while listening; interim words in
+  a polite live region. The browser's silence cut-off restarts listening (three quick empty ends stop it); a 2-minute
+  cap stops it and says so. Closing the sheet stops the microphone.
+- Support: Chrome and Edge (desktop), Chrome on Android, Safari on iPhone/iPad/Mac (14.5+) have recognition; Firefox
+  has none (the mic is hidden; Settings › Voice says why). Every browser refuses the microphone on plain http: the mic
+  then says to open the secure (https) address. Android Chrome repeats words in continuous mode, so Android listens
+  phrase by phrase and restarts. Where the sound goes: Chrome → Google's servers; Edge → Microsoft's; Safari → Apple
+  (on the device or Apple's servers). Settings › Voice says so, plus on/off and the language, per device.
 
