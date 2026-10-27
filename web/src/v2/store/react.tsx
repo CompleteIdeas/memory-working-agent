@@ -86,6 +86,7 @@ export function useJobs() {
 const ACTION_WORD: Partial<Record<ActionKind, string>> = {
   'job.stop': 'Stop', 'job.continue': 'Continue', 'job.startOver': 'Start over', 'job.open': 'Open', 'job.pause': 'Pause',
   'job.resume': 'Resume', 'job.cancel': 'Cancel', 'draft.confirm': 'Confirm', 'draft.remove': 'Remove', 'message.send': 'Send',
+  'today.checkin': 'Done', 'today.wrap': 'Good night', 'draft.create': 'Add',
 };
 
 export function useStatusPill() {

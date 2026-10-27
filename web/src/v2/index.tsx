@@ -15,6 +15,7 @@ import { MemoryCache, type CacheDb } from './store/cache';
 import { openIdbCache } from './store/idb';
 import { StoreProvider } from './store/react';
 import { Shell } from './shell/Shell';
+import { scenarioClock } from './dev/fixture-clock';
 
 /** The prototype's clock (fixture-data.ts FIXTURE_NOW), kept here so the main chunk does not pull the example data. */
 const FIXTURE_NOW = new Date(2026, 10, 9, 9, 10).getTime();
@@ -22,7 +23,8 @@ const FIXTURE_NOW = new Date(2026, 10, 9, 9, 10).getTime();
 async function makeStore(): Promise<V2Store> {
   const q = new URLSearchParams(location.search);
   const inBrowser = q.get('fixtures') === '1';
-  let frozen: number | null = inBrowser ? FIXTURE_NOW : null;
+  // W2: a Today scenario has its own time of day (N05 7:30 AM, midday 12:30 PM, N09 6:30 PM)
+  let frozen: number | null = inBrowser ? scenarioClock(q.get('scenario')) : null;
   const nowParam = q.get('now');
   if (nowParam && !Number.isNaN(Date.parse(nowParam))) frozen = Date.parse(nowParam);
   const now = () => frozen ?? Date.now();

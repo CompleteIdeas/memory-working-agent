@@ -1,0 +1,14 @@
+/* MWA v2, slice W2: Today. The prototype's look (.checkin, .needcard, .nextup, .donelist, .weekly…) is in shell/v2.css;
+   this adds the card titles, quoted outside words, and honest freshness notes. */
+.cardh { font-size: 19px; font-weight: 700; }
+.needcard h3 { margin: 0; }
+.needtitle { background: none; border: 0; padding: 0; color: var(--ink); font: inherit; font-weight: 700; text-align: left; min-height: 32px; cursor: pointer; }
+.needtitle:hover { text-decoration: underline; text-underline-offset: 3px; }
+.needcard + .needcard { margin-top: 12px; }
+/* words that came from outside, quoted by the server: shown as a quote, never as the helper's own */
+q.outside { quotes: "“" "”"; background: var(--card-2); border-radius: 4px; padding: 0 3px; }
+.freshnote { margin: 0 0 10px; padding: 10px 12px; border-radius: 8px; background: var(--card); border-left: 4px solid var(--edge); font-size: 15px; }
+.freshnote p { margin: 0; }
+.freshnote .vbtn { margin-top: 8px; }
+.freshnote.not_connected, .freshnote.reconnect { border-left-color: var(--accent); }
+.nubar { background: var(--edge); }

@@ -25,6 +25,7 @@ import {
   type ImportantItem, type ImportantGroup, type ImportantList, type ItemChange, type ItemActionResult, type SkippedList, type TriageRule,
 } from '../api/client';
 import type { CacheDb, StoreName } from './cache';
+import { TodayFeed } from './today';
 
 export const THREAD_KEEP = 50;
 export const COLLECTIONS: SyncCollection[] = ['jobs', 'calendar', 'projects', 'turns'];
@@ -83,7 +84,11 @@ export type ActionKind =
   | 'job.stop' | 'job.continue' | 'job.startOver' | 'job.open' | 'job.pause' | 'job.resume' | 'job.cancel'
   | 'draft.confirm' | 'draft.remove' | 'message.send'
   // W3: the Important list and the mail reader
-  | 'item.handled' | 'item.unhandle' | 'item.notImportant' | 'item.action' | 'mail.important' | 'mail.draft' | 'rule.delete';
+  | 'item.handled' | 'item.unhandle' | 'item.notImportant' | 'item.action' | 'mail.important' | 'mail.draft' | 'rule.delete'
+  // W2: Today's check-in and wrap, and a calendar draft from the person's own input
+  | 'today.checkin' | 'today.wrap' | 'draft.create';
+/** W2: a draft from the person's own input (POST /calendar/drafts). */
+export interface DraftInput { title: string; start: string; end?: string; allDay?: boolean; location?: string; provider?: 'google' | 'outlook' }
 export type NotImportantScope = 'sender' | 'domain' | 'kind';
 export interface ActionArgs {
   id?: string; capUsd?: number; text?: string; provider?: 'google' | 'outlook';
@@ -93,6 +98,8 @@ export interface ActionArgs {
   body?: string;
   /** mail.important: the skipped list it was picked from (its row leaves that list) */
   group?: ImportantGroup;
+  /** draft.create (W2): the new draft */
+  draft?: DraftInput;
 }
 export interface ActOptions {
   /** the screen shows a refusal itself (the Not important sheet): no error notice as well */
@@ -196,6 +203,8 @@ export class V2Store {
   private syncAgain = false;
   private replaying: Promise<void> | null = null;
   private mailTimer: unknown = null;
+  /** W2: the Today composite (./today.ts) */
+  readonly today: TodayFeed;
 
   constructor(o: StoreOptions) {
     this.client = o.client;
@@ -205,6 +214,11 @@ export class V2Store {
     this.now = o.now ?? (() => Date.now());
     this.backoff = o.backoff ?? [1_000, 3_000, 10_000, 30_000];
     this.s = initial(!!o.fixtures);
+    this.today = new TodayFeed({
+      client: this.client, cache: this.cache, env: this.env, now: this.now,
+      act: (kind, label) => this.act(kind, {}, label),
+      supported: () => (this.s.meta ? this.s.meta.features.includes('today') : null),
+    });
   }
 
   // ---------- subscription (useSyncExternalStore) ----------
@@ -225,6 +239,7 @@ export class V2Store {
     if (this.started) return;
     this.started = true;
     await this.loadCache();
+    await this.today.start();
     if (!this.started) return; // stopped while the cache was loading (React StrictMode mounts twice)
     this.unsubs.push(
       this.env.on('online', () => { void this.connect('online'); }),
@@ -238,6 +253,7 @@ export class V2Store {
   stop(): void {
     this.started = false;
     this.closeStream();
+    this.today.stop();
     for (const u of this.unsubs.splice(0)) u();
     for (const t of this.timers) this.env.clearTimeout(t);
     this.timers.clear();
@@ -291,6 +307,7 @@ export class V2Store {
     this.retryN = 0;
     this.openStream();
     void this.replayOutbox();
+    void this.today.load(); // W2: Today as it is now (on open, online, and every reconnect)
   }
 
   private handleFailure(e: unknown, _reason: string) {
@@ -436,6 +453,7 @@ export class V2Store {
     if (!m) return;
     const seq = Number(m.seq ?? e.lastEventId) || 0;
     const del = m.op === 'delete' || m.data == null;
+    if (m.entity === 'today') this.today.changed(); // W2: a data-less notice: GET /today again
     switch (m.entity) {
       case 'job': this.upsert('jobs', del ? [] : [m.data as Job], del ? [m.id] : []); break;
       case 'calendar': this.upsert('calendar', del ? [] : [m.data as CalendarItem], del ? [m.id] : []); break;
@@ -674,11 +692,15 @@ export class V2Store {
       case 'mail.important': out = await c.markMailImportant(id, key); break;
       case 'mail.draft': out = await c.saveMailDraft(id, { body: e.args.body ?? '' }, key); break;
       case 'rule.delete': out = await c.deleteTriageRule(id, key); break;
+      case 'today.checkin': out = await c.finishCheckin(key); break;
+      case 'today.wrap': out = await c.finishWrap(key); break;
+      case 'draft.create': out = await c.createCalendarDraft(e.args.draft ?? { title: '', start: '' }, key); break;
     }
     this.applyResult(e.kind, out, e.args);
     return out;
   }
   private applyResult(kind: ActionKind, out: unknown, args: ActionArgs = {}) {
+    if (kind.startsWith('today.')) { this.today.apply((out as { today?: Schemas['Today'] } | null)?.today); return; }
     if (kind.startsWith('job.')) { const d = out as JobDetail; if (d?.job) this.upsert('jobs', [d.job], []); return; }
     if (kind.startsWith('item.') || kind === 'mail.important') {
       const d = out as ItemChange | ItemActionResult | null;
