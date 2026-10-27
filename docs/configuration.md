@@ -23,9 +23,22 @@ environment, or in the `.env` file on the data volume (`MWA_ENV_PATH`, default `
 | `MWA_NO_OPEN` | unset | Set to skip auto-opening the browser on `serve`. |
 
 ## Security & access ⚠
+
+> **Exposing MWA through a forwarder? Set `MWA_RELAYED=1`.** With no password, a request that arrives from
+> 127.0.0.1 with `Host: localhost` is trusted as "this machine". A hand-made forwarder — `socat`, `netsh interface
+> portproxy`, `ssh -R`, an nginx `stream` block or `proxy_pass` without `X-Forwarded-For` — delivers every remote
+> request exactly like that, and MWA cannot see it. Anyone who sets one up must set `MWA_RELAYED=1` and
+> `MWA_ACCESS_PASSWORD`. (MWA does detect its own Docker image's Tailscale, a bind beyond 127.0.0.1, Railway and
+> containers, and `tailscale serve` forwarding to its port — checked at start and every 5 minutes.) The server says
+> this in its start-up log whenever it runs with no password on loopback.
 | Var | Default | Purpose |
 |---|---|---|
-| `MWA_ACCESS_PASSWORD` | unset (open) | ⚠ Shared password gate. When set, **every** `/api/` route requires login (constant-time check, 30-day HttpOnly cookie). **Set this for any networked/NAS/Tailscale/`0.0.0.0` deployment.** Unset = localhost-only, no auth (single-user default). |
+| `MWA_ACCESS_PASSWORD` | unset (open) | ⚠ Shared password gate. When set, **every** `/api/` route requires login (constant-time check, 30-day HttpOnly cookie with a server-side record: signing out ends it). **Set this for any networked/NAS/Tailscale/`0.0.0.0` deployment.** Unset = this computer only (single-user default); a paired phone still works. Wrong passwords slow their source down (¼ s doubling to 10 s); the right one is never refused. |
+| `MWA_ALLOWED_HOSTS` | unset | Comma-separated host names the server answers to besides `localhost`, `127.0.0.1`, `[::1]`, IP addresses and this machine's name — e.g. `mwa.tail1a2b.ts.net`, or `*.tail1a2b.ts.net`. Any other `Host` gets 421 (DNS-rebinding defence). Railway's own domain and the Docker image's `<TAILSCALE_HOSTNAME>.<tailnet>.ts.net` are allowed automatically. `*` turns the check off. A non-local name here also means **relayed mode** (below). |
+| `MWA_PUBLIC_URL` | unset | Where phones reach the helper, e.g. `https://mwa.tail1a2b.ts.net`. Pairing links (the QR) use it when Settings is opened at `localhost`; also settable in Settings › Your helper. Its host is allowed, and it means relayed mode. |
+| `MWA_RELAYED` | auto | `1`: something can relay remote clients to this server from 127.0.0.1 (socat, ssh -R, netsh portproxy, nginx without X-Forwarded-For…), so nobody counts as "this machine" — sign in with the password or a paired device. Detected automatically when bound beyond 127.0.0.1 (`MWA_SERVE_HOST=0.0.0.0`, the Docker image), with the Docker image's Tailscale (`TAILSCALE_AUTHKEY`), on Railway/containers, when `tailscale serve` forwards to this port (checked at start), or with a non-local `MWA_ALLOWED_HOSTS` / `MWA_PUBLIC_URL`. `0` says it is not. |
+| `MWA_TRUSTED_PROXY` | unset | Comma-separated IP addresses **or CIDR ranges** (`127.0.0.1`, `10.0.0.0/8`, `fd7a:115c:a1e0::/48`) of proxies whose `X-Forwarded-For` the throttles may believe (e.g. `127.0.0.1` behind `tailscale serve`, so each phone is its own source); the right-most address not in the list counts. Unset: the socket address counts, and the header is ignored. |
+| `MWA_UPLOAD_QUOTA_MB` | `2048` | Total size of files added through uploads (every project's `uploads` folder). Past it, an upload gets 507. One file is at most `MWA_MAX_UPLOAD_MB` (25). |
 | `MWA_ALLOW_UNATTENDED_WRITES` | unset (off) | ⚠ When `1`, a scheduled/unattended run may `confirm_action` a write with no human present. Leave OFF unless you intend autonomous writes. |
 | `MWA_APPROVAL_TTL_MS` | `600000` (10 min) | How long a pending dry-run write stays confirmable before it expires. |
 

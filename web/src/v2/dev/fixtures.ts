@@ -21,6 +21,7 @@ import type { CalendarItem, Job, JobStatus, MailHeader, MailMessage, Meta, Proje
 import { CATS, EMAILS, EVENTS, FIXTURE_NOW, PROJECTS, THREADS, at, dayStart } from './fixture-data';
 import { w4Read, w4Seed, w4Write } from './fixtures-w4';
 import { ImportantFixtures } from './fixtures-important';
+import { SettingsFixtures } from './fixtures-settings';
 import { TodayFixtures, TODAY_SCENARIOS } from './fixtures-today';
 import { scenarioClock } from './fixture-clock';
 
@@ -30,7 +31,7 @@ export interface StreamMessage { event: string; data: unknown; id?: number }
 type Entity = 'job' | 'calendar' | 'project' | 'turn' | 'mail' | 'item' | 'ask';
 interface Ev { seq: number; entity: Entity; id: string; op: 'upsert' | 'delete' }
 
-export const FIXTURE_SCENARIOS = ['N00', 'N06', 'states', 'old-client', 'sorting', 'thread-long', ...TODAY_SCENARIOS] as const;
+export const FIXTURE_SCENARIOS = ['N00', 'N06', 'states', 'old-client', 'sorting', 'thread-long', ...TODAY_SCENARIOS, 'signed-out', 'unpaired', 'phone', 'first-run'] as const;
 export type FixtureScenario = (typeof FIXTURE_SCENARIOS)[number];
 export const FIXTURE_SERVER_VERSION = 'fixtures';
 
@@ -57,6 +58,8 @@ export class FixtureServer {
   private clock: () => number;
   /** W3: the Important list, the reader's extras and about-asks (./fixtures-important.ts) */
   readonly important: ImportantFixtures;
+  /** W5: who is signed in, pairing, devices, Settings and files (./fixtures-settings.ts) */
+  readonly settings: SettingsFixtures;
   /** W2: Today, the calendar's accounts and new drafts (./fixtures-today.ts) */
   readonly today: TodayFixtures;
 
@@ -71,6 +74,7 @@ export class FixtureServer {
       later: (fn, ms) => this.later(fn, ms), answerDelay: () => this.answerDelay,
       mail: this.mail, projects: this.projects, turns: this.turns, bodyOf: (id) => this.bodies.get(id),
     }, this.scenario);
+    this.settings = new SettingsFixtures(this.scenario, () => this.clock());
     this.today = new TodayFixtures({
       clock: () => this.clock(), jobs: this.jobs, calendar: this.calendar, putCal: (c) => this.putCal(c), later: (fn, ms) => this.later(fn, ms),
       important: () => this.important.snapshot(),
@@ -149,13 +153,17 @@ export class FixtureServer {
     const method = req.method.toUpperCase();
     const cv = /^[a-z]+\/(\d+(?:\.\d+){0,2})/i.exec(String(req.headers['x-mwa-client'] ?? ''))?.[1];
     if (cv && cmp(cv, this.minClient) < 0 && req.path !== '/meta') return err(426, 'client_too_old', 'A newer version of the app is needed. Reload to update.');
+    // W5: signed out → 401 except the public routes; a phone → 403 on admin routes (./fixtures-settings.ts)
+    const gate = this.settings.gate(method, req.path);
+    if (gate) return gate;
+    if (method === 'POST' && (req.path === '/session' || req.path === '/pair')) return this.settings.write(method, req.path, req.body)!; // public: no key needed
     if (method !== 'GET') {
       const key = String(req.headers['idempotency-key'] ?? '');
       if (!/^[A-Za-z0-9._:-]{8,128}$/.test(key)) return err(400, 'idempotency_key_required', 'Send an Idempotency-Key header (8–128 letters, digits, . _ : -).');
       const fp = `${method} ${req.path}\n${JSON.stringify(req.body ?? null)}`;
       const seen = this.idem.get(key);
       if (seen) return seen.fp === fp ? { ...seen.res, headers: { ...(seen.res.headers ?? {}), 'idempotent-replay': 'true' } } : err(409, 'idempotency_key_reused', 'That Idempotency-Key was already used for a different request.');
-      const res = this.today.write(method, req.path, req.body) ?? this.write(method, req.path, req.body);
+      const res = this.settings.write(method, req.path, req.body, req.query) ?? this.today.write(method, req.path, req.body) ?? this.write(method, req.path, req.body);
       if (res.status < 500) this.idem.set(key, { fp, res });
       return res;
     }
@@ -166,8 +174,10 @@ export class FixtureServer {
     let m: RegExpExecArray | null;
     const imp = this.important.read(path, q);
     if (imp) return imp;
+    const w5 = this.settings.read(path, q);
+    if (w5) return w5;
     if (path === '/meta') {
-      const meta: Meta = { api: 'v1', server: FIXTURE_SERVER_VERSION, minClient: this.minClient, secure: true, features: ['jobs', 'calendar', 'mail', 'projects', 'important', 'ask', 'today'], importing: null };
+      const meta: Meta = { api: 'v1', server: FIXTURE_SERVER_VERSION, minClient: this.minClient, secure: true, features: ['jobs', 'calendar', 'mail', 'projects', 'important', 'ask', 'today', 'settings', 'files'], importing: null };
       return { status: 200, body: meta };
     }
     const w4 = w4Read(this, path, q);

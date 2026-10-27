@@ -103,7 +103,8 @@ export function fakeNow(env: NodeJS.ProcessEnv = process.env): number | null {
 
 /** The owner's name: MWA_OWNER_NAME, else `owner.name` in mwa.config.json, else none. */
 function defaultGreetingName(): string | null {
-  const clean = (s: unknown) => String(s ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40) || null;
+  // W5 security review: only text counts as a name (an array or object in the settings file is ignored)
+  const clean = (s: unknown) => (typeof s === 'string' ? s : '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40) || null;
   if (process.env.MWA_OWNER_NAME?.trim()) return clean(process.env.MWA_OWNER_NAME);
   try { if (existsSync(configPath())) return clean((JSON.parse(readFileSync(configPath(), 'utf8')) as { owner?: { name?: unknown } }).owner?.name); } catch { /* not JSON */ }
   return null;

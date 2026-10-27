@@ -137,26 +137,31 @@ describe('the Projects tab\'s words', () => {
   });
 });
 
-describe('adding files (the legacy upload, until /api/v1 has one)', () => {
-  const file = (name: string, size = 10) => ({ name, size }) as File;
+describe('adding files (POST /api/v1/files)', () => {
+  const file = (name: string, size = 10) => new File([new Uint8Array(size)], name);
   it('fixture mode never touches the network', async () => {
     let called = false;
     const r = await uploadFile(file('icp-eventing-handbook.pdf'), { projectId: 'eventing', fixtures: true, fetch: (async () => { called = true; return new Response('{}'); }) as typeof fetch });
     expect(r).toEqual({ ok: true, file: { name: 'icp-eventing-handbook.pdf', path: 'fixtures/uploads/icp-eventing-handbook.pdf' } });
     expect(called).toBe(false);
   });
-  it('posts the file into the project\'s folder and returns its workspace path', async () => {
-    let url = '';
-    const r = await uploadFile(file('notes.pdf'), { projectId: 'eventing', fixtures: false, fetch: (async (u: RequestInfo | URL) => { url = String(u); return new Response(JSON.stringify({ ok: true, path: 'serve/p-eventing/uploads/notes.pdf' })); }) as typeof fetch });
-    expect(url).toBe('/api/files/upload?session=p-eventing&name=notes.pdf');
+  it('posts the file to the v1 upload with an Idempotency-Key and returns its workspace path', async () => {
+    let url = '', init: RequestInit | undefined;
+    const r = await uploadFile(file('notes.pdf'), { projectId: 'eventing', fixtures: false, fetch: (async (u: RequestInfo | URL, i?: RequestInit) => { url = String(u); init = i; return new Response(JSON.stringify({ id: 'serve/p-eventing/uploads/notes.pdf', path: 'serve/p-eventing/uploads/notes.pdf', name: 'notes.pdf', size: 10, projectId: 'eventing', pages: 2 }), { status: 201 }); }) as typeof fetch });
+    expect(url).toBe('/api/v1/files?name=notes.pdf&projectId=eventing');
+    expect(init?.method).toBe('POST');
+    expect(new Headers(init?.headers).get('idempotency-key')).toMatch(/^[0-9A-Z]{26}$/);
+    expect(new Headers(init?.headers).get('content-type')).toBe('application/octet-stream');
     expect(r).toEqual({ ok: true, file: { name: 'notes.pdf', path: 'serve/p-eventing/uploads/notes.pdf' } });
   });
-  it('a paired phone (no password session) is told plainly; too big, refused, offline too', async () => {
-    const f401 = (async () => new Response('{"error":"locked"}', { status: 401 })) as typeof fetch;
-    expect(await uploadFile(file('a.pdf'), { projectId: null, fixtures: false, fetch: f401 })).toEqual({ ok: false, message: 'Adding files needs your password sign-in on this device for now. Paired phones get files in a later update.' });
+  it('a device that may not add files, too big, refused, signed out, offline: each told plainly', async () => {
+    const f403 = (async () => new Response(JSON.stringify({ error: { code: 'forbidden', message: 'This device is not allowed to do that.' } }), { status: 403 })) as typeof fetch;
+    expect(await uploadFile(file('a.pdf'), { projectId: null, fixtures: false, fetch: f403 })).toEqual({ ok: false, message: 'a.pdf: This device is not allowed to do that.' });
+    const f401 = (async () => new Response(JSON.stringify({ error: { code: 'locked', message: 'Sign in to continue.' } }), { status: 401 })) as typeof fetch;
+    expect(await uploadFile(file('a.pdf'), { projectId: null, fixtures: false, fetch: f401 })).toEqual({ ok: false, message: 'Sign in again to add files.' });
     expect(await uploadFile(file('big.pdf', 26 * 1024 * 1024), { projectId: null, fixtures: false })).toMatchObject({ ok: false, message: 'big.pdf is too big to add here: the limit is 25 MB.' });
-    const f400 = (async () => new Response(JSON.stringify({ ok: false, message: 'Bad name.' }), { status: 400 })) as typeof fetch;
-    expect(await uploadFile(file('x.exe'), { projectId: null, fixtures: false, fetch: f400 })).toEqual({ ok: false, message: 'x.exe: Bad name.' });
+    const f400 = (async () => new Response(JSON.stringify({ error: { code: 'empty_file', message: 'That file is empty.' } }), { status: 400 })) as typeof fetch;
+    expect(await uploadFile(file('x.txt'), { projectId: null, fixtures: false, fetch: f400 })).toEqual({ ok: false, message: 'x.txt: That file is empty.' });
     const off = (async () => { throw new TypeError('Failed to fetch'); }) as typeof fetch;
     expect(await uploadFile(file('a.pdf'), { projectId: null, fixtures: false, fetch: off })).toMatchObject({ ok: false, message: 'Can’t reach your helper to add files right now.' });
   });

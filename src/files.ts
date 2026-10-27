@@ -82,7 +82,11 @@ export function fileHeaders(name: string, size: number, download: boolean): Reco
 
 /** A safe file name for an upload: no folders, no leading dots, nothing odd. */
 export function cleanName(name: string): string {
-  const n = basename(String(name).replace(/\\/g, '/')).replace(/[^\w.\- ()]/g, '_').replace(/^[.\s]+/, '').trim().slice(0, 120);
+  let n = basename(String(name).replace(/\\/g, '/')).replace(/[^\w.\- ()]/g, '_').replace(/^[.\s]+/, '').trim().slice(0, 120);
+  // Windows: a name may not end in a dot or a space, and CON, PRN, AUX, NUL, COM1-9 and LPT1-9 (with any extension)
+  // are devices, not files (W5 security review)
+  n = n.replace(/[.\s]+$/, '');
+  if (/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i.test(n)) n = `_${n}`;
   return n || 'upload';
 }
 

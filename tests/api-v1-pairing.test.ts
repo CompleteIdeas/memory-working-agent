@@ -4,10 +4,13 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { createV1 } from '../src/api/router.js';
 import { v1Routes } from '../src/api/v1.js';
-import { makeAuthenticate, resetPairingThrottle, fromThisMachine } from '../src/api/auth.js';
+import { makeAuthenticate, fromThisMachine } from '../src/api/auth.js';
+import { pairingGate } from '../src/api/gate.js';
 import { appDb, resetAppDb } from '../src/v2/db.js';
 
 const mode = { passwordSet: false, sessionValid: false };
+/** the pairing gate's waits (recorded, not slept) */
+const waits: number[] = [];
 let server: Server, base = '';
 let key = 0;
 const k = () => `test-key-${Date.now()}-${++key}`;
@@ -16,7 +19,7 @@ const j = async (r: Response) => ({ status: r.status, body: await r.json().catch
 const NET = { 'x-forwarded-for': '100.64.0.7' };
 
 beforeEach(async () => {
-  resetAppDb(':memory:'); resetPairingThrottle(); Object.assign(mode, { passwordSet: false, sessionValid: false });
+  resetAppDb(':memory:'); pairingGate.reset(); waits.length = 0; pairingGate.configure({ sleep: async (ms) => { waits.push(ms); } }); Object.assign(mode, { passwordSet: false, sessionValid: false });
   if (!server) {
     const v1 = createV1(v1Routes(), {
       authenticate: (req) => makeAuthenticate({ passwordSet: mode.passwordSet, sessionValid: () => mode.sessionValid })(req),
@@ -98,16 +101,17 @@ describe('pairing', () => {
     const r1 = await j(await fetch(`${base}/pair`, { method: 'POST', headers: { ...NET, 'content-type': 'application/json' }, body: JSON.stringify({ code: await newCode() }) }));
     expect(r1.body.token).toBeUndefined();
     const c1 = r1.headers.get('set-cookie') ?? '';
-    // a request to 127.0.0.1 is a secure context for a browser, so Secure is right here too (the not-secure case —
-    // a plain http://100.x address — is covered by secureContext's own test)
-    expect(c1).toMatch(/^mwa_device=[A-Za-z0-9_-]{40,}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=\d+; Secure$/);
+    // W5 security review: plain http (even to 127.0.0.1) gets no Secure flag — some browsers drop such a cookie
+    expect(c1).toMatch(/^mwa_device=[A-Za-z0-9_-]{40,}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=\d+$/);
     const r2 = await fetch(`${base}/pair`, { method: 'POST', headers: { ...NET, 'x-forwarded-proto': 'https', 'content-type': 'application/json' }, body: JSON.stringify({ code: await newCode() }) });
     expect(r2.headers.get('set-cookie')).toMatch(/; Secure$/);
   });
-  it('five wrong codes in ten minutes from one place stop further tries from there (429)', async () => {
-    for (let i = 0; i < 5; i++) await fetch(`${base}/pair`, { method: 'POST', headers: { ...NET, 'content-type': 'application/json' }, body: JSON.stringify({ code: 'AAAA-AAAA' }) });
-    const r = await j(await fetch(`${base}/pair`, { method: 'POST', headers: { ...NET, 'content-type': 'application/json' }, body: JSON.stringify({ code: await newCode() }) }));
-    expect(r).toMatchObject({ status: 429, body: { error: { code: 'too_many_attempts' } } });
+  it('wrong codes from one place make that place wait longer (doubling); a right code is never refused', async () => {
+    for (let i = 0; i < 6; i++) expect((await fetch(`${base}/pair`, { method: 'POST', headers: { ...NET, 'content-type': 'application/json' }, body: JSON.stringify({ code: 'AAAA-AAAA' }) })).status).toBe(400);
+    expect(waits).toEqual([250, 500, 1000]); // free for the first 3, then 0.25 s doubling
+    const r = await j(await fetch(`${base}/pair`, { method: 'POST', headers: { ...NET, 'content-type': 'application/json' }, body: JSON.stringify({ code: await newCode(), cookie: false }) }));
+    expect(r.status).toBe(201);
+    expect(waits.at(-1)).toBe(2000); // it waited its turn, then got in
   });
 });
 
@@ -189,9 +193,9 @@ describe('review of A2', () => {
     mode.sessionValid = false;
     expect((await fetch(`${base}/devices`, { headers: { ...NET, cookie } })).status).toBe(403); // the device alone: no admin
   });
-  it('wrong codes are limited per source: one sprayer cannot lock the owner out', async () => {
-    for (let i = 0; i < 5; i++) await fetch(`${base}/pair`, { method: 'POST', headers: { 'x-forwarded-for': '203.0.113.9', 'content-type': 'application/json' }, body: JSON.stringify({ code: 'AAAA-AAAA' }) });
-    expect((await fetch(`${base}/pair`, { method: 'POST', headers: { 'x-forwarded-for': '203.0.113.9', 'content-type': 'application/json' }, body: JSON.stringify({ code: 'BBBB-BBBB' }) })).status).toBe(429);
+  it('a sprayer cannot lock the owner out, and rotating X-Forwarded-For does not make new sources (W5 review)', async () => {
+    for (let i = 0; i < 8; i++) await fetch(`${base}/pair`, { method: 'POST', headers: { 'x-forwarded-for': `203.0.113.${i}`, 'content-type': 'application/json' }, body: JSON.stringify({ code: 'AAAA-AAAA' }) });
+    expect(pairingGate.failures('127.0.0.1')).toBe(8); // all counted against the socket, whatever the header said
     const owner = await j(await fetch(`${base}/pair`, { method: 'POST', headers: { ...NET, 'content-type': 'application/json' }, body: JSON.stringify({ code: await newCode(), cookie: false }) }));
     expect(owner.status).toBe(201);
   });

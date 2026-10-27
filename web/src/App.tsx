@@ -194,7 +194,7 @@ export default function App() {
   const [ui] = useState(() => {
     let stored: string | null = null;
     try { stored = localStorage.getItem('mwa-ui'); } catch { /* private mode */ }
-    const pick = chooseUi(location.search, stored);
+    const pick = chooseUi(location.search, stored, location.pathname);
     const asked = new URLSearchParams(location.search).get('ui');
     if (asked === 'v1' || asked === 'v2') { try { localStorage.setItem('mwa-ui', asked); } catch { /* */ } }
     return pick;

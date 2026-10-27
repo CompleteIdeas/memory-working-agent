@@ -92,6 +92,22 @@ const CALLS: Record<string, (c: MwaClient) => unknown> = {
   finishWrap: (c) => c.finishWrap({ day: '2026-11-09' }),
   listTriageRules: (c) => c.listTriageRules(),
   deleteTriageRule: (c) => c.deleteTriageRule('r1'),
+  // W5
+  getMe: (c) => c.getMe(),
+  signIn: (c) => c.signIn('pw'),
+  signOut: (c) => c.signOut(),
+  signOutEverywhere: (c) => c.signOutEverywhere(),
+  renameDevice: (c) => c.renameDevice('dev_1', 'Kitchen tablet'),
+  getSettings: (c) => c.getSettings(),
+  updateSettings: (c) => c.updateSettings({ helperName: 'Juniper' }),
+  getSpending: (c) => c.getSpending(),
+  updateSpending: (c) => c.updateSpending({ monthlyUsd: 20 }),
+  listAccounts: (c) => c.listAccounts(),
+  connectAccount: (c) => c.connectAccount('google'),
+  listVault: (c) => c.listVault(),
+  forgetVaultEntry: (c) => c.forgetVaultEntry('Bank'),
+  listFiles: (c) => c.listFiles({ projectId: 'general' }),
+  uploadFile: (c) => c.uploadFile(new Blob(['x']), { name: 'a.txt', projectId: 'general' }),
 };
 const URL_ONLY = new Set(['streamUrl', 'calendarDraftIcsUrl', 'projectLiveUrl']); // GET links opened by EventSource or a download
 

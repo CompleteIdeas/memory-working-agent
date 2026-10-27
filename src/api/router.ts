@@ -27,6 +27,8 @@ export interface RouteCtx {
   caller: string;
   /** who is calling (null on a public route with nobody signed in) */
   who: Caller | null;
+  /** W5: a route with `rawBody` gets the request body as bytes here (and `body` stays undefined) */
+  raw?: Buffer;
 }
 export interface Reply {
   status?: number; body?: unknown; headers?: Record<string, string>;
@@ -38,7 +40,15 @@ export interface Reply {
   transient?: boolean;
 }
 export type Handler = (ctx: RouteCtx) => Promise<Reply> | Reply;
-export interface Route { method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'; path: string; scope: Scope; handler: Handler }
+export interface Route {
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'; path: string; scope: Scope; handler: Handler;
+  /** W5 (file upload): the body is not JSON; it is read as bytes up to `max` and handed over as ctx.raw. `tooLarge` is
+   *  the refusal's plain words. Every other check (scope, same-origin, Idempotency-Key over the bytes) still applies. */
+  rawBody?: { max: number; tooLarge: string };
+  /** W5: admission before the body is read (a concurrency limit): throw an ApiError to refuse, or return a release
+   *  function the router calls when the request is done. */
+  admit?: (ctx: { req: IncomingMessage; caller: string }) => () => void;
+}
 
 export interface RouterDeps {
   /** who is calling, or null when nobody valid is (src/api/auth.ts makeAuthenticate) */
@@ -84,10 +94,25 @@ function compile(path: string): (p: string) => Record<string, string> | null {
   };
 }
 
-async function readRaw(req: IncomingMessage): Promise<Buffer> {
-  let size = 0; const chunks: Buffer[] = [];
-  for await (const c of req) { const b = Buffer.isBuffer(c) ? c : Buffer.from(c); size += b.length; if (size > MAX_BODY) throw new ApiError(413, 'too_large', 'The request is too large.'); chunks.push(b); }
-  return Buffer.concat(chunks);
+async function readRaw(req: IncomingMessage, max = MAX_BODY, tooLarge = 'The request is too large.'): Promise<Buffer> {
+  // a declared length over the limit is refused before a byte is read
+  const declared = Number(req.headers['content-length']);
+  if (Number.isFinite(declared) && declared > max) throw Object.assign(new ApiError(413, 'too_large', tooLarge), { declared: true });
+  // listeners, not `for await`: leaving a for-await early destroys the request, and the client then sees a reset
+  // instead of the 413 (W5 security review). On overflow the stream is left as it is; the caller drains it.
+  return new Promise<Buffer>((resolve, reject) => {
+    let size = 0; const chunks: Buffer[] = [];
+    const onData = (c: Buffer | string) => {
+      const b = Buffer.isBuffer(c) ? c : Buffer.from(c);
+      size += b.length;
+      if (size > max) { cleanup(); reject(new ApiError(413, 'too_large', tooLarge)); return; }
+      chunks.push(b);
+    };
+    const onEnd = () => { cleanup(); resolve(Buffer.concat(chunks)); };
+    const onError = (e: Error) => { cleanup(); reject(e); };
+    const cleanup = () => { req.off('data', onData); req.off('end', onEnd); req.off('error', onError); };
+    req.on('data', onData); req.on('end', onEnd); req.on('error', onError);
+  });
 }
 function parseJson(raw: Buffer): unknown {
   if (!raw.length) return undefined;
@@ -158,6 +183,7 @@ export function createV1(routes: Route[], deps: RouterDeps): (req: IncomingMessa
     const method = (req.method ?? 'GET').toUpperCase();
     const head = method === 'HEAD';
     let reserved: { key: string; caller: string } | null = null;
+    let admitted: (() => void) | null = null;
     try {
       const hits = table.map((r) => ({ r, params: r.match(sub) })).filter((h) => h.params);
       // nobody signed in: only a public route answers anything but 401 (no route map for strangers — review of A2)
@@ -187,8 +213,9 @@ export function createV1(routes: Route[], deps: RouterDeps): (req: IncomingMessa
       if (write && !bearerCall && !deps.sameOrigin(req)) throw new ApiError(403, 'cross_origin', 'Cross-site requests are blocked.');
 
       const caller = who ? (who.kind === 'device' ? `device:${who.id}` : who.id) : 'anonymous'; // each device: its own key space
-      const raw = write ? await readRaw(req) : Buffer.alloc(0);
-      const body = write ? parseJson(raw) : undefined;
+      if (r.admit) admitted = r.admit({ req, caller });
+      const raw = write ? await readRaw(req, r.rawBody?.max, r.rawBody?.tooLarge) : Buffer.alloc(0);
+      const body = write && !r.rawBody ? parseJson(raw) : undefined;
       if (write && r.scope !== 'public') {
         const key = String(req.headers['idempotency-key'] ?? '');
         if (!/^[A-Za-z0-9._:-]{8,128}$/.test(key)) throw new ApiError(400, 'idempotency_key_required', 'Send an Idempotency-Key header (8–128 letters, digits, . _ : -).');
@@ -203,7 +230,7 @@ export function createV1(routes: Route[], deps: RouterDeps): (req: IncomingMessa
 
       let status: number, out: Reply;
       try {
-        out = await r.handler({ req, url, params, body, caller, who });
+        out = await r.handler({ req, url, params, body, caller, who, ...(r.rawBody ? { raw } : {}) });
         status = out.status ?? 200;
       } catch (e) {
         if (!(e instanceof ApiError) || e.status >= 500) throw e;
@@ -230,11 +257,44 @@ export function createV1(routes: Route[], deps: RouterDeps): (req: IncomingMessa
     } catch (e) {
       if (reserved) release(reserved.key, reserved.caller);
       if (res.headersSent) { res.destroy(); return true; }
-      if (e instanceof ApiError) send(res, e.status, errBody(e), {}, head);
+      if (e instanceof ApiError && e.status === 413 && !req.complete) {
+        // W5 security review: a body over the limit (chunked, or a declared length) gets a clean 413. The rest of the
+        // body is read and dropped so the client sees the answer instead of a reset — but at most 64 MB or 30 s more,
+        // then the connection is cut.
+        if ((e as { declared?: boolean }).declared) {
+          // a declared length over the limit: read and drop what comes (64 MB at most), answer once it has all come or
+          // nothing has for 3 s, and close the connection (a client that declared more than it sent must not reuse it)
+          let dropped = 0, answered = false;
+          const answer = () => {
+            if (answered) return; answered = true; clearTimeout(idle);
+            res.writeHead(413, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', connection: 'close' });
+            res.end(JSON.stringify(errBody(e)));
+          };
+          let idle = setTimeout(answer, 3_000);
+          req.on('data', (c: Buffer) => {
+            dropped += c.length;
+            clearTimeout(idle); idle = setTimeout(answer, 3_000);
+            if (dropped > 64 * 1024 * 1024) { answer(); setTimeout(() => req.destroy(), 1000).unref?.(); }
+          });
+          req.on('end', answer);
+          req.on('close', () => clearTimeout(idle));
+          req.resume();
+          return true;
+        }
+        res.writeHead(413, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(errBody(e)));
+        let dropped = 0;
+        const cut = setTimeout(() => req.destroy(), 30_000); cut.unref?.();
+        req.on('data', (c: Buffer) => { dropped += c.length; if (dropped > 64 * 1024 * 1024) req.destroy(); });
+        req.on('end', () => clearTimeout(cut)); req.on('close', () => clearTimeout(cut));
+        req.resume();
+      } else if (e instanceof ApiError) send(res, e.status, errBody(e), {}, head);
       else {
         logger.error('api', 'v1 handler failed', { path: url.pathname, error: (e as Error).message.slice(0, 200) });
         send(res, 500, errBody(new ApiError(500, 'internal', 'Something went wrong on the server.')), {}, head);
       }
+    } finally {
+      if (admitted) admitted();
     }
     return true;
   };

@@ -11,7 +11,7 @@
  *     the answer followed live, the plan card, the job ("I'll let you know · ready around …"), or the offer.
  *   - Opened about one thing (`about.kind` + `about.id`: a job from the working sheet…), it shows the chip and the
  *     server's 2–3 questions for it; the ask carries `about` and the answer shows here.
- *   - Files: the legacy upload (see ./upload.ts: works with the password sign-in, not yet on a paired phone).
+ *   - Files: POST /api/v1/files (see ./upload.ts), from the computer or a paired phone.
  *   - The mic: real voice is P4; until then it says so and puts the cursor in the text box (N08: the mic opens Ask).
  */
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
@@ -136,7 +136,7 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
       if (!aboutThing && files.length) {
         setUploading(true); setFileNote(null);
         for (const f of files) {
-          const r = await uploadFile(f.file, { projectId: target, fixtures });
+          const r = await uploadFile(f.file, { projectId: target, fixtures, client: store.client });
           if (!r.ok) { setFileNote(r.message); setUploading(false); return; }
           paths.push(r.file.path);
         }

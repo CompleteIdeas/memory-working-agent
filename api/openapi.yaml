@@ -48,7 +48,7 @@ components:
           required: [code, message]
           additionalProperties: false
           properties:
-            code: { type: string, description: 'Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer; important: bad_group, bad_state, bad_scope, not_handled, not_open, no_action, freemail_domain, kind_not_available, unavailable. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again.' }
+            code: { type: string, description: 'Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer; important: bad_group, bad_state, bad_scope, not_handled, not_open, no_action, freemail_domain, kind_not_available, unavailable; W5 settings and files: no_password, wrong_password, not_a_session, bad_body, bad_name, bad_time_zone, bad_url, bad_limit, bad_cap, fixed, bad_config, no_file, no_name, empty_file, unsafe_document, busy, storage_full. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again.' }
             message: { type: string, description: Plain words for a person. }
     Scope:
       type: string
@@ -60,8 +60,9 @@ components:
       properties:
         code: { type: string, pattern: '^[A-Z2-9]{4}-[A-Z2-9]{4}$', description: One-time, valid 10 minutes. }
         expiresAt: { type: integer }
-        pairUrl: { type: string, description: 'Show as a QR code: <origin>/pair#c=CODE (the fragment never reaches a server).' }
+        pairUrl: { type: string, description: 'Show as a QR code: <origin>/pair#c=CODE (the fragment never reaches a server). Opened at localhost, it uses the helper''s public address (MWA_PUBLIC_URL, Settings, or the tailnet name in MWA_ALLOWED_HOSTS).' }
         scopes: { type: array, items: { $ref: '#/components/schemas/Scope' } }
+        reachable: { type: boolean, description: 'false: no public address is known and the link says "localhost", which a phone cannot open. Ask for the helper''s address (PATCH /settings publicUrl).' }
     PairResult:
       type: object
       required: [deviceId, scopes]
@@ -1074,6 +1075,148 @@ components:
         message: { type: string, description: '"Morning check-in done. Have a good Monday.", "See you in the morning."' }
         ignored: { type: boolean, description: 'The `day` sent is not today (a tap queued yesterday): nothing was changed.' }
         today: { $ref: '#/components/schemas/Today' }
+    Me:
+      type: object
+      description: 'Who this request is (W5). Public: a signed-out app uses it to offer the password (passwordSet) or pairing only. Signed out it says only that and whether a password is set — which the lock page shows anyway — and nothing about devices or settings.'
+      required: [signedIn, kind, deviceId, deviceName, scopes, passwordSet]
+      additionalProperties: false
+      properties:
+        signedIn: { type: boolean }
+        kind: { type: ['string', 'null'], enum: [session, local, device, null], description: 'session = the password; local = this machine with no password; device = a paired device.' }
+        deviceId: { type: ['string', 'null'], description: 'This device, when it is a paired one (mark it in the device list).' }
+        deviceName: { type: ['string', 'null'] }
+        scopes: { type: array, items: { $ref: '#/components/schemas/Scope' } }
+        passwordSet: { type: boolean, description: 'MWA_ACCESS_PASSWORD is set: the sign-in screen offers the password.' }
+    SignedIn:
+      type: object
+      required: [signedIn, kind, scopes]
+      additionalProperties: false
+      properties:
+        signedIn: { type: boolean, const: true }
+        kind: { type: string, const: session }
+        scopes: { type: array, items: { $ref: '#/components/schemas/Scope' } }
+    Feature:
+      type: object
+      required: [id, label, on, canChange, note]
+      additionalProperties: false
+      properties:
+        id: { type: string, enum: [sorting, calendar, mail] }
+        label: { type: string, description: '"Sorting your mail into Important".' }
+        on: { type: boolean }
+        canChange: { type: boolean, description: 'false: fixed when the helper was installed (say so; offer no switch).' }
+        note: { type: string, description: 'Plain words for what it does, or why it cannot be changed here.' }
+    HelperSettings:
+      type: object
+      required: [helperName, ownerName, ownerNameFixed, timeZone, timeZoneFixed, publicUrl, publicUrlFixed, firstRunDone, configError, features]
+      additionalProperties: false
+      properties:
+        helperName: { type: string, description: 'What the helper is called ("Your helper" until named).' }
+        ownerName: { type: ['string', 'null'], description: 'The name in the greeting ("Good morning, Robert").' }
+        ownerNameFixed: { type: boolean, description: 'Set by the deployment (MWA_OWNER_NAME): read-only here.' }
+        timeZone: { type: string, description: 'An IANA zone; used for the calendar, Important and reminders.' }
+        timeZoneFixed: { type: boolean }
+        publicUrl: { type: ['string', 'null'], description: 'Where phones reach the helper ("https://mwa.tail1a2b.ts.net"): MWA_PUBLIC_URL, the address saved here, or a tailnet name in MWA_ALLOWED_HOSTS.' }
+        publicUrlFixed: { type: boolean, description: 'Set by the deployment (MWA_PUBLIC_URL): read-only here.' }
+        firstRunDone: { type: boolean, description: 'First-run setup on the computer was finished or skipped (kept in app.db, not the settings file).' }
+        configError: { type: ['string', 'null'], description: 'The settings file (mwa.config.json) cannot be read: what is wrong, in plain words. Show it instead of first run.' }
+        features: { type: array, items: { $ref: '#/components/schemas/Feature' } }
+    Spending:
+      type: object
+      required: [month, limit, background, defaults]
+      additionalProperties: false
+      properties:
+        month:
+          type: object
+          required: [label, usd, calls]
+          additionalProperties: false
+          properties:
+            label: { type: string, description: '"November 2026".' }
+            usd: { type: number }
+            calls: { type: integer }
+        limit:
+          type: object
+          required: [usd, fixed, state, pct]
+          additionalProperties: false
+          properties:
+            usd: { type: ['number', 'null'], description: 'The monthly limit, or null for none.' }
+            fixed: { type: boolean, description: 'Set by the deployment (MWA_MONTHLY_BUDGET_USD): read-only here.' }
+            state: { type: string, enum: [none, ok, warn, over] }
+            pct: { type: ['number', 'null'] }
+        background:
+          type: array
+          description: 'This month''s work that is not a job (mail sorting, reading newsletters for dates).'
+          items:
+            type: object
+            required: [purpose, label, usd, calls]
+            additionalProperties: false
+            properties:
+              purpose: { type: string }
+              label: { type: string }
+              usd: { type: number }
+              calls: { type: integer }
+        defaults:
+          type: object
+          description: 'The default limits per kind of work. A hand-off''s and a Continue''s limit come from its estimate, up to these.'
+          required: [handoffMaxUsd, continueMaxUsd, perFireUsd, perFireFixed]
+          additionalProperties: false
+          properties:
+            handoffMaxUsd: { type: number, description: 'A hand-off''s default limit is at most this.' }
+            continueMaxUsd: { type: number, description: 'Any limit (Continue, Start over) is at most this.' }
+            perFireUsd: { type: ['number', 'null'], description: 'Each run of a repeating job, when it has no limit of its own (null: none).' }
+            perFireFixed: { type: boolean }
+    Account:
+      type: object
+      required: [provider, label, what, connected, needsReconnect, method, connect]
+      additionalProperties: false
+      properties:
+        provider: { type: string, enum: [google, outlook] }
+        label: { type: string }
+        what: { type: string, description: 'One sentence of what it allows: "Calendar and Gmail. I can read them and make drafts. I never send."' }
+        connected: { type: boolean }
+        needsReconnect: { type: boolean, description: 'The sign-in expired or was revoked: offer Reconnect.' }
+        method: { type: ['string', 'null'], enum: [sign-in, app-password, null] }
+        connect: { type: string, enum: [browser, code, setup], description: 'How Connect works here: a sign-in page to open, a code to type at the provider, or a one-time setup on the computer first.' }
+    ConnectStart:
+      type: object
+      required: [kind, provider, url, message]
+      additionalProperties: false
+      properties:
+        kind: { type: string, enum: [browser, code, setup] }
+        provider: { type: string, enum: [google, outlook] }
+        url: { type: string, description: 'browser: the sign-in page; code: where to type the code; setup: the full settings.' }
+        code: { type: string, description: 'code: what to type.' }
+        expiresIn: { type: integer, description: 'code: seconds it stays valid.' }
+        message: { type: string }
+    VaultEntry:
+      type: object
+      required: [name, fields]
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        site: { type: string }
+        fields: { type: array, items: { type: string }, description: Field names only; never a value. }
+        savedAt: { type: integer }
+    UploadedFile:
+      type: object
+      required: [id, path, name, size, projectId, pages]
+      additionalProperties: false
+      properties:
+        id: { type: string, description: 'The same as path.' }
+        path: { type: string, description: 'Workspace-relative; send it in /ask `files`.' }
+        name: { type: string, description: 'The cleaned name it was saved under ("rules (2).pdf" when one existed).' }
+        size: { type: integer }
+        projectId: { type: string }
+        pages: { type: ['integer', 'null'], description: 'Pages as read_document counts them; null when it could not be counted quickly.' }
+    FileRow:
+      type: object
+      required: [id, path, name, size, mtime]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        path: { type: string }
+        name: { type: string }
+        size: { type: integer }
+        mtime: { type: number }
   responses:
     Error:
       description: An error.
@@ -1146,6 +1289,33 @@ paths:
                   devices: { type: array, items: { $ref: '#/components/schemas/Device' } }
         default: { $ref: '#/components/responses/Error' }
   /devices/{id}:
+    patch:
+      operationId: renameDevice
+      summary: Rename a paired device (admin).
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 60 }
+      responses:
+        '200':
+          description: Renamed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [device]
+                additionalProperties: false
+                properties:
+                  device: { $ref: '#/components/schemas/Device' }
+        default: { $ref: '#/components/responses/Error' }
     delete:
       operationId: revokeDevice
       summary: Remove a device; its next request is refused (admin).
@@ -2296,4 +2466,243 @@ paths:
         '200':
           description: Done, with Today as it is now.
           content: { application/json: { schema: { $ref: '#/components/schemas/TodayAck' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /me:
+    get:
+      operationId: getMe
+      summary: 'Who this request is: signed in or not, as what, with which scopes; and whether a password is set (W5).'
+      security: []
+      responses:
+        '200':
+          description: The caller.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Me' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /session:
+    post:
+      operationId: signIn
+      summary: Sign in with the password; sets the mwa_session cookie. Throttled (10 wrong tries per 10 minutes).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+      responses:
+        '200':
+          description: Signed in (Set-Cookie mwa_session).
+          content: { application/json: { schema: { $ref: '#/components/schemas/SignedIn' } } }
+        default: { $ref: '#/components/responses/Error' }
+    delete:
+      operationId: signOut
+      summary: Sign this browser out of the password session.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Signed out (the cookie is cleared).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [signedOut]
+                additionalProperties: false
+                properties:
+                  signedOut: { type: boolean, const: true }
+        default: { $ref: '#/components/responses/Error' }
+  /session/sign-out-everywhere:
+    post:
+      operationId: signOutEverywhere
+      summary: 'End every password session, this one included (admin). Paired devices are removed one by one.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Signed out everywhere (the cookie is cleared).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [signedOut, message]
+                additionalProperties: false
+                properties:
+                  signedOut: { type: integer, description: How many sessions ended. }
+                  message: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /settings:
+    get:
+      operationId: getSettings
+      summary: 'The helper''s settings: its name, the greeting name, the time zone, first run, and the switches.'
+      responses:
+        '200':
+          description: The settings.
+          content: { application/json: { schema: { $ref: '#/components/schemas/HelperSettings' } } }
+        default: { $ref: '#/components/responses/Error' }
+    patch:
+      operationId: updateSettings
+      summary: Change the settings (admin). A setting the deployment fixed is refused (400 fixed).
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                helperName: { type: string, maxLength: 40 }
+                ownerName: { type: ['string', 'null'], maxLength: 40 }
+                timeZone: { type: string }
+                publicUrl: { type: ['string', 'null'], description: 'The helper''s address for phones, or null to forget it.' }
+                firstRunDone: { type: boolean }
+                features:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    sorting: { type: boolean }
+      responses:
+        '200':
+          description: The settings now.
+          content: { application/json: { schema: { $ref: '#/components/schemas/HelperSettings' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /spending:
+    get:
+      operationId: getSpending
+      summary: 'This month''s spending, the monthly limit, the background line, and the default limits per kind.'
+      responses:
+        '200':
+          description: Spending.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Spending' } } }
+        default: { $ref: '#/components/responses/Error' }
+    patch:
+      operationId: updateSpending
+      summary: Change the monthly limit or the per-run limit for repeating jobs (admin).
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                monthlyUsd: { type: ['number', 'null'], description: 'Dollars a month (at least 1), or null for no limit.' }
+                perFireUsd: { type: ['number', 'null'], description: 'Dollars per run of a repeating job, rounded to the cent: $0.01 to $20. 0 or null: back to the default (25¢); never "no limit".' }
+      responses:
+        '200':
+          description: Spending now.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Spending' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /accounts:
+    get:
+      operationId: listAccounts
+      summary: 'Google and Outlook: connected or not, whether one needs reconnecting, and how Connect works here.'
+      responses:
+        '200':
+          description: The two accounts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts]
+                additionalProperties: false
+                properties:
+                  accounts: { type: array, items: { $ref: '#/components/schemas/Account' } }
+        default: { $ref: '#/components/responses/Error' }
+  /accounts/{provider}/connect:
+    parameters:
+      - { name: provider, in: path, required: true, schema: { type: string, enum: [google, outlook] } }
+    post:
+      operationId: connectAccount
+      summary: 'Start connecting (or reconnecting) Google or Outlook (admin): a sign-in page to open, a code, or a setup note.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: What to do next.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ConnectStart' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /vault:
+    get:
+      operationId: listVault
+      summary: Saved logins, names and field names only (admin).
+      responses:
+        '200':
+          description: The entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries]
+                additionalProperties: false
+                properties:
+                  entries: { type: array, items: { $ref: '#/components/schemas/VaultEntry' } }
+        default: { $ref: '#/components/responses/Error' }
+  /vault/forget:
+    post:
+      operationId: forgetVaultEntry
+      summary: Forget one saved login (admin). Jobs that used it will ask again.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        '200':
+          description: Forgotten.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [forgot, message]
+                additionalProperties: false
+                properties:
+                  forgot: { type: string }
+                  message: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /files:
+    get:
+      operationId: listFiles
+      summary: The files added to a project (General when no projectId), newest first.
+      parameters:
+        - { name: projectId, in: query, required: false, schema: { type: string } }
+      responses:
+        '200':
+          description: The files.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [projectId, folder, files]
+                additionalProperties: false
+                properties:
+                  projectId: { type: string }
+                  folder: { type: string }
+                  files: { type: array, items: { $ref: '#/components/schemas/FileRow' } }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      operationId: uploadFile
+      summary: 'Add a file to a project (act). The body is the file (with ?name=), or multipart/form-data with one file part. Capped at 25 MB (413); at most 2 at a time per device and 4 in all (429 busy); all added files share MWA_UPLOAD_QUOTA_MB, 2 GB (507 storage_full). The name is cleaned (no folders, dot files or Windows device names); never saved over another file.'
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { name: projectId, in: query, required: false, schema: { type: string } }
+        - { name: name, in: query, required: false, schema: { type: string }, description: 'The file name (required for a raw body; a multipart part carries its own).' }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream: { schema: { type: string, format: binary } }
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: Saved; send `path` in /ask `files`.
+          content: { application/json: { schema: { $ref: '#/components/schemas/UploadedFile' } } }
         default: { $ref: '#/components/responses/Error' }

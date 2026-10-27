@@ -50,8 +50,8 @@ web/src/v2/
   and archived in plain words), a job ("I’ll let you know · ready around …", and the way to the working sheet), or the
   offer (Work on it in the background · Do it here now). An ask made offline waits in the outbox with its key; a plan
   that comes back from the outbox shows when Ask is opened next.
-- **Files**: `upload.ts` posts to the legacy `/api/files/upload` (TODO: an /api/v1 upload) — it works with the
-  password sign-in, not yet on a paired phone (which is told so); fixture mode never touches the network.
+- **Files**: `upload.ts` posts to `POST /api/v1/files` (W5: act scope, Idempotency-Key) — from the computer or a
+  paired phone; fixture mode never touches the network.
 - **Voice** is P4: the mic opens the Ask sheet and says so.
 - **"Ask about this"** — ONE component everywhere: `<AskAbout kind id label … />` (`screens/ask/AskAbout.tsx`), used
   by a project's Work tab (inline), an Important item's sheet and the mail reader (W3's copy is gone). Props:
@@ -128,5 +128,19 @@ moving a turn, Stop, Steer and the offer.
 
 Reconnecting and connecting a calendar from v2 (W5: Today and the Calendar point to Settings and say so), rules in Settings (W5; "Your rules" opens
 from the bottom of Important until then), the month's spending limit (the API has no spending summary yet: the sheet shows what the jobs cost),
-voice (P4: the mic opens the Ask sheet), an /api/v1 upload (W4 uses the legacy one until W5), sign-in
-and pairing screens (W5: a 401 shows "Sign in to continue"), the service worker's offline shell for v2 (P1/P2).
+voice (P4: the mic opens the Ask sheet), an /api/v1 upload (W4 uses the legacy one until W5), the service worker's offline shell for v2 (P1/P2).
+
+## W5: sign-in, pairing, first run, Settings
+
+- `screens/start/Start.tsx`: `useStartGate()` (the shell asks it first) — **Sign in** after a 401 (`POST /api/v1/session`;
+  with no password set, "Pair this device first"), **Pair this phone** (`/pair`, the QR's `/pair#c=CODE`, or "Type a
+  code"; `POST /pair` sets the device cookie), and **first run** on the computer until `firstRunDone` (name the helper,
+  connect Google / Outlook, turn on what's off, pair your phone with the code and QR). `/pair` always opens the v2 app.
+- `screens/settings/`: Settings (Connected, This month, Devices, Your rules, Your helper, What I keep up to date, Saved
+  logins, Notifications, Look, About), `useSettings.ts` (data and words), `PairNewDevice.tsx` and `qr.ts` (a small
+  QR encoder, byte mode level M, checked against the `qrcode` package in tests/web-v2-qr.test.ts). Admin-only parts
+  are read-only on a paired phone, with one line that says why. The Important list's "Your rules" sheet links here.
+- Fixtures (`dev/fixtures-settings.ts`): scenarios `signed-out` (password "example"), `unpaired` (code K7PQ-M4XZ),
+  `phone` (a paired phone, no admin) and `first-run`.
+- `node scripts/v2-w5-smoke.mjs --axe <axe.min.js> [--out <dir>]`.
+

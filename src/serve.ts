@@ -60,7 +60,13 @@ import { goalsMentioned, WORK_NOTE_HEAD } from './work-note.js';
 import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, runApproved, recentApprovalOutcomes, recentAutoApproved } from './tools/approval.js';
 import { logger, readLogs, type LogLevel } from './logger.js';
 import { createV1Handler } from './api/v1.js';
-import { makeAuthenticate } from './api/auth.js';
+import { makeAuthenticate, hasValidDeviceCookie } from './api/auth.js';
+import { configureSessions, sessionValid, secretEquals, pruneSessions } from './api/sessions.js';
+import { signInWithPassword } from './api/signin.js';
+import { hostAllowed, relayedMode, detectTailscaleServe } from './api/trust.js';
+import { setSettingsRouteDeps } from './api/routes/settings.js';
+import { handleLegacyFiles, signedOutPageAllowed, legacyApiScope } from './api/legacy.js';
+import { applyStoredSettings } from './v2/settings.js';
 import { setJobRouteDeps, capFor, setCap } from './api/routes/jobs.js';
 import { setStreamDeps } from './api/routes/stream.js';
 import { startCalendarSync } from './sync/calendar.js';
@@ -100,7 +106,7 @@ import { disconnectMicrosoft } from './connectors/microsoft.js';
 import { setSetupDeps, listSetupRequests, submitSetupRequest, cancelSetupRequest } from './connect/setup.js';
 import { awmCliPath, loadEmbeddings, loadPostgresStore } from './awm-api.js';
 import { MEMORY_OFF, agentMemory } from './memory-off.js';
-import { listFiles, insideRoot, fileHeaders, saveUpload, deleteFile, sessionFolder, uploadsIn, MAX_UPLOAD, readShares, createShare, revokeShare, shareFor } from './files.js';
+import { fileHeaders, sessionFolder, uploadsIn, shareFor } from './files.js';
 import { offersBackground, OFFER_TEXT, startBackgroundWork, continueGoal, resumeInstruction } from './handoff.js';
 import { scheduleRows, scheduleControl, type ScheduleAction } from './schedule-api.js';
 import { liveRuns, FINAL_EVENTS } from './live-runs.js';
@@ -170,48 +176,13 @@ export function sameOriginOk(req: IncomingMessage): boolean {
 // existing one-machine flow is unchanged. Cookie-based on purpose: EventSource (the SSE
 // chat) can't send custom headers but does send same-origin cookies automatically.
 const ACCESS_PW = process.env.MWA_ACCESS_PASSWORD || '';
-// BL-71: a session survives a restart or a deploy. It was an in-memory set, so every deploy signed the person out
-// (Robert, 2026-10-22: he came back and couldn't get back to what he was doing). A session is now
-// `<expiry>.<nonce>.<mac>`, signed with a key made from the access password and a random salt kept beside the
-// agent's data — so changing the password still signs every session out, and nothing is stored per session.
-const SESSION_MS = 30 * 24 * 3_600_000;
-let sessionKey: Buffer | null = null;
-function sessionMacKey(): Buffer {
-  if (sessionKey) return sessionKey;
-  const p = join(dirname(dbFile()), '.session-salt');
-  let salt = '';
-  try { salt = readFileSync(p, 'utf8').trim(); } catch { /* first start */ }
-  if (salt.length < 32) {
-    salt = randomBytes(32).toString('hex');
-    try { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, salt, { mode: 0o600 }); } catch { /* sessions then last until a restart */ }
-  }
-  sessionKey = createHmac('sha256', ACCESS_PW).update(`mwa-session-v1:${salt}`).digest();
-  return sessionKey;
-}
-const sessionMac = (body: string) => createHmac('sha256', sessionMacKey()).update(body).digest('base64url');
-function issueToken(): string {
-  const body = `${Date.now() + SESSION_MS}.${randomBytes(18).toString('base64url')}`;
-  return `${body}.${sessionMac(body)}`;
-}
-function validToken(t: string): boolean {
-  const m = /^(\d{10,16})\.([A-Za-z0-9_-]{16,64})\.([A-Za-z0-9_-]{20,})$/.exec(t);
-  if (!m || Number(m[1]) < Date.now()) return false;
-  return safeEqual(m[3], sessionMac(`${m[1]}.${m[2]}`));
-}
-function safeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a), bb = Buffer.from(b);
-  if (ab.length !== bb.length) return false;
-  try { return timingSafeEqual(ab, bb); } catch { return false; }
-}
-function cookieToken(req: IncomingMessage): string | null {
-  const raw = req.headers.cookie ?? '';
-  for (const part of raw.split(';')) { const [k, ...v] = part.trim().split('='); if (k === 'mwa_session') return v.join('='); }
-  return null;
-}
+// BL-71: a session survives a restart or a deploy (signed with a key from the password and a salt beside the data).
+// W5 security review: each session also has a record in app.db, so signing out ends it on the server too
+// (src/api/sessions.ts). With no password, "authed" means nothing on its own: every /api route checks its caller.
+configureSessions({ password: ACCESS_PW });
 function authed(req: IncomingMessage): boolean {
   if (!ACCESS_PW) return true;
-  const t = cookieToken(req);
-  return !!t && validToken(t);
+  return sessionValid(req);
 }
 
 // Bundled MCP tools the Connections page can toggle on/off (no file editing).
@@ -718,6 +689,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   }, 15_000).unref();
 
   loadEnv();
+  // v2 (W5): what Settings saved that the server reads from the environment (time zone, mail sorting, the per-fire
+  // limit), unless the deployment set it — before the calendar, mail and triage loops start.
+  applyStoredSettings();
 
   // THE INBOX (BL-06): drop an instruction file (*.md / *.txt) into <workspace>/inbox and MWA works it
   // unattended — in Docker, /data/mwa-workspace/inbox — writes outbox/<id>.md, and posts the result to
@@ -837,7 +811,21 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
     } catch (e) { logger.error('v2', 'jobs migration failed (it is tried again at the next start)', { error: (e as Error).message.slice(0, 200) }); }
     finally { m.close(); }
   })();
-  const v1 = createV1Handler({ authenticate: makeAuthenticate({ passwordSet: !!ACCESS_PW, sessionValid: authed }), sameOrigin: sameOriginOk });
+  const authenticate = makeAuthenticate({ passwordSet: !!ACCESS_PW, sessionValid: authed });
+  const v1 = createV1Handler({ authenticate, sameOrigin: sameOriginOk });
+  // v2 (W5): sign-in, Settings and Connect for the v2 app use the server's own password, session and sign-in flows.
+  setSettingsRouteDeps({
+    passwordSet: () => !!ACCESS_PW,
+    checkPassword: (pw) => !!ACCESS_PW && secretEquals(pw, ACCESS_PW),
+    connections: () => ({
+      googleClient: !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET, gmailAppPassword: gmailImapConfigured(),
+      googleConnected: googleConfigured() || gmailImapConfigured(),
+      outlookDeviceCode: microsoftClientReady(), microsoftClient: !!process.env.MICROSOFT_CLIENT_ID, outlookConnected: microsoftConfigured(),
+    }),
+    startGoogle: () => startGmailConnect(false),
+    startOutlookDeviceCode: () => startMicrosoftDeviceCode(false),
+    startOutlook: () => startMicrosoftConnect(false),
+  });
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');
@@ -847,30 +835,43 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       // /api/chat on 127.0.0.1 through the browser and started a run). Its every request carries this header.
       if (req.headers[AGENT_BROWSER_HEADER]) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'the agent browser may not call MWA' })); return; }
 
-      // Access gate (no-op unless MWA_ACCESS_PASSWORD is set).
-      if (ACCESS_PW) {
-        if (p === '/api/login' && req.method === 'POST') {
-          const b = await readBody(req);
-          if (typeof b.password === 'string' && safeEqual(b.password, ACCESS_PW)) {
-            res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': `mwa_session=${issueToken()}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000` });
-            res.end(JSON.stringify({ ok: true }));
-          } else {
-            res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: 'Wrong password.' }));
-          }
-          return;
-        }
-        // /api/health is exempt: it is the LIVENESS probe. With a password set it answered 401,
-        // so the Dockerfile HEALTHCHECK failed forever and the container sat "unhealthy" — on a
-        // NAS or under a restart policy that acts on health, permanently. Measured 2026-10-14:
-        // FailingStreak 4 within two minutes of boot. The handler below still withholds the
-        // detail (counts, sessions) from an unauthenticated caller; only ok/db go out.
-        // BL-70: a share link opens one file for whoever holds it: its page, the app's built assets
-        // and the share API answer without the password. The token is the whole permission.
-        // v2: /api/v1 checks its own callers (a paired phone has no password session), so the gate lets it through.
-        const shared = p.startsWith('/s/') || p.startsWith('/api/share/') || p.startsWith('/assets/') || p === '/api/v1' || p.startsWith('/api/v1/');
-        if (!authed(req) && p !== '/api/health' && !shared) {
-          if (p.startsWith('/api/')) { res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'locked', message: 'Sign in to continue.' })); return; }
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(LOGIN_HTML); return;
+      // W5 security review (5): the Host must be one this server answers to — DNS rebinding sends the attacker's name.
+      // The liveness probe is exempt (a platform's health check may use any name; it says only ok/db to strangers).
+      if (p !== '/api/health' && !hostAllowed(req)) {
+        res.writeHead(421, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end(`This helper doesn't answer to "${String(req.headers.host ?? '').slice(0, 80)}". Add the name to MWA_ALLOWED_HOSTS if it is yours.`);
+        return;
+      }
+
+      // Signing in with the password (the legacy page's form): the same throttle and session record as /api/v1/session.
+      if (p === '/api/login' && req.method === 'POST') {
+        if (!ACCESS_PW) { res.writeHead(409, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: 'No password is set on this helper.' })); return; }
+        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
+        const b = await readBody(req);
+        const cookie = typeof b.password === 'string' ? await signInWithPassword(req, b.password, (pw) => secretEquals(pw, ACCESS_PW), 'legacy-login') : null;
+        if (cookie) { res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': cookie }); res.end(JSON.stringify({ ok: true })); }
+        else { res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: 'Wrong password.' })); }
+        return;
+      }
+
+      // Pages with a password set: the lock page unless signed in. /api/health is the LIVENESS probe (2026-10-14: with
+      // a password it answered 401 and the container sat "unhealthy"). BL-70: a share link opens one file for whoever
+      // holds it. v2 (W5): the app's page loads for /pair, the v2 app and a paired device, so they can show their own
+      // sign-in and pairing screens (src/api/legacy.ts). Every /api route checks its own callers below.
+      if (ACCESS_PW && !p.startsWith('/api/') && !authed(req)) {
+        const shared = p.startsWith('/s/') || p.startsWith('/assets/') || signedOutPageAllowed(p, url.search, hasValidDeviceCookie(req));
+        if (!shared) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(LOGIN_HTML); return; }
+      }
+
+      // W5 security review (6): every legacy /api route takes the same callers as /api/v1 — the password session, this
+      // machine (as trust.ts defines it), or a paired device with the scope the route needs — password or not.
+      // /api/v1 and /api/files answer for themselves; health, login and share links are public (legacyApiScope).
+      if (p.startsWith('/api/') && p !== '/api/v1' && !p.startsWith('/api/v1/') && p !== '/api/files' && !p.startsWith('/api/files/')) {
+        const need = legacyApiScope(req.method ?? 'GET', p);
+        if (need !== 'public') {
+          const who = authenticate(req);
+          if (!who) { res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'locked', message: 'Sign in to continue.' })); return; }
+          if (!who.scopes.has(need)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'forbidden', message: 'This device is not allowed to do that. Use the app on your computer, or sign in with the password.' })); return; }
         }
       }
 
@@ -1181,7 +1182,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         const full = { ok: db, uptimeSec: Math.round((Date.now() - SERVER_START) / 1000), db, memoryCount, activeRuns: activeRuns + schedulerRuns, chatRuns: activeRuns, schedulerRuns, sessions: sessions.size, schedulerLastTickAgoSec };
         // Locked + not signed in: the probe still gets its verdict (and the 503 when the DB is
         // down, which is the whole point of the check), but not the operational detail.
-        const body = (ACCESS_PW && !authed(req)) ? { ok: db, db } : full;
+        const body = authenticate(req) ? full : { ok: db, db };
         res.writeHead(db ? 200 : 503, { 'content-type': 'application/json' });
         res.end(JSON.stringify(body));
         return;
@@ -1223,61 +1224,11 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         res.end(JSON.stringify({ name: hit.share.path.split('/').pop(), size: statSync(hit.abs).size, expires: hit.share.expires, formats: exportFormats(hit.abs) }));
         return;
       }
-      // BL-70: the person's files — what MWA wrote under the workspace, and what they added.
-      if (p.startsWith('/api/files')) {
-        const root = resolve(loadConfig().workspace ?? './mwa-workspace');
-        const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
-        if (p === '/api/files' && req.method === 'GET') { json(200, { files: listFiles(root).map((f) => ({ ...f, formats: exportFormats(f.path) })) }); return; }
-        if (p === '/api/files/raw' && (req.method === 'GET' || req.method === 'HEAD')) {
-          const abs = insideRoot(root, url.searchParams.get('path') ?? '');
-          if (!abs || !existsSync(abs) || !statSync(abs).isFile()) { json(404, { error: 'not found' }); return; }
-          res.writeHead(200, fileHeaders(abs, statSync(abs).size, url.searchParams.get('download') === '1'));
-          if (req.method === 'HEAD') { res.end(); return; }
-          createReadStream(abs).pipe(res);
-          return;
-        }
-        if (p === '/api/files/export' && req.method === 'GET') {
-          const abs = insideRoot(root, url.searchParams.get('path') ?? '');
-          if (!abs || !existsSync(abs) || !statSync(abs).isFile()) { json(404, { error: 'not found' }); return; }
-          await sendExport(res, abs, url.searchParams.get('format') ?? '');
-          return;
-        }
-        if (p === '/api/files/shares' && req.method === 'GET') {
-          const path = url.searchParams.get('path');
-          json(200, { shares: readShares(root).filter((x) => !path || x.path === path) });
-          return;
-        }
-        if (req.method === 'POST' && !sameOriginOk(req)) { json(403, { ok: false, error: 'cross-origin request blocked' }); return; }
-        if (p === '/api/files/share' && req.method === 'POST') {
-          const b = await readBody(req);
-          const share = createShare(root, String(b.path ?? ''), Number(b.days ?? 7));
-          json(share ? 200 : 404, share ? { ok: true, share } : { ok: false, message: 'No such file.' });
-          return;
-        }
-        if (p === '/api/files/unshare' && req.method === 'POST') {
-          const b = await readBody(req);
-          json(200, { ok: revokeShare(root, String(b.token ?? '')) });
-          return;
-        }
-        if (p === '/api/files/upload' && req.method === 'POST') {
-          // The body is the file itself; name and chat come in the query. Capped while reading.
-          const folder = `${sessionFolder(url.searchParams.get('session') || 'default')}/uploads`;
-          const chunks: Buffer[] = []; let size = 0;
-          for await (const c of req) {
-            size += (c as Buffer).length;
-            if (size > MAX_UPLOAD) { json(413, { ok: false, message: `Too big: the limit is ${Math.round(MAX_UPLOAD / 1048576)} MB.` }); req.destroy(); return; }
-            chunks.push(c as Buffer);
-          }
-          try { json(200, { ok: true, path: saveUpload(root, folder, url.searchParams.get('name') ?? 'upload', Buffer.concat(chunks)) }); }
-          catch (e) { json(400, { ok: false, message: (e as Error).message }); }
-          return;
-        }
-        if (p === '/api/files/delete' && req.method === 'POST') {
-          const b = await readBody(req);
-          json(200, { ok: deleteFile(root, String(b.path ?? '')) });
-          return;
-        }
-        json(404, { error: 'not found' }); return;
+      // BL-70: the person's files — what MWA wrote under the workspace, and what they added. W5: the same callers as
+      // /api/v1 (the session, this machine, a paired device with the scope), password or not (src/api/legacy.ts).
+      if (p === '/api/files' || p.startsWith('/api/files/')) {
+        await handleLegacyFiles(req, res, url, { root: () => resolve(loadConfig().workspace ?? './mwa-workspace'), authenticate, sameOrigin: sameOriginOk, sendExport });
+        return;
       }
       // BL-71d: conversations to go back to, from any device.
       if (p === '/api/conversations' && req.method === 'GET') {
@@ -1832,7 +1783,26 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
     }
   });
   const host = process.env.MWA_SERVE_HOST ?? '127.0.0.1';
+  // W5 security review (5): `tailscale serve` forwarding to this port makes every tailnet request arrive from
+  // 127.0.0.1 — then nobody may count as "this machine" (trust.ts).
+  if (await detectTailscaleServe(port)) logger.info('serve', `tailscale serve forwards to port ${port}: relayed mode (sign in with the password or a paired device)`);
   await new Promise<void>((r) => server.listen(port, host, r));
+  // W5 security review (5): reachable through a relay, nobody counts as "this machine" — with no password nobody can
+  // sign in to make a pairing code either. Say so where the operator looks.
+  if (relayedMode() && !ACCESS_PW) {
+    logger.warn('serve', 'This helper can be reached through the network or a relay and has no password: nobody can sign in or pair a phone. Set MWA_ACCESS_PASSWORD.');
+    console.warn('  [mwa] No password is set and this helper is reachable through the network or a relay: set MWA_ACCESS_PASSWORD to sign in and pair your phone.');
+  } else if (!ACCESS_PW) {
+    // W5 re-review (M-1): MWA can't see a hand-made forwarder; whoever adds one must say so
+    const note = 'No password is set, so this computer is trusted as "this machine". If you expose MWA through socat, netsh portproxy, ssh -R or an nginx stream, set MWA_RELAYED=1 (and MWA_ACCESS_PASSWORD): every request through such a forwarder looks local.';
+    logger.info('serve', note);
+    console.log(`  [mwa] ${note}`);
+  }
+  // W5 re-review: `tailscale serve` may be switched on after MWA starts — look again every 5 minutes. Sessions that
+  // can't come back are pruned now and daily.
+  { const t = setInterval(() => { void detectTailscaleServe(port).then((hit) => { if (hit) logger.info('serve', `tailscale serve now forwards to port ${port}: relayed mode`); }).catch(() => {}); }, 5 * 60_000); t.unref?.(); }
+  try { pruneSessions(); } catch { /* app.db unavailable: next time */ }
+  { const t = setInterval(() => { try { pruneSessions(); } catch { /* next time */ } }, 24 * 3_600_000); t.unref?.(); }
   // v2 (A8): mail headers for "All email" and triage — every 15 minutes (and on app open via POST /api/v1/mail/refresh).
   // Headers only, no model calls; nothing happens while no mail account is connected.
   // It starts once v2 is ready (the jobs migration at server start), like the rest of v2.
@@ -1969,6 +1939,7 @@ button{width:100%;margin-top:10px;border:0;border-radius:3px;background:var(--si
 <button type="submit">Unlock</button>
 <div class="err" id="err"></div>
 </form><script>
+try{if(localStorage.getItem('mwa-ui')==='v2'&&!/[?&]ui=/.test(location.search)){location.replace('/?ui=v2');}}catch(_){}
 async function go(e){e.preventDefault();var err=document.getElementById('err');err.textContent='';
 try{var r=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:document.getElementById('pw').value})});
 if(r.ok){location.href='/';}else{var d=await r.json().catch(function(){return{}});err.textContent=d.message||'Wrong password.';}}

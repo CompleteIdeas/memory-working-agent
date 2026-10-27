@@ -14,6 +14,7 @@ import { Calendar, Important, Settings, Today, type View } from './screens';
 import { AskSheet } from '../screens/ask/AskSheet';
 import { Projects } from '../screens/projects/Projects';
 import { Arrow, Mic, Person, Spark, TabCalendar, TabImportant, TabProjects, TabToday, Close } from './icons';
+import { useStartGate } from '../screens/start/Start';
 
 const TABS: { view: View; label: string; icon: ReactNode }[] = [
   { view: 'today', label: 'Today', icon: <TabToday /> },
@@ -100,20 +101,9 @@ function UpdateBar() {
   );
 }
 
-function SignIn() {
-  return (
-    <main id="main" className="main" tabIndex={-1}>
-      <div className="card signin-card">
-        <h1 style={{ fontSize: 26 }}>Sign in to continue</h1>
-        <p style={{ marginTop: 10 }}>This device isn’t signed in to your helper any more. Sign in with your password, or pair this phone again from the app on your computer.</p>
-        <div className="acts"><button type="button" className="vbtn vbtn-primary" onClick={() => { location.href = '/'; }}>Sign in</button></div>
-      </div>
-    </main>
-  );
-}
-
 export function Shell() {
-  const { auth, fixtures } = useMeta();
+  const { fixtures } = useMeta();
+  const start = useStartGate();
   const desk = useMedia('(min-width: 900px)');
   const wide = useMedia('(min-width: 1200px)');
   const [view, setView] = useState<View>(() => {
@@ -133,7 +123,8 @@ export function Shell() {
   useEffect(() => { if (first.current) { first.current = false; return; } main.current?.focus({ preventScroll: true }); }, [view]);
   const ask = useCallback((a?: AskAbout) => { setWorkOpen(false); setAbout(a ?? contextRef.current); setAskOpen(true); }, []);
 
-  if (auth === 'signin') return <div className="v2app"><SignIn /><UpdateBar /></div>;
+  // W5: sign in, pair this phone, or first run on the computer, before the app itself (screens/start)
+  if (start) return <div className="v2app">{start}<UpdateBar /></div>;
   const Screen = SCREENS[view];
   return (
     <div className="v2app">

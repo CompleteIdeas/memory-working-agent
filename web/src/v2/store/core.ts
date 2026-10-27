@@ -344,6 +344,17 @@ export class V2Store {
     void this.today.load(); // W2: Today as it is now (on open, online, and every reconnect)
   }
 
+  /** W5: signed in or paired just now: forget the 401 and connect again (catch up, the stream, the outbox). */
+  async resume(): Promise<void> {
+    this.set({ auth: 'ok' });
+    await this.connect('open');
+  }
+  /** W5: this device signed out (or was told it is not signed in): stop the stream and show the sign-in screens. */
+  signedOut(): void {
+    this.closeStream();
+    this.set({ auth: 'signin', connection: 'unreachable' });
+  }
+
   private handleFailure(e: unknown, _reason: string) {
     if (e instanceof SignInRequired) { this.closeStream(); this.set({ auth: 'signin', connection: 'unreachable' }); return; }
     if (e instanceof UpdateRequired) { this.closeStream(); this.set({ updateReady: true, connection: 'unreachable' }); return; }

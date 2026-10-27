@@ -13,6 +13,7 @@
  * onboarding can't read arbitrary disk.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { docxText } from './tools/safe-zip.js';
 import { extname, basename, join } from 'node:path';
 import { resolveAllowed } from './tools/access.js';
 import { INTERVIEW_QUESTIONS } from './awm-api.js';
@@ -46,12 +47,7 @@ async function extractText(buf: Buffer, lower: string): Promise<string> {
     const { text } = await ex(pdf, { mergePages: true });
     return Array.isArray(text) ? text.join('\n') : String(text ?? '');
   }
-  if (lower.endsWith('.docx')) {
-    const m: any = await import('mammoth');
-    const fn = m.extractRawText ?? m.default?.extractRawText;
-    const { value } = await fn({ buffer: buf });
-    return String(value ?? '');
-  }
+  if (lower.endsWith('.docx')) return docxText(buf); // bounded inflate (W5 re-review)
   const text = buf.toString('utf8');
   if (lower.endsWith('.html') || lower.endsWith('.htm')) return stripHtml(text);
   return text;
