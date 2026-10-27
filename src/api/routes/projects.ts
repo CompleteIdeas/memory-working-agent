@@ -70,6 +70,15 @@ export interface ProjectRouteDeps {
 }
 let deps: ProjectRouteDeps | null = null;
 export function setProjectRouteDeps(d: ProjectRouteDeps | null): void { deps = d; }
+/** W4: a Stop or a note sent for one run (`runId`) never lands on another: 409 not_running when that run is not the
+ *  one going in the project now (it finished, or a later one started). Without `runId`: whatever runs now. */
+function meantRun(projectId: string, runId: unknown): void {
+  if (runId === undefined || runId === null) return;
+  if (typeof runId !== 'string' || !runId) throw new ApiError(400, 'bad_run', '`runId` is the id of the run you mean.');
+  const cur = deps?.live?.(projectId);
+  const curId = (cur?.run as { runId?: unknown } | null | undefined)?.runId;
+  if (curId !== runId) throw new ApiError(409, 'not_running', 'That answer is not being written any more: it already finished.');
+}
 /** The send path an ask reuses (A6). */
 export function projectRouteDeps(): ProjectRouteDeps | null { return deps; }
 
@@ -178,8 +187,9 @@ export const projectRoutes: Route[] = [
   },
   {
     method: 'POST', path: '/projects/{id}/stop', scope: 'act',
-    handler: ({ params }) => {
+    handler: ({ params, body }) => {
       const p = load(params.id);
+      meantRun(p.id, bodyOf(body).runId);
       if (!deps?.stop?.(p.id)) throw new ApiError(409, 'nothing_running', 'Nothing is running in this project.');
       return { body: { stopped: true, message: 'Stopping. The step that is running finishes; nothing new starts.' } };
     },
@@ -190,6 +200,7 @@ export const projectRoutes: Route[] = [
       const p = load(params.id);
       const text = String(bodyOf(body).text ?? '').trim().slice(0, 4000);
       if (!text) throw new ApiError(400, 'bad_text', 'Nothing to add.');
+      meantRun(p.id, bodyOf(body).runId);
       if (!deps?.steer?.(p.id, text)) throw new ApiError(409, 'nothing_running', 'Nothing is running in this project. Send it as a message.');
       return { body: { added: true, message: 'Added to the running answer. It is taken into account from the next step.' } };
     },

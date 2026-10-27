@@ -136,3 +136,16 @@ export function choiceText(c: { mode?: 'now' | 'background'; narrowLabel?: strin
   if (c.narrowLabel) return c.narrowLabel;
   return c.mode === 'now' ? 'Do it now' : 'In the background';
 }
+
+/** W4 review: a plan option's own limit, as the person sets it ("stops at $0.50"); null while the box is not a valid
+ *  amount. Each option has its own (the server's capDefault for it). */
+export function capFor(raw: string): number | null { const c = parseCap(raw); return c.ok ? c.usd : null; }
+/** The warning under a limit below what the option is expected to cost. */
+export function capWarning(cap: number | null, estimateUsd: number): string | null {
+  return cap !== null && cap < estimateUsd ? 'That limit is below the estimate — it will stop partway.' : null;
+}
+/** What a Stop or "Add to it" refused says in place. */
+export function runActionRefusal(code: string | undefined, message: string, what: 'stop' | 'steer'): string {
+  if (code === 'not_running' || code === 'nothing_running') return what === 'stop' ? 'It had already finished.' : 'It had already finished, so I couldn’t add that. Send it as a new message.';
+  return message || 'That didn’t work. Try again.';
+}

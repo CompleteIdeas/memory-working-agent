@@ -111,11 +111,15 @@ export function Shell() {
   const [workOpen, setWorkOpen] = useState(false);
   const [askOpen, setAskOpen] = useState(false);
   const [about, setAbout] = useState<AskAbout | null>(null);
+  // W4: what the screen has open (a project): the Ask bar and the mic ask there
+  const [context, setContext] = useState<AskAbout | null>(null);
+  const contextRef = useRef<AskAbout | null>(null);
+  contextRef.current = context;
   const main = useRef<HTMLElement>(null);
   const first = useRef(true);
   const go = useCallback((v: View) => { setView(v); window.scrollTo(0, 0); }, []);
   useEffect(() => { if (first.current) { first.current = false; return; } main.current?.focus({ preventScroll: true }); }, [view]);
-  const ask = useCallback((a?: AskAbout) => { setWorkOpen(false); setAbout(a ?? null); setAskOpen(true); }, []);
+  const ask = useCallback((a?: AskAbout) => { setWorkOpen(false); setAbout(a ?? contextRef.current); setAskOpen(true); }, []);
 
   if (auth === 'signin') return <div className="v2app"><SignIn /><UpdateBar /></div>;
   const Screen = SCREENS[view];
@@ -138,7 +142,7 @@ export function Shell() {
       </header>
 
       <main id="main" ref={main} className="main" tabIndex={-1}>
-        <Screen desk={desk} wide={wide} go={go} ask={ask} />
+        <Screen desk={desk} wide={wide} go={go} ask={ask} onContext={setContext} />
       </main>
 
       <div className="askdock" id="askdock"><div className="askcap">

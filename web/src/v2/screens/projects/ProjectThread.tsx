@@ -5,14 +5,15 @@
  * divider before a conversation imported from before projects, and "Move to another project" on every message.
  * The composer at the bottom asks in this project (POST /ask with its id), so a big ask gets its plan card here.
  */
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useAsk, useCalendarItem, useJobMap, useLive, useProjectActions, useProjectMap, useProjects, useThread } from '../../store/react';
 import type { Project, Turn } from '../../api/client';
 import { Spark } from '../../shell/icons';
-import { AskOutcomeView, HelperSays, Typing, Who } from '../ask/AskOutcome';
-import { ABOUT_NOUN, provenanceLine, refusalFor, stageLine, type Refusal } from '../ask/logic';
+import { AskOutcomeView, HelperSays, Typing, Who, useStopRun } from '../ask/AskOutcome';
+import { AnswerText, answerWords } from '../ask/answerText';
+import { ABOUT_NOUN, provenanceLine, refusalFor, runActionRefusal, stageLine, type Refusal } from '../ask/logic';
 import { turnNotes } from './logic';
-import { useDismiss } from './useDismiss';
+import { menuKeys, useDismiss } from './useDismiss';
 
 interface Sent { n: number; text: string; entryId?: string; queued?: string; refusal?: Refusal & { code?: string } }
 
@@ -26,7 +27,19 @@ export function ProjectThread({ p }: { p: Project }) {
   const [text, setText] = useState('');
   const n = useRef(0);
   const input = useRef<HTMLTextAreaElement>(null);
-  const runningNow = all.some((t) => t.kind === 'running');
+  const runningTurn = all.find((t) => t.kind === 'running');
+  const runningNow = !!runningTurn;
+  // answers arriving are said aloud to a screen reader (the thread itself is not a live region: it would read it all)
+  const [heard, setHeard] = useState('');
+  const lastAnswer = [...all].reverse().find((t) => t.kind !== 'running' && t.kind !== 'divider' && t.reply);
+  const seenAnswer = useRef<string | null>(null);
+  useEffect(() => {
+    if (!lastAnswer) return;
+    if (seenAnswer.current === null) { seenAnswer.current = lastAnswer.id; return; } // what was there when it opened
+    if (seenAnswer.current === lastAnswer.id) return;
+    seenAnswer.current = lastAnswer.id;
+    setHeard(`Your helper answered: ${answerWords(lastAnswer.reply).slice(0, 200)}`);
+  }, [lastAnswer]);
 
   const send = async (e: FormEvent) => {
     e.preventDefault();
@@ -50,6 +63,7 @@ export function ProjectThread({ p }: { p: Project }) {
   return (
     <section className="projthread" aria-labelledby={`th-${p.id}`}>
       <h2 className="sr-only" id={`th-${p.id}`}>Our conversation</h2>
+      <p className="sr-only" role="status" aria-live="polite">{heard}</p>
       {hasEarlier && (
         <button type="button" className="vbtn vbtn-quiet earlier" disabled={loadingEarlier}
           onClick={async () => { setLoadingEarlier(true); await loadEarlier(); setLoadingEarlier(false); }}>
@@ -73,7 +87,10 @@ export function ProjectThread({ p }: { p: Project }) {
             {x.refusal ? (
               <div className="refusal" role="alert"><p>{x.refusal.text}</p>
                 <div className="acts">
-                  {x.refusal.code === 'busy' && <button type="button" className="vbtn" onClick={async () => { await actions.steer(p.id, x.text); setSent((s) => s.filter((y) => y.n !== x.n)); }}>Add it to the answer</button>}
+                  {x.refusal.code === 'busy' && <button type="button" className="vbtn" onClick={async () => {
+                    const r = await actions.steer(p.id, x.text, runningTurn?.runId);
+                    setSent((s) => (r.ok ? s.filter((y) => y.n !== x.n) : s.map((y) => (y.n !== x.n ? y : { ...y, refusal: { text: runActionRefusal(r.code, r.message, 'steer'), again: true, code: r.code } }))));
+                  }}>Add it to the answer</button>}
                   {x.refusal.again && <button type="button" className="vbtn vbtn-quiet" onClick={() => { setText(x.text); setSent((s) => s.filter((y) => y.n !== x.n)); input.current?.focus(); }}>Ask again</button>}
                 </div>
               </div>
@@ -113,7 +130,7 @@ function TurnView({ t, p, onMoved }: { t: Turn; p: Project; onMoved: (m: { text:
         : t.kind === 'offer' ? <OfferTurn p={p} t={t} />
         : t.reply ? (
           <HelperSays tail={<TurnFoot t={t} />} action={<MoveMenu t={t} p={p} onMoved={onMoved} />}>
-            {t.kind === 'result' && <span className="resultlead">From work I did in the background: </span>}{t.reply}
+            <AnswerText text={t.reply} tainted={t.tainted} lead={t.kind === 'result' ? <span className="resultlead">From work I did in the background: </span> : null} />
           </HelperSays>
         ) : <MoveMenu t={t} p={p} onMoved={onMoved} />}
     </div>
@@ -138,6 +155,7 @@ function MoveMenu({ t, p, onMoved }: { t: Turn; p: Project; onMoved: (m: { text:
   const actions = useProjectActions();
   const [open, setOpen] = useState(false);
   const wrap = useDismiss<HTMLDivElement>(open, () => setOpen(false));
+  const trigger = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const others = projects.filter((x) => x.id !== p.id);
@@ -152,10 +170,10 @@ function MoveMenu({ t, p, onMoved }: { t: Turn; p: Project; onMoved: (m: { text:
   };
   return (
     <div className="movewrap" ref={wrap}>
-      <button type="button" className="linkish quietlink movebtn" aria-haspopup="menu" aria-expanded={open} disabled={busy} onClick={() => setOpen((o) => !o)}
+      <button ref={trigger} type="button" className="linkish quietlink movebtn" aria-haspopup="menu" aria-expanded={open} disabled={busy} onClick={() => setOpen((o) => !o)}
         aria-label={`Move to another project: ${t.message.slice(0, 60)}`}>Move…</button>
       {open && (
-        <div className="menu" role="menu" aria-label="Move to" onKeyDown={(e) => { if (e.key === 'Escape') setOpen(false); }}>
+        <div className="menu" role="menu" aria-label="Move to" onKeyDown={menuKeys(trigger, () => setOpen(false))}>
           {others.map((x, i) => <button key={x.id} type="button" role="menuitem" autoFocus={i === 0} onClick={() => void move(x)}>{x.name}</button>)}
         </div>
       )}
@@ -168,7 +186,7 @@ function MoveMenu({ t, p, onMoved }: { t: Turn; p: Project; onMoved: (m: { text:
 function RunningAnswer({ p, t }: { p: Project; t: Turn }) {
   const live = useLive(p.id);
   const actions = useProjectActions();
-  const [stopping, setStopping] = useState(false);
+  const stopper = useStopRun(p.id, t.runId);
   const [adding, setAdding] = useState(false);
   const [note, setNote] = useState('');
   const [said, setSaid] = useState<string | null>(null);
@@ -178,15 +196,16 @@ function RunningAnswer({ p, t }: { p: Project; t: Turn }) {
       <Who />
       <Typing />
       {stage && <p className="stage" role="status">{stage}</p>}
-      {said && <p className="ask-note" role="status">{said}</p>}
+      {(stopper.said || said) && <p className="ask-note" role="status">{stopper.said ?? said}</p>}
       {adding ? (
         <form className="steerform" onSubmit={async (e) => {
           e.preventDefault();
           const words = note.trim();
           if (!words) return;
-          const r = await actions.steer(p.id, words);
-          setAdding(false); setNote('');
-          setSaid(r.ok ? 'Added. It’s taken into account from the next step.' : r.message);
+          const r = await actions.steer(p.id, words, t.runId);
+          setAdding(false);
+          if (r.ok) setNote('');
+          setSaid(r.ok ? 'Added. It’s taken into account from the next step.' : runActionRefusal(r.code, r.message, 'steer'));
         }}>
           <label htmlFor={`steer-${t.id}`} className="sr-only">Add to the answer</label>
           <input id={`steer-${t.id}`} className="textin" autoFocus value={note} placeholder="Also check…" onChange={(e) => setNote(e.target.value)} />
@@ -195,7 +214,7 @@ function RunningAnswer({ p, t }: { p: Project; t: Turn }) {
         </form>
       ) : (
         <div className="acts">
-          <button type="button" className="vbtn" disabled={stopping} onClick={async () => { setStopping(true); const r = await actions.stop(p.id); if (!r.ok) setStopping(false); }}>{stopping ? 'Stopping…' : 'Stop'}</button>
+          <button type="button" className="vbtn" disabled={stopper.busy} onClick={() => void stopper.stop()}>{stopper.busy ? 'Stopping…' : 'Stop'}</button>
           <button type="button" className="vbtn vbtn-quiet" onClick={() => setAdding(true)}>Add to it</button>
         </div>
       )}
@@ -217,6 +236,7 @@ function OfferTurn({ p, t }: { p: Project; t: Turn }) {
         {state.error && <p className="ask-note error" role="alert">{state.error}</p>}
         <div className="acts">
           <button type="button" className="vbtn vbtn-primary" disabled={state.busy} onClick={async () => {
+            if (state.busy) return;
             setState({ busy: true });
             const r = await actions.acceptOffer(p.id, t.message || undefined);
             setState(r.ok || r.queued ? { said: r.message ?? 'Started in the background.' } : { error: r.message });

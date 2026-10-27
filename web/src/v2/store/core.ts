@@ -26,6 +26,11 @@ import {
 import type { CacheDb, StoreName } from './cache';
 
 export const THREAD_KEEP = 50;
+/** W4: the most turns kept on a thread's earlier pages in memory; past it the oldest go, and "Earlier messages" loads
+ *  the thread again from its latest page (the server's cursors are opaque, so a trimmed page cannot be resumed). */
+export const OLDER_KEEP = 300;
+/** The cursor that says "load the thread again, then page back" after earlier pages were trimmed. */
+export const RELOAD_THREAD = '__reload__';
 export const COLLECTIONS: SyncCollection[] = ['jobs', 'calendar', 'projects', 'turns'];
 
 // ---------- the event source and the environment, injectable for tests ----------
@@ -83,6 +88,8 @@ export interface ActionArgs {
   /** W4: the request body of an ask (`ask`), a plan's choice (`ask.choose`), a move ({projectId}), a project's fields */
   body?: Record<string, unknown>;
 }
+/** W4: actions about a run happening NOW: never kept for later (a Stop sent an hour late could land on another run). */
+const NOW_ONLY: ReadonlySet<ActionKind> = new Set(['project.stop', 'project.steer']);
 export interface OutboxEntry {
   id: string;
   /** the Idempotency-Key, the same on every try */
@@ -97,7 +104,7 @@ export interface OutboxEntry {
 }
 export type ActResult =
   | { ok: true; queued: false; message?: string; data?: unknown; entryId?: string }
-  | { ok: false; queued: true; message: string; entryId?: string }
+  | { ok: false; queued: true; message: string; code?: string; entryId?: string }
   | { ok: false; queued: false; message: string; code?: string; entryId?: string };
 export interface ActOptions {
   /** no notice for a refusal: the screen says it in place (a plan's "This plan is old — ask again") */
@@ -127,6 +134,10 @@ export interface StoreState {
   threadNext: Record<string, string | null>;
   /** W4: asks this device made, by outbox entry id; plan choices by ask id; asks as the server last said (stream) */
   askOutcomes: Record<string, AskOutcome>;
+  /** W4: actions refused when the outbox sent them (by outbox entry id): the screen that made them says so in place */
+  refused: Record<string, { kind: ActionKind; code?: string; message: string; askId?: string }>;
+  /** W4: plans the person put aside ("Not now") — no longer offered when the Ask sheet opens */
+  dismissedPlans: Record<string, true>;
   askChoices: Record<string, AskChosen>;
   asks: Record<string, AskRecord>;
   mail: MailState;
@@ -149,7 +160,7 @@ export interface StoreOptions {
 const initial = (fixtures: boolean): StoreState => ({
   ready: false, connection: 'starting', auth: 'ok', updateReady: false, meta: null, cursor: 0, updatedAt: null,
   jobs: {}, calendar: {}, conflicts: {}, projects: {}, threads: {}, threadLoaded: {}, live: {},
-  threadOlder: {}, threadNext: {}, askOutcomes: {}, askChoices: {}, asks: {},
+  threadOlder: {}, threadNext: {}, askOutcomes: {}, askChoices: {}, asks: {}, refused: {}, dismissedPlans: {},
   mail: { headers: [], note: '', connected: false, loaded: false, loading: false, error: null },
   outbox: [], notices: [], fixtures,
 });
@@ -376,7 +387,7 @@ export class V2Store {
       }
       touched.add(t.projectId);
     }
-    if (older !== this.s.threadOlder) this.set({ threadOlder: older });
+    if (older !== this.s.threadOlder) this.setOlder(older);
     this.set({ threads });
     this.persist((c) => c.put('threads', [...touched].map((pid) => ({ key: pid, value: { projectId: pid, turns: threads[pid] ?? [] } }))));
   }
@@ -451,19 +462,30 @@ export class V2Store {
     } catch (e) { this.noteError(e); }
   }
 
+  /** W4: earlier pages, at most OLDER_KEEP turns a thread: past it the oldest go and the thread's cursor says
+   *  "load again" (RELOAD_THREAD). */
+  private setOlder(older: Record<string, Turn[]>) {
+    let next = this.s.threadNext;
+    for (const [pid, turns] of Object.entries(older)) {
+      if (turns.length <= OLDER_KEEP) continue;
+      older = { ...older, [pid]: turns.slice(-OLDER_KEEP) };
+      next = { ...next, [pid]: RELOAD_THREAD };
+    }
+    this.set({ threadOlder: older, ...(next !== this.s.threadNext ? { threadNext: next } : {}) });
+  }
+
   /** W4: the page of a thread before what is shown ("Earlier messages"). Kept apart from the latest 50 (which the
    *  stream keeps current) and not cached on the device. Resolves false when there is nothing earlier. */
   async loadEarlier(projectId: string, limit = 30): Promise<boolean> {
     const before = this.s.threadNext[projectId];
     if (!before) return false;
+    if (before === RELOAD_THREAD) { await this.loadThread(projectId); return true; }
     try {
       const r = await this.client.getProjectThread(projectId, { before, limit });
       const have = new Set([...(this.s.threadOlder[projectId] ?? []), ...(this.s.threads[projectId] ?? [])].map((t) => t.id));
       const fresh = r.turns.filter((t) => !have.has(t.id) && t.projectId === projectId);
-      this.set({
-        threadOlder: { ...this.s.threadOlder, [projectId]: [...fresh, ...(this.s.threadOlder[projectId] ?? [])].sort((a, b) => a.ts - b.ts || (a.id < b.id ? -1 : 1)) },
-        threadNext: { ...this.s.threadNext, [projectId]: r.next },
-      });
+      this.set({ threadNext: { ...this.s.threadNext, [projectId]: r.next } });
+      this.setOlder({ ...this.s.threadOlder, [projectId]: [...fresh, ...(this.s.threadOlder[projectId] ?? [])].sort(byTs) });
       return true;
     } catch (e) { this.noteError(e); return false; }
   }
@@ -515,18 +537,38 @@ export class V2Store {
   // ---------- actions and the outbox ----------
   /** Do something now, or — when the network is down — keep it with its key and send it when back online. */
   async act(kind: ActionKind, args: ActionArgs, label: string, opts: ActOptions = {}): Promise<ActResult> {
+    // a plan's choice is made once: a second tap (or a second card) while one is on its way gets that one's answer
+    if (kind === 'ask.choose' && args.id) {
+      const going = this.choosing.get(args.id);
+      if (going) return going;
+      if (this.s.outbox.some((x) => x.kind === 'ask.choose' && x.args.id === args.id)) return { ok: false, queued: true, message: 'Your choice is waiting to be sent.' };
+      const p = this.act1(kind, args, label, opts);
+      this.choosing.set(args.id, p);
+      try { return await p; } finally { this.choosing.delete(args.id); }
+    }
+    return this.act1(kind, args, label, opts);
+  }
+  private choosing = new Map<string, Promise<ActResult>>();
+
+  private async act1(kind: ActionKind, args: ActionArgs, label: string, opts: ActOptions): Promise<ActResult> {
     const entry: OutboxEntry = { id: newKey(this.now()), key: newKey(this.now()), kind, args, label, createdAt: this.now(), attempts: 0 };
     const entryId = entry.id;
-    if (!this.env.online() || this.s.connection === 'offline') return this.enqueue(entry);
+    const nowOnly = NOW_ONLY.has(kind);
+    const cannot = (): ActResult => ({ ok: false, queued: false, code: 'offline', entryId,
+      message: kind === 'project.stop' ? 'You’re offline — I can’t stop it from here right now.' : 'You’re offline — I can’t add to it from here right now.' });
+    const later = (code: string, message: string): ActResult => ({ ok: false, queued: false, code, entryId, message });
+    if (!this.env.online() || this.s.connection === 'offline') return nowOnly ? cannot() : this.enqueue(entry);
+    if (nowOnly && this.s.updateReady) return later('client_too_old', 'Reload the app first.');
+    if (nowOnly && this.s.auth === 'signin') return later('locked', 'Sign in again first.');
     if (this.s.updateReady) return this.enqueue(entry, 'Saved. It will be sent after you reload.');
     if (this.s.auth === 'signin') return this.enqueue(entry, 'Saved. It will be sent once you sign in again.');
     try {
       const data = await this.send(entry);
       return { ok: true, queued: false, data, message: messageOf(data), entryId };
     } catch (e) {
-      if (e instanceof NetworkError) return this.enqueue(entry);
-      if (e instanceof UpdateRequired) { this.set({ updateReady: true }); return this.enqueue(entry, 'Saved. It will be sent after you reload.'); }
-      if (e instanceof SignInRequired) { this.set({ auth: 'signin' }); return this.enqueue(entry, 'Saved. It will be sent once you sign in again.'); }
+      if (e instanceof NetworkError) return nowOnly ? cannot() : this.enqueue(entry);
+      if (e instanceof UpdateRequired) { this.set({ updateReady: true }); return nowOnly ? later('client_too_old', 'Reload the app first.') : this.enqueue(entry, 'Saved. It will be sent after you reload.'); }
+      if (e instanceof SignInRequired) { this.set({ auth: 'signin' }); return nowOnly ? later('locked', 'Sign in again first.') : this.enqueue(entry, 'Saved. It will be sent once you sign in again.'); }
       if (e instanceof Conflict && !TRANSIENT_CONFLICTS.has(e.code)) { await this.showCurrent(entry); }
       const message = e instanceof Error ? e.message : 'That didn’t work.';
       if (!opts.quiet) this.notice(message, 'error');
@@ -562,8 +604,11 @@ export class V2Store {
             if (e instanceof UpdateRequired) { this.keep(tried, e.message); this.set({ updateReady: true }); break; }
             if (e instanceof SignInRequired) { this.keep(tried, e.message); this.set({ auth: 'signin' }); break; }
             if (e instanceof Conflict && TRANSIENT_CONFLICTS.has(e.code)) { this.keep(tried, e.message); break; }
-            // refused for good (409 changed meanwhile, 403, 404…): drop it, say so, show what is true now
+            // refused for good (409 changed meanwhile, 403, 404…): drop it, say so, show what is true now; the screen
+            // that made it finds why in `refused` (a plan card shows it with Ask again)
             this.dropFromOutbox(entry.id);
+            this.set({ refused: { ...this.s.refused, [entry.id]: { kind: entry.kind, code: e instanceof ApiError ? e.code : undefined,
+              message: e instanceof Error ? e.message : 'It didn’t go through.', ...(entry.kind === 'ask.choose' && entry.args.id ? { askId: entry.args.id } : {}) } } });
             if (e instanceof Conflict) await this.showCurrent(entry);
             this.notice(`${entry.label}: ${e instanceof Error ? e.message : 'it didn’t go through.'}`, 'error');
           }
@@ -598,8 +643,8 @@ export class V2Store {
       case 'turn.move': out = await c.moveTurn(id, { projectId: String(b.projectId ?? '') }, key); break;
       case 'project.create': out = await c.createProject(b as { name: string; icon?: string | null }, key); break;
       case 'project.update': out = await c.updateProject(id, b as { name?: string; icon?: string | null; archived?: boolean; sort?: number }, key); break;
-      case 'project.stop': out = await c.stopProjectRun(id, key); break;
-      case 'project.steer': out = await c.steerProjectRun(id, { text: e.args.text ?? '' }, key); break;
+      case 'project.stop': out = await c.stopProjectRun(id, typeof b.runId === 'string' ? { runId: b.runId } : {}, key); break;
+      case 'project.steer': out = await c.steerProjectRun(id, { text: e.args.text ?? '', ...(typeof b.runId === 'string' ? { runId: b.runId } : {}) }, key); break;
       case 'project.offer': out = await c.acceptProjectOffer(id, e.args.text ? { message: e.args.text } : {}, key); break;
     }
     this.applyResult(e.kind, out, e, replayed);
@@ -637,6 +682,9 @@ export class V2Store {
       if (e.kind.startsWith('job.') && e.args.id) { const d = await this.client.getJob(e.args.id); this.upsert('jobs', [d.job], []); }
     } catch { /* the stream will bring it */ }
   }
+
+  /** W4: a plan the person puts aside ("Not now"): the Ask sheet stops offering it. */
+  dismissPlan(askId: string) { this.set({ dismissedPlans: { ...this.s.dismissedPlans, [askId]: true } }); }
 
   // ---------- notices ----------
   notice(text: string, tone: Notice['tone'] = 'info') {

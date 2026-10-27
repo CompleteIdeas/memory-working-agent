@@ -204,6 +204,8 @@ export function useAsk() {
   const choices = useSlice((s) => s.askChoices);
   const asks = useSlice((s) => s.asks);
   const outbox = useSlice((s) => s.outbox);
+  const refused = useSlice((s) => s.refused);
+  const dismissed = useSlice((s) => s.dismissedPlans);
   return useMemo(() => ({
     send: (body: AskBody, label = 'Your question'): Promise<ActResult> => store.act('ask', { body: body as unknown as Record<string, unknown> }, label, { quiet: true }),
     choose: (askId: string, c: AskChoice): Promise<ActResult> => store.act('ask.choose', { id: askId, body: c as Record<string, unknown> }, 'Your choice', { quiet: true }),
@@ -215,9 +217,28 @@ export function useAsk() {
     records: asks,
     /** still in the outbox (not sent yet); false once sent — or refused when it was replayed */
     waiting: (entryId: string | null | undefined) => !!entryId && outbox.some((x) => x.id === entryId),
-    /** asks replayed from the outbox that came back as a plan, not chosen yet (the Ask sheet shows them) */
-    waitingPlans: Object.values(outcomes).filter((o) => o.replayed && o.start.kind === 'plan' && !choices[o.start.askId]),
-  }), [store, outcomes, choices, asks, outbox]);
+    /** why the outbox's send of this action was refused, if it was */
+    refused: (entryId: string | null | undefined) => (entryId ? refused[entryId] : undefined),
+    /** why a plan's choice sent from the outbox was refused (the latest), if one was */
+    refusedChoice: (askId: string | null | undefined) => (askId ? Object.values(refused).filter((r) => r.askId === askId).pop() : undefined),
+    /** put a plan aside ("Not now"): the Ask sheet stops offering it */
+    dismiss: (askId: string) => store.dismissPlan(askId),
+    /** plans waiting for a choice, one per ask, oldest first: kept in the store, so the Ask sheet shows them again when
+     *  it is opened (not only while the sheet that asked is open). Not chosen, not old, not refused, not put aside. */
+    waitingPlans: waitingPlans(outcomes, choices, asks, refused, dismissed),
+  }), [store, outcomes, choices, asks, outbox, refused, dismissed]);
+}
+
+export function waitingPlans(outcomes: StoreState['askOutcomes'], choices: StoreState['askChoices'], asks: StoreState['asks'],
+  refused: StoreState['refused'], dismissed: StoreState['dismissedPlans']) {
+  const seen = new Set<string>();
+  const refusedAsks = new Set(Object.values(refused).map((r) => r.askId).filter(Boolean));
+  return Object.values(outcomes).sort((a, b) => a.at - b.at).filter((o) => {
+    const id = o.start.askId;
+    if (o.start.kind !== 'plan' || seen.has(id)) return false;
+    seen.add(id);
+    return !choices[id] && !dismissed[id] && !refusedAsks.has(id) && asks[id]?.state !== 'expired' && asks[id]?.state !== 'narrowed';
+  });
 }
 
 /** The run being written in a project's thread, as the stream last said (`live` events of session p-<id>). */
@@ -236,8 +257,9 @@ export function useProjectActions() {
     archive: (p: Project) => store.act('project.update', { id: p.id, body: { archived: true } }, `Archive “${p.name}”`),
     restore: (p: Project) => store.act('project.update', { id: p.id, body: { archived: false } }, `Restore “${p.name}”`),
     moveTurn: (turnId: string, projectId: string, quiet = false) => store.act('turn.move', { id: turnId, body: { projectId } }, 'Move a message', { quiet }),
-    stop: (projectId: string) => store.act('project.stop', { id: projectId }, 'Stop the answer'),
-    steer: (projectId: string, text: string) => store.act('project.steer', { id: projectId, text }, 'Add to the answer'),
+    /** Stop / Steer the run the person sees (`runId`): never kept for later; refused in place while offline */
+    stop: (projectId: string, runId?: string | null) => store.act('project.stop', { id: projectId, ...(runId ? { body: { runId } } : {}) }, 'Stop the answer', { quiet: true }),
+    steer: (projectId: string, text: string, runId?: string | null) => store.act('project.steer', { id: projectId, text, ...(runId ? { body: { runId } } : {}) }, 'Add to the answer', { quiet: true }),
     acceptOffer: (projectId: string, message?: string) => store.act('project.offer', { id: projectId, ...(message ? { text: message } : {}) }, 'Work on it in the background'),
     loadWork: (projectId: string) => store.loadProjectWork(projectId),
     loadFiles: (projectId: string) => store.client.getProjectFiles(projectId),

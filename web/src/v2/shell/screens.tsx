@@ -10,7 +10,11 @@ import { Back, Chev, Person, ProjectIcon, Spark } from './icons';
 import type { AskAbout } from './sheets';
 
 export type View = 'today' | 'calendar' | 'inbox' | 'projects' | 'settings';
-export interface ScreenProps { desk: boolean; wide: boolean; go: (v: View) => void; ask: (a?: AskAbout) => void }
+export interface ScreenProps {
+  desk: boolean; wide: boolean; go: (v: View) => void; ask: (a?: AskAbout) => void;
+  /** W4: what the screen has open (a project), so the Ask bar asks there; null when nothing is */
+  onContext?: (c: AskAbout | null) => void;
+}
 
 const DAY = 86_400_000;
 const startOfDay = (ms: number) => { const d = new Date(ms); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };

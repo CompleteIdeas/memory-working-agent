@@ -21,7 +21,7 @@ import { Sheet } from '../../shell/sheets';
 import { Close, Mic, Spark } from '../../shell/icons';
 import { AskOutcomeView, Typing, Who } from './AskOutcome';
 import { refusalFor, routeHow, type Refusal } from './logic';
-import { MAX_FILES, uploadFile, type Uploaded } from './upload';
+import { MAX_FILES, MAX_UPLOAD_BYTES, uploadFile } from './upload';
 import './ask.css';
 
 /** What the sheet is opened for. W1's shape ({label, projectId}) plus, for "Ask about this", the thing's kind and id. */
@@ -34,6 +34,8 @@ export interface AskContext {
 
 interface Exchange { n: number; text: string; files: string[]; entryId?: string; queued?: string; refusal?: Refusal; sending: boolean }
 interface RouteChoice { projectId: string; name: string; confidence: string }
+/** A file picked for the ask: added to the project at Send (to wherever the ask goes then). */
+interface Picked { file: File; name: string; key: number }
 
 const DEFAULT_SUGGESTIONS = ['What’s on today?', 'Add a reminder'];
 const PROJECT_SUGGESTIONS = ['What’s coming up?', 'Take notes'];
@@ -47,8 +49,11 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
   const inProject = !aboutThing && about?.projectId ? projects.find((p) => p.id === about.projectId) ?? null : null;
 
   const [text, setText] = useState('');
-  const [files, setFiles] = useState<Uploaded[]>([]);
+  // files are kept on the device until Send, then added to the project the ask goes to at that moment
+  const [files, setFiles] = useState<Picked[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [fileNote, setFileNote] = useState<string | null>(null);
   const [micNote, setMicNote] = useState<string | null>(null);
   const [chosen, setChosen] = useState<RouteChoice | null>(null);
@@ -60,6 +65,7 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
   const input = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const n = useRef(0);
+  const fileKey = useRef(0);
   const suggestSeq = useRef(0);
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -104,46 +110,60 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
   const target = route?.projectId ?? projects.find((p) => p.general)?.id ?? null;
   const last = log[log.length - 1];
   const lastOutcome = last ? asks.outcome(last.entryId) : undefined;
-  const waitingChoice = !!lastOutcome && lastOutcome.start.kind === 'plan' && !asks.choice(lastOutcome.start.askId) && asks.ask(lastOutcome.start.askId)?.state !== 'expired';
+  const waitingChoice = !!lastOutcome && lastOutcome.start.kind === 'plan' && !asks.choice(lastOutcome.start.askId) && asks.ask(lastOutcome.start.askId)?.state !== 'expired'
+    && !asks.refusedChoice(lastOutcome.start.askId);
   const hideForm = waitingChoice && !formBack;
-  const waitingPlans = aboutThing ? [] : asks.waitingPlans;
+  // plans waiting for a choice live in the store: shown again when the sheet opens, once each (not twice when this
+  // sheet's own log already holds the same ask)
+  const inLog = new Set(log.map((x) => asks.outcome(x.entryId)?.start.askId).filter((x): x is string => !!x));
+  const waitingPlans = aboutThing ? [] : asks.waitingPlans.filter((o) => !inLog.has(o.start.askId));
 
   const send = async (raw: string) => {
     const words = raw.trim();
-    if ((!words && !files.length) || uploading) return;
-    const said = words || 'Here are some files.';
-    const body: AskBody = {
-      text: said,
-      ...(aboutThing ? { about: aboutThing } : {}),
-      ...(!aboutThing && chosen ? { projectId: chosen.projectId } : {}),
-      ...(!aboutThing && files.length ? { files: files.map((f) => f.path) } : {}),
-    };
-    const id = ++n.current;
-    setLog((l) => [...l, { n: id, text: said, files: files.map((f) => f.name), sending: true }]);
-    setText(''); setFiles([]); setFileNote(null); setMicNote(null); setFormBack(false);
-    const r = await asks.send(body, said.slice(0, 60));
-    setLog((l) => l.map((x) => (x.n !== id ? x : {
-      ...x, sending: false, entryId: r.entryId,
-      ...(r.queued ? { queued: r.message } : {}),
-      ...(!r.ok && !r.queued ? { refusal: refusalFor(r.code, r.message) } : {}),
-    })));
+    if ((!words && !files.length) || sendingRef.current) return;
+    sendingRef.current = true; setSending(true);
+    try {
+      const said = words || 'Here are some files.';
+      // the files go to the project it goes to now (a Change after picking them moves them with it)
+      const paths: string[] = [];
+      if (!aboutThing && files.length) {
+        setUploading(true); setFileNote(null);
+        for (const f of files) {
+          const r = await uploadFile(f.file, { projectId: target, fixtures });
+          if (!r.ok) { setFileNote(r.message); setUploading(false); return; }
+          paths.push(r.file.path);
+        }
+        setUploading(false);
+      }
+      const body: AskBody = {
+        text: said,
+        ...(aboutThing ? { about: aboutThing } : {}),
+        ...(!aboutThing && chosen ? { projectId: chosen.projectId } : {}),
+        ...(paths.length ? { files: paths } : {}),
+      };
+      const id = ++n.current;
+      setLog((l) => [...l, { n: id, text: said, files: files.map((f) => f.name), sending: true }]);
+      setText(''); setFiles([]); setFileNote(null); setMicNote(null); setFormBack(false);
+      const r = await asks.send(body, said.slice(0, 60));
+      setLog((l) => l.map((x) => (x.n !== id ? x : {
+        ...x, sending: false, entryId: r.entryId,
+        ...(r.queued ? { queued: r.message } : {}),
+        ...(!r.ok && !r.queued ? { refusal: refusalFor(r.code, r.message) } : {}),
+      })));
+    } finally { sendingRef.current = false; setSending(false); }
   };
   const submit = (e: FormEvent) => { e.preventDefault(); void send(text); };
   const again = (t: string) => { setText(t); setFormBack(true); setTimeout(() => input.current?.focus(), 30); };
 
-  const addFiles = async (e: ChangeEvent<HTMLInputElement>) => {
+  const addFiles = (e: ChangeEvent<HTMLInputElement>) => {
     const picked = [...(e.target.files ?? [])];
     e.target.value = '';
     if (!picked.length) return;
     if (files.length + picked.length > MAX_FILES) { setFileNote(`Up to ${MAX_FILES} files at a time.`); return; }
-    setUploading(true); setFileNote(null);
-    const added: Uploaded[] = [];
-    for (const f of picked) {
-      const r = await uploadFile(f, { projectId: target, fixtures });
-      if (r.ok) added.push(r.file); else { setFileNote(r.message); break; }
-    }
-    setFiles((x) => [...x, ...added]);
-    setUploading(false);
+    const big = picked.find((f) => f.size > MAX_UPLOAD_BYTES);
+    if (big) { setFileNote(`${big.name} is too big to add here: the limit is 25 MB.`); return; }
+    setFileNote(null);
+    setFiles((x) => [...x, ...picked.map((file) => ({ file, name: file.name || 'file', key: ++fileKey.current }))]);
   };
 
   const ctx = aboutThing ? <span className="aboutchip"><Spark size={14} />About: {about!.label}</span>
@@ -156,9 +176,9 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
       head={<span className="ask-ctx" id="ask-ctx">{ctx}</span>}>
       <div ref={logRef} className="ask-log" id="ask-log" role="log" aria-live="polite" aria-label="Conversation with your helper">
         {waitingPlans.map((o) => (
-          <div key={o.entryId} className="thread">
-            <div className="msg-you"><span className="sr-only">You: </span>{o.text}<span className="routeto">Sent when you were back online</span></div>
-            <AskOutcomeView start={o.start} text={o.text} onShowWork={onShowWork} onAgain={again} />
+          <div key={o.start.askId} className="thread">
+            <div className="msg-you"><span className="sr-only">You: </span>{o.text}<span className="routeto">{o.replayed ? 'Sent when you were back online · ' : ''}waiting for your choice</span></div>
+            <AskOutcomeView start={o.start} text={o.text} onShowWork={onShowWork} onAgain={again} onDismiss={() => asks.dismiss(o.start.askId)} />
           </div>
         ))}
         {log.map((x) => {
@@ -173,9 +193,9 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
                 <div className="refusal" role="alert"><p>{x.refusal.text}</p>
                   {x.refusal.again && <div className="acts"><button type="button" className="vbtn" onClick={() => again(x.text)}>Ask again</button></div>}
                 </div>
-              ) : out ? <AskOutcomeView start={out.start} text={out.text} onShowWork={onShowWork} onAgain={again} />
+              ) : out ? <AskOutcomeView start={out.start} text={out.text} onShowWork={onShowWork} onAgain={again} autoFocus={x === last} />
                 : x.queued ? (asks.waiting(x.entryId) ? <p className="ask-note" role="status">Waiting to send. {x.queued}</p>
-                  : <div className="refusal" role="alert"><p>That didn’t go through. Ask again.</p><div className="acts"><button type="button" className="vbtn" onClick={() => again(x.text)}>Ask again</button></div></div>)
+                  : <div className="refusal" role="alert"><p>{refusedText(asks.refused(x.entryId))}</p><div className="acts"><button type="button" className="vbtn" onClick={() => again(x.text)}>Ask again</button></div></div>)
                 : <div className="msg-h"><Who /><Typing /></div>}
             </div>
           );
@@ -183,14 +203,19 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
       </div>
       {showStarters && (
         <div className="ask-sugg" id="ask-sugg">
-          {starters.map((s) => <button key={s} type="button" className="sugg" onClick={() => void send(s)}>{s}</button>)}
+          {starters.map((s) => <button key={s} type="button" className="sugg" disabled={sending} onClick={() => void send(s)}>{s}</button>)}
+        </div>
+      )}
+      {hideForm && (
+        <div className="editask">
+          <button type="button" className="linkish quietlink" onClick={() => { if (last) setText(last.text); setFormBack(true); setTimeout(() => input.current?.focus(), 30); }}>Edit my ask</button>
         </div>
       )}
       <form className="ask-form" id="ask-form" autoComplete="off" noValidate onSubmit={submit} hidden={hideForm}>
         {files.length > 0 && (
           <div className="ask-files" id="ask-files">
             {files.map((f, i) => (
-              <span key={f.path} className="filechip"><DocIcon />{f.name}
+              <span key={f.key} className="filechip"><DocIcon />{f.name}
                 <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFiles((x) => x.filter((_, k) => k !== i))}><Close size={16} /></button>
               </span>
             ))}
@@ -203,7 +228,7 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
               <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth={2} strokeLinecap="round" /></svg>
             </button>
           )}
-          <input ref={fileInput} type="file" id="ask-file" className="sr-only" multiple accept=".pdf,.txt,.md,.docx,.csv,.html" tabIndex={-1} aria-label="Choose files" onChange={(e) => void addFiles(e)} />
+          <input ref={fileInput} type="file" id="ask-file" className="sr-only" multiple accept=".pdf,.txt,.md,.docx,.csv,.html" tabIndex={-1} aria-label="Choose files" onChange={addFiles} />
           <label htmlFor="ask-input" className="sr-only">Message your helper</label>
           <input ref={input} id="ask-input" className="ask-input" type="text" placeholder={aboutThing ? 'Ask about this…' : 'Ask anything…'} enterKeyHint="send"
             value={text} onChange={(e) => { setText(e.target.value); setMicNote(null); }} />
@@ -211,7 +236,7 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
             <button type="button" className="micbtn" aria-label="Hold to talk" aria-describedby="mic-hint"
               onClick={() => { setMicNote('Talking to your helper comes in a later update. Type it for now.'); input.current?.focus(); }}><Mic size={22} /></button>
           ) : (
-            <button type="submit" className="sendbtn" id="send-btn" aria-label="Send" disabled={uploading}>
+            <button type="submit" className="sendbtn" id="send-btn" aria-label="Send" disabled={uploading || sending}>
               <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" /></svg>
             </button>
           )}
@@ -246,4 +271,9 @@ export function AskSheet({ open, about, onClose, onShowWork }: { open: boolean; 
 
 function DocIcon() {
   return <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h7l4 4V20a.5.5 0 0 1-.5.5h-10A.5.5 0 0 1 7 20z" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinejoin="round" /><path d="M14 3.5V8h4" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinejoin="round" /></svg>;
+}
+
+/** Why an ask sent from the outbox was refused, in plain words. */
+function refusedText(r: { code?: string; message: string } | undefined): string {
+  return r ? refusalFor(r.code, r.message).text : 'That didn’t go through. Ask again.';
 }

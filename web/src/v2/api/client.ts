@@ -256,8 +256,9 @@ export class MwaClient {
   getProjectWork(id: string) { return this.get<{ jobs: Job[] }>('/projects/{id}/work', { path: { id } }); }
   getProjectFiles(id: string) { return this.get<ProjectFiles>('/projects/{id}/files', { path: { id } }); }
   moveTurn(id: string, body: { projectId: string }, o: { key?: string } = {}) { return this.post<TurnMoved>('/turns/{id}/move', { path: { id }, body, key: o.key }); }
-  stopProjectRun(id: string, o: { key?: string } = {}) { return this.post<{ stopped: true; message: string }>('/projects/{id}/stop', { path: { id }, key: o.key }); }
-  steerProjectRun(id: string, body: { text: string }, o: { key?: string } = {}) { return this.post<{ added: true; message: string }>('/projects/{id}/steer', { path: { id }, body, key: o.key }); }
+  /** `runId`: the run the person meant (409 not_running if it is not the one going now). */
+  stopProjectRun(id: string, body: { runId?: string } = {}, o: { key?: string } = {}) { return this.post<{ stopped: true; message: string }>('/projects/{id}/stop', { path: { id }, body, key: o.key }); }
+  steerProjectRun(id: string, body: { text: string; runId?: string }, o: { key?: string } = {}) { return this.post<{ added: true; message: string }>('/projects/{id}/steer', { path: { id }, body, key: o.key }); }
   /** The project's live run as server-sent events (opened with EventSource by a screen that follows an answer). */
   projectLiveUrl(id: string) { return this.url('/projects/{id}/live', { path: { id } }); }
   acceptProjectOffer(id: string, body: { message?: string } = {}, o: { key?: string } = {}) { return this.post<{ goal: string; message: string }>('/projects/{id}/offer/accept', { path: { id }, body, key: o.key }); }

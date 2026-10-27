@@ -17,18 +17,24 @@ import type { ScreenProps } from '../../shell/screens';
 import { ProjectThread } from './ProjectThread';
 import { ProjectFiles, ProjectWork } from './ProjectWork';
 import { activityText, projectStatus } from './logic';
-import { useDismiss } from './useDismiss';
+import { menuKeys, useDismiss } from './useDismiss';
 import './projects.css';
 
 const ICONS = ['horse', 'home', 'spark', 'leaf', 'heart'] as const;
 
-export function Projects({ desk, ask }: ScreenProps) {
+export function Projects({ desk, ask, onContext }: ScreenProps) {
   const projects = useProjects();
   const all = useProjectMap();
   const [sel, setSel] = useState<string | null>(() => (typeof location === 'undefined' ? null : new URLSearchParams(location.search).get('project')));
   const p = sel ? all[sel] ?? null : null;
   // an archived project leaves the list; its pane closes (Restore brings it back)
   useEffect(() => { if (p?.archived) setSel(null); }, [p?.archived]);
+  // the shell's Ask bar asks in the project that is open (and nowhere in particular once none is)
+  const open = p && !p.archived ? p : null;
+  useEffect(() => {
+    onContext?.(open ? { label: open.name, projectId: open.id } : null);
+  }, [open?.id, open?.name, onContext]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onContext?.(null), [onContext]);
 
   const list = <ProjectList projects={projects} selected={p?.id ?? null} onOpen={setSel} />;
   if (!desk) return p && !p.archived ? <ProjectPane key={p.id} p={p} back={() => setSel(null)} ask={ask} /> : list;
@@ -156,6 +162,7 @@ function ProjectPane({ p, back, ask }: { p: Project; back?: () => void; ask: Scr
   const [tab, setTab] = useState<Tab>('conversation');
   const [menu, setMenu] = useState(false);
   const menuRef = useDismiss<HTMLDivElement>(menu, () => setMenu(false));
+  const menuButton = useRef<HTMLButtonElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const actions = useProjectActions();
@@ -175,9 +182,9 @@ function ProjectPane({ p, back, ask }: { p: Project; back?: () => void; ask: Scr
           {renaming ? <Rename p={p} onDone={() => setRenaming(false)} /> : <h1>{p.name}</h1>}
         </div>
         <div className="menuwrap" ref={menuRef}>
-          <button type="button" className="iconbtn" aria-label="Project options" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu((m) => !m)}><More /></button>
+          <button ref={menuButton} type="button" className="iconbtn" aria-label="Project options" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu((m) => !m)}><More /></button>
           {menu && (
-            <div className="menu" role="menu" aria-label="Project options" onKeyDown={(e) => { if (e.key === 'Escape') setMenu(false); }}>
+            <div className="menu" role="menu" aria-label="Project options" onKeyDown={menuKeys(menuButton, () => setMenu(false))}>
               <button type="button" role="menuitem" autoFocus onClick={() => { setMenu(false); setRenaming(true); }}>Rename</button>
               {!p.general && <button type="button" role="menuitem" onClick={() => { setMenu(false); setConfirmArchive(true); }}>Archive</button>}
             </div>
