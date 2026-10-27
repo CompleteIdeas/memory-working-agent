@@ -93,3 +93,24 @@ export function cookieSecure(req: IncomingMessage): boolean {
   if ((req.socket as { encrypted?: boolean }).encrypted) return true;
   return String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim().toLowerCase() === 'https';
 }
+
+/**
+ * A computer install served to the tailnet with `tailscale serve` (https, or --tcp) is relayed too: tailscaled hands
+ * MWA every tailnet request from 127.0.0.1. At start, ask the local Tailscale (if any) whether it forwards to this
+ * port; if it does and MWA_RELAYED was not set either way, relayed mode is switched on. Best-effort: no Tailscale,
+ * or no answer within 3 s, changes nothing. (Any other relay — socat, ssh -R, netsh portproxy — needs MWA_RELAYED=1.)
+ */
+export async function detectTailscaleServe(port: number, run: (cmd: string, args: string[]) => Promise<string> = defaultRun): Promise<boolean> {
+  if (String(process.env.MWA_RELAYED ?? '').trim() !== '') return false;
+  let out = '';
+  try { out = await run('tailscale', ['serve', 'status', '--json']); } catch { return false; }
+  const hit = new RegExp(`(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0):${port}(?![0-9])`).test(out);
+  if (hit) process.env.MWA_RELAYED = '1';
+  return hit;
+}
+async function defaultRun(cmd: string, args: string[]): Promise<string> {
+  const { execFile } = await import('node:child_process');
+  return new Promise((res, rej) => {
+    execFile(cmd, args, { timeout: 3000, windowsHide: true }, (e, stdout) => (e ? rej(e) : res(String(stdout))));
+  });
+}

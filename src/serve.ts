@@ -63,7 +63,7 @@ import { createV1Handler } from './api/v1.js';
 import { makeAuthenticate, hasValidDeviceCookie } from './api/auth.js';
 import { configureSessions, sessionValid, secretEquals } from './api/sessions.js';
 import { signInWithPassword } from './api/signin.js';
-import { hostAllowed, relayedMode } from './api/trust.js';
+import { hostAllowed, relayedMode, detectTailscaleServe } from './api/trust.js';
 import { setSettingsRouteDeps } from './api/routes/settings.js';
 import { handleLegacyFiles, signedOutPageAllowed, legacyApiScope } from './api/legacy.js';
 import { applyStoredSettings } from './v2/settings.js';
@@ -1783,6 +1783,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
     }
   });
   const host = process.env.MWA_SERVE_HOST ?? '127.0.0.1';
+  // W5 security review (5): `tailscale serve` forwarding to this port makes every tailnet request arrive from
+  // 127.0.0.1 — then nobody may count as "this machine" (trust.ts).
+  if (await detectTailscaleServe(port)) logger.info('serve', `tailscale serve forwards to port ${port}: relayed mode (sign in with the password or a paired device)`);
   await new Promise<void>((r) => server.listen(port, host, r));
   // W5 security review (5): reachable through a relay, nobody counts as "this machine" — with no password nobody can
   // sign in to make a pairing code either. Say so where the operator looks.

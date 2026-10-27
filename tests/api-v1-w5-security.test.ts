@@ -17,7 +17,7 @@ import { makeAuthenticate, fromThisMachine, createPairCode, redeemPairCode, rena
 import { resetAppDb, appDb } from '../src/v2/db.js';
 import { setProjectRouteDeps } from '../src/api/routes/projects.js';
 import { setSettingsRouteDeps } from '../src/api/routes/settings.js';
-import { hostAllowed, relayedMode, sourceOf, cookieSecure } from '../src/api/trust.js';
+import { hostAllowed, relayedMode, sourceOf, cookieSecure, detectTailscaleServe } from '../src/api/trust.js';
 import { legacyApiScope } from '../src/api/legacy.js';
 import { captureDeploymentEnv, readSettings, updateSettings } from '../src/v2/settings.js';
 import { configureSessions, issueSession, sessionIdOf, secretEquals, SESSION_MS } from '../src/api/sessions.js';
@@ -76,6 +76,22 @@ describe('(5) "this machine" only when nothing can relay to it', () => {
     expect(fromThisMachine(req({ host: 'localhost:7788' }), { MWA_RELAYED: '0' })).toBe(true);
     expect(fromThisMachine(req({ host: 'rebind.attacker.example' }), { MWA_RELAYED: '0' })).toBe(false);
     expect(fromThisMachine(req({ host: 'localhost', headers: { 'x-forwarded-for': '1.2.3.4' } }), { MWA_RELAYED: '0' })).toBe(false);
+  });
+  it('`tailscale serve` forwarding to this port switches relayed mode on (unless MWA_RELAYED says otherwise)', async () => {
+    const prev = process.env.MWA_RELAYED; delete process.env.MWA_RELAYED;
+    try {
+      const status = JSON.stringify({ TCP: { 443: { HTTPS: true } }, Web: { 'mwa.tail1a2b.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:7788' } } } } });
+      expect(await detectTailscaleServe(7799, async () => status)).toBe(false);
+      expect(process.env.MWA_RELAYED).toBeUndefined();
+      expect(await detectTailscaleServe(7788, async () => status)).toBe(true);
+      expect(process.env.MWA_RELAYED).toBe('1');
+      delete process.env.MWA_RELAYED;
+      expect(await detectTailscaleServe(7788, async () => JSON.stringify({ TCP: { 7788: { TCPForward: '127.0.0.1:7788' } } }))).toBe(true);
+      delete process.env.MWA_RELAYED;
+      expect(await detectTailscaleServe(7788, async () => { throw new Error('ENOENT'); })).toBe(false);
+      process.env.MWA_RELAYED = '0';
+      expect(await detectTailscaleServe(7788, async () => status)).toBe(false); // the owner's own word stands
+    } finally { if (prev === undefined) delete process.env.MWA_RELAYED; else process.env.MWA_RELAYED = prev; }
   });
   it('the throttle source is the socket; X-Forwarded-For only behind a trusted proxy (right-most untrusted hop)', () => {
     expect(sourceOf(req({ addr: '::ffff:127.0.0.1', headers: { 'x-forwarded-for': '6.6.6.6' } }), {})).toBe('127.0.0.1');
@@ -379,7 +395,7 @@ describe('(9) the LOWs', () => {
         r.on('error', reject);
         const chunk = Buffer.alloc(1 << 20, 65);
         let sent = 0;
-        const pump = () => { while (sent < 30) { sent++; if (!r.write(chunk)) { r.once('drain', pump); return; } } r.end(); };
+        const pump = () => { while (sent < 40) { sent++; if (!r.write(chunk)) { r.once('drain', pump); return; } } r.end(); };
         pump();
       });
       expect(res.status).toBe(413);

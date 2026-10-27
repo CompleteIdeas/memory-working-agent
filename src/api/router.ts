@@ -97,10 +97,22 @@ function compile(path: string): (p: string) => Record<string, string> | null {
 async function readRaw(req: IncomingMessage, max = MAX_BODY, tooLarge = 'The request is too large.'): Promise<Buffer> {
   // a declared length over the limit is refused before a byte is read
   const declared = Number(req.headers['content-length']);
-  if (Number.isFinite(declared) && declared > max) throw new ApiError(413, 'too_large', tooLarge);
-  let size = 0; const chunks: Buffer[] = [];
-  for await (const c of req) { const b = Buffer.isBuffer(c) ? c : Buffer.from(c); size += b.length; if (size > max) throw new ApiError(413, 'too_large', tooLarge); chunks.push(b); }
-  return Buffer.concat(chunks);
+  if (Number.isFinite(declared) && declared > max) throw Object.assign(new ApiError(413, 'too_large', tooLarge), { declared: true });
+  // listeners, not `for await`: leaving a for-await early destroys the request, and the client then sees a reset
+  // instead of the 413 (W5 security review). On overflow the stream is left as it is; the caller drains it.
+  return new Promise<Buffer>((resolve, reject) => {
+    let size = 0; const chunks: Buffer[] = [];
+    const onData = (c: Buffer | string) => {
+      const b = Buffer.isBuffer(c) ? c : Buffer.from(c);
+      size += b.length;
+      if (size > max) { cleanup(); reject(new ApiError(413, 'too_large', tooLarge)); return; }
+      chunks.push(b);
+    };
+    const onEnd = () => { cleanup(); resolve(Buffer.concat(chunks)); };
+    const onError = (e: Error) => { cleanup(); reject(e); };
+    const cleanup = () => { req.off('data', onData); req.off('end', onEnd); req.off('error', onError); };
+    req.on('data', onData); req.on('end', onEnd); req.on('error', onError);
+  });
 }
 function parseJson(raw: Buffer): unknown {
   if (!raw.length) return undefined;
@@ -249,6 +261,26 @@ export function createV1(routes: Route[], deps: RouterDeps): (req: IncomingMessa
         // W5 security review: a body over the limit (chunked, or a declared length) gets a clean 413. The rest of the
         // body is read and dropped so the client sees the answer instead of a reset — but at most 64 MB or 30 s more,
         // then the connection is cut.
+        if ((e as { declared?: boolean }).declared) {
+          // a declared length over the limit: read and drop what comes (64 MB at most), answer once it has all come or
+          // nothing has for 3 s, and close the connection (a client that declared more than it sent must not reuse it)
+          let dropped = 0, answered = false;
+          const answer = () => {
+            if (answered) return; answered = true; clearTimeout(idle);
+            res.writeHead(413, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', connection: 'close' });
+            res.end(JSON.stringify(errBody(e)));
+          };
+          let idle = setTimeout(answer, 3_000);
+          req.on('data', (c: Buffer) => {
+            dropped += c.length;
+            clearTimeout(idle); idle = setTimeout(answer, 3_000);
+            if (dropped > 64 * 1024 * 1024) { answer(); setTimeout(() => req.destroy(), 1000).unref?.(); }
+          });
+          req.on('end', answer);
+          req.on('close', () => clearTimeout(idle));
+          req.resume();
+          return true;
+        }
         res.writeHead(413, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
         res.end(JSON.stringify(errBody(e)));
         let dropped = 0;

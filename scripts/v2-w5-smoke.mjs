@@ -178,6 +178,11 @@ try {
       check(`${L}: and the code as text`, /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test((await page.locator('.paircode').first().textContent()) ?? ''));
       const qr = await page.locator('svg.qr').evaluate((s) => ({ w: s.getBoundingClientRect().width, path: s.querySelector('path')?.getAttribute('d')?.length ?? 0 }));
       check(`${L}: the QR is drawn (at least 150 px, real modules)`, qr.w >= 150 && qr.path > 500, JSON.stringify(qr));
+      // W5 security review (8): a fresh computer doesn't know its address yet: the phone can't open "localhost"
+      check(`${L}: no address known → "Your phone can’t reach ‘localhost’"`, await visible(page.getByText('Your phone can’t reach “localhost”.', { exact: false })));
+      await page.getByLabel('Your helper’s address').fill('mwa.tail1a2b.ts.net');
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
+      check(`${L}: with the address saved, a new code without the warning`, await gone(page.getByText('Your phone can’t reach “localhost”.', { exact: false })));
       await shot(page, `${L}-07-first-run-qr`, true);
       await axe(page, `${L} first run QR`);
       await noOverflow(page, `${L} first run QR`);
@@ -200,6 +205,8 @@ try {
       check(`${L}: Google connected, Outlook offers "Connect Outlook"`, await visible(main.getByText('· connected')) && await main.getByRole('button', { name: 'Connect Outlook' }).isVisible());
       check(`${L}: spending "$1.29 of your $20 limit" and the background line`, await visible(main.getByText('$1.29 of your $20 limit')) && await main.getByText(/In the background: sorting your mail 31¢/).isVisible());
       check(`${L}: the default limits per kind`, await main.getByText('Set from its estimate, at most $5.', { exact: false }).isVisible() && await main.getByText('25¢ a run, unless the job has its own limit.').isVisible());
+      check(`${L}: Sign out everywhere offered to the password session`, await main.getByRole('button', { name: 'Sign out everywhere' }).isVisible());
+      check(`${L}: the helper's address for phones`, (await main.getByLabel('Your helper’s address for phones').inputValue()) === 'https://mwa.tail1a2b.ts.net');
       check(`${L}: Notifications: coming soon, in plain words`, await main.getByText('Coming soon.', { exact: false }).isVisible());
       check(`${L}: About: the version, the minimum app version and the classic app`, await main.getByText(/Version fixtures\. Works with this app from version 1\.0\.0\./).isVisible() && await main.getByRole('button', { name: 'Use the current app' }).isVisible());
       await shot(page, `${L}-08-settings-top`);

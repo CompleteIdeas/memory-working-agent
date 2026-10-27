@@ -75,8 +75,38 @@ the real model, each capped at $1.
   rule also stops DNS rebinding.
 - So in Docker (and any relayed setup) with NO password, v1 trusts nobody but paired devices, and nobody can make the
   first pairing code: set MWA_ACCESS_PASSWORD for any networked install (sign in, then pair the phone).
-- The legacy /api routes are unchanged: with no password they remain open to the network (pre-existing).
+- The legacy /api routes were unchanged by A2: with no password they remained open to the network (fixed in W5, below).
 - W5 must let the app shell and /pair load under a password (today the legacy gate serves the login page for `/`).
 - An event feed (A4) must not show other devices' names to a device without admin.
 - Clear-Site-Data does not include "cookies" (on *.ts.net that could clear the whole tailnet domain); "Sign out this
   phone" revokes the device server-side, which is what matters.
+
+## Notes from the W5 security review (2026-10-26), fixed on v2-w5
+- **A2's "Host must be local" was not enough.** The client chooses the Host, so anyone behind a raw relay (tailscaled
+  userspace networking, `tailscale serve --tcp`, socat, ssh -R, portproxy) can send `Host: localhost`. "This machine"
+  now also needs the server not to be reachable through a relay (src/api/trust.ts `relayedMode`: bound beyond
+  127.0.0.1, `MWA_RELAYED=1`, the Docker image's Tailscale, a hosted deploy, `tailscale serve` forwarding to the port
+  (checked at start), or a non-local `MWA_ALLOWED_HOSTS` / `MWA_PUBLIC_URL`). A relay MWA cannot see (a hand-made socat
+  or ssh tunnel on a plain computer install) needs `MWA_RELAYED=1`.
+- **Every request's Host is checked** (421 otherwise; `/api/health` exempt): loopback, IP literals, this machine's
+  name, `MWA_ALLOWED_HOSTS`, the `MWA_PUBLIC_URL` host, Railway's domains, the Docker tailnet name. Stops DNS rebinding.
+- **Every legacy `/api/*` route takes the same callers as v1**, password or not (src/api/legacy.ts `legacyApiScope`:
+  public = health, login, share links; admin = secrets, memory export/edit, logs, connections, setup, models, billing
+  settings, step-up, routines, the inbox scan, opening the browser; approve = approvals; act = writes and `/api/chat`).
+- **Sign-in throttle**: per socket address (X-Forwarded-For only from `MWA_TRUSTED_PROXY`), attempts from one source
+  one at a time with waits ¼ s doubling to 10 s after 3 failures, at most 30 s; a global failure rate adds up to 3 s;
+  the right password is never refused. `POST /api/login` and pairing go through the same gate (src/api/gate.ts).
+- **Sessions have a server record** (app.db `sessions`): sign-out ends a session; "Sign out everywhere" ends all;
+  sessions issued before the table existed are adopted once.
+- **Uploads**: only PDFs, text and small-when-unzipped .docx files are counted (the zip directory is read before
+  inflating; 20 MB cap; read_document refuses a bigger .docx too); 2 uploads at a time per device, 4 in all; a 2 GB
+  quota (`MWA_UPLOAD_QUOTA_MB`); clean 413 for oversize bodies; Windows device names are never file names.
+- **OAuth**: Google and Outlook loopback sign-ins carry a random `state` (and PKCE); the listener accepts only that
+  state, ignores stray requests, gives up after 10 minutes; a newer sign-in replaces an older one.
+- **Pairing links** use the helper's public address (`MWA_PUBLIC_URL`, Settings, or the ts.net name in
+  `MWA_ALLOWED_HOSTS`) when opened at localhost, and say so when none is known.
+- First run is kept in app.db (a broken mwa.config.json is reported, not a trap); non-string settings are 400;
+  device names lose bidi controls; secrets are compared hashed (no length leak); session/device cookies are Secure
+  only over https. Signed-out `/me` keeps `passwordSet`: the start screen needs it to offer the password or pairing
+  only, and the lock page shows the same.
+
