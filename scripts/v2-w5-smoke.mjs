@@ -209,7 +209,7 @@ try {
       check(`${L}: the helper's address for phones`, (await main.getByLabel('Your helper’s address for phones').inputValue()) === 'https://mwa.tail1a2b.ts.net');
       // P3 replaced W5's "Coming soon" card: this device's state, the kinds, and the privacy note (scripts/v2-p3-push-smoke.mjs drives it)
       check(`${L}: Notifications: this device's state, the kinds and the privacy note, in plain words`, await visible(main.locator('#notify-state')) && await main.getByRole('checkbox', { name: 'Something needs your OK' }).isVisible() && await main.getByText(/never contain your messages or titles/).isVisible());
-      check(`${L}: About: the version, the minimum app version and the classic app`, await main.getByText(/Version fixtures\. Works with this app from version 1\.0\.0\./).isVisible() && await main.getByRole('button', { name: 'Use the current app' }).isVisible());
+      check(`${L}: About: the version, the minimum app version and the classic app`, await main.getByText(/Version fixtures\. Works with this app from version 1\.0\.0\./).isVisible() && await main.getByRole('button', { name: 'Use the classic app' }).isVisible());
       await shot(page, `${L}-08-settings-top`);
       await shot(page, `${L}-09-settings-full`, true);
       await axe(page, `${L} settings`);
