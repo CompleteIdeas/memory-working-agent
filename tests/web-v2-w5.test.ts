@@ -224,6 +224,9 @@ describe('the start screens and the pairing card, rendered', () => {
     expect(html).toContain('K7PQ-M4XZ');
     expect(html).toContain('mwa.tail1a2b.ts.net/pair');
     expect(html).toContain('for 10:00 more');
+    const local = render(h(PairCodeCard, { code: { code: 'K7PQ-M4XZ', expiresAt: FIXTURE_NOW + 600_000, pairUrl: 'http://localhost:7788/pair#c=K7PQ-M4XZ', scopes: [], reachable: false }, now: () => FIXTURE_NOW, onNew: noop, onSetAddress: async () => ({ ok: true }) }));
+    expect(local).toContain('Your phone can’t reach “localhost”.');
+    expect(local).toContain('<label for="pair-addr" class="sr-only">Your helper’s address</label>');
     const old = render(h(PairCodeCard, { code: { code: 'K7PQ-M4XZ', expiresAt: FIXTURE_NOW - 1, pairUrl: 'https://x/pair#c=K7PQ-M4XZ', scopes: [] }, now: () => FIXTURE_NOW, onNew: noop }));
     expect(old).toContain('This code has expired.');
     expect(old).not.toContain('role="img"');

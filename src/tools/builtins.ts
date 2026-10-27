@@ -534,6 +534,34 @@ async function pdfPages(buf: Buffer): Promise<string[]> {
   while (pdfPagesCache.size > 4) pdfPagesCache.delete(pdfPagesCache.keys().next().value as string);
   return pages;
 }
+/**
+ * W5 security review (3): a .docx is a zip, and mammoth inflates it whole — a 150 KB file can hold 150 MB of XML. Read
+ * the zip's central directory first (no inflating) and add up what its parts would unzip to. Null when the file is
+ * not a zip we can read (a Zip64 archive counts as too big).
+ */
+export const MAX_UNZIPPED_BYTES = 20 * 1024 * 1024;
+export function zipUnpackedSize(buf: Buffer): number | null {
+  const min = Math.max(0, buf.length - 65_557);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= min; i--) if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) return null;
+  const entries = buf.readUInt16LE(eocd + 10), cdSize = buf.readUInt32LE(eocd + 12), cdOff = buf.readUInt32LE(eocd + 16);
+  if (entries === 0xffff || cdOff === 0xffffffff || cdOff + cdSize > buf.length) return Number.POSITIVE_INFINITY; // Zip64 or broken
+  let total = 0, at = cdOff;
+  for (let n = 0; n < entries; n++) {
+    if (at + 46 > buf.length || buf.readUInt32LE(at) !== 0x02014b50) return Number.POSITIVE_INFINITY;
+    const size = buf.readUInt32LE(at + 24);
+    if (size === 0xffffffff) return Number.POSITIVE_INFINITY;
+    total += size;
+    at += 46 + buf.readUInt16LE(at + 28) + buf.readUInt16LE(at + 30) + buf.readUInt16LE(at + 32);
+  }
+  return total;
+}
+/** A .docx small enough, unzipped, to read. */
+export function docxReadable(buf: Buffer): boolean {
+  const n = zipUnpackedSize(buf);
+  return n !== null && n <= MAX_UNZIPPED_BYTES;
+}
 /** What read_document returns per call when the model does not ask for more (its `max_chars` default). */
 export const READ_DOCUMENT_CHARS = 8000;
 /**
@@ -552,6 +580,7 @@ export async function documentSize(src: string, buf: Buffer): Promise<{ pages: n
       return sized(chars, pages.length);
     }
     if (src.toLowerCase().endsWith('.docx')) {
+      if (!docxReadable(buf)) return sized(buf.length); // too big unzipped: count it by its size instead of inflating it
       const m: any = await import('mammoth');
       const fn = m.extractRawText ?? m.default?.extractRawText;
       const { value } = await fn({ buffer: buf });
@@ -590,6 +619,7 @@ const readDocumentTool: RegisteredTool = {
         return windowOf(chosen, args.offset, max, `${name}: ${pages.length} page${pages.length === 1 ? '' : 's'}, showing ${a === b ? `page ${a}` : `pages ${a}–${b}`}${b < pages.length ? ` (pages: "${b + 1}-" reads the rest)` : ''}`, 'read_document', { source: src, ...(args.pages ? { pages: String(args.pages) } : {}) });
       }
       if (lower.endsWith('.docx')) {
+        if (!docxReadable(buf)) return `(${name}: this Word file is too big to read here once unzipped — over ${MAX_UNZIPPED_BYTES / 1048576} MB of text. Ask for a PDF or a smaller file.)`;
         const m: any = await import('mammoth');
         const fn = m.extractRawText ?? m.default?.extractRawText;
         const { value } = await fn({ buffer: buf });

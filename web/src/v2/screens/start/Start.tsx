@@ -40,6 +40,7 @@ export function useStartGate(): ReactNode | null {
   const [meError, setMeError] = useState<string | null>(null);
   const [settings, setSettings] = useState<HelperSettings | null>(null);
   const [check, setCheck] = useState(0);
+  const [configSeen, setConfigSeen] = useState(false);
   const hasSettings = !!meta?.features.includes('settings');
   useEffect(() => {
     const again = () => setCheck((n) => n + 1);
@@ -66,7 +67,9 @@ export function useStartGate(): ReactNode | null {
       onCancel={() => { leavePairPage(); setPairRoute(false); }} />;
   }
   if (auth === 'signin') return <SignInScreen me={me} error={meError} onSignedIn={signedIn} onPair={() => setPairRoute(true)} onRetry={() => setCheck((n) => n + 1)} />;
-  if (settings && !settings.firstRunDone && me?.scopes.includes('admin')) return <FirstRun onDone={(s) => setSettings(s)} />;
+  // a settings file that can't be read: say what is wrong (W5 security review) instead of trapping the owner in first run
+  if (settings?.configError && me?.scopes.includes('admin') && !configSeen) return <ConfigErrorScreen text={settings.configError} onRetry={() => setCheck((n) => n + 1)} onGoOn={() => setConfigSeen(true)} />;
+  if (settings && !settings.firstRunDone && !settings.configError && me?.scopes.includes('admin')) return <FirstRun onDone={(s) => setSettings(s)} />;
   return null;
 }
 
@@ -125,6 +128,20 @@ export function SignInScreen({ me, error, onSignedIn, onPair, onRetry }: { me: M
           <button type="button" className="vbtn vbtn-quiet" onClick={onPair}>Pair with a code instead</button>
         </div>
       </form>
+    </StartPage>
+  );
+}
+
+function ConfigErrorScreen({ text, onRetry, onGoOn }: { text: string; onRetry: () => void; onGoOn: () => void }) {
+  return (
+    <StartPage label="Your settings file can’t be read">
+      <h1 tabIndex={-1}>Your settings file can’t be read</h1>
+      <p className="configerr">{text}</p>
+      <p className="small">Until it is fixed, your helper uses its defaults and can’t save changes to names, the time zone or limits.</p>
+      <div className="actions">
+        <button type="button" className="vbtn vbtn-primary vbtn-wide" onClick={onRetry}>I fixed it — check again</button>
+        <button type="button" className="vbtn vbtn-quiet" onClick={onGoOn}>Open the app anyway</button>
+      </div>
     </StartPage>
   );
 }
@@ -239,7 +256,7 @@ export function FirstRun({ onDone }: { onDone: (s: HelperSettings) => void }) {
       {step === 'names' && s && <NamesStep s={s} save={data.updateSettings} onNext={next} />}
       {step === 'connect' && <ConnectStep accounts={data.accounts ?? []} connect={data.connect} refresh={data.refreshAccounts} onNext={next} />}
       {step === 'switches' && s && <SwitchesStep s={s} save={data.updateSettings} onNext={next} />}
-      {step === 'phone' && <PhoneStep createCode={data.createPairCode} now={store.now} onFinish={() => void finish()} />}
+      {step === 'phone' && <PhoneStep createCode={data.createPairCode} now={store.now} onFinish={() => void finish()} saveAddress={(url) => data.updateSettings({ publicUrl: url })} />}
       {refusal && <p className="refusal" role="alert">{refusal}</p>}
       {dots}
     </StartPage>
@@ -355,7 +372,10 @@ function SwitchesStep({ s, save, onNext }: { s: HelperSettings; save: ReturnType
   );
 }
 
-function PhoneStep({ createCode, now, onFinish }: { createCode: ReturnType<typeof useSettingsData>['createPairCode']; now: () => number; onFinish: () => void }) {
+function PhoneStep({ createCode, now, onFinish, saveAddress }: {
+  createCode: ReturnType<typeof useSettingsData>['createPairCode']; now: () => number; onFinish: () => void;
+  saveAddress: (url: string) => Promise<{ ok: boolean; message?: string }>;
+}) {
   const [code, setCode] = useState<PairCode | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -370,7 +390,8 @@ function PhoneStep({ createCode, now, onFinish }: { createCode: ReturnType<typeo
     <section aria-labelledby="ob-h">
       <h1 id="ob-h" tabIndex={-1}>Put MWA on your phone</h1>
       <p className="lede">Scan this with your phone’s camera, then tap Pair. The code works once, for 10 minutes.</p>
-      {code && <PairCodeCard code={code} now={now} busy={busy} level={2} onNew={() => void make()} />}
+      {code && <PairCodeCard code={code} now={now} busy={busy} level={2} onNew={() => void make()}
+        onSetAddress={async (url) => { const o = await saveAddress(url); if (o.ok) await make(); return o; }} />}
       {refusal && <p className="refusal" role="alert">{refusal}</p>}
       <div className="actions">
         <button type="button" className="vbtn vbtn-primary vbtn-wide" onClick={onFinish}>Finish</button>

@@ -38,6 +38,36 @@ export function signedOutPageAllowed(pathname: string, search: string, hasDevice
   return false;
 }
 
+/**
+ * The scope a legacy /api/* request needs (W5 security review, finding 6). Until W5, with no password, every legacy
+ * route answered anyone who could reach the port — through a relay or a tailnet that meant anyone on it. Now every
+ * one takes the same callers as /api/v1 (the password session, this machine, or a paired device), password or not:
+ *   - public (explicit list): the liveness probe, signing in, and share links (the token is the permission);
+ *   - admin: secrets, memory export and editing, logs, connections, models, setup, billing settings, step-up,
+ *     routines, the inbox scan, opening the machine's browser — what Settings would gate;
+ *   - approve: confirming or cancelling an approval;
+ *   - act: anything that changes something, and the GETs that start work (the chat, its live stream);
+ *   - read: every other GET.
+ * /api/v1 and /api/files answer for themselves. Unknown paths default by method (GET read, else act).
+ */
+const PUBLIC_API = [/^\/api\/health$/, /^\/api\/login$/, /^\/api\/share\//];
+const ADMIN_API = [
+  /^\/api\/vault(\/|$)/, /^\/api\/memory\/(export|forget|correct)$/, /^\/api\/logs$/, /^\/api\/connections$/, /^\/api\/save$/,
+  /^\/api\/setup(\/|$)/, /^\/api\/models$/, /^\/api\/onboard\//, /^\/api\/billing\/budget$/, /^\/api\/billing\.csv$/, /^\/api\/stepup\//,
+  /^\/api\/policies\/forget$/, /^\/api\/routines\/(promote|retire)$/, /^\/api\/ingest$/, /^\/api\/open$/,
+];
+const APPROVE_API = [/^\/api\/approvals\/(confirm|cancel)$/];
+const ACTING_GETS = [/^\/api\/chat$/]; // starts a run (an EventSource GET); /chat/live and /chat/attach only watch one
+export function legacyApiScope(method: string, path: string): Scope | 'public' {
+  const m = method.toUpperCase();
+  if (PUBLIC_API.some((r) => r.test(path))) return 'public';
+  if (ADMIN_API.some((r) => r.test(path))) return 'admin';
+  if (APPROVE_API.some((r) => r.test(path))) return 'approve';
+  if (m === 'POST' && path === '/api/quiet') return 'admin';
+  if (m === 'GET' || m === 'HEAD') return ACTING_GETS.some((r) => r.test(path)) ? 'act' : 'read';
+  return 'act';
+}
+
 /** The scope a legacy files request needs: GET/HEAD read; anything that changes something act. */
 export function legacyFilesScope(method: string): Scope { return method === 'GET' || method === 'HEAD' ? 'read' : 'act'; }
 

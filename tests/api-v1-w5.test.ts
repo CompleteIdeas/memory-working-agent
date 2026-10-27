@@ -7,7 +7,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createV1 } from '../src/api/router.js';
 import { v1Routes } from '../src/api/v1.js';
-import { makeAuthenticate, resetPairingThrottle, resetSignInThrottle, createPairCode, redeemPairCode } from '../src/api/auth.js';
+import { makeAuthenticate, createPairCode, redeemPairCode } from '../src/api/auth.js';
+import { signInGate, pairingGate } from '../src/api/gate.js';
+import { configureSessions, sessionValid as realSessionValid } from '../src/api/sessions.js';
 import { resetAppDb } from '../src/v2/db.js';
 import { setProjectRouteDeps } from '../src/api/routes/projects.js';
 import { setSettingsRouteDeps } from '../src/api/routes/settings.js';
@@ -18,6 +20,7 @@ import { captureDeploymentEnv, applyStoredSettings } from '../src/v2/settings.js
 import { MAX_UPLOAD } from '../src/files.js';
 
 const mode = { passwordSet: false, sessionValid: false };
+const gateWaits: number[] = [];
 let server: Server, base = '', origin = '', ws = '', cfgDir = '';
 let key = 0;
 const k = () => `w5-key-${Date.now()}-${++key}`;
@@ -31,7 +34,7 @@ const saved: Record<string, string | undefined> = {};
 beforeAll(async () => {
   for (const e of ENV_KEYS) { saved[e] = process.env[e]; delete process.env[e]; }
   setEmbedder(async (t) => [t.length % 7, 1, 0]);
-  const authenticate = (req: Parameters<ReturnType<typeof makeAuthenticate>>[0]) => makeAuthenticate({ passwordSet: mode.passwordSet, sessionValid: () => mode.sessionValid })(req);
+  const authenticate = (req: Parameters<ReturnType<typeof makeAuthenticate>>[0]) => makeAuthenticate({ passwordSet: mode.passwordSet, sessionValid: (r) => mode.sessionValid || realSessionValid(r) })(req);
   const sameOrigin = (req: { headers: Record<string, unknown> }) => !req.headers.origin || req.headers.origin === 'http://same.example';
   const v1 = createV1(v1Routes(), { authenticate, sameOrigin: sameOrigin as never });
   server = createServer(async (req, res) => {
@@ -47,7 +50,9 @@ beforeAll(async () => {
   base = `${origin}/api/v1`;
 });
 beforeEach(() => {
-  resetAppDb(':memory:'); resetPairingThrottle(); resetSignInThrottle();
+  resetAppDb(':memory:'); signInGate.reset(); pairingGate.reset(); gateWaits.length = 0;
+  for (const g of [signInGate, pairingGate]) g.configure({ sleep: async (ms) => { gateWaits.push(ms); } });
+  configureSessions({ password: 'throwaway-pw' });
   Object.assign(mode, { passwordSet: false, sessionValid: false });
   ws = mkdtempSync(join(tmpdir(), 'mwa-w5-ws-'));
   cfgDir = mkdtempSync(join(tmpdir(), 'mwa-w5-cfg-'));
@@ -56,7 +61,7 @@ beforeEach(() => {
   captureDeploymentEnv();
   setProjectRouteDeps({ workspace: () => ws, startChat: async () => ({ state: 'started', runId: 'x' }), stop: () => false, steer: () => false, attach: () => null, acceptOffer: async () => null } as never);
   setSettingsRouteDeps({
-    passwordSet: () => mode.passwordSet, checkPassword: (pw) => pw === 'throwaway-pw', issueSession: () => 'signed-session-token',
+    passwordSet: () => mode.passwordSet, checkPassword: (pw) => pw === 'throwaway-pw',
     connections: () => ({ googleClient: false, gmailAppPassword: true, googleConnected: true, outlookDeviceCode: true, microsoftClient: false, outlookConnected: false }),
     startOutlookDeviceCode: async () => ({ user_code: 'QWER-TY12', verification_uri: 'https://microsoft.com/devicelogin', expires_in: 900 }),
   });
@@ -278,18 +283,63 @@ describe('GET /me and POST /session', () => {
     const ok = await j(await send('throwaway-pw'));
     expect(ok.status).toBe(200);
     expect(ok.body).toEqual({ signedIn: true, kind: 'session', scopes: ['read', 'act', 'approve', 'admin'] });
-    expect(ok.headers.get('set-cookie')).toMatch(/^mwa_session=signed-session-token; HttpOnly; SameSite=Lax; Path=\/; Max-Age=2592000/);
+    // a session of its own (id in the token, a row in app.db); no Secure flag on plain http (W5 review)
+    expect(ok.headers.get('set-cookie')).toMatch(/^mwa_session=\d+\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{20,}; HttpOnly; SameSite=Lax; Path=\/; Max-Age=2592000$/);
     expect((await send('throwaway-pw', { origin: 'http://evil.example' })).status).toBe(403); // no login CSRF
   });
-  it('wrong passwords are throttled per source (10 per 10 minutes), without touching pairing', async () => {
+  it('wrong passwords slow their source down; rotating X-Forwarded-For does not help; the right password always gets in', async () => {
     mode.passwordSet = true;
-    const send = (pw: string) => fetch(`${base}/session`, { method: 'POST', headers: { 'content-type': 'application/json', ...NET }, body: JSON.stringify({ password: pw }) });
-    for (let i = 0; i < 10; i++) expect((await send('nope')).status).toBe(401);
-    const r = await j(await send('throwaway-pw'));
-    expect(r.status).toBe(429);
-    expect(r.body.error.message).toMatch(/Wait ten minutes/);
-    const code = createPairCode('test').code;
-    expect((await fetch(`${base}/pair`, { method: 'POST', headers: { ...NET, 'content-type': 'application/json' }, body: JSON.stringify({ code, cookie: false }) })).status).toBe(201);
+    const send = (pw: string, h: Record<string, string> = {}) => fetch(`${base}/session`, { method: 'POST', headers: { 'content-type': 'application/json', ...h }, body: JSON.stringify({ password: pw }) });
+    for (let i = 0; i < 12; i++) expect((await send('nope', { 'x-forwarded-for': `10.0.0.${i}` })).status).toBe(401);
+    expect(signInGate.failures('127.0.0.1')).toBe(12); // one source: the socket, whatever the header said
+    expect(gateWaits.slice(0, 3)).toEqual([250, 500, 1000]);
+    expect(Math.max(...gateWaits)).toBe(10_000); // doubling, capped at 10 s
+    const ok = await j(await send('throwaway-pw'));
+    expect(ok.status).toBe(200); // never refused: it waited, then got in
+    expect(pairingGate.failures('127.0.0.1')).toBe(0); // pairing is counted apart
+  });
+  it('an owner behind a spoofed X-Forwarded-For cannot be locked out, and a junk flood never blocks the right password', async () => {
+    mode.passwordSet = true;
+    const send = (pw: string, h: Record<string, string> = {}) => fetch(`${base}/session`, { method: 'POST', headers: { 'content-type': 'application/json', ...h }, body: JSON.stringify({ password: pw }) });
+    for (let i = 0; i < 60; i++) await send(`junk${i}`, { 'x-forwarded-for': '100.64.0.7' });
+    expect((await send('throwaway-pw', { 'x-forwarded-for': '100.64.0.7' })).status).toBe(200);
+    expect((await send('throwaway-pw')).status).toBe(200);
+    expect(gateWaits.every((w) => w <= 30_000)).toBe(true);
+  });
+  it('behind a configured trusted proxy, X-Forwarded-For names the source', async () => {
+    mode.passwordSet = true;
+    process.env.MWA_TRUSTED_PROXY = '127.0.0.1';
+    try {
+      const send = (pw: string, xff: string) => fetch(`${base}/session`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': xff }, body: JSON.stringify({ password: pw }) });
+      for (let i = 0; i < 4; i++) await send('nope', '100.64.0.9');
+      expect(signInGate.failures('100.64.0.9')).toBe(4);
+      expect(signInGate.failures('127.0.0.1')).toBe(0);
+      expect(signInGate.failures('100.64.0.10')).toBe(0);
+    } finally { delete process.env.MWA_TRUSTED_PROXY; }
+  });
+  it('signing out ends the session on the server: the copied cookie stops working', async () => {
+    mode.passwordSet = true;
+    const r = await fetch(`${base}/session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'throwaway-pw' }) });
+    const cookie = (r.headers.get('set-cookie') ?? '').split(';')[0];
+    expect((await fetch(`${base}/settings`, { headers: { cookie } })).status).toBe(200);
+    const copied = cookie;
+    expect((await fetch(`${base}/session`, { method: 'DELETE', headers: { cookie, 'idempotency-key': k() } })).status).toBe(200);
+    expect((await fetch(`${base}/settings`, { headers: { cookie: copied } })).status).toBe(401);
+    expect((await j(await fetch(`${base}/me`, { headers: { cookie: copied } }))).body.signedIn).toBe(false);
+  });
+  it('sign out everywhere ends every password session (admin only)', async () => {
+    mode.passwordSet = true;
+    const signIn = async () => ((await fetch(`${base}/session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'throwaway-pw' }) })).headers.get('set-cookie') ?? '').split(';')[0];
+    const a = await signIn(), b = await signIn();
+    const phone = device(['read', 'act', 'approve']);
+    expect((await fetch(`${base}/session/sign-out-everywhere`, { method: 'POST', headers: as(phone.token, { 'idempotency-key': k() }) })).status).toBe(403);
+    const r = await j(await fetch(`${base}/session/sign-out-everywhere`, { method: 'POST', headers: { cookie: a, 'idempotency-key': k() } }));
+    expect(r.status).toBe(200); expect(r.body.signedOut).toBe(2);
+    for (const c of [a, b]) expect((await fetch(`${base}/settings`, { headers: { cookie: c } })).status).toBe(401);
+    expect((await fetch(`${base}/settings`, { headers: as(phone.token) })).status).toBe(200);
+    await new Promise((res) => setTimeout(res, 5));
+    const fresh = await signIn();
+    expect((await fetch(`${base}/settings`, { headers: { cookie: fresh } })).status).toBe(200);
   });
   it('DELETE /session clears the cookie for a password session only', async () => {
     mode.passwordSet = true; mode.sessionValid = true;
@@ -313,7 +363,8 @@ describe('settings', () => {
     expect(r.body).toMatchObject({ helperName: 'Juniper', ownerName: 'Robert', timeZone: 'Europe/London', firstRunDone: true });
     expect(process.env.MWA_TZ).toBe('Europe/London'); // applies now, without a restart
     const cfg = JSON.parse(readFileSync(process.env.MWA_CONFIG_PATH!, 'utf8'));
-    expect(cfg).toMatchObject({ owner: { name: 'Robert' }, helper: { name: 'Juniper', timeZone: 'Europe/London', firstRunDone: true } });
+    expect(cfg).toMatchObject({ owner: { name: 'Robert' }, helper: { name: 'Juniper', timeZone: 'Europe/London' } });
+    expect(cfg.helper.firstRunDone).toBeUndefined(); // first run lives in app.db (a broken config must not trap the owner in it)
     expect((await j(await patch('/settings', { ownerName: null }))).body.ownerName).toBeNull();
   });
   it('switches mail sorting off and on (the triage reads it at once); the calendar switch cannot be changed here', async () => {
@@ -375,6 +426,16 @@ describe('spending', () => {
     expect(cleared.body.defaults.perFireUsd).toBe(0.25);
     expect((await j(await patch({ monthlyUsd: 0.5 }))).body.error.code).toBe('bad_limit');
     expect((await j(await patch({ perFireUsd: 21 }))).body.error.code).toBe('bad_cap');
+    // W5 review: rounded first, then at least 1 cent: 0.001 is refused, never "no limit"; 0 means the default
+    expect((await j(await patch({ perFireUsd: 0.001 }))).body.error.code).toBe('bad_cap');
+    expect((await j(await patch({ perFireUsd: 0.004 }))).body.error.code).toBe('bad_cap');
+    expect((await j(await patch({ perFireUsd: 20.004 }))).body.defaults.perFireUsd).toBe(20);
+    expect((await j(await patch({ perFireUsd: 0 }))).body.defaults.perFireUsd).toBe(0.25);
+    expect(process.env.MWA_FIRE_CAP_USD).toBeUndefined();
+    // a refusal saves nothing: the monthly limit is not changed by a request whose per-run limit is refused
+    await patch({ monthlyUsd: 20 });
+    expect((await j(await patch({ monthlyUsd: 40, perFireUsd: 0.001 }))).status).toBe(400);
+    expect((await j(await fetch(`${base}/spending`))).body.limit.usd).toBe(20);
     expect((await j(await patch({ monthlyUsd: '20' }))).body.error.code).toBe('bad_body');
     process.env.MWA_MONTHLY_BUDGET_USD = '30';
     expect((await j(await patch({ monthlyUsd: 10 }))).body.error.code).toBe('fixed');
@@ -395,7 +456,7 @@ describe('accounts and devices', () => {
     expect((await j(await post('google'))).body).toMatchObject({ kind: 'setup', provider: 'google', url: '/?ui=v1' });
   });
   it('a failing flow is a 503 the app can retry with the same key', async () => {
-    setSettingsRouteDeps({ passwordSet: () => false, checkPassword: () => false, issueSession: () => 'x',
+    setSettingsRouteDeps({ passwordSet: () => false, checkPassword: () => false,
       connections: () => ({ googleClient: true, gmailAppPassword: false, googleConnected: false, outlookDeviceCode: false, microsoftClient: false, outlookConnected: false }),
       startGoogle: () => { throw new Error('port in use'); } });
     const key1 = k();

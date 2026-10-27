@@ -1143,6 +1143,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/session/sign-out-everywhere": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** End every password session, this one included (admin). Paired devices are removed one by one. */
+        post: operations["signOutEverywhere"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/settings": {
         parameters: {
             query?: never;
@@ -1259,7 +1276,7 @@ export interface paths {
         /** The files added to a project (General when no projectId), newest first. */
         get: operations["listFiles"];
         put?: never;
-        /** Add a file to a project (act). The body is the file (with ?name=), or multipart/form-data with one file part. Capped at 25 MB; the name is cleaned; never saved over another file. */
+        /** Add a file to a project (act). The body is the file (with ?name=), or multipart/form-data with one file part. Capped at 25 MB (413); at most 2 at a time per device and 4 in all (429 busy); all added files share MWA_UPLOAD_QUOTA_MB, 2 GB (507 storage_full). The name is cleaned (no folders, dot files or Windows device names); never saved over another file. */
         post: operations["uploadFile"];
         delete?: never;
         options?: never;
@@ -1273,7 +1290,7 @@ export interface components {
     schemas: {
         Error: {
             error: {
-                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer; important: bad_group, bad_state, bad_scope, not_handled, not_open, no_action, freemail_domain, kind_not_available, unavailable; W5 settings and files: no_password, wrong_password, not_a_session, bad_body, bad_name, bad_time_zone, bad_limit, bad_cap, fixed, bad_config, no_file, no_name, empty_file. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
+                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer; important: bad_group, bad_state, bad_scope, not_handled, not_open, no_action, freemail_domain, kind_not_available, unavailable; W5 settings and files: no_password, wrong_password, not_a_session, bad_body, bad_name, bad_time_zone, bad_url, bad_limit, bad_cap, fixed, bad_config, no_file, no_name, empty_file, busy, storage_full. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
                 code: string;
                 /** @description Plain words for a person. */
                 message: string;
@@ -1285,9 +1302,11 @@ export interface components {
             /** @description One-time */
             code: string;
             expiresAt: number;
-            /** @description Show as a QR code: <origin>/pair#c=CODE (the fragment never reaches a server). */
+            /** @description Show as a QR code: <origin>/pair#c=CODE (the fragment never reaches a server). Opened at localhost, it uses the helper's public address (MWA_PUBLIC_URL, Settings, or the tailnet name in MWA_ALLOWED_HOSTS). */
             pairUrl: string;
             scopes: components["schemas"]["Scope"][];
+            /** @description false: no public address is known and the link says "localhost", which a phone cannot open. Ask for the helper's address (PATCH /settings publicUrl). */
+            reachable?: boolean;
         };
         PairResult: {
             deviceId: string;
@@ -2266,7 +2285,7 @@ export interface components {
             message: string;
             today: components["schemas"]["Today"];
         };
-        /** @description Who this request is (W5). Public: a signed-out app uses it to offer the password (passwordSet) or pairing only. */
+        /** @description Who this request is (W5). Public: a signed-out app uses it to offer the password (passwordSet) or pairing only. Signed out it says only that and whether a password is set — which the lock page shows anyway — and nothing about devices or settings. */
         Me: {
             signedIn: boolean;
             /**
@@ -2309,8 +2328,14 @@ export interface components {
             /** @description An IANA zone; used for the calendar, Important and reminders. */
             timeZone: string;
             timeZoneFixed: boolean;
-            /** @description First-run setup on the computer was finished or skipped. */
+            /** @description Where phones reach the helper ("https://mwa.tail1a2b.ts.net"): MWA_PUBLIC_URL, the address saved here, or a tailnet name in MWA_ALLOWED_HOSTS. */
+            publicUrl: string | null;
+            /** @description Set by the deployment (MWA_PUBLIC_URL): read-only here. */
+            publicUrlFixed: boolean;
+            /** @description First-run setup on the computer was finished or skipped (kept in app.db, not the settings file). */
             firstRunDone: boolean;
+            /** @description The settings file (mwa.config.json) cannot be read: what is wrong, in plain words. Show it instead of first run. */
+            configError: string | null;
             features: components["schemas"]["Feature"][];
         };
         Spending: {
@@ -4345,6 +4370,33 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    signOutEverywhere: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed out everywhere (the cookie is cleared). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description How many sessions ended. */
+                        signedOut: number;
+                        message: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getSettings: {
         parameters: {
             query?: never;
@@ -4381,6 +4433,8 @@ export interface operations {
                     helperName?: string;
                     ownerName?: string | null;
                     timeZone?: string;
+                    /** @description The helper's address for phones, or null to forget it. */
+                    publicUrl?: string | null;
                     firstRunDone?: boolean;
                     features?: {
                         sorting?: boolean;
@@ -4436,7 +4490,7 @@ export interface operations {
                 "application/json": {
                     /** @description Dollars a month (at least 1), or null for no limit. */
                     monthlyUsd?: number | null;
-                    /** @description Dollars per run of a repeating job (above 0, at most 20), or null for the default. */
+                    /** @description Dollars per run of a repeating job, rounded to the cent: $0.01 to $20. 0 or null: back to the default (25¢); never "no limit". */
                     perFireUsd?: number | null;
                 };
             };

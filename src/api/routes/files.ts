@@ -12,13 +12,13 @@
  * password. The name is never trusted: no folders, no leading dots, nothing odd (files.ts cleanName), and the folder
  * comes from the project's id, which must be an existing project.
  */
-import { basename } from 'node:path';
-import { readFileSync, statSync } from 'node:fs';
+import { basename, extname, join } from 'node:path';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { ApiError, type Route } from '../router.js';
 import { projectRouteDeps } from './projects.js';
 import { getProject, sessionOf, GENERAL } from '../../v2/projects.js';
 import { cleanName, insideRoot, listFiles, saveUpload, sessionFolder, MAX_UPLOAD } from '../../files.js';
-import { documentSize } from '../../tools/builtins.js';
+import { documentSize, docxReadable } from '../../tools/builtins.js';
 
 const MULTIPART_SLACK = 64 * 1024; // the part headers and boundaries around the file
 const COUNT_TIMEOUT_MS = 5_000;
@@ -63,10 +63,37 @@ export function firstFilePart(raw: Buffer, contentType: string): { filename: str
   return null;
 }
 
-/** Pages, counted the way read_document reads them; null when it takes too long or can't be read. */
+// W5 security review (3): pages are counted here only for files read_document reads cheaply — a PDF (its own bounded
+// parser), text, and a .docx whose parts unzip to at most 20 MB (checked from the zip's directory before inflating).
+// Anything else, or a bigger .docx, gets no count (null): /ask estimates it from the size.
+const TEXT_LIKE = new Set(['.txt', '.md', '.csv', '.tsv', '.json', '.jsonl', '.log', '.yaml', '.yml', '.xml', '.ics', '.eml', '.html', '.htm']);
+/** At most 2 uploads at a time from one caller, 4 in all; the uploads may use MWA_UPLOAD_QUOTA_MB (2 GB) of disk. */
+const PER_CALLER = 2, IN_ALL = 4;
+const busy = new Map<string, number>();
+let busyAll = 0;
+export function uploadQuotaBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const mb = Number(env.MWA_UPLOAD_QUOTA_MB ?? 2048);
+  return (Number.isFinite(mb) && mb > 0 ? mb : 2048) * 1024 * 1024;
+}
+/** Bytes used by everything added through uploads (every project's uploads folder). */
+export function uploadsUsed(ws: string): number {
+  let total = 0;
+  try {
+    for (const d of readdirSync(join(ws, 'serve'))) {
+      const up = join(ws, 'serve', d, 'uploads');
+      try { for (const f of listFiles(up)) total += f.size; } catch { /* none */ }
+    }
+  } catch { /* no serve folder yet */ }
+  return total;
+}
+
+/** Pages, counted the way read_document reads them; null when it is not counted here, takes too long or can't be read. */
 async function pagesOf(abs: string): Promise<number | null> {
   try {
+    const ext = extname(abs).toLowerCase();
+    if (ext !== '.pdf' && ext !== '.docx' && !TEXT_LIKE.has(ext)) return null;
     const buf = readFileSync(abs);
+    if (ext === '.docx' && !docxReadable(buf)) return null;
     return await Promise.race([
       documentSize(abs, buf).then((s) => s.pages).catch(() => null),
       new Promise<null>((r) => { const t = setTimeout(() => r(null), COUNT_TIMEOUT_MS); (t as { unref?: () => void }).unref?.(); }),
@@ -78,6 +105,13 @@ export const fileRoutes: Route[] = [
   {
     method: 'POST', path: '/files', scope: 'act',
     rawBody: { max: MAX_UPLOAD + MULTIPART_SLACK, tooLarge: tooLarge() },
+    admit: ({ caller }) => {
+      const mine = busy.get(caller) ?? 0;
+      if (mine >= PER_CALLER || busyAll >= IN_ALL) throw new ApiError(429, 'busy', 'Other files are still being added. Try again in a moment.', true);
+      busy.set(caller, mine + 1); busyAll++;
+      let done = false;
+      return () => { if (done) return; done = true; busyAll--; const n = (busy.get(caller) ?? 1) - 1; if (n > 0) busy.set(caller, n); else busy.delete(caller); };
+    },
     handler: async ({ req, url, raw }) => {
       const p = projectOf(url.searchParams.get('projectId'));
       if (p.archived) throw new ApiError(409, 'archived', `${p.name} is archived. Restore it first.`);
@@ -92,6 +126,8 @@ export const fileRoutes: Route[] = [
       if (data.length > MAX_UPLOAD) throw new ApiError(413, 'too_large', tooLarge());
       if (!data.length) throw new ApiError(400, 'empty_file', 'That file is empty.');
       const ws = root();
+      const quota = uploadQuotaBytes();
+      if (uploadsUsed(ws) + data.length > quota) throw new ApiError(507, 'storage_full', `Your helper’s space for added files is full (${Math.round(quota / 1048576)} MB). Remove some files from your projects and try again.`, true);
       let path: string;
       try { path = saveUpload(ws, uploadsFolder(p.id), cleanName(name), data); }
       catch { throw new ApiError(400, 'bad_name', 'That file name can’t be used. Rename the file and try again.'); }

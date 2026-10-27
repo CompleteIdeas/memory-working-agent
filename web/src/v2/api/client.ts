@@ -82,7 +82,7 @@ export type VaultEntry = Schemas['VaultEntry'];
 export type UploadedFile = Schemas['UploadedFile'];
 export type FileRow = Schemas['FileRow'];
 export type FileList = Json<'/files', 'get', 200>;
-export type SettingsPatch = { helperName?: string; ownerName?: string | null; timeZone?: string; firstRunDone?: boolean; features?: { sorting?: boolean } };
+export type SettingsPatch = { helperName?: string; ownerName?: string | null; timeZone?: string; firstRunDone?: boolean; features?: { sorting?: boolean }; publicUrl?: string | null };
 export type SpendingPatch = { monthlyUsd?: number | null; perFireUsd?: number | null };
 
 /** The version this build reports; set by vite.config.ts from web/package.json. */
@@ -313,6 +313,7 @@ export class MwaClient {
   getMe() { return this.get<Me>('/me'); }
   signIn(password: string, o: { key?: string } = {}) { return this.post<SignedIn>('/session', { body: { password }, key: o.key }); }
   async signOut(o: { key?: string } = {}) { return (await this.call<{ signedOut: true }>('DELETE', '/session', { key: o.key })).body; }
+  signOutEverywhere(o: { key?: string } = {}) { return this.post<{ signedOut: number; message: string }>('/session/sign-out-everywhere', { key: o.key }); }
   async renameDevice(id: string, name: string, o: { key?: string } = {}) { return (await this.call<{ device: Device }>('PATCH', '/devices/{id}', { path: { id }, body: { name }, key: o.key })).body; }
   getSettings() { return this.get<HelperSettings>('/settings'); }
   async updateSettings(body: SettingsPatch, o: { key?: string } = {}) { return (await this.call<HelperSettings>('PATCH', '/settings', { body, key: o.key })).body; }

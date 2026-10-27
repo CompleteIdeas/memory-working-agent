@@ -160,6 +160,12 @@ export function useSettingsData() {
         if (out.ok) store.signedOut();
         return out;
       },
+      /** Every password session ends, this one too (admin). */
+      signOutEverywhere: async (): Promise<ActOutcome> => {
+        const out = await act((key) => client.signOutEverywhere({ key }), undefined, (r) => r.message);
+        if (out.ok) store.signedOut();
+        return out;
+      },
     };
   }, [client, store, data.me]);
 

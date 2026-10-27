@@ -17,8 +17,9 @@
  */
 import type { IncomingMessage } from 'node:http';
 import { ApiError, type Route } from '../router.js';
-import { secureContext } from '../net.js';
-import { deviceName, renameDevice, signInThrottled, noteSignInFailure, sourceOf, type Caller } from '../auth.js';
+import { deviceName, renameDevice, type Caller } from '../auth.js';
+import { signInWithPassword, sessionCookie } from '../signin.js';
+import { revokeSessionOf, revokeAllSessions } from '../sessions.js';
 import { readSettings, updateSettings, setFireCap, fireCapFixed, SettingsError } from '../../v2/settings.js';
 import { billingSummary, readCalls, monthStart, monthlyBudget, setMonthlyBudget } from '../../billing.js';
 import { fireCapUsd, HANDOFF_CAP_MAX_USD, CAP_MAX_USD } from '../../v2/estimate.js';
@@ -31,8 +32,6 @@ export interface SettingsRouteDeps {
   passwordSet: () => boolean;
   /** constant-time comparison with MWA_ACCESS_PASSWORD */
   checkPassword: (pw: string) => boolean;
-  /** a new signed session token (the value of the mwa_session cookie) */
-  issueSession: () => string;
   /** what is set up for Google and Outlook on this server */
   connections?: () => { googleClient: boolean; gmailAppPassword: boolean; googleConnected: boolean; outlookDeviceCode: boolean; microsoftClient: boolean; outlookConnected: boolean };
   /** the existing flows (src/connect): a consent page for this computer, or Microsoft's device code */
@@ -43,8 +42,6 @@ export interface SettingsRouteDeps {
 let deps: SettingsRouteDeps | null = null;
 export function setSettingsRouteDeps(d: SettingsRouteDeps | null): void { deps = d; }
 
-const SESSION_COOKIE = 'mwa_session';
-const SESSION_MAX_AGE_S = 30 * 24 * 3600;
 const bodyOf = (b: unknown): Record<string, unknown> => (b && typeof b === 'object' && !Array.isArray(b) ? b as Record<string, unknown> : {});
 const usd = (n: number) => Math.round(n * 10_000) / 10_000;
 const asApi = (e: unknown): never => {
@@ -52,9 +49,6 @@ const asApi = (e: unknown): never => {
   throw e;
 };
 
-function sessionCookie(req: IncomingMessage, token: string, maxAge = SESSION_MAX_AGE_S): string {
-  return `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secureContext(req) ? '; Secure' : ''}`;
-}
 
 export function meOf(who: Caller | null) {
   const passwordSet = !!deps?.passwordSet();
@@ -139,21 +133,30 @@ export const settingsRoutes: Route[] = [
   { method: 'GET', path: '/me', scope: 'public', handler: ({ who }) => ({ body: meOf(who) }) },
   {
     method: 'POST', path: '/session', scope: 'public',
-    handler: ({ req, body }) => {
+    handler: async ({ req, body }) => {
       if (!deps?.passwordSet()) throw new ApiError(409, 'no_password', 'No password is set on this helper. Pair this device with a code from the computer instead.');
-      const source = sourceOf(req);
-      if (signInThrottled(source)) throw new ApiError(429, 'too_many_attempts', 'Too many wrong passwords. Wait ten minutes and try again.');
       const pw = bodyOf(body).password;
       if (typeof pw !== 'string' || !pw || pw.length > 1000) throw new ApiError(400, 'bad_body', 'Type your password.');
-      if (!deps.checkPassword(pw)) { noteSignInFailure(source); throw new ApiError(401, 'wrong_password', 'That password isn’t right. Try again.'); }
-      return { body: { signedIn: true, kind: 'session', scopes: ['read', 'act', 'approve', 'admin'] }, headers: { 'set-cookie': sessionCookie(req, deps.issueSession()) } };
+      // the sign-in gate: wrong tries from one place make that place wait longer; the right password always gets in
+      const cookie = await signInWithPassword(req, pw, deps.checkPassword);
+      if (!cookie) throw new ApiError(401, 'wrong_password', 'That password isn’t right. Try again.');
+      return { body: { signedIn: true, kind: 'session', scopes: ['read', 'act', 'approve', 'admin'] }, headers: { 'set-cookie': cookie } };
     },
   },
   {
     method: 'DELETE', path: '/session', scope: 'read',
     handler: ({ req, who }) => {
       if (who?.kind !== 'session') throw new ApiError(400, 'not_a_session', 'This device isn’t signed in with the password.');
+      revokeSessionOf(req); // the session itself ends on the server: a copied cookie stops working too
       return { body: { signedOut: true }, headers: { 'set-cookie': sessionCookie(req, 'x', 0) } };
+    },
+  },
+  {
+    // "Sign out everywhere": every password session ends (this one too). Paired devices are removed one by one.
+    method: 'POST', path: '/session/sign-out-everywhere', scope: 'admin',
+    handler: ({ req }) => {
+      const n = revokeAllSessions();
+      return { body: { signedOut: n, message: n === 1 ? 'Signed out of 1 browser.' : `Signed out of ${n} browsers.` }, headers: { 'set-cookie': sessionCookie(req, 'x', 0) } };
     },
   },
   {
@@ -171,7 +174,7 @@ export const settingsRoutes: Route[] = [
     method: 'PATCH', path: '/settings', scope: 'admin',
     handler: ({ body }) => {
       const b = bodyOf(body);
-      const known = ['helperName', 'ownerName', 'timeZone', 'firstRunDone', 'features'];
+      const known = ['helperName', 'ownerName', 'timeZone', 'firstRunDone', 'features', 'publicUrl'];
       const extra = Object.keys(b).filter((k) => !known.includes(k));
       if (extra.length || !Object.keys(b).length) throw new ApiError(400, 'bad_body', `Send one or more of: ${known.join(', ')}.`);
       try { return { body: updateSettings(b) }; } catch (e) { return asApi(e); }
@@ -191,10 +194,18 @@ export const settingsRoutes: Route[] = [
       };
       const monthly = b.monthlyUsd === undefined ? undefined : num(b.monthlyUsd, 'monthlyUsd');
       const fire = b.perFireUsd === undefined ? undefined : num(b.perFireUsd, 'perFireUsd');
+      // check both before saving either (a refusal saves nothing)
       if (monthly !== undefined) {
         if (monthlyBudget().fixed) throw new ApiError(400, 'fixed', 'The monthly limit was set when this helper was installed, so it can’t be changed here.');
         if (monthly !== null && !(monthly >= 1 && monthly < 1_000_000)) throw new ApiError(400, 'bad_limit', 'Give a monthly limit of at least $1, for example 20.');
-        const r = setMonthlyBudget(monthly === null ? 'off' : String(monthly));
+      }
+      if (fire !== undefined && fire !== null && fire !== 0) {
+        const r = Math.round(fire * 100) / 100;
+        if (!(r >= 0.01 && r <= 20)) throw new ApiError(400, 'bad_cap', 'Give a dollar amount from $0.01 to $20, for example 0.25.');
+      }
+      if (fire !== undefined && fireCapFixed()) throw new ApiError(400, 'fixed', 'The limit for repeating jobs was set when this helper was installed, so it can’t be changed here.');
+      if (monthly !== undefined) {
+        const r = setMonthlyBudget(monthly === null ? 'off' : String(Math.round(monthly * 100) / 100));
         if (!r.ok) throw new ApiError(409, 'bad_config', r.message);
       }
       if (fire !== undefined) { try { setFireCap(fire); } catch (e) { asApi(e); } }

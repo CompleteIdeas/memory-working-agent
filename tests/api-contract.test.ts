@@ -162,7 +162,7 @@ beforeAll(async () => {
   const w5 = mkdtempSync(join(tmpdir(), 'mwa-w5-contract-'));
   Object.assign(process.env, { MWA_CONFIG_PATH: join(w5, 'mwa.config.json'), MWA_TOKEN_LOG: join(w5, 'tokens.jsonl'), MWA_VAULT_PATH: join(w5, 'vault.json') });
   setSettingsRouteDeps({
-    passwordSet: () => true, checkPassword: (pw) => pw === 'right-password', issueSession: () => 'session-token-for-tests',
+    passwordSet: () => true, checkPassword: (pw) => pw === 'right-password',
     connections: () => ({ googleClient: true, gmailAppPassword: false, googleConnected: false, outlookDeviceCode: true, microsoftClient: false, outlookConnected: false }),
     startGoogle: () => 'https://accounts.google.example/consent', startOutlook: () => 'https://login.microsoft.example/consent',
     startOutlookDeviceCode: async () => ({ user_code: 'ABCD-1234', verification_uri: 'https://microsoft.com/devicelogin', expires_in: 900 }),
@@ -332,6 +332,10 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /session', path: '/session', init: { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'right-password' }) }, status: 200 },
   { op: 'POST /session', path: '/session', init: { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'wrong' }) }, status: 401 },
   { op: 'DELETE /session', path: '/session', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 200 },
+  { op: 'POST /session/sign-out-everywhere', path: '/session/sign-out-everywhere', init: post, status: 200 },
+  { op: 'PATCH /settings', path: '/settings', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ publicUrl: 'mwa.tail1a2b.ts.net' }) }), status: 200 },
+  { op: 'PATCH /settings', path: '/settings', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ publicUrl: 'ftp://x' }) }), status: 400 },
+  { op: 'PATCH /settings', path: '/settings', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ helperName: ['a'] }) }), status: 400 },
   { op: 'PATCH /devices/{id}', path: '/devices/dev_nope', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ name: 'Kitchen tablet' }) }), status: 404 },
   { op: 'PATCH /devices/{id}', path: '/devices/dev_nope', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ name: '' }) }), status: 400 },
   { op: 'GET /settings', path: '/settings', status: 200 },

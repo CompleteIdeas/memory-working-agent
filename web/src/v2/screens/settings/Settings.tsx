@@ -49,6 +49,9 @@ export function Settings({ go }: ScreenProps) {
       {data.error && <div className="card"><p>{data.error}</p><div className="acts"><button type="button" className="vbtn" onClick={() => void data.reload()}>Try again</button></div></div>}
       {!data.loading && !data.error && (
         <>
+          {data.settings?.configError && (
+            <p className="configerr" role="alert"><b>Your settings file can’t be read.</b> {data.settings.configError}</p>
+          )}
           {!admin && (
             <p className="card adminnote" role="note">
               This {data.me?.kind === 'device' ? 'phone' : 'device'} can read your day, act on it and approve things. Connecting accounts, changing limits and
@@ -266,6 +269,7 @@ function Devices({ data, admin }: { data: ReturnType<typeof useSettingsData>; ad
         {(admin || signOutLine) && (
           <div className="acts">
             {admin && !code && <button type="button" className="vbtn vbtn-primary" onClick={() => void pair()} disabled={busy}>Pair a new device</button>}
+            {admin && me?.kind === 'session' && <button type="button" className="vbtn vbtn-quiet" onClick={async () => { const o = await data.signOutEverywhere(); if (!o.ok) setNote(said(o)); }}>Sign out everywhere</button>}
             {signOutLine && <button type="button" className="vbtn" onClick={async () => {
               const o = await data.signOut();
               if (!o.ok) setNote(said(o));
@@ -275,7 +279,8 @@ function Devices({ data, admin }: { data: ReturnType<typeof useSettingsData>; ad
         )}
         {me?.kind === 'device' && <p className="soft">Signing out removes this phone’s key and clears what it saved. To use it again, pair it from your computer.</p>}
       </div>
-      {code && <PairCodeCard code={code} now={store.now} busy={busy} onNew={() => void pair()} onDone={() => { setCode(null); void data.reload(); }} />}
+      {code && <PairCodeCard code={code} now={store.now} busy={busy} onNew={() => void pair()} onDone={() => { setCode(null); void data.reload(); }}
+        onSetAddress={async (url) => { const o = await data.updateSettings({ publicUrl: url }); if (o.ok) await pair(); return o; }} />}
       <Note said={note} />
     </Section>
   );
@@ -367,9 +372,10 @@ function HelperSection({ data, admin }: { data: ReturnType<typeof useSettingsDat
   const [helperName, setHelperName] = useState(s?.helperName ?? '');
   const [ownerName, setOwnerName] = useState(s?.ownerName ?? '');
   const [tz, setTz] = useState(s?.timeZone ?? '');
+  const [pub, setPub] = useState(s?.publicUrl ?? '');
   const [note, setNote] = useState<Said>(null);
   const [busy, setBusy] = useState(false);
-  useEffect(() => { if (s) { setHelperName(s.helperName); setOwnerName(s.ownerName ?? ''); setTz(s.timeZone); } }, [s]);
+  useEffect(() => { if (s) { setHelperName(s.helperName); setOwnerName(s.ownerName ?? ''); setTz(s.timeZone); setPub(s.publicUrl ?? ''); } }, [s]);
   if (!s) return null;
   const list = zones();
   const options = list.includes(s.timeZone) ? list : [s.timeZone, ...list];
@@ -380,6 +386,7 @@ function HelperSection({ data, admin }: { data: ReturnType<typeof useSettingsDat
           <div className="setrow"><div className="grow"><span className="rowtitle">Name</span><span className="s">{s.helperName}</span></div></div>
           <div className="setrow"><div className="grow"><span className="rowtitle">What I call you</span><span className="s">{s.ownerName ?? 'Not set'}</span></div></div>
           <div className="setrow"><div className="grow"><span className="rowtitle">Time zone</span><span className="s">{s.timeZone.replace(/_/g, ' ')}</span></div></div>
+          {s.publicUrl && <div className="setrow"><div className="grow"><span className="rowtitle">Address for phones</span><span className="s">{s.publicUrl}</span></div></div>}
         </div>
       </Section>
     );
@@ -390,6 +397,7 @@ function HelperSection({ data, admin }: { data: ReturnType<typeof useSettingsDat
     if (helperName.trim() !== s.helperName) patch.helperName = helperName;
     if (!s.ownerNameFixed && (ownerName.trim() || null) !== s.ownerName) patch.ownerName = ownerName.trim() || null;
     if (!s.timeZoneFixed && tz !== s.timeZone) patch.timeZone = tz;
+    if (!s.publicUrlFixed && (pub.trim() || null) !== s.publicUrl) patch.publicUrl = pub.trim() || null;
     if (!Object.keys(patch).length) { setNote({ text: 'Nothing to save.', error: false }); return; }
     setBusy(true); setNote(null);
     setNote(said(await data.updateSettings(patch)));
@@ -412,6 +420,9 @@ function HelperSection({ data, admin }: { data: ReturnType<typeof useSettingsDat
           <input id="set-tz" className="setinput" value={tz} disabled={s.timeZoneFixed} onChange={(e) => setTz(e.target.value)} aria-describedby="set-tz-help" />
         )}
         <span className="s" id="set-tz-help">{s.timeZoneFixed ? 'Set when your helper was installed.' : 'For your calendar, reminders and what counts as today.'}</span>
+        <label htmlFor="set-pub">Your helper’s address for phones</label>
+        <input id="set-pub" className="setinput" inputMode="url" placeholder="https://mwa.tail1a2b.ts.net" value={pub} disabled={s.publicUrlFixed} onChange={(e) => setPub(e.target.value)} aria-describedby="set-pub-help" />
+        <span className="s" id="set-pub-help">{s.publicUrlFixed ? 'Set when your helper was installed.' : 'What your phone opens to reach your helper. Pairing codes use it.'}</span>
         <div className="acts"><button type="submit" className="vbtn vbtn-primary" disabled={busy}>Save</button></div>
         <Note said={note} />
       </form>

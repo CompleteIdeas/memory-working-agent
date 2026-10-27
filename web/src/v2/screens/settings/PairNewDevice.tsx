@@ -24,7 +24,11 @@ export function timeLeft(expiresAt: number, now: number): string {
   return s ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : 'expired';
 }
 
-export function PairCodeCard({ code, now, onNew, onDone, busy, level = 3 }: { code: PairCode; now: () => number; onNew: () => void; onDone?: () => void; busy?: boolean; level?: 2 | 3 }) {
+export function PairCodeCard({ code, now, onNew, onDone, busy, level = 3, onSetAddress }: {
+  code: PairCode; now: () => number; onNew: () => void; onDone?: () => void; busy?: boolean; level?: 2 | 3;
+  /** the link says "localhost" (no public address known): save the helper's address, then make a new code */
+  onSetAddress?: (url: string) => Promise<{ ok: boolean; message?: string }>;
+}) {
   const H = level === 2 ? 'h2' : 'h3';
   const [t, setT] = useState(now());
   useEffect(() => { const i = setInterval(() => setT(now()), 1000); return () => clearInterval(i); }, [now]);
@@ -34,6 +38,7 @@ export function PairCodeCard({ code, now, onNew, onDone, busy, level = 3 }: { co
   return (
     <div className="card paircard" role="group" aria-labelledby="pair-h">
       <H id="pair-h" className="pairtitle">Pair your phone</H>
+      {code.reachable === false && <AddressAsk onSave={onSetAddress} />}
       {expired ? (
         <p className="soft">This code has expired. Make a new one.</p>
       ) : (
@@ -50,6 +55,31 @@ export function PairCodeCard({ code, now, onNew, onDone, busy, level = 3 }: { co
         {!expired && <button type="button" className="vbtn" onClick={onNew} disabled={busy}>Make a new code</button>}
         {onDone && <button type="button" className="vbtn vbtn-quiet" onClick={onDone}>Done</button>}
       </div>
+    </div>
+  );
+}
+
+/** "Your phone can't reach localhost": ask for the helper's address (the one the phone opens over Tailscale). */
+function AddressAsk({ onSave }: { onSave?: (url: string) => Promise<{ ok: boolean; message?: string }> }) {
+  const [v, setV] = useState('');
+  const [note, setNote] = useState<{ text: string; error: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="addrask" role="alert">
+      <p><b>Your phone can’t reach “localhost”.</b> Set your helper’s address — the one your phone opens, for example https://mwa.tail1a2b.ts.net — and make a new code.</p>
+      {onSave && (
+        <form className="dollarrow" onSubmit={async (e) => {
+          e.preventDefault(); setBusy(true); setNote(null);
+          const r = await onSave(v);
+          setNote(r.ok ? null : { text: r.message ?? 'That didn’t work.', error: true });
+          setBusy(false);
+        }}>
+          <label htmlFor="pair-addr" className="sr-only">Your helper’s address</label>
+          <input id="pair-addr" className="setinput" inputMode="url" placeholder="https://mwa.tail1a2b.ts.net" value={v} onChange={(e) => setV(e.target.value)} />
+          <button type="submit" className="vbtn" disabled={busy || !v.trim()}>Save</button>
+        </form>
+      )}
+      {note && <p className="setnote error">{note.text}</p>}
     </div>
   );
 }

@@ -96,6 +96,7 @@ const CALLS: Record<string, (c: MwaClient) => unknown> = {
   getMe: (c) => c.getMe(),
   signIn: (c) => c.signIn('pw'),
   signOut: (c) => c.signOut(),
+  signOutEverywhere: (c) => c.signOutEverywhere(),
   renameDevice: (c) => c.renameDevice('dev_1', 'Kitchen tablet'),
   getSettings: (c) => c.getSettings(),
   updateSettings: (c) => c.updateSettings({ helperName: 'Juniper' }),

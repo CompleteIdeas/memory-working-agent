@@ -11,7 +11,7 @@
 import { google } from 'googleapis';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
-import { createServer } from 'node:http';
+import { catchOAuthCode, newPkce } from '../connect/oauth-catcher.js';
 import type { RegisteredTool } from '../tools/registry.js';
 import { connectorTokenPath } from '../paths.js';
 import { proposeDraft } from '../sync/drafts.js';
@@ -99,32 +99,30 @@ const SCOPES_READONLY = [
  *  CLI (awaits) and the web UI (surfaces the URL to the browser, resolves in background). */
 function beginConsent(readOnly = false): { url: string; done: Promise<string> } {
   const o = oauthClient();
-  const url = o.generateAuthUrl({ access_type: 'offline', scope: readOnly ? SCOPES_READONLY : SCOPES, prompt: 'consent' });
+  // W5 security review (7): a random state the loopback listener must see back, and PKCE binding the code to this
+  // attempt — a stray or forged request to localhost:7799 can neither end the sign-in nor swap in another account
+  const { verifier, challenge, state } = newPkce();
+  const url = o.generateAuthUrl({
+    access_type: 'offline', scope: readOnly ? SCOPES_READONLY : SCOPES, prompt: 'consent', state,
+    code_challenge: challenge, code_challenge_method: 'S256' as never,
+  });
+  const caught = catchOAuthCode({ port: REDIRECT_PORT, state, label: 'Google' });
   const done = (async () => {
-    const code: string = await new Promise((res, rej) => {
-      const srv = createServer((req, rq) => {
-        try {
-          const u = new URL(req.url ?? '', REDIRECT_URI);
-          if (u.pathname !== '/oauth') { rq.statusCode = 404; rq.end(); return; }
-          const c = u.searchParams.get('code');
-          rq.end('MWA: Gmail connected. You can close this tab and return to MWA.');
-          srv.close();
-          if (c) res(c); else rej(new Error(u.searchParams.get('error') ?? 'no code'));
-        } catch (e) { rej(e as Error); }
-      });
-      srv.on('error', rej);
-      srv.listen(REDIRECT_PORT, '127.0.0.1');
-    });
-    const { tokens } = await o.getToken(code);
+    const code = await caught.code;
+    const { tokens } = await o.getToken({ code, codeVerifier: verifier });
     mkdirSync(dirname(tokenPath()), { recursive: true });
     writeFileSync(tokenPath(), JSON.stringify(tokens, null, 2), { mode: 0o600 });
     o.setCredentials(tokens);
-    const prof = await google.gmail({ version: 'v1', auth: o }).users.getProfile({ userId: 'me' });
+    const rootUrl = process.env.MWA_GOOGLE_API_ROOT ? process.env.MWA_GOOGLE_API_ROOT.replace(/\/?$/, '/') : undefined;
+    const prof = await google.gmail({ version: 'v1', auth: o, ...(rootUrl ? { rootUrl } : {}) }).users.getProfile({ userId: 'me' });
     recordGoogleSignIn(tokens as Record<string, unknown>, prof.data.emailAddress ?? null);
     return prof.data.emailAddress ?? 'your account';
   })();
   return { url, done };
 }
+
+/** Tests (W5): start a consent and hand back its URL and completion, without the console logging of startGmailConnect. */
+export const beginGoogleConsentForTests = beginConsent;
 
 /**
  * v2 (A7): a sign-in finished. Keep the address beside the token (the calendar cache is keyed by it) and start the

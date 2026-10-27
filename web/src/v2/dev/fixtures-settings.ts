@@ -28,7 +28,7 @@ const norm = (c: string) => c.toUpperCase().replace(/[^A-Z0-9]/g, '');
 /** Which requests answer with nobody signed in (the server's public routes). */
 const PUBLIC = new Set(['GET /meta', 'GET /me', 'POST /session', 'POST /pair']);
 /** Which need admin (a paired phone gets 403). */
-const ADMIN: RegExp[] = [/^POST \/pair\/codes$/, /^GET \/devices$/, /^(DELETE|PATCH) \/devices\/[^/]+$/, /^PATCH \/(settings|spending)$/, /^POST \/accounts\/[^/]+\/connect$/, /^GET \/vault$/, /^POST \/vault\/forget$/];
+const ADMIN: RegExp[] = [/^POST \/session\/sign-out-everywhere$/, /^POST \/pair\/codes$/, /^GET \/devices$/, /^(DELETE|PATCH) \/devices\/[^/]+$/, /^PATCH \/(settings|spending)$/, /^POST \/accounts\/[^/]+\/connect$/, /^GET \/vault$/, /^POST \/vault\/forget$/];
 
 export class SettingsFixtures {
   passwordSet: boolean;
@@ -59,7 +59,9 @@ export class SettingsFixtures {
     const first = scenario === 'first-run';
     this.settings = {
       helperName: first ? 'Your helper' : 'Juniper', ownerName: first ? null : 'Robert', ownerNameFixed: false,
-      timeZone: 'America/New_York', timeZoneFixed: false, firstRunDone: !first,
+      timeZone: 'America/New_York', timeZoneFixed: false, firstRunDone: !first, configError: null,
+      // first run on a fresh computer: no address for phones yet (the pairing step asks for it)
+      publicUrl: first ? null : 'https://mwa.tail1a2b.ts.net', publicUrlFixed: false,
       features: [
         { id: 'sorting', label: 'Sorting your mail into Important', on: !first, canChange: true, note: 'Reads new mail headers and picks what’s worth a look. A few cents a day, never more than 15¢.' },
         { id: 'calendar', label: 'Keeping your calendar up to date', on: true, canChange: false, note: 'Checks your calendar every 30 minutes.' },
@@ -123,6 +125,10 @@ export class SettingsFixtures {
       this.signedIn = true; this.kind = 'session'; this.deviceId = null;
       return { status: 200, body: { signedIn: true, kind: 'session', scopes: [...ALL] } };
     }
+    if (method === 'POST' && path === '/session/sign-out-everywhere') {
+      this.signedIn = false;
+      return { status: 200, body: { signedOut: 2, message: 'Signed out of 2 browsers.' } };
+    }
     if (method === 'DELETE' && path === '/session') {
       if (this.kind !== 'session') return err(400, 'not_a_session', 'This device isn’t signed in with the password.');
       this.signedIn = false;
@@ -144,7 +150,8 @@ export class SettingsFixtures {
       this.n++;
       this.codes.add(raw);
       const code = `${raw.slice(0, 4)}-${raw.slice(4)}`;
-      return { status: 201, body: { code, expiresAt: this.clock() + 10 * MINUTE, pairUrl: `https://mwa.tail1a2b.ts.net/pair#c=${code}`, scopes: [...PHONE_SCOPES] } };
+      const base = this.settings.publicUrl ?? 'http://localhost:7788';
+      return { status: 201, body: { code, expiresAt: this.clock() + 10 * MINUTE, pairUrl: `${base}/pair#c=${code}`, scopes: [...PHONE_SCOPES], reachable: !!this.settings.publicUrl } };
     }
     if (method === 'POST' && path === '/devices/me/sign-out') {
       if (this.kind !== 'device' || !this.deviceId) return err(400, 'not_a_device', 'Only a paired device can sign itself out.');
@@ -169,7 +176,7 @@ export class SettingsFixtures {
       return { status: 200, body: { revoked: id } };
     }
     if (method === 'PATCH' && path === '/settings') {
-      const known = ['helperName', 'ownerName', 'timeZone', 'firstRunDone', 'features'];
+      const known = ['helperName', 'ownerName', 'timeZone', 'firstRunDone', 'features', 'publicUrl'];
       if (!Object.keys(b).length || Object.keys(b).some((x) => !known.includes(x))) return err(400, 'bad_body', `Send one or more of: ${known.join(', ')}.`);
       const s = { ...this.settings };
       if (b.helperName !== undefined) { const n = String(b.helperName).trim().slice(0, 40); if (!n) return err(400, 'bad_name', 'Give your helper a name, or leave it as it is.'); s.helperName = n; }
@@ -180,6 +187,15 @@ export class SettingsFixtures {
         s.timeZone = z;
       }
       if (b.firstRunDone !== undefined) s.firstRunDone = !!b.firstRunDone;
+      if (b.publicUrl !== undefined) {
+        if (b.publicUrl === null || b.publicUrl === '') s.publicUrl = null;
+        else {
+          let u: URL | null = null;
+          try { const t = String(b.publicUrl).trim(); u = new URL(/^[a-z]+:\/\//i.test(t) ? t : `https://${t}`); } catch { u = null; }
+          if (!u || (u.protocol !== 'https:' && u.protocol !== 'http:') || (u.pathname && u.pathname !== '/')) return err(400, 'bad_url', 'That isn’t an address a phone can open. Use the one in your browser’s address bar on the phone, for example https://mwa.tail1a2b.ts.net.');
+          s.publicUrl = `${u.protocol}//${u.host}`;
+        }
+      }
       if (b.features !== undefined) {
         const f = b.features as Record<string, unknown>;
         if (!f || typeof f !== 'object' || Object.keys(f).some((x) => x !== 'sorting')) return err(400, 'bad_body', '`features` is {"sorting": true or false}. The other switches can’t be changed here.');

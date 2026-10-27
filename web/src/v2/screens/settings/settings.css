@@ -69,3 +69,6 @@ select.setinput { appearance: auto; }
 .startpage { min-height: 100dvh; }
 @media (min-width: 900px) { .ob { padding-top: 96px; } }
 .paircard .pairtitle { font-size: 18px; font-weight: 700; line-height: 1.3; }
+.addrask { margin: 12px 0; padding: 12px; border-radius: 8px; background: var(--card-2); border-left: 4px solid var(--signal); }
+.addrask .dollarrow { margin-top: 8px; }
+.configerr { margin-top: 12px; padding: 12px; border-radius: 8px; background: var(--card); border-left: 4px solid var(--signal); overflow-wrap: anywhere; }
