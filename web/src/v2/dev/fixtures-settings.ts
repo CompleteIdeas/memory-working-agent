@@ -30,7 +30,7 @@ const norm = (c: string) => c.toUpperCase().replace(/[^A-Z0-9]/g, '');
 /** Which requests answer with nobody signed in (the server's public routes). */
 const PUBLIC = new Set(['GET /meta', 'GET /me', 'POST /session', 'POST /pair']);
 /** Which need admin (a paired phone gets 403). */
-const ADMIN: RegExp[] = [/^POST \/session\/sign-out-everywhere$/, /^POST \/pair\/codes$/, /^GET \/devices$/, /^(DELETE|PATCH) \/devices\/[^/]+$/, /^PATCH \/(settings|spending)$/, /^POST \/accounts\/[^/]+\/connect$/, /^GET \/vault$/, /^POST \/vault\/forget$/];
+const ADMIN: RegExp[] = [/^POST \/session\/sign-out-everywhere$/, /^POST \/pair\/codes$/, /^GET \/devices$/, /^(DELETE|PATCH) \/devices\/[^/]+$/, /^PATCH \/(settings|spending)$/, /^POST \/accounts\/[^/]+\/connect$/, /^GET \/vault$/, /^POST \/vault\/forget$/, /^PATCH \/push\/settings$/];
 
 export class SettingsFixtures {
   passwordSet: boolean;
@@ -112,7 +112,7 @@ export class SettingsFixtures {
     if (path === '/accounts') return { status: 200, body: { accounts: this.accounts } };
     if (path === '/vault') return { status: 200, body: { entries: this.vault } };
     // P3: notifications (no push service in fixture mode: the list is empty and the settings are kept here)
-    if (path === '/push/subscriptions') return { status: 200, body: { vapidPublicKey: FIXTURE_VAPID, subscriptions: [], settings: this.push } };
+    if (path === '/push/subscriptions') return { status: 200, body: { vapidPublicKey: FIXTURE_VAPID, keysReset: null, subscriptions: [], settings: this.push } };
     if (path === '/files') {
       const pid = q.get('projectId') || 'general';
       return { status: 200, body: { projectId: pid, folder: `serve/p-${pid}/uploads`, files: this.files.get(pid) ?? [] } };

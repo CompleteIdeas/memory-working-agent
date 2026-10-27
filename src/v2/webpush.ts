@@ -15,12 +15,14 @@
  * service is allowed only in a test run (VITEST or NODE_ENV=test) AND only at the loopback origin named in
  * MWA_PUSH_TEST_ORIGIN.
  *
+ * The VAPID `sub` is a fixed contact (MWA_PUSH_SUBJECT, else a generic mailto:), never the tailnet address.
+ *
  * The VAPID private key lives in `push-vapid.json` beside agent.db (MWA_PUSH_VAPID to put it elsewhere), created on
  * first use with mode 0600 where the file system honours it. It is never logged and never leaves the server; only the
  * public key is handed to browsers (the `applicationServerKey`).
  */
 import { createECDH, createPrivateKey, createPublicKey, hkdfSync, createCipheriv, createDecipheriv, randomBytes, sign, verify, type KeyObject } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { dbFile } from '../paths.js';
 
@@ -100,14 +102,28 @@ function validKeys(k: unknown): k is VapidKeys {
   return !!o && typeof o.publicKey === 'string' && typeof o.privateKey === 'string' && unb64u(o.publicKey).length === 65 && unb64u(o.privateKey).length === 32;
 }
 
+/** P3 review: when the key file was found unreadable and replaced (every phone then has to turn notifications on
+ *  again: their subscriptions were made with the old key). Reported loudly, never silently. */
+let reset: { at: number; movedTo: string | null } | null = null;
+export const vapidReset = (): { at: number; movedTo: string | null } | null => reset;
+
 /** This server's VAPID keys: read, or made once and saved (0600). Two processes starting together agree on one file
- *  (an exclusive create; the loser reads the winner's). */
+ *  (an exclusive create; the loser reads the winner's). A file that exists but cannot be read as keys is NOT silently
+ *  overwritten: it is moved aside (push-vapid.json.corrupt-<time>), the error is logged, new keys are made, and
+ *  vapidReset() says so (Settings shows "Notifications need to be turned on again"). */
 export function vapidKeys(env: NodeJS.ProcessEnv = process.env): VapidKeys {
   const p = vapidPath(env) ?? ':memory:';
   if (memo && memo.path === p) return memo.keys;
   let keys: VapidKeys | null = null;
+  let corrupt = false;
   if (p !== ':memory:' && existsSync(p)) {
-    try { const k = JSON.parse(readFileSync(p, 'utf8')); if (validKeys(k)) keys = { publicKey: k.publicKey, privateKey: k.privateKey }; } catch { /* unreadable: made again below */ }
+    try { const k = JSON.parse(readFileSync(p, 'utf8')); if (validKeys(k)) keys = { publicKey: k.publicKey, privateKey: k.privateKey }; else corrupt = true; } catch { corrupt = true; }
+  }
+  if (corrupt) {
+    let movedTo: string | null = `${p}.corrupt-${Date.now()}`;
+    try { renameSync(p, movedTo); } catch { movedTo = null; }
+    reset = { at: Date.now(), movedTo };
+    console.error(`[push] ERROR: the web push key file ${p} could not be read as keys${movedTo ? ` (moved to ${movedTo})` : ''}. New keys were made: every phone has to turn notifications on again in Settings › Notifications.`);
   }
   if (!keys) {
     keys = newKeys();
@@ -128,7 +144,7 @@ export function vapidKeys(env: NodeJS.ProcessEnv = process.env): VapidKeys {
   return keys;
 }
 /** Tests: forget the memoised keys. */
-export function resetVapid(): void { memo = null; }
+export function resetVapid(): void { memo = null; reset = null; }
 
 function signingKey(k: VapidKeys): KeyObject {
   const pub = unb64u(k.publicKey);
@@ -207,18 +223,36 @@ export interface SendOpts { ttlSec?: number; urgency?: 'very-low' | 'low' | 'nor
 export type SendOutcome = { outcome: 'accepted' | 'gone' | 'retry' | 'failed'; status: number; detail?: string };
 export type Transport = (url: string, init: { method: 'POST'; headers: Record<string, string>; body: Buffer }) => Promise<{ status: number; text?: () => Promise<string> }>;
 
+/** A response body read at most `max` bytes, streamed (P3 review: a push service's error page must not be read whole). */
+export async function readCapped(body: ReadableStream<Uint8Array> | null, max = 2048): Promise<string> {
+  if (!body) return '';
+  const reader = body.getReader();
+  const parts: Uint8Array[] = [];
+  let n = 0;
+  try {
+    while (n < max) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      parts.push(value.subarray(0, max - n)); n += Math.min(value.length, max - n);
+    }
+  } finally { await reader.cancel().catch(() => undefined); }
+  return Buffer.concat(parts).toString('utf8');
+}
+
 const defaultTransport: Transport = async (url, init) => {
   const r = await fetch(url, { method: 'POST', headers: init.headers, body: init.body, redirect: 'manual', signal: AbortSignal.timeout(10_000) });
-  return { status: r.status, text: () => r.text() };
+  // P3 review: a 2xx body is never read (cancelled, so the connection is free at once); an error body at most 2 KB
+  if (r.status >= 200 && r.status < 300) { await r.body?.cancel().catch(() => undefined); return { status: r.status }; }
+  return { status: r.status, text: () => readCapped(r.body) };
 };
 
-/** The VAPID `sub`: MWA_PUSH_SUBJECT, else the helper's https address, else a placeholder mailto (some services
- *  insist on one). */
-export function pushSubject(publicUrl: string | null, env: NodeJS.ProcessEnv = process.env): string {
+/** The VAPID `sub` (P3 review): a fixed contact that says nothing about the person or where the helper lives — never
+ *  the tailnet address. MWA_PUSH_SUBJECT (a mailto: or https: contact you choose), else a generic address. */
+export const DEFAULT_PUSH_SUBJECT = 'mailto:push@mwa.example';
+export function pushSubject(env: NodeJS.ProcessEnv = process.env): string {
   const s = String(env.MWA_PUSH_SUBJECT ?? '').trim();
-  if (/^(mailto:|https:\/\/)/i.test(s)) return s;
-  if (publicUrl && /^https:\/\//i.test(publicUrl)) return publicUrl.replace(/\/+$/, '');
-  return 'mailto:owner@example.com';
+  if (/^mailto:[^\s@]+@[^\s@]+$/i.test(s) || /^https:\/\/[^\s]+$/i.test(s)) return s.slice(0, 200);
+  return DEFAULT_PUSH_SUBJECT;
 }
 
 /** Encrypt and send one message to one subscription. Never throws. */
@@ -231,7 +265,7 @@ export async function sendPush(t: PushTarget, payload: object, o: SendOpts = {},
   try {
     const k = vapidKeys(env);
     body = encryptPayload(Buffer.from(JSON.stringify(payload)), keys.p256dh, keys.auth);
-    auth = `vapid t=${vapidJwt(ep.url.origin, o.subject ?? pushSubject(null, env), k)}, k=${k.publicKey}`;
+    auth = `vapid t=${vapidJwt(ep.url.origin, o.subject ?? pushSubject(env), k)}, k=${k.publicKey}`;
   } catch (e) { return { outcome: 'failed', status: 0, detail: `could not encrypt: ${(e as Error).message.slice(0, 80)}` }; }
   const headers: Record<string, string> = {
     'content-type': 'application/octet-stream', 'content-encoding': 'aes128gcm', ttl: String(o.ttlSec ?? 4 * 3600),

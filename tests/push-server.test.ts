@@ -16,8 +16,9 @@ import { configureSessions, issueSession, sessionValid, revokeAllSessions } from
 import {
   encryptPayload, decryptPayload, checkEndpoint, checkKeys, vapidKeys, vapidJwt, verifyVapidJwt, resetVapid, sendPush, unb64u, b64u, type Transport,
 } from '../src/v2/webpush.js';
-import { saveSubscription, listSubscriptions, sentState, writePrefs, removeSubscriptionsOf } from '../src/v2/push-store.js';
-import { pushTick, setPushDeps, resetPushTests, payloadFor } from '../src/v2/push.js';
+import { saveSubscription, listSubscriptions, sentState, writePrefs, removeSubscriptionsOf, retryRows } from '../src/v2/push-store.js';
+import { appDb } from '../src/v2/db.js';
+import { pushTick, setPushDeps, resetPushTests, payloadFor, FAILING_REMOVE_MS } from '../src/v2/push.js';
 import { createJob, claimTry, endTry, addTry, updateJob } from '../src/v2/jobs.js';
 import { upsertItem, itemId } from '../src/v2/important.js';
 import { readReceipts } from '../src/receipts.js';
@@ -219,7 +220,7 @@ describe('the routes: auth, scopes, ownership, revocation', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mwa-push-cfg-'));
     process.env.MWA_CONFIG_PATH = join(dir, 'mwa.config.json');
     try {
-      const d = device();
+      const d = session(); // an admin (the password session): these are shared settings
       const patch = (b: unknown) => fetch(`${base}/push/settings`, { method: 'PATCH', headers: { ...d.h, ...key(), 'content-type': 'application/json' }, body: JSON.stringify(b) });
       expect((await (await patch({ morning: '04:00' })).json()).error.code).toBe('bad_time');
       expect((await (await patch({ kinds: { spam: true } })).json()).error.code).toBe('bad_kinds');
@@ -430,17 +431,53 @@ describe('what notifies, and what is sent', () => {
     expect(readReceipts().find((x) => x.fire === 'approval:ap_gone')).toMatchObject({ channel: 'push', status: 'dropped' });
   });
 
-  it('a push service that does not answer: nothing marked, tried again on the next tick', async () => {
+  it('review fix 9: "try later" (429/5xx) is retried for THAT device with backoff; the other device is not sent it twice', async () => {
+    const other = browser();
+    saveSubscription({ endpoint: other.endpoint, p256dh: other.p256dh, auth: other.auth, owner: 'local', vendor: 'google' }, T0);
     let down = true;
-    svc = fakeService(() => (down ? 503 : 201));
+    svc = fakeService((url) => (url === b.endpoint && down ? 503 : 201));
     setPushDeps({ transport: svc.t, pendingApprovals: () => approvals, quiet: () => false, now: () => now, tz: () => 'UTC', morningNews: async () => false });
     approvals = [approval('ap_retry')];
     await pushTick();
-    expect(sentState('approval:ap_retry')).toBeNull();
-    down = false;
-    await pushTick();
     expect(sentState('approval:ap_retry')).toBe('sent');
+    expect(svc.seen.map((x) => x.url).sort()).toEqual([b.endpoint, other.endpoint].sort());
+    expect(retryRows().map((r) => [r.sub_id === listSubscriptions().find((x) => x.endpoint === b.endpoint)!.id, r.key, r.tries])).toEqual([[true, 'approval:ap_retry', 1]]);
+    // not due yet: nothing
+    now += 10_000; await pushTick();
     expect(svc.seen).toHaveLength(2);
+    // due (30 s), still down: the delay doubles
+    now += 25_000; let r = await pushTick();
+    expect(r.retried.map((x) => x.outcome)).toEqual(['retry']);
+    expect(retryRows()[0].tries).toBe(2);
+    expect(retryRows()[0].next_at - now).toBe(60_000);
+    // up again: this device gets it; the other one never got a second copy
+    down = false; now += 61_000; r = await pushTick();
+    expect(r.retried.map((x) => x.outcome)).toEqual(['accepted']);
+    expect(svc.seen.filter((x) => x.url === other.endpoint)).toHaveLength(1);
+    expect(svc.seen.filter((x) => x.url === b.endpoint)).toHaveLength(3);
+    const last = svc.seen.filter((x) => x.url === b.endpoint).pop()!;
+    expect(JSON.parse(decryptPayload(last.body, b.priv, b.authBuf).toString('utf8'))).toEqual({ kind: 'approval', id: 'ap_retry', tag: 'mwa-approval' });
+    expect(retryRows()).toHaveLength(0);
+  });
+
+  it('review fix 9: a retry for an item answered meanwhile is dropped; a device failing for days is removed', async () => {
+    svc = fakeService(() => 503);
+    setPushDeps({ transport: svc.t, pendingApprovals: () => approvals, quiet: () => false, now: () => now, tz: () => 'UTC', morningNews: async () => false });
+    approvals = [approval('ap_gone_meanwhile')];
+    await pushTick();
+    expect(retryRows()).toHaveLength(1);
+    approvals = []; // answered on the computer
+    now += 31_000; await pushTick();
+    expect(retryRows()).toHaveLength(0);
+    expect(svc.seen).toHaveLength(1);
+    // the subscription has been failing since the first try: after FAILING_REMOVE_MS it goes
+    const s = listSubscriptions()[0];
+    expect(s.failing_since).not.toBeNull();
+    appDb().prepare('UPDATE push_subs SET failing_since = ? WHERE id = ?').run(Date.now() - FAILING_REMOVE_MS - 1000, s.id);
+    approvals = [approval('ap_next')];
+    const r = await pushTick();
+    expect(r.note).toBe('no subscriptions');
+    expect(listSubscriptions()).toHaveLength(0);
   });
 
   it('receipts: "accepted" (the service took it, not proof it was shown), never "sent"/"delivered"', async () => {
@@ -449,7 +486,7 @@ describe('what notifies, and what is sent', () => {
     const r = readReceipts().filter((x) => x.channel === 'push');
     expect(r).toHaveLength(1);
     expect(r[0]).toMatchObject({ status: 'accepted', fire: 'approval:ap_rc' });
-    expect(r[0].detail).toMatch(/Google’s push service took it for 1 of 1 device/);
+    expect(r[0].detail).toMatch(/accepted by Google’s push service for 1 of 1 device/);
   });
 
   it('a revoked owner gets nothing, and its subscriptions are cleaned up at send time', async () => {

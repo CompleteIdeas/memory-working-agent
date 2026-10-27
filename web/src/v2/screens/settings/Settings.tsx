@@ -77,7 +77,7 @@ export function Settings({ go }: ScreenProps) {
           {admin && <SavedLogins data={data} />}
           <Section id="notify" title="Notifications">
             {/* P3: web push for this device, which kinds, the morning time, quiet hours, a test */}
-            <NotificationsCard publicUrl={data.settings?.publicUrl ?? null} />
+            <NotificationsCard publicUrl={data.settings?.publicUrl ?? null} admin={admin} />
           </Section>
           <VoiceSettings />
           <Look />

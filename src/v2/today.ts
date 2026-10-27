@@ -43,7 +43,7 @@ import { calendarAccounts, calendarNow, calendarTz } from '../sync/calendar.js';
 import { mailAccounts } from '../sync/mail.js';
 import { listJobs, viewJobs, ownerOwns, type JobView } from './jobs.js';
 import { statusPill, type StatusPill } from './pill.js';
-import { itemId, apiItem, visibleItem, type ApiItem, type ItemRow } from './important.js';
+import { itemId, apiItem, visibleItem, phishingSource, type ApiItem, type ItemRow } from './important.js';
 import { atLabel, plainWhy } from './triage.js';
 import { actionsBetween, type ActionRow } from './actions.js';
 import { billingSummary, readCalls, monthStart, monthlyBudget, tokenLogPath } from '../billing.js';
@@ -325,7 +325,7 @@ function needsYou(views: JobView[], approvals: PendingView[], cal: ReturnType<ty
   const phishing = (key: string) => items.get(key)?.caution === 'phishing';
 
   // approvals: the owner's, oldest first (the one that has waited longest)
-  const mine = approvals.filter((a) => ownerOwns(a.personId) && !phishing(`approval:${a.id}`)).sort((a, b) => a.createdAt - b.createdAt);
+  const mine = approvals.filter((a) => ownerOwns(a.personId) && !phishing(`approval:${a.id}`) && !phishingSource(a.taintSources)).sort((a, b) => a.createdAt - b.createdAt);
   if (mine.length) {
     const a = mine[0];
     // a staged action's summary was written by a run (perhaps after reading outside content): outside words

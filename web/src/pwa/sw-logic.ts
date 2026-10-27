@@ -172,7 +172,8 @@ export const PUSH_WORDS: Record<PushKindW | 'other', { title: string; body: stri
 
 /** Where tapping a notification opens the app: the v2 app at Today, the approval, the job (the working sheet). */
 export function pushTarget(p: PushData | null, scope: string): string {
-  const base = new URL('./?ui=v2', scope).href;
+  // `from=notification`: v2 for this visit only — a person who chose the classic app keeps it (App.tsx, P3 review)
+  const base = new URL('./?ui=v2&from=notification', scope).href;
   if (!p) return `${base}#/today`;
   const id = p.id ? encodeURIComponent(p.id) : null;
   switch (p.kind) {

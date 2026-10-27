@@ -27,7 +27,7 @@ describe('push decisions (sw-logic)', () => {
     expect(notificationFor('garbage', SCOPE).options).toMatchObject({ body: PUSH_WORDS.other.body, tag: 'mwa-other' });
   });
   it('where a tap goes: Today, the approval, the job, the working sheet, Settings', () => {
-    const base = `${SCOPE}?ui=v2`;
+    const base = `${SCOPE}?ui=v2&from=notification`; // v2 for this visit only (P3 review)
     expect(pushTarget({ kind: 'approval', id: 'ap_1', tag: '' }, SCOPE)).toBe(`${base}#/approval/ap_1`);
     expect(pushTarget({ kind: 'approval', id: null, tag: '' }, SCOPE)).toBe(`${base}#/today`);
     expect(pushTarget({ kind: 'waiting', id: 'j_1', tag: '' }, SCOPE)).toBe(`${base}#/job/j_1`);
@@ -36,6 +36,7 @@ describe('push decisions (sw-logic)', () => {
     expect(pushTarget({ kind: 'test', id: null, tag: '' }, SCOPE)).toBe(`${base}#/settings/notifications`);
     expect(safeTarget('https://evil.example/#/today', SCOPE)).toBe(`${base}#/today`);
     expect(safeTarget(`${base}#/job/x`, SCOPE)).toBe(`${base}#/job/x`);
+    expect(base).toContain('from=notification'); // App.tsx does not remember v2 for such a visit
   });
   it('which window a tap reuses, and how', () => {
     const v1 = { url: `${SCOPE}?ui=v1`, visibilityState: 'hidden' }, v2 = { url: `${SCOPE}?ui=v2#/today`, visibilityState: 'visible' }, other = { url: 'https://other.example/' };
@@ -103,7 +104,7 @@ describe('the worker (sw.ts): push, notificationclick, pushsubscriptionchange', 
     await w.run('push', { data: { text: () => JSON.stringify({ kind: 'result', id: 'j_42', tag: 'mwa-result', title: 'PLANTED' }) } });
     expect(w.shown).toHaveLength(1);
     expect(w.shown[0].title).toBe('Your helper');
-    expect(w.shown[0].options).toMatchObject({ body: 'A result is ready', tag: 'mwa-result', data: { url: `${SCOPE}?ui=v2#/job/j_42`, kind: 'result' } });
+    expect(w.shown[0].options).toMatchObject({ body: 'A result is ready', tag: 'mwa-result', data: { url: `${SCOPE}?ui=v2&from=notification#/job/j_42`, kind: 'result' } });
     expect(JSON.stringify(w.shown)).not.toContain('PLANTED');
     // no data at all still shows something (a push must)
     await w.run('push', { data: null });
@@ -124,7 +125,7 @@ describe('the worker (sw.ts): push, notificationclick, pushsubscriptionchange', 
     expect(a.navigated).toEqual([`${SCOPE}?ui=v2#/job/j_1`]);
     const b = await loadWorker();
     await b.run('notificationclick', { notification: { data: { url: 'https://evil.example/' }, close: () => {} } });
-    expect(b.opened).toEqual([`${SCOPE}?ui=v2#/today`]); // a foreign URL never opens
+    expect(b.opened).toEqual([`${SCOPE}?ui=v2&from=notification#/today`]); // a foreign URL never opens
   });
   it('pushsubscriptionchange: subscribes again with the server key and tells the server, replacing the old endpoint', async () => {
     const w = await loadWorker({

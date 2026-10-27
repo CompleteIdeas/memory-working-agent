@@ -1294,7 +1294,7 @@ export interface paths {
         /** P3: the server's VAPID public key, this caller's web push subscriptions (an admin sees all), and the notification settings. */
         get: operations["listPushSubscriptions"];
         put?: never;
-        /** P3: store this browser's push subscription for this caller (a paired device or a password session). Only https endpoints on Google's, Apple's, Mozilla's or Microsoft's push service are accepted (400 bad_endpoint). `replaces` is the endpoint it supersedes (pushsubscriptionchange). */
+        /** P3: store this browser's push subscription for this caller (a paired device or a password session). Only https endpoints on Google's, Apple's, Mozilla's or Microsoft's push service are accepted (400 bad_endpoint). An endpoint another live device holds is never moved (409 endpoint_taken); past the overall cap, 409 too_many. `replaces` is the endpoint it supersedes (pushsubscriptionchange). */
         post: operations["addPushSubscription"];
         delete?: never;
         options?: never;
@@ -1332,7 +1332,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** P3: which kinds notify, the morning time, and quiet hours (null or "off" for none). */
+        /** P3: which kinds notify, the morning time, and quiet hours (null or "off" for none). Shared by every device, so admin only; turning notifications on or off for one device is the subscription routes (act). */
         patch: operations["updatePushSettings"];
         trace?: never;
     };
@@ -1359,7 +1359,7 @@ export interface components {
     schemas: {
         Error: {
             error: {
-                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer; important: bad_group, bad_state, bad_scope, not_handled, not_open, no_action, freemail_domain, kind_not_available, unavailable; push (P3): bad_endpoint, bad_keys, bad_kinds, bad_time, bad_quiet, not_subscribed, too_many_tests; W5 settings and files: no_password, wrong_password, not_a_session, bad_body, bad_name, bad_time_zone, bad_url, bad_limit, bad_cap, fixed, bad_config, no_file, no_name, empty_file, unsafe_document, busy, storage_full. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
+                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer; important: bad_group, bad_state, bad_scope, not_handled, not_open, no_action, freemail_domain, kind_not_available, unavailable; push (P3): bad_endpoint, bad_keys, endpoint_taken, too_many, bad_kinds, bad_time, bad_quiet, not_subscribed, too_many_tests; W5 settings and files: no_password, wrong_password, not_a_session, bad_body, bad_name, bad_time_zone, bad_url, bad_limit, bad_cap, fixed, bad_config, no_file, no_name, empty_file, unsafe_document, busy, storage_full. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
                 code: string;
                 /** @description Plain words for a person. */
                 message: string;
@@ -2456,7 +2456,7 @@ export interface components {
             morning: string;
             timeZone: string;
             quietHours: {
-                /** @description HH:MM-HH:MM, or null for none. The same quiet hours Telegram respects (the helper computer's clock). */
+                /** @description HH:MM-HH:MM, or null for none. In timeZone, the person's zone (P3 review). The same quiet hours Telegram respects. */
                 value: string | null;
                 /** @description Set by the deployment (MWA_QUIET_HOURS); not changeable here. */
                 fixed: boolean;
@@ -4839,6 +4839,8 @@ export interface operations {
                     "application/json": {
                         /** @description The applicationServerKey for PushManager.subscribe (base64url, an uncompressed P-256 point). */
                         vapidPublicKey: string;
+                        /** @description When the key file was found unreadable and new keys were made (every device must turn notifications on again), else null. */
+                        keysReset: number | null;
                         subscriptions: components["schemas"]["PushSubscription"][];
                         settings: components["schemas"]["PushSettings"];
                     };

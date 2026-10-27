@@ -112,7 +112,7 @@ export function jobDeliveries(job: string, receipts: Receipt[] = readReceipts())
     .sort((a, b) => b.ts - a.ts);
 }
 
-const CHANNEL = { app: 'the app', telegram: 'Telegram', push: 'phone notifications', none: '' } as const;
+const CHANNEL = { app: 'the app', telegram: 'Telegram', push: 'your phone', none: '' } as const;
 /** The time, with the date when it isn't today — a job that stopped firing must not look current. */
 const hhmm = (ts: number) => {
   const d = new Date(ts); const t = d.toTimeString().slice(0, 5);
@@ -123,7 +123,7 @@ function describe(r: Receipt): string {
   const where = CHANNEL[r.channel];
   switch (r.status) {
     case 'sent': return `sent to ${where} ${hhmm(r.ts)}${r.detail ? ` (${r.detail})` : ''}`;
-    case 'accepted': return `handed to the push service ${hhmm(r.ts)} (not proof the phone showed it)`;
+    case 'accepted': return `sent to your phone ${hhmm(r.ts)} (${r.detail ? `${r.detail}; ` : ''}not proof it was shown)`;
     case 'served': return `shown in an open app tab ${hhmm(r.ts)} (not proof it was read)`;
     case 'stored': return `saved in ${where}, not yet shown in an open tab`;
     case 'superseded': return `replaced by a later result before it was sent`;

@@ -22,6 +22,7 @@ import { randomBytes } from 'node:crypto';
 import { loadConfig, configPath } from './config.js';
 import { recordReceipt } from './receipts.js';
 import { notifyPath } from './paths.js';
+import { localTz } from './sync/tz.js';
 
 /** Every fire a held item speaks for: its own and those it replaced. */
 export function firesOf(i: { fire?: string; replaced?: string[] }): string[] {
@@ -46,10 +47,21 @@ export function parseQuietHours(s: string | undefined | null): QuietWindow | nul
   return { start, end, label: `${pad(h1)}:${pad(m1)}-${pad(h2)}:${pad(m2)}` };
 }
 
-/** Is this moment inside the window? A window that wraps midnight is the union of its two halves. */
-export function inQuietWindow(w: QuietWindow | null, at: Date = new Date()): boolean {
+/** Minutes since midnight on the wall clock of `tz` (an IANA zone), or of this machine when none is given. */
+function wallMinutes(at: Date, tz?: string): number {
+  if (!tz) return at.getHours() * 60 + at.getMinutes();
+  try {
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+      .formatToParts(at).filter((x) => x.type !== 'literal').map((x) => [x.type, Number(x.value)]));
+    return (p.hour ?? 0) * 60 + (p.minute ?? 0);
+  } catch { return at.getHours() * 60 + at.getMinutes(); }
+}
+
+/** Is this moment inside the window, on the wall clock of `tz` (P3 review: the PERSON's zone — a server on Railway
+ *  runs in UTC, and 22:00 means the person's 22:00)? A window that wraps midnight is the union of its two halves. */
+export function inQuietWindow(w: QuietWindow | null, at: Date = new Date(), tz?: string): boolean {
   if (!w) return false;
-  const t = at.getHours() * 60 + at.getMinutes();
+  const t = wallMinutes(at, tz);
   return w.start < w.end ? t >= w.start && t < w.end : t >= w.start || t < w.end;
 }
 
@@ -87,12 +99,13 @@ export function quietWindow(): QuietWindow | null {
 }
 
 export function isQuietNow(at: Date = new Date()): boolean {
-  return inQuietWindow(quietWindow(), at);
+  return inQuietWindow(quietWindow(), at, localTz());
 }
 
-/** The machine's time zone, for saying what "22:00" means. */
+/** The person's time zone (MWA_TZ, else this machine's — the calendar's and the morning check-in's), for saying what
+ *  "22:00" means and for keeping it. */
 export function timeZoneName(): string {
-  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || process.env.TZ || 'local time'; } catch { return process.env.TZ || 'local time'; }
+  try { return localTz(); } catch { return process.env.TZ || 'local time'; }
 }
 
 /** Save the window to mwa.config.json ("off" clears it). Refuses to touch a config it can't parse —

@@ -14,6 +14,9 @@ export type PushState =
   | 'on'
   /** allowed or not asked yet, and not subscribed */
   | 'off'
+  /** P3 review: this browser's subscription was made with a key the server no longer has (its key file was replaced):
+   *  it must be turned on again */
+  | 'stale'
   /** the person (or the browser) said no: only the browser's settings can undo it */
   | 'blocked'
   /** iPhone or iPad in a browser tab: install to the home screen first */
@@ -34,6 +37,8 @@ export interface PushFacts {
   standalone: boolean;
   /** this browser has a subscription AND the server lists it as this caller's */
   subscribed: boolean;
+  /** this browser has a subscription made with another key than the server's current one (P3 review) */
+  staleKey?: boolean;
 }
 
 export function pushState(f: PushFacts): PushState {
@@ -43,6 +48,7 @@ export function pushState(f: PushFacts): PushState {
   if (ios && !f.standalone) return 'ios-install';
   if (!f.hasWorker || !f.hasPush || !f.hasNotification) return 'unsupported';
   if (f.permission === 'denied') return 'blocked';
+  if (f.staleKey) return 'stale';
   return f.subscribed && f.permission === 'granted' ? 'on' : 'off';
 }
 
@@ -61,7 +67,8 @@ export interface PushWords { line: string; button: string | null; tone: 'ok' | '
 export function pushWords(s: PushState, f: Pick<PushFacts, 'userAgent' | 'standalone' | 'touchPoints'>, secureAddress: string): PushWords {
   switch (s) {
     case 'on': return { line: 'On for this device. I’ll tell you when something needs you.', button: 'Turn off', tone: 'ok' };
-    case 'off': return { line: 'Off for this device. Turn them on and your phone will ask whether to allow them.', button: 'Turn on notifications', tone: 'plain' };
+    case 'off': return { line: 'Off on this device. Turn them on and your phone will ask whether to allow them.', button: 'Turn on notifications', tone: 'plain' };
+    case 'stale': return { line: 'Notifications need to be turned on again on this device: your helper’s notification key was replaced.', button: 'Turn on again', tone: 'warn' };
     case 'blocked': return { line: `Notifications are blocked for MWA on this device. ${unblockSteps(f.userAgent, f.standalone, f.touchPoints)}`, button: null, tone: 'warn' };
     case 'ios-install': return { line: 'On iPhone and iPad, notifications work only in the installed app: add MWA to your Home Screen first (Share › Add to Home Screen), open it from there, then turn them on here.', button: null, tone: 'warn' };
     case 'insecure': return { line: `Notifications need the secure address. Open ${secureAddress} on this device.`, button: null, tone: 'warn' };
@@ -71,7 +78,7 @@ export function pushWords(s: PushState, f: Pick<PushFacts, 'userAgent' | 'standa
 
 // ── the browser side ────────────────────────────────────────────────────────────────────────────────────────────
 
-export function readFacts(subscribed: boolean): PushFacts {
+export function readFacts(subscribed: boolean, staleKey = false): PushFacts {
   const w = typeof window === 'undefined' ? undefined : window;
   const nav = typeof navigator === 'undefined' ? undefined : navigator;
   const N = (w as unknown as { Notification?: { permission: NotificationPermission } } | undefined)?.Notification;
@@ -85,6 +92,7 @@ export function readFacts(subscribed: boolean): PushFacts {
     touchPoints: nav?.maxTouchPoints ?? 0,
     standalone: !!w && (w.matchMedia?.('(display-mode: standalone)').matches || (nav as unknown as { standalone?: boolean })?.standalone === true),
     subscribed,
+    staleKey,
   };
 }
 
@@ -108,7 +116,7 @@ export function keyBytes(b64u: string): Uint8Array {
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }
-const sameKey = (a: ArrayBuffer | null | undefined, b: Uint8Array) => !!a && a.byteLength === b.length && new Uint8Array(a).every((x, i) => x === b[i]);
+export const sameKey = (a: ArrayBuffer | null | undefined, b: Uint8Array) => !!a && a.byteLength === b.length && new Uint8Array(a).every((x, i) => x === b[i]);
 
 export function platformName(ua: string, touchPoints = 0): string {
   if (isIos(ua, touchPoints)) return 'ios';

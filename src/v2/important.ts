@@ -328,3 +328,42 @@ export function itemForStream(id: string, now: number, tz: string): ApiItem | nu
   if (r && !visibleItem(r)) return undefined;
   return r && inSnapshot(r, now) ? apiItem(r, now, tz) : null;
 }
+
+// ── P3 review: phishing, by where an approval's taint came from ─────────────────────────────────────────────────
+
+/** A mail the deterministic phishing signal fired on (its verdict, or its Important item's caution). */
+function mailPhishing(mailId: string, d: AppDb): boolean {
+  if ((getVerdict(mailId, d)?.flags ?? '').startsWith('phishing:')) return true;
+  return getItem(itemId(`mail:${mailId}`), d)?.caution === 'phishing';
+}
+
+/**
+ * Did any of these taint sources (ToolContext.taintSources: `gmail:<provider id>` from read_email, `mail:<app mail
+ * id>`, `item:<Important item id>`) come from a phishing-flagged mail or item? Used where approvals become Important
+ * items (triage.ts rebuildApprovals), by Today's Needs-you and by push, so a send a run staged after reading a
+ * phishing message is never put in front of the person as "needs your OK" or pushed to their phone. Never throws.
+ */
+export function phishingSource(sources: readonly string[] | undefined, d: AppDb = appDb()): boolean {
+  if (!sources?.length) return false;
+  try {
+    for (const s of sources.slice(0, 20)) {
+      const i = s.indexOf(':');
+      if (i < 1) continue;
+      const kind = s.slice(0, i), id = s.slice(i + 1);
+      if (!id) continue;
+      if (kind === 'mail' && mailPhishing(id, d)) return true;
+      if (kind === 'item') {
+        const it = getItem(id, d);
+        if (it?.caution === 'phishing') return true;
+        if (it?.source_ref?.startsWith('m_') && mailPhishing(it.source_ref, d)) return true; // a mail item, or a fact read from a mail
+      }
+      if (kind === 'gmail') {
+        // the provider's message id: every account holding it (the app's mail id is account + provider id)
+        let rows: { account: string }[] = [];
+        try { rows = d.prepare('SELECT account FROM mail_headers WHERE provider_id = ?').all(id) as { account: string }[]; } catch { rows = []; }
+        for (const r of rows) if (mailPhishing(`m_${Buffer.from(`${r.account}\n${id}`, 'utf8').toString('base64url')}`, d)) return true;
+      }
+    }
+  } catch { return false; }
+  return false;
+}

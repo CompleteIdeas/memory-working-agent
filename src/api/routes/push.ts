@@ -7,7 +7,8 @@
  *                                            password session, or this machine). Only https endpoints on the known
  *                                            push services (SSRF); `replaces` drops the subscription it supersedes
  *   DELETE /push/subscriptions/{id}   (act)   the caller's own (an admin: any)
- *   PATCH  /push/settings             (act)   which kinds notify, the morning time, quiet hours
+ *   PATCH  /push/settings             (admin) which kinds notify, the morning time, quiet hours: shared by every
+ *                                            device, so the owner's (P3 review); a phone sees them read-only
  *   POST   /push/test                 (act)   "Send a test" to the caller's own subscriptions, at once
  *
  * A subscription belongs to the device or session that made it: revoking the device, signing that session out or
@@ -18,10 +19,10 @@ import { ApiError, type Route } from '../router.js';
 import type { Caller } from '../auth.js';
 import { sessionIdOf, cookieToken } from '../sessions.js';
 import { cleanDeviceName } from '../auth.js';
-import { checkEndpoint, checkKeys, vapidKeys, vendorWords, type Vendor } from '../../v2/webpush.js';
+import { checkEndpoint, checkKeys, vapidKeys, vapidReset, vendorWords, type Vendor } from '../../v2/webpush.js';
 import {
   saveSubscription, getSubscription, subscriptionByEndpoint, listSubscriptions, deleteSubscription, readPrefs, writePrefs, validMorning,
-  PUSH_KINDS, type PushKind, type SubRow,
+  PUSH_KINDS, PushStoreError, type PushKind, type SubRow,
 } from '../../v2/push-store.js';
 import { sendTest, liveSubscriptions } from '../../v2/push.js';
 import { quietWindow, setQuietHours, quietEnvInvalid, parseQuietHours } from '../../quiet.js';
@@ -67,7 +68,9 @@ export const pushRoutes: Route[] = [
       const owner = ownerOrNull(who, req);
       const admin = !!who?.scopes.has('admin');
       const subs = listSubscriptions().filter((s) => admin || s.owner === owner);
-      return { body: { vapidPublicKey: vapidKeys().publicKey, subscriptions: subs.map((s) => subView(s, s.owner === owner)), settings: settingsView() } };
+      const vapidPublicKey = vapidKeys().publicKey; // first: reading the key file is what finds it corrupt
+      const reset = vapidReset();
+      return { body: { vapidPublicKey, keysReset: reset ? reset.at : null, subscriptions: subs.map((s) => subView(s, s.owner === owner)), settings: settingsView() } };
     },
   },
   {
@@ -88,7 +91,14 @@ export const pushRoutes: Route[] = [
         const old = subscriptionByEndpoint(b.replaces);
         if (old && old.owner === owner) deleteSubscription(old.id);
       }
-      const s = saveSubscription({ endpoint: ep.url.href, p256dh: String(keys.p256dh).replace(/=+$/, ''), auth: String(keys.auth).replace(/=+$/, ''), owner, platform, vendor: ep.vendor, expiresAt });
+      let s: SubRow;
+      try {
+        s = saveSubscription({ endpoint: ep.url.href, p256dh: String(keys.p256dh).replace(/=+$/, ''), auth: String(keys.auth).replace(/=+$/, ''), owner, platform, vendor: ep.vendor, expiresAt, vapid: vapidKeys().publicKey });
+      } catch (e) {
+        // P3 review: another device's endpoint is never moved to this caller; past the cap, no live device is cut off
+        if (e instanceof PushStoreError) throw new ApiError(409, e.code, e.message);
+        throw e;
+      }
       return { status: 201, body: { subscription: subView(s, true) } };
     },
   },
@@ -104,7 +114,7 @@ export const pushRoutes: Route[] = [
     },
   },
   {
-    method: 'PATCH', path: '/push/settings', scope: 'act',
+    method: 'PATCH', path: '/push/settings', scope: 'admin',
     handler: ({ body }) => {
       const b = bodyOf(body);
       const known = ['kinds', 'morning', 'quietHours'];

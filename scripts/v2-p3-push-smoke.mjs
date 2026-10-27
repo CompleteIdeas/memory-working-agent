@@ -7,7 +7,7 @@
  * the server's subscription check (it accepts the mock's loopback origin only because the server runs with
  * NODE_ENV=test and MWA_PUSH_TEST_ORIGIN naming it), the notifier, the RFC 8291 encryption, the service worker.
  *
- *   node --import tsx scripts/v2-p3-push-smoke.mjs --data <empty folder> [--out <dir>] [--port 7897]
+ *   node --import tsx scripts/v2-p3-push-smoke.mjs --data <empty folder> [--axe <axe.min.js>] [--out <dir>] [--port 7897]
  *
  * It checks:
  *   1. Settings › Notifications says "Off", asks for the permission only on the tap, and turns on (the server lists a
@@ -18,14 +18,16 @@
  *   3. that payload delivered to the service worker (CDP ServiceWorker.deliverPushMessage) shows "A job is waiting for
  *      you" with the tag mwa-waiting; a notificationclick on it opens the working sheet at that job in the open page
  *   4. "Send a test" reaches the mock and the page says which push service took it (not "delivered")
- *   5. Turn off: the server forgets it
+ *   3b. with only a classic (v1) tab open, a tap opens the job in v2 there, and the stored choice of v1 is kept
+ *   5. Turn off: the server forgets it; axe on the section
+ *   6. a paired phone (fixture world) sees the shared settings read-only, with a plain line why; axe
  *   6. the server is stopped by its PID; the mock is closed
  */
 import { chromium } from 'playwright-core';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createECDH, randomBytes } from 'node:crypto';
-import { mkdirSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readdirSync, statSync, existsSync, readFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -40,6 +42,18 @@ mkdirSync(OUT, { recursive: true });
 mkdirSync(DATA, { recursive: true });
 const { decryptPayload } = await import(pathToFileURL(join(ROOT, 'src', 'v2', 'webpush.ts')).href);
 
+const AXE = arg('axe', process.env.AXE_PATH ?? '');
+const axeSrc = AXE && existsSync(AXE) ? readFileSync(AXE, 'utf8') : null;
+if (!axeSrc) console.warn('! no axe-core given (--axe): accessibility checks are skipped');
+async function axe(pg, label, include) {
+  if (!axeSrc) return;
+  await pg.addScriptTag({ content: axeSrc }).catch(() => {});
+  const v = await pg.evaluate(async (sel) => {
+    const r = await window.axe.run(sel ? { include: [sel] } : document, { resultTypes: ['violations'] });
+    return r.violations.map((x) => `${x.id} (${x.impact}): ${x.nodes.length} × ${x.nodes.slice(0, 2).map((n) => n.target.join(' ')).join(' | ')}`);
+  }, include ?? null);
+  check(`${label}: axe 0 violations`, v.length === 0, v.join('; '));
+}
 const results = [];
 let failed = 0;
 function check(name, ok, detail = '') { results.push({ name, ok: !!ok, detail: String(detail ?? '') }); if (!ok) failed++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail && !ok ? ` — ${detail}` : ''}`); }
@@ -128,7 +142,7 @@ try {
     };
     PushManager.prototype.getSubscription = async function () { return current; };
   }, FAKE);
-  const page = await ctx.newPage();
+  let page = await ctx.newPage();
   await page.goto(`${BASE}/?ui=v2&view=settings`);
   // the worker must control the page (it shows the notification and answers the tap)
   for (let i = 0; i < 75 && !(await page.evaluate(() => !!navigator.serviceWorker.controller).catch(() => false)); i++) await sleep(200);
@@ -188,7 +202,7 @@ try {
     let shown = [];
     for (let i = 0; i < 25 && !shown.length && sw; i++) { shown = await sw.evaluate(async () => (await self.registration.getNotifications()).map((n) => ({ title: n.title, body: n.body, tag: n.tag, data: n.data }))); if (!shown.length) await sleep(200); }
     check('the worker shows "A job is waiting for you" (tag mwa-waiting), no title', shown.length === 1 && shown[0].body === 'A job is waiting for you' && shown[0].tag === 'mwa-waiting' && !JSON.stringify(shown).includes('PLANTED'), JSON.stringify(shown));
-    check('…pointing at the job', shown[0]?.data?.url === `${BASE}/?ui=v2#/job/${j.job.id}`, JSON.stringify(shown[0]?.data));
+    check('…pointing at the job (v2 for this visit only: from=notification)', shown[0]?.data?.url === `${BASE}/?ui=v2&from=notification#/job/${j.job.id}`, JSON.stringify(shown[0]?.data));
     if (sw && shown.length) {
       await sw.evaluate(async () => {
         const [n] = await self.registration.getNotifications();
@@ -198,6 +212,26 @@ try {
       check('a tap opens the working sheet at that job in the open page', await card.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false));
       await page.screenshot({ path: join(OUT, '3-tap-opens-job.png') });
     }
+  }
+
+  // ---------- 3b. a tap with only the classic app open: v2 for that tap, the person's choice of v1 kept ----------
+  if (regId && payloadText) {
+    await page.close();
+    page = await ctx.newPage();
+    await page.goto(`${BASE}/?ui=v1`); // the person chose the classic app (remembered as mwa-ui=v1)
+    for (let i = 0; i < 50 && !(await page.evaluate(() => !!navigator.serviceWorker.controller).catch(() => false)); i++) await sleep(200);
+    const cdp2 = await ctx.newCDPSession(page);
+    await cdp2.send('ServiceWorker.enable');
+    await cdp2.send('ServiceWorker.deliverPushMessage', { origin: `${BASE}/`, registrationId: String(regId), data: payloadText });
+    const sw = ctx.serviceWorkers()[0];
+    let n = 0;
+    for (let i = 0; i < 25 && !n && sw; i++) { n = await sw.evaluate(async () => (await self.registration.getNotifications()).length); if (!n) await sleep(200); }
+    await sw?.evaluate(async () => { const [x] = await self.registration.getNotifications(); self.dispatchEvent(new NotificationEvent('notificationclick', { notification: x })); });
+    await page.waitForURL(/from=notification/, { timeout: 10_000 }).catch(() => {});
+    const card = page.locator(`#jt-${j.job.id}`);
+    const opened = await card.waitFor({ state: 'visible', timeout: 15_000 }).then(() => true, () => false);
+    const kept = await page.evaluate(() => localStorage.getItem('mwa-ui'));
+    check('a tap with only a classic (v1) tab: that tab opens the job in v2, and the person\'s choice of v1 is kept', opened && kept === 'v1', `opened=${opened} mwa-ui=${kept} url=${page.url()}`);
   }
 
   // ---------- 4. Send a test ----------
@@ -216,8 +250,19 @@ try {
   await page.getByRole('button', { name: 'Turn off' }).click();
   await page.waitForFunction(() => document.querySelector('#notify-state')?.getAttribute('data-state') === 'off', null, { timeout: 10_000 }).catch(() => {});
   const after = await (await fetch(`${BASE}/api/v1/push/subscriptions`, { headers: H })).json();
-  check('Turn off: the server forgets this device', after.subscriptions.length === 0 && (await state.getAttribute('data-state')) === 'off');
+  check('Turn off: the server forgets this device', after.subscriptions.length === 0 && (await page.locator('#notify-state').getAttribute('data-state')) === 'off');
   await page.screenshot({ path: join(OUT, '5-notifications-off.png'), fullPage: true });
+  await axe(page, 'Settings › Notifications (off)', '#sec-notify');
+
+  // ---------- 6. a paired phone sees the shared settings read-only (fixture world: a phone, no admin) ----------
+  const phone = await ctx.newPage();
+  await phone.goto(`${BASE}/?fixtures=1&scenario=phone&view=settings`);
+  const ro = await phone.locator('#notify-readonly').waitFor({ timeout: 15_000 }).then(() => true, () => false);
+  const disabled = ro && await phone.getByRole('checkbox', { name: 'Something needs your OK' }).isDisabled();
+  const quietRo = ro && await phone.locator('#notify-quiet-ro').isVisible();
+  check('a paired phone: kinds, morning time and quiet hours read-only, with a plain line why', ro && disabled && quietRo, `ro=${ro} disabled=${disabled} quiet=${quietRo}`);
+  await phone.screenshot({ path: join(OUT, '6-phone-read-only.png'), fullPage: true });
+  await axe(phone, 'Settings › Notifications (phone, read-only)', '#sec-notify');
 } catch (e) {
   check('the run finished without an error', false, e.stack ?? e.message);
 } finally {

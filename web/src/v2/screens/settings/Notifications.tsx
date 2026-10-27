@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../../store/react';
 import type { PushKindName, PushList, PushSettings } from '../../api/client';
-import { askPermission, browserSubscription, platformName, pushState, pushWords, readFacts, subscribeBrowser, unsubscribeBrowser } from '../../../pwa/push';
+import { askPermission, browserSubscription, keyBytes, platformName, pushState, pushWords, readFacts, sameKey, subscribeBrowser, unsubscribeBrowser } from '../../../pwa/push';
 import { secureAddress } from '../../../pwa/install';
 import { messageOf } from './useSettings';
 
@@ -21,36 +21,30 @@ const KIND_LABEL: Record<PushKindName, string> = {
 const KINDS: PushKindName[] = ['approval', 'waiting', 'result', 'morning'];
 type Said = { text: string; error: boolean } | null;
 
-export function NotificationsCard({ publicUrl = null }: { publicUrl?: string | null }) {
+export function NotificationsCard({ publicUrl = null, admin = false }: { publicUrl?: string | null; admin?: boolean }) {
   const client = useStore().client;
   const [list, setList] = useState<PushList | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [endpoint, setEndpoint] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<Said>(null);
+  const [stale, setStale] = useState(false);
 
   const load = useCallback(async () => {
     try {
+      // P3 review: nothing is re-registered quietly here. A subscription the server no longer knows (an admin removed
+      // it, or the push service kept refusing it) shows as "Off on this device" until the person turns it on again.
       const [l, sub] = await Promise.all([client.listPushSubscriptions(), browserSubscription()]);
-      let got = l;
-      // the browser still has a subscription the server no longer knows (pruned, or this phone paired again): give it
-      // back quietly — only when notifications are already allowed, so nothing is ever asked here
-      if (sub && Notification.permission === 'granted' && !l.subscriptions.some((s) => s.mine && s.endpoint === sub.endpoint)) {
-        const j = sub.toJSON();
-        if (j.endpoint && j.keys?.p256dh && j.keys.auth) {
-          try {
-            await client.addPushSubscription({ endpoint: j.endpoint, keys: { p256dh: j.keys.p256dh, auth: j.keys.auth }, expirationTime: j.expirationTime ?? null, platform: platformName(navigator.userAgent, navigator.maxTouchPoints) });
-            got = await client.listPushSubscriptions();
-          } catch { /* shown as off */ }
-        }
-      }
-      setList(got); setEndpoint(sub?.endpoint ?? null); setLoadError(null);
+      setList(l); setEndpoint(sub?.endpoint ?? null);
+      // a subscription made with a key the server no longer has can never be delivered: say so
+      setStale(!!sub && (!sameKey(sub.options?.applicationServerKey ?? null, keyBytes(l.vapidPublicKey)) || (l.keysReset != null && !l.subscriptions.some((s) => s.mine && s.endpoint === sub.endpoint))));
+      setLoadError(null);
     } catch (e) { setLoadError(messageOf(e)); }
   }, [client]);
   useEffect(() => { void load(); }, [load]);
 
   const mine = list?.subscriptions.find((s) => s.mine && s.endpoint === endpoint) ?? null;
-  const facts = readFacts(!!mine);
+  const facts = readFacts(!!mine, stale);
   const state = pushState(facts);
   const words = pushWords(state, facts, secureAddress(publicUrl));
 
@@ -115,7 +109,8 @@ export function NotificationsCard({ publicUrl = null }: { publicUrl?: string | n
       {others > 0 && <p className="s soft">Also on for {others === 1 ? 'one other device' : `${others} other devices`}.</p>}
       {state === 'on' && <div className="acts"><button type="button" className="vbtn" disabled={busy} onClick={() => void test()}>Send a test</button></div>}
 
-      <fieldset className="notifykinds">
+      {!admin && <p className="s soft" id="notify-readonly">Which kinds, the morning time and quiet hours are shared by all your devices, so they’re changed on your computer, or after signing in with your password.</p>}
+      <fieldset className="notifykinds" disabled={!admin}>
         <legend className="rowtitle">Tell me when</legend>
         {KINDS.map((k) => (
           <label key={k} className="checkrow">
@@ -124,8 +119,8 @@ export function NotificationsCard({ publicUrl = null }: { publicUrl?: string | n
           </label>
         ))}
       </fieldset>
-      <MorningTime settings={list.settings} save={save} />
-      <QuietHours settings={list.settings} save={save} />
+      <MorningTime settings={list.settings} save={save} admin={admin} />
+      <QuietHours settings={list.settings} save={save} admin={admin} />
       <p className="s soft" id="notify-privacy">
         Notifications pass through Google’s or Apple’s push service; they never contain your messages or titles. They only say
         something like “Something needs your OK”, and the app shows the details once you open it.
@@ -135,19 +130,19 @@ export function NotificationsCard({ publicUrl = null }: { publicUrl?: string | n
   );
 }
 
-function MorningTime({ settings, save }: { settings: PushSettings; save: (p: { morning: string }, ok: string) => Promise<void> }) {
+function MorningTime({ settings, save, admin }: { settings: PushSettings; save: (p: { morning: string }, ok: string) => Promise<void>; admin: boolean }) {
   const [v, setV] = useState(settings.morning);
   useEffect(() => setV(settings.morning), [settings.morning]);
   return (
     <div className="setrow">
       <label className="grow" htmlFor="notify-morning"><span className="rowtitle">Morning check-in at</span><span className="s">Only when there’s something to say ({settings.timeZone}).</span></label>
-      <input id="notify-morning" type="time" min="05:00" max="11:30" value={v} onChange={(e) => setV(e.target.value)}
+      <input id="notify-morning" type="time" min="05:00" max="11:30" value={v} disabled={!admin} onChange={(e) => setV(e.target.value)}
         onBlur={() => { if (v && v !== settings.morning) void save({ morning: v }, `Your morning check-in comes at ${v}.`); }} />
     </div>
   );
 }
 
-function QuietHours({ settings, save }: { settings: PushSettings; save: (p: { quietHours: string | null }, ok: string) => Promise<void> }) {
+function QuietHours({ settings, save, admin }: { settings: PushSettings; save: (p: { quietHours: string | null }, ok: string) => Promise<void>; admin: boolean }) {
   const q = settings.quietHours;
   const [from, to] = (q.value ?? '22:00-07:00').split('-');
   const [on, setOn] = useState(!!q.value);
@@ -155,6 +150,7 @@ function QuietHours({ settings, save }: { settings: PushSettings; save: (p: { qu
   const [b, setB] = useState(to);
   useEffect(() => { setOn(!!q.value); const [x, y] = (q.value ?? '22:00-07:00').split('-'); setA(x); setB(y); }, [q.value]);
   if (q.fixed) return <p className="s">Quiet hours: {q.value ?? 'none'} (set when this helper was installed).</p>;
+  if (!admin) return <p className="s" id="notify-quiet-ro"><span className="rowtitle">Quiet hours</span>{q.value ? `${q.value.replace('-', ' to ')}, in your time zone (${settings.timeZone}).` : 'None.'}</p>;
   return (
     <fieldset className="notifyquiet">
       <legend className="rowtitle">Quiet hours</legend>
@@ -166,7 +162,7 @@ function QuietHours({ settings, save }: { settings: PushSettings; save: (p: { qu
           <button type="button" className="vbtn" onClick={() => void save({ quietHours: `${a}-${b}` }, `Quiet from ${a} to ${b}. What needs you then waits until ${b}.`)}>Save</button>
         </div>
       )}
-      <p className="s soft">The same quiet hours apply to Telegram. Times are on the helper’s computer clock.</p>
+      <p className="s soft">Times are in your time zone ({settings.timeZone}). The same quiet hours apply to Telegram.</p>
     </fieldset>
   );
 }
