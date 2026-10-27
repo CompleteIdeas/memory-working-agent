@@ -8,7 +8,11 @@
  * The pill opens the working sheet; the Ask bar opens the Ask sheet.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { useMeta, useNotices, useStatusPill } from '../store/react';
+import { useMeta, useNotices, useNow, useStatusPill, useStore } from '../store/react';
+import { useUpdate } from '../../pwa/react';
+import { applyUpdate, serverTooOld } from '../../pwa/register';
+import { updateWords } from '../../pwa/update';
+import { offlineWords } from '../../pwa/offline';
 import { WorkingSheet, type AskAbout } from './sheets';
 import { Calendar, Important, Settings, Today, type View } from './screens';
 import { AskSheet } from '../screens/ask/AskSheet';
@@ -89,13 +93,45 @@ function Toasts() {
   );
 }
 
-function UpdateBar() {
+/**
+ * P2: "A new version is ready · Reload". Two sources, one banner: a new build's service worker waiting (src/pwa/), or the
+ * API's 426 (the store's updateReady), which also makes the page look for that worker first. Reload never interrupts an
+ * action on its way: it waits (a few seconds at most) until nothing is in flight and the outbox is saved, then the new
+ * worker takes over and the page reloads once. What waits in the outbox is in IndexedDB and is sent after the reload.
+ */
+export function UpdateBar() {
+  const store = useStore();
   const { updateReady } = useMeta();
-  if (!updateReady) return null;
+  const update = useUpdate();
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { if (updateReady) serverTooOld(); }, [updateReady]);
+  const words = updateWords(update) ?? (updateReady ? { text: 'A new version is ready', button: 'Reload' } : null);
+  if (!words) return null;
+  const reload = async () => {
+    if (busy) return;
+    setBusy(true);
+    for (let i = 0; i < 50 && store.getState().inflight.length; i++) await new Promise((r) => setTimeout(r, 100));
+    await Promise.race([store.idle(), new Promise((r) => setTimeout(r, 2_000))]);
+    applyUpdate();
+  };
   return (
     <div className="updatebar" role="alert">
-      <p>A newer version is ready</p>
-      <button type="button" className="vbtn" onClick={() => location.reload()}>Reload</button>
+      <p>{busy ? 'Updating…' : words.text}</p>
+      <button type="button" className="vbtn" disabled={busy} onClick={() => void reload()}>{words.button}</button>
+    </div>
+  );
+}
+
+/** P2: the quiet offline banner: what the screen shows is the saved copy, and what waits to be sent. */
+export function OfflineBar() {
+  const { connection, updatedAt, waitingToSend, updateReady, auth } = useMeta();
+  const now = useNow();
+  const w = offlineWords({ connection, updatedAt, waiting: waitingToSend, now, blocked: updateReady || auth === 'signin' });
+  if (!w) return null;
+  return (
+    <div className="offlinebar" role="status" id="offlinebar">
+      <p>{w.head}</p>
+      {w.waiting && <p className="offlinewait">{w.waiting}</p>}
     </div>
   );
 }
@@ -121,7 +157,8 @@ export function Shell() {
     return v && v in SCREENS ? (v as View) : 'today';
   });
   const [workOpen, setWorkOpen] = useState(false);
-  const [askOpen, setAskOpen] = useState(false);
+  // P1: the home-screen shortcut "Ask" opens with the Ask sheet (?ask=1)
+  const [askOpen, setAskOpen] = useState(() => new URLSearchParams(location.search).get('ask') === '1');
   const [about, setAbout] = useState<AskAbout | null>(null);
   // W4: what the screen has open (a project): the Ask bar and the mic ask there
   const [context, setContext] = useState<AskAbout | null>(null);
@@ -153,6 +190,7 @@ export function Shell() {
         <button type="button" className="avatar avatar-top" aria-label="Settings" onClick={() => go('settings')}><Person /></button>
       </header>
 
+      <OfflineBar />
       <main id="main" ref={main} className="main" tabIndex={-1}>
         <Screen desk={desk} wide={wide} go={go} ask={ask} onContext={setContext} openWork={() => setWorkOpen(true)} />
       </main>

@@ -88,7 +88,7 @@ export class SignInRequired extends ApiError { constructor(m: string) { super(40
 export class Forbidden extends ApiError { constructor(code: string, m: string) { super(403, code, m); this.name = 'Forbidden'; } }
 /** 409: the thing changed under us (finished, already running, removed…). Show the server's current state. */
 export class Conflict extends ApiError { constructor(code: string, m: string) { super(409, code, m); this.name = 'Conflict'; } }
-/** 426: this build is older than the server accepts. Offer "A newer version is ready · Reload". */
+/** 426: this build is older than the server accepts. Offer "A new version is ready · Reload". */
 export class UpdateRequired extends ApiError { constructor(m: string) { super(426, 'client_too_old', m); this.name = 'UpdateRequired'; } }
 /** The request never got an answer (offline, the server is down, a proxy dropped it). Safe to retry with the same key. */
 export class NetworkError extends Error {

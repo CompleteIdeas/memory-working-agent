@@ -1,4 +1,4 @@
-# MWA v2 web app (W1: shell, client, store, fixture mode · W2: Today and the Calendar · W3: Important and the mail reader · W4: Ask and Projects)
+# MWA v2 web app (W1: shell, client, store, fixture mode · W2: Today and the Calendar · W3: Important and the mail reader · W4: Ask and Projects · P1/P2: install, offline, updates)
 
 The v2 app is opt-in until W6: open the app with `?ui=v2` (remembered on the device; `?ui=v1` goes back), or use
 Settings › "Use the current app". v1 is unchanged: v2 is a lazy chunk with its own stylesheet that v1 never loads.
@@ -107,6 +107,43 @@ overrides it), a dashed **simulated** tag shows in the header, and `&theme=dark|
 forces a theme. Writes it acts on: job stop / continue / open, calendar draft confirm / remove, project messages and
 asks (a simulated answer follows on the stream, with its progress), plan choices, projects (create, rename, archive),
 moving a turn, Stop, Steer and the offer.
+
+## Install, offline and updates (slices P1/P2)
+
+```
+web/src/pwa/          (in the main bundle: both UIs share one worker)
+  sw-logic.ts         the worker's decisions, pure: route a request, which caches to delete, is a fetched file usable
+  sw.ts               the worker (bundled to dist-ui/sw.js by web/vite-pwa.ts with this build's file list)
+  update.ts           "A new version is ready · Reload" as a state machine
+  register.ts         registers the worker, feeds update.ts, keeps the install prompt, points v2 at its manifest
+  install.ts          "Install on this phone" in plain words, per browser
+  offline.ts          the offline banner's words
+  react.ts            useUpdate, useInstallState
+web/vite-pwa.ts       after the build: hashes every file, writes sw.js + pwa-build.json
+web/public/manifest-v2.webmanifest, web/public/pwa/   the v2 manifest and icons (node web/scripts/gen-pwa-icons.mjs)
+screens/settings/InstallCard.tsx                      Settings › This device › Install on this phone
+src/pwa.ts            (server) cache headers; the worker, manifests and icons are public behind the password
+scripts/tailscale-serve.mjs                           npm run tailscale:serve
+```
+
+- **One worker for v1 and v2.** They are one build (one index.html, v2 a lazy chunk) at the same origin and path, so two
+  workers would fight over one scope. v1 keeps its own manifest; v2 swaps to `manifest-v2.webmanifest` (start_url
+  `./?ui=v2&source=pwa`, shortcuts Ask · Today · Important) before the browser reads it.
+- **Precache, all or nothing.** The worker caches every file of its build in `mwa-precache-<buildId>`; index.html must
+  be the page that loads this build's entry script (a sign-in page is refused), or the install fails and the old worker
+  stays. So a cached index.html never points at hashed files the cache lacks.
+- **Pages: network first, the cached shell offline** (or after 4 s, or on a 5xx from the proxy while the computer
+  sleeps). Online, the server still decides (a sign-in page, v1's reload-on-401). `/api/*` is never touched: data lives
+  in IndexedDB through the store. The cache before the current one is kept, so an old tab's lazy chunk still loads.
+- **Updates.** A new build's worker installs and WAITS; the shell shows "A new version is ready · Reload". Reload waits
+  for actions in flight, then the worker takes over (SKIP_WAITING) and the page reloads once. A page that already runs
+  the new build (it fetched index.html after the deploy) lets the worker take over quietly. A 426 shows the same banner
+  and looks for the new worker first. The outbox is in IndexedDB, so it survives.
+- **Offline.** "Offline · showing what I had at 9:10 AM" and "2 things will be sent when you're back online" under the
+  header; Stop, "Add to it" and a plan choice with a price are refused offline in plain words (a narrower ask, which has
+  no price, still waits). A choice already in an outbox from an earlier build is still sent.
+- **Tests:** `npx vitest run tests/pwa-sw.test.ts tests/pwa-client.test.ts tests/pwa-server.test.ts`, and
+  `node scripts/v2-p1p2-smoke.mjs --data <empty folder> --axe <axe.min.js>` (a real `mwa serve` on 7899, builds A and B).
 
 ## Tests
 

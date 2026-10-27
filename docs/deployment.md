@@ -150,6 +150,13 @@ domain pack (`MWA_DOMAIN_PACK`) + 4 domain MCP servers → port the existing 222
 - Set it in the app (Connections → Tailscale) or as `TAILSCALE_AUTHKEY`. At boot the container
   joins your tailnet (userspace networking) and is reachable at its tailnet name — **no public
   port**. Keep `MWA_ACCESS_PASSWORD` as a second factor.
+- HTTPS for phones (v2 P1): the container also runs `tailscale serve --bg --https=443 http://127.0.0.1:<port>` (tailnet
+  only, Funnel never on) and sets `MWA_PUBLIC_URL=https://<name>.<tailnet>.ts.net` unless you set it. Phones need that
+  https address to install the app and keep it offline. Needs MagicDNS + HTTPS certificates enabled in the Tailscale admin
+  (https://login.tailscale.com/admin/dns). `TAILSCALE_SERVE=0` turns it off. On a computer (no Docker):
+  `npm run tailscale:serve`, which prints the .env lines: `MWA_PUBLIC_URL`, `MWA_ALLOWED_HOSTS=<name>.<tailnet>.ts.net`,
+  optionally `MWA_TRUSTED_PROXY=127.0.0.1`, and `MWA_ACCESS_PASSWORD` (required: relayed, nobody is "this machine")
+  (see docs/onboarding-and-pairing.html#secure-address).
 
 ### Secrets
 - Local/Docker: `.env` on the data volume (0600, gitignored). Azure: **Key Vault** → secret refs.

@@ -44,8 +44,8 @@ from a code-grounded plan (2026-10-26); file:line references there were checked 
 | W1 | v2 web shell + typed client + IndexedDB store + fixture server from prototype data | L | A1 | |
 | W2–W5 | Today+Calendar · Important+mail · Projects+Ask+plan · Settings+first run+devices | M each | W1 + backend | |
 | W6 | Cutover (v2 default, v1 at ?ui=v1 for one release) | S | W2–W5 | |
-| P1 | Installable PWA + secure context (tailscale serve, manifest, install UX) | M | W1 | |
-| P2 | Offline data, outbox, update prompt, clear on revoke | L | P1, A4 | |
+| P1 | Installable PWA + secure context (tailscale serve, manifest, install UX) | M | W1 | built on v2-p1 with P2 (not merged); phone test needs Robert's tailnet |
+| P2 | Offline data, outbox, update prompt, clear on revoke | L | P1, A4 | built on v2-p1 (not merged); clear on revoke is W5's sign-out (the worker caches only the public shell) |
 | P3 | Web push | M | P2, A4 | |
 | P4 | Voice (browser speech) | S | W4 | |
 

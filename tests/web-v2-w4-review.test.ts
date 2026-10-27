@@ -127,15 +127,37 @@ describe('p6: Stop and "Add to it" are about the run going now', () => {
   });
 });
 
+// P2: a priced choice is no longer queued offline (it is refused in place, "choose when you're back online"); a choice
+// already waiting in an outbox saved by an earlier build is still sent after the update, and refused there as before.
+function oldOutboxChoice(w: ReturnType<typeof world>, askId: string, payload: Record<string, unknown>) {
+  const entry = { id: `old_${askId}`, key: `key_${askId}`, kind: 'ask.choose' as const, args: { id: askId, payload }, label: 'Your choice', createdAt: FIXTURE_NOW, attempts: 0 };
+  w.set({ outbox: [...w.store.getState().outbox, entry] });
+  return { entryId: entry.id };
+}
+
 describe('p3 / p2-A: a choice made offline and refused when sent', () => {
-  it('the refusal is kept for the card (no stuck "waiting"), shown with Ask again', async () => {
+  it('P2: offline, a priced choice is refused in place (not queued); the plan still waits for a choice', async () => {
     const w = world();
     await w.start();
     const r = await w.store.act('ask', { payload: { text: 'learn everything from these two PDFs', files: PDFS } }, 'ask', { quiet: true });
     const start = w.store.getState().askOutcomes[r.entryId!].start as AskStart;
     w.setOnline(false);
     const c = await w.store.act('ask.choose', { id: start.askId, payload: { mode: 'now', capUsd: 0.5 } }, 'Your choice', { quiet: true });
-    expect(c.queued).toBe(true);
+    expect(c).toMatchObject({ ok: false, queued: false, code: 'offline' });
+    expect(c.message).toMatch(/offline.*back online/i);
+    expect(w.store.getState().outbox).toHaveLength(0);
+    // a narrower ask has no price: it may wait
+    const n = await w.store.act('ask.choose', { id: start.askId, payload: { narrowIndex: 0 } }, 'Your choice', { quiet: true });
+    expect(n.queued).toBe(true);
+    w.store.stop();
+  });
+  it('the refusal is kept for the card (no stuck "waiting"), shown with Ask again', async () => {
+    const w = world();
+    await w.start();
+    const r = await w.store.act('ask', { payload: { text: 'learn everything from these two PDFs', files: PDFS } }, 'ask', { quiet: true });
+    const start = w.store.getState().askOutcomes[r.entryId!].start as AskStart;
+    w.setOnline(false);
+    const c = oldOutboxChoice(w, start.askId, { mode: 'now', capUsd: 0.5 });
     forgetFile(w.fx, PDFS[0]);
     w.setOnline(true);
     await until(() => w.store.getState().outbox.length === 0 && Object.keys(w.store.getState().refused).length > 0);
@@ -157,7 +179,7 @@ describe('p3 / p2-A: a choice made offline and refused when sent', () => {
     const r = await w.store.act('ask', { payload: { text: '[old] go through all my newsletters' } }, 'ask', { quiet: true });
     const askId = w.store.getState().askOutcomes[r.entryId!].start.askId;
     w.setOnline(false);
-    const c = await w.store.act('ask.choose', { id: askId, payload: { mode: 'now', capUsd: 0.5 } }, 'c', { quiet: true });
+    const c = oldOutboxChoice(w, askId, { mode: 'now', capUsd: 0.5 });
     w.setOnline(true);
     await until(() => !!w.store.getState().refused[c.entryId!]);
     expect(w.store.getState().refused[c.entryId!].code).toBe('expired');

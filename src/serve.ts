@@ -61,6 +61,7 @@ import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, ru
 import { logger, readLogs, type LogLevel } from './logger.js';
 import { createV1Handler } from './api/v1.js';
 import { makeAuthenticate } from './api/auth.js';
+import { pwaPublic, uiCacheControl } from './pwa.js';
 import { setJobRouteDeps, capFor, setCap } from './api/routes/jobs.js';
 import { setStreamDeps } from './api/routes/stream.js';
 import { startCalendarSync } from './sync/calendar.js';
@@ -687,7 +688,8 @@ function serveStatic(res: ServerResponse, dir: string, pathname: string): void {
     if (extname(rel)) { res.writeHead(404); res.end('not found'); return; }
     file = join(dir, 'index.html');
   }
-  res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' });
+  // P1/P2 (src/pwa.ts): hashed assets are immutable; index.html, sw.js and the manifests are always revalidated
+  res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream', 'cache-control': uiCacheControl(relative(dir, file)) });
   res.end(readFileSync(file));
 }
 
@@ -867,7 +869,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         // BL-70: a share link opens one file for whoever holds it: its page, the app's built assets
         // and the share API answer without the password. The token is the whole permission.
         // v2: /api/v1 checks its own callers (a paired phone has no password session), so the gate lets it through.
-        const shared = p.startsWith('/s/') || p.startsWith('/api/share/') || p.startsWith('/assets/') || p === '/api/v1' || p.startsWith('/api/v1/');
+        // P1/P2: the service worker, the manifests and install icons (fetched without cookies), and index.html for the
+        // worker's own precache request, are public like /assets/ (src/pwa.ts)
+        const shared = p.startsWith('/s/') || p.startsWith('/api/share/') || p.startsWith('/assets/') || p === '/api/v1' || p.startsWith('/api/v1/')
+          || pwaPublic(p, req);
         if (!authed(req) && p !== '/api/health' && !shared) {
           if (p.startsWith('/api/')) { res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'locked', message: 'Sign in to continue.' })); return; }
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(LOGIN_HTML); return;

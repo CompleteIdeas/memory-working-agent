@@ -8,6 +8,7 @@ import { useMeta, useProjects, useThread } from '../store/react';
 import { Important } from '../screens/important/Important';
 import type { Project } from '../api/client';
 import { Back, Chev, ProjectIcon, Spark } from './icons';
+import { InstallCard } from '../screens/settings/InstallCard';
 
 export { Important };
 import type { AskAbout } from './sheets';
@@ -94,6 +95,8 @@ export function Settings({ go }: ScreenProps) {
           <button key={t} type="button" role="radio" aria-checked={theme === t} onClick={() => pick(t)}>{t[0].toUpperCase() + t.slice(1)}</button>
         ))}
       </div>
+      <h2 className="sh">This device</h2>
+      <InstallCard />
       <h2 className="sh">The app</h2>
       <div className="card">
         <div className="setrow"><span className="grow">Your helper<span className="s" style={{ display: 'block' }}>{meta ? `Version ${meta.server} · API ${meta.api}` : 'Not reached yet'}</span></span></div>

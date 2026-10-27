@@ -15,7 +15,7 @@
  *      Idempotency-Key and replayed on `online` and when the app becomes visible — the same key, so the server never
  *      does it twice. A 409 (it changed meanwhile) drops the action and shows the server's current state.
  *
- * Errors: 401 → `auth: 'signin'` (the shell asks to sign in or pair); 426 → `updateReady` ("A newer version is
+ * Errors: 401 → `auth: 'signin'` (the shell asks to sign in or pair); 426 → `updateReady` ("A new version is
  * ready · Reload"); 403 and other refusals → a notice with the server's own words.
  */
 import {
@@ -119,6 +119,17 @@ export interface ActOptions {
 }
 /** W4: actions about a run happening NOW: never kept for later (a Stop sent an hour late could land on another run). */
 const NOW_ONLY: ReadonlySet<ActionKind> = new Set(['project.stop', 'project.steer']);
+/** P2: a plan's choice that starts paid work (Do it now / In the background, with its price and ready time) is made
+ *  online only: sent hours later the plan may be old and its price wrong. A narrower ask (no price) may wait. */
+export function nowOnly(kind: ActionKind, args: ActionArgs): boolean {
+  if (NOW_ONLY.has(kind)) return true;
+  return kind === 'ask.choose' && typeof args.payload?.mode === 'string';
+}
+const OFFLINE_WORDS: Partial<Record<ActionKind, string>> = {
+  'project.stop': 'You’re offline — I can’t stop it from here right now.',
+  'project.steer': 'You’re offline — I can’t add to it from here right now.',
+  'ask.choose': 'You’re offline — choose when you’re back online, so the price and the time are still right.',
+};
 
 // ---------- the Important list (W3) ----------
 export interface ImportantMeta { handledCount: number; skipped: ImportantList['skipped']; sorting: ImportantList['sorting'] }
@@ -712,14 +723,14 @@ export class V2Store {
     // queued: it moves from in flight to the outbox in one step, so the screen does not flicker back
     const requeue = (m?: string, quietly = false) => { landed(); return this.enqueue(entry, m, quietly); };
     // W4: Stop and "Add to it" are about the run going now: refused in place, never kept for later
-    const nowOnly = NOW_ONLY.has(kind);
+    const isNowOnly = nowOnly(kind, entry.args);
     const refuse = (code: string, message: string): ActResult => { landed(); return { ok: false, queued: false, code, message, entryId }; };
-    const offline = () => refuse('offline', kind === 'project.stop' ? 'You’re offline — I can’t stop it from here right now.' : 'You’re offline — I can’t add to it from here right now.');
-    if (!this.env.online() || this.s.connection === 'offline') return nowOnly ? offline() : requeue();
-    if (this.s.updateReady) return nowOnly ? refuse('client_too_old', 'Reload the app first.') : requeue('Saved. It will be sent after you reload.');
-    if (this.s.auth === 'signin') return nowOnly ? refuse('locked', 'Sign in again first.') : requeue('Saved. It will be sent once you sign in again.');
+    const offline = () => refuse('offline', OFFLINE_WORDS[kind] ?? 'You’re offline — this needs your helper right now.');
+    if (!this.env.online() || this.s.connection === 'offline') return isNowOnly ? offline() : requeue();
+    if (this.s.updateReady) return isNowOnly ? refuse('client_too_old', 'Reload the app first.') : requeue('Saved. It will be sent after you reload.');
+    if (this.s.auth === 'signin') return isNowOnly ? refuse('locked', 'Sign in again first.') : requeue('Saved. It will be sent once you sign in again.');
     // an earlier action on the same thing is still waiting in the outbox: this one goes behind it, in order
-    if (!nowOnly && entry.args.id && this.s.outbox.some((x) => x.args.id === entry.args.id)) {
+    if (!isNowOnly && entry.args.id && this.s.outbox.some((x) => x.args.id === entry.args.id)) {
       const r = requeue('It will be sent right after the change before it.', true);
       void this.replayOutbox();
       return r;
@@ -729,9 +740,9 @@ export class V2Store {
       landed();
       return { ok: true, queued: false, data, message: messageOf(data), entryId };
     } catch (e) {
-      if (e instanceof NetworkError) return nowOnly ? offline() : requeue();
-      if (e instanceof UpdateRequired) { this.set({ updateReady: true }); return nowOnly ? refuse('client_too_old', 'Reload the app first.') : requeue('Saved. It will be sent after you reload.'); }
-      if (e instanceof SignInRequired) { this.set({ auth: 'signin' }); return nowOnly ? refuse('locked', 'Sign in again first.') : requeue('Saved. It will be sent once you sign in again.'); }
+      if (e instanceof NetworkError) return isNowOnly ? offline() : requeue();
+      if (e instanceof UpdateRequired) { this.set({ updateReady: true }); return isNowOnly ? refuse('client_too_old', 'Reload the app first.') : requeue('Saved. It will be sent after you reload.'); }
+      if (e instanceof SignInRequired) { this.set({ auth: 'signin' }); return isNowOnly ? refuse('locked', 'Sign in again first.') : requeue('Saved. It will be sent once you sign in again.'); }
       landed();
       if (e instanceof Conflict && !TRANSIENT_CONFLICTS.has(e.code)) { await this.showCurrent(entry); }
       const message = e instanceof Error ? e.message : 'That didn’t work.';
