@@ -17,6 +17,8 @@ export interface ScreenProps {
   desk: boolean; wide: boolean; go: (v: View) => void; ask: (a?: AskAbout) => void;
   /** W2: open the working sheet (a waiting job's card on Today) */
   openWork?: () => void;
+  /** W4: what the screen has open (a project), so the Ask bar asks there; null when nothing is */
+  onContext?: (c: AskAbout | null) => void;
 }
 
 // W2: Today and the Calendar are full screens now

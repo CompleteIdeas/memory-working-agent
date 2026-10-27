@@ -111,7 +111,7 @@ try {
       // a Done line opens its sheet
       await main(page).getByRole('button', { name: /I drafted a yes to Coach Ellen/ }).click();
       const dd = page.locator('#done-dlg');
-      check(`${L} N01: a Done line opens "Done for you" with See it and Ask about this`, await seen(dd.getByRole('heading', { name: 'Done for you' })) && await dd.getByRole('button', { name: 'See it' }).isVisible() && await dd.getByRole('button', { name: 'Ask about this' }).isVisible());
+      check(`${L} N01: a Done line opens "Done for you" with See it and Ask about this (about the email)`, await seen(dd.getByRole('heading', { name: 'Done for you' })) && await dd.getByRole('button', { name: 'See it' }).isVisible() && await dd.getByRole('button', { name: 'Ask about this' }).isVisible());
       await page.waitForTimeout(300);
       await shot(page, `N01-${L}-done-sheet`);
       await axe(page, `${L} N01 done sheet`);
@@ -191,8 +191,14 @@ try {
       const evd = page.locator('#event-dlg');
       check(`${L} N02: an event opens its sheet with Ask about this`, await seen(evd.getByRole('heading', { name: 'Farrier at the barn' })) && await evd.getByRole('button', { name: 'Ask about this' }).isVisible());
       await evd.getByRole('button', { name: 'Ask about this' }).click();
-      check(`${L} N02: Ask about this opens the Ask sheet about the event`, await seen(page.locator('#ask-dlg').getByText(/About: Farrier at the barn/)));
-      await page.locator('#ask-dlg').getByRole('button', { name: 'Close' }).click();
+      check(`${L} N02: Ask about this is tied to the event ("About: Farrier at the barn")`, await seen(evd.getByText(/About: Farrier at the barn/)));
+      const sugg = evd.locator('.sugg').first();
+      if (await seen(sugg, 5_000)) await sugg.click(); else { await evd.getByRole('textbox', { name: /^Ask about/ }).fill('What should I bring?'); await evd.getByRole('button', { name: 'Send' }).click(); }
+      check(`${L} N02: the answer shows in the event's sheet, under "You asked"`, await seen(evd.getByRole('heading', { name: 'You asked' })) && await seen(evd.locator('.qa-a .who'), 15_000));
+      await page.waitForTimeout(300);
+      await shot(page, `N02-${L}-01b-event-ask`);
+      await axe(page, `${L} N02 event sheet`);
+      await evd.getByRole('button', { name: 'Close' }).click();
       // Wednesday: the helper's draft, with where it came from
       await strip.getByRole('tab', { name: /^Wednesday, November 11/ }).click();
       const draft = main(page).getByRole('group', { name: 'Draft: Riley — dentist' });

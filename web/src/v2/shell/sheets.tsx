@@ -1,13 +1,14 @@
 /**
- * The shell's sheets (v2 build, slice W1): the working sheet (opened from the status pill) and the Ask sheet (from
- * the Ask bar). Accessible names follow the prototype's contract (scratchpad/ux/prototype-v2/REPLAY-NOTES.md):
+ * The shell's sheets (v2 build, slice W1): the working sheet (opened from the status pill). The Ask sheet (from the
+ * Ask bar) is W4's, in screens/ask/AskSheet.tsx, with the same accessible names. Accessible names follow the
+ * prototype's contract (scratchpad/ux/prototype-v2/REPLAY-NOTES.md):
  * `#work-dlg` titled with the pill's text, groups `heading "Waiting for you · N"` …, each job an `article` named by
  * its title; `#ask-dlg` with `textbox "Message your helper"` and `button "Send"`; both close with `button "Close"`.
  */
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { useJobs, useMeta, useProjectMap, useProjects, useSendMessage, useStatusPill, useThread } from '../store/react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useJobs, useProjectMap, useStatusPill } from '../store/react';
 import { jobLine, money } from '../store/status';
-import type { Job, MessageSent } from '../api/client';
+import type { Job } from '../api/client';
 import { Close, Spark } from './icons';
 
 export function Sheet({ id, titleId, title, open, onClose, head, children }: {
@@ -40,7 +41,8 @@ export function Sheet({ id, titleId, title, open, onClose, head, children }: {
   );
 }
 
-export interface AskAbout { label: string; projectId: string | null }
+/** What the Ask sheet is opened for; `kind` + `id` make it "Ask about this" (W4: POST /ask with `about`). */
+export interface AskAbout { label: string; projectId: string | null; kind?: 'item' | 'mail' | 'event' | 'draft' | 'job' | 'conflict'; id?: string }
 
 // ---------- the working sheet ----------
 
@@ -89,7 +91,7 @@ export function WorkingSheet({ open, onClose, onAskAbout }: { open: boolean; onC
                   <p className="cost">{live ? `${money(j.costUsd)} so far` : `${money(j.costUsd)} spent`}{live && j.capUsd != null ? ` · stops at $${j.capUsd.toFixed(2)}` : ''}</p>
                   <div className="acts">
                     {primary(j)}
-                    <button type="button" className="vbtn vbtn-quiet" onClick={() => onAskAbout({ label: j.title, projectId: j.projectId })}><Spark />Ask about this</button>
+                    <button type="button" className="vbtn vbtn-quiet" onClick={() => onAskAbout({ label: j.title, projectId: j.projectId, kind: 'job', id: j.id })}><Spark />Ask about this</button>
                   </div>
                 </article>
               );
@@ -101,74 +103,4 @@ export function WorkingSheet({ open, onClose, onAskAbout }: { open: boolean; onC
   );
 }
 
-// ---------- the Ask sheet ----------
-
-interface Sent { id: number; text: string; projectId: string; turnId?: string; note?: string; error?: boolean }
-
-export function AskSheet({ open, about, onClose }: { open: boolean; about: AskAbout | null; onClose: () => void }) {
-  const projects = useProjects();
-  const { fixtures } = useMeta();
-  const send = useSendMessage();
-  const general = projects.find((p) => p.general) ?? null;
-  const target = about?.projectId ?? general?.id ?? null;
-  const targetName = projects.find((p) => p.id === target)?.name ?? null;
-  const { turns } = useThread(open ? target : null);
-  const [text, setText] = useState('');
-  const [sent, setSent] = useState<Sent[]>([]);
-  const [sending, setSending] = useState(false);
-  const input = useRef<HTMLInputElement>(null);
-  const n = useRef(0);
-  useEffect(() => { if (open) { setSent([]); setText(''); setTimeout(() => input.current?.focus(), 30); } }, [open, about]);
-  const byTurn = useMemo(() => new Map(turns.map((t) => [t.id, t])), [turns]);
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    const words = text.trim();
-    if (!words || sending) return;
-    if (!target) { setSent((s) => [...s, { id: ++n.current, text: words, projectId: '', note: 'Your helper isn’t reachable yet. Try again in a moment.', error: true }]); return; }
-    setSending(true);
-    const full = about ? `About ${about.label}: ${words}` : words;
-    const id = ++n.current;
-    setSent((s) => [...s, { id, text: words, projectId: target }]);
-    setText('');
-    const r = await send(target, full);
-    setSending(false);
-    setSent((s) => s.map((x) => (x.id !== id ? x
-      : r.ok ? { ...x, turnId: (r.data as MessageSent | undefined)?.turnId, note: (r.data as MessageSent | undefined)?.state === 'offer' ? (r.data as MessageSent).message : undefined }
-      : { ...x, note: r.message, error: !r.queued })));
-  };
-
-  return (
-    <Sheet id="ask-dlg" titleId="ask-title" title="Ask your helper" open={open} onClose={onClose}
-      head={<span className="ask-ctx" id="ask-ctx">{about ? <span className="aboutchip">About: {about.label}</span> : null}</span>}>
-      <div className="ask-log" id="ask-log" role="log" aria-live="polite" aria-label="Conversation with your helper">
-        {sent.map((m) => {
-          const t = m.turnId ? byTurn.get(m.turnId) : undefined;
-          return (
-            <div key={m.id} className="thread">
-              <div className="msg-you">{m.text}</div>
-              {m.note ? <p className="ask-note">{m.note}</p>
-                : !t || t.kind === 'running' ? <span className="typing" aria-label="Your helper is answering"><i /><i /><i /></span>
-                : (
-                  <div className="msg-h">
-                    <div className="who"><Spark size={16} />Your helper{fixtures ? <span className="simmini">simulated</span> : null}</div>
-                    <div className="txt">{t.reply || t.message}</div>
-                  </div>
-                )}
-            </div>
-          );
-        })}
-      </div>
-      <form className="ask-form" id="ask-form" autoComplete="off" noValidate onSubmit={(e) => void submit(e)}>
-        {targetName && <p className="ask-note" style={{ padding: '0 4px 8px' }}>Goes to {targetName}.</p>}
-        <div className="ask-row">
-          <label htmlFor="ask-input" className="sr-only">Message your helper</label>
-          <input ref={input} id="ask-input" className="ask-input" type="text" placeholder="Ask anything…" enterKeyHint="send" value={text} onChange={(e) => setText(e.target.value)} />
-          <button type="submit" className="sendbtn" id="send-btn" aria-label="Send" disabled={sending}>
-            <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" /></svg>
-          </button>
-        </div>
-      </form>
-    </Sheet>
-  );
-}
+// The Ask sheet is screens/ask/AskSheet.tsx (W4).

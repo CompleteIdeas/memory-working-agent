@@ -9,7 +9,8 @@ import { useEffect, useState } from 'react';
 import type { ImportantItem, MailMessage } from '../../api/client';
 import { useItemActions, useMeta, useStore } from '../../store/react';
 import { Back, Spark } from '../../shell/icons';
-import { AskAboutButton, AskAboutSheet, QaBlock, useAskAbout } from '../important/AskAbout';
+import { AskAbout } from '../ask/AskAbout';
+import { shortLabel } from '../../store/important';
 import { ActionPreview, CautionBox } from '../important/ItemDetail';
 import { CautionTag } from '../important/ItemRow';
 import { CheckIcon, WarnIcon } from '../important/icons';
@@ -113,8 +114,6 @@ export interface ReaderProps {
 export function MailReader({ mailId, item, back, heading = 'h1', idp, onHandled, onNotImportant, onRun, busy }: ReaderProps) {
   const { msg, error, loading } = useMailMessage(mailId);
   const { fixtures } = useMeta();
-  const [askOpen, setAskOpen] = useState(false);
-  const ask = useAskAbout(item ? { kind: 'item', id: item.id } : { kind: 'mail', id: mailId }, item ?? null);
   // the message's own caution (review of W3: opened from All email it had none), else the item's
   const caution = (msg ? msg.caution ?? item?.caution : item?.caution) ?? null;
   const phishing = caution === 'phishing';
@@ -160,8 +159,10 @@ export function MailReader({ mailId, item, back, heading = 'h1', idp, onHandled,
         )}
         {msg && !phishing && (
           <>
-            <div className="askrow"><AskAboutButton onClick={() => setAskOpen(true)} /></div>
-            <QaBlock qa={ask.qa} idp={`rd-${idp}`} />
+            <div className="askrow">
+              <AskAbout key={item ? item.id : mailId} kind={item ? 'item' : 'mail'} id={item ? item.id : mailId} label={shortLabel(item ? item.title : msg.subject || '(no subject)')}
+                item={item ?? null} form="sheet" sheetId={`about-mail-${idp}`} taintNote={'Based on what the email says — check before acting'} />
+            </div>
           </>
         )}
         {item && item.state === 'open' && (onHandled || onNotImportant) && (
@@ -171,7 +172,6 @@ export function MailReader({ mailId, item, back, heading = 'h1', idp, onHandled,
           </div>
         )}
       </article>
-      <AskAboutSheet id={`about-mail-${idp}`} open={askOpen} onClose={() => setAskOpen(false)} ask={ask} />
     </>
   );
 }

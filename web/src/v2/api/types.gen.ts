@@ -719,7 +719,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Stop the answer being written in this project. The step that is running finishes; nothing new starts. 409 nothing_running. */
+        /** Stop the answer being written in this project. The step that is running finishes; nothing new starts. 409 nothing_running; with `runId`, 409 not_running when that run is not the one going now (it finished, or another started). */
         post: operations["stopProjectRun"];
         delete?: never;
         options?: never;
@@ -738,7 +738,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Add a note to the answer being written in this project (the "add to it" of a busy send). 409 nothing_running. */
+        /** Add a note to the answer being written in this project (the "add to it" of a busy send). 409 nothing_running; with `runId`, 409 not_running when that run is not the one going now. */
         post: operations["steerProjectRun"];
         delete?: never;
         options?: never;
@@ -3261,7 +3261,14 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description The run the person meant (the running turn's runId): a Stop never lands on a later run. */
+                    runId?: string;
+                };
+            };
+        };
         responses: {
             /** @description Stopping. */
             200: {
@@ -3294,6 +3301,8 @@ export interface operations {
             content: {
                 "application/json": {
                     text: string;
+                    /** @description The run the person meant: the note never lands on a later run. */
+                    runId?: string;
                 };
             };
         };

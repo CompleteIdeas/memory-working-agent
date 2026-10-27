@@ -24,7 +24,8 @@ import { Sheet } from '../../shell/sheets';
 import { Chev, Person, Spark } from '../../shell/icons';
 import { ImportantBody } from '../important/Important';
 import { DayAgenda, EventSheet } from '../calendar/Agenda';
-import { ConflictAsk, useDraftNote } from '../calendar/Calendar';
+import { ConflictAskAbout, useDraftNote } from '../calendar/Calendar';
+import { AskAbout } from '../ask/AskAbout';
 import { useNotNow } from '../calendar/notnow';
 import './today.css';
 
@@ -93,7 +94,7 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
   const runNeed = async (n: TodayNeed) => {
     const a = n.action;
     if (!a) { open(n.open); return; }
-    if (a.kind === 'draft-note' && n.itemId) { setAskFor(n.id); await note.run(n.itemId, n.id.replace(/^need:conflict:/, ''), n.title); return; }
+    if (a.kind === 'draft-note' && n.itemId) { setAskFor(n.id); await note.run(n.itemId, n.title); return; }
     if (n.kind === 'job') {
       const j = jobs.jobs.find((x) => x.id === n.open.id);
       const f = j ? ({ continue: jobs.continue, 'start-over': jobs.startOver, stop: jobs.stop, open: jobs.open, resume: jobs.resume } as Record<string, ((x: typeof j) => Promise<unknown>) | undefined>)[a.kind] : undefined;
@@ -161,7 +162,7 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
             <button type="button" className="vbtn vbtn-quiet" onClick={() => notNow.hide(n.id, 'OK, I’ll bring it up again tomorrow.')}>Not now</button>
           </div>
           {n.kind === 'conflict' && askFor === n.id && (
-            <ConflictAsk about={note.asking?.about ?? null} open={!!note.asking} prefill={note.asking?.prefill} onClose={note.close} idp={`need-${n.id.replace(/[^a-z0-9]/gi, '-')}`} />
+            <ConflictAskAbout conflictId={n.id.replace(/^need:conflict:/, '')} itemId={n.itemId} label={n.title} asking={note.asking} sheetId={`about-need-${n.id.replace(/[^a-z0-9]/gi, '-')}`} />
           )}
         </div>
       ))}
@@ -241,9 +242,12 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
             <p className="soft" style={{ fontSize: 14.5 }}>{new Date(doneLine.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</p>
             <div className="acts dacts">
               <button type="button" className="vbtn" onClick={() => { const o = doneLine.open; setDoneLine(null); open(o); }}>See it</button>
-              {/* TODO(W4): <AskAbout kind="activity" id={doneLine.id} label=…/> replaces this thin call */}
-              <button type="button" className="vbtn vbtn-helper" onClick={() => { const l = doneLine; setDoneLine(null); ask({ label: l.text.length > 60 ? `${l.text.slice(0, 59)}…` : l.text, projectId: null }); }}><Spark />Ask about this</button>
+              {!aboutOfDone(doneLine) && (
+                <button type="button" className="vbtn vbtn-helper" onClick={() => { const l = doneLine; setDoneLine(null); ask({ label: l.text.length > 60 ? `${l.text.slice(0, 59)}…` : l.text, projectId: null }); }}><Spark />Ask about this</button>
+              )}
             </div>
+            {/* Ask about this (W4's one component) on the thing the line is about: the answer shows here */}
+            {aboutOfDone(doneLine) && <AskAbout key={doneLine.id} {...aboutOfDone(doneLine)!} label={doneLine.text.length > 40 ? `${doneLine.text.slice(0, 39)}…` : doneLine.text} />}
           </div>
         )}
       </Sheet>
@@ -262,10 +266,20 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
         <YourDay now={now} note={cal.showEvents ? (cal.state === 'ok' ? null : cal.note) : cal.note} known={cal.showEvents} free={cal.canSayFree} onOpen={setEvent} />
       </aside>
       {sheets}
-      <EventSheet item={event} conflicts={[]} fixtures={fixtures} onClose={() => setEvent(null)}
-        onAsk={(label) => { setEvent(null); ask({ label, projectId: null }); /* TODO(W4): <AskAbout kind="event" …/> */ }} />
+      <EventSheet item={event} conflicts={[]} fixtures={fixtures} onClose={() => setEvent(null)} />
     </div>
   );
+}
+
+/** What a Done line is about, for W4's AskAbout (an action in the activity log has no thing to ask about: null). */
+function aboutOfDone(d: TodayDone): { kind: 'event' | 'draft' | 'job' | 'mail' | 'item'; id: string } | null {
+  const o = d.open;
+  if (!o.id) return null;
+  if (o.kind === 'calendar') return { kind: o.id.startsWith('cd_') ? 'draft' : 'event', id: o.id };
+  if (o.kind === 'job') return { kind: 'job', id: o.id };
+  if (o.kind === 'mail') return { kind: 'mail', id: o.id };
+  if (o.kind === 'item') return { kind: 'item', id: o.id };
+  return null;
 }
 
 /** The desktop's right-hand column: the whole day (events and drafts), live from the store, with the "now" line. */

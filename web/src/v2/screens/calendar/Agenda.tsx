@@ -16,6 +16,7 @@ import {
 } from '../../store/calendar-ops';
 import { Sheet } from '../../shell/sheets';
 import { Spark } from '../../shell/icons';
+import { AskAbout } from '../ask/AskAbout';
 import './calendar.css';
 
 const Check = () => (
@@ -106,8 +107,8 @@ export function DayAgenda({ day, items, conflicts, now, isToday, empty, highligh
 }
 
 /** An event (or a draft) in a sheet: when, where, which calendar, what it overlaps, and Ask about this. */
-export function EventSheet({ item, conflicts, fixtures, onClose, onAsk }: {
-  item: DisplayItem | null; conflicts: CalendarConflict[]; fixtures: boolean; onClose: () => void; onAsk: (label: string) => void;
+export function EventSheet({ item, conflicts, fixtures, onClose }: {
+  item: DisplayItem | null; conflicts: CalendarConflict[]; fixtures: boolean; onClose: () => void;
 }) {
   const [shown, setShown] = useState<DisplayItem | null>(item);
   useEffect(() => { if (item) setShown(item); }, [item]);
@@ -126,10 +127,8 @@ export function EventSheet({ item, conflicts, fixtures, onClose, onAsk }: {
           {i.kind === 'event' && i.addedByHelper && <p className="receiptline"><Check /><span>Added by your helper. No invites were sent.</span></p>}
           {clash.length > 0 && <p className="clashline"><Warn /><span>Overlaps with {clash.join(' and ')}</span></p>}
           {i.kind === 'draft' && <div style={{ marginTop: 14 }}><DraftCard item={i} fixtures={fixtures} /></div>}
-          {/* TODO(W4): <AskAbout kind="event" id={i.id} label={label}/> replaces this thin call (the answer then shows here) */}
-          <div className="acts dacts">
-            <button type="button" className="vbtn vbtn-helper" onClick={() => onAsk(label)}><Spark />Ask about this</button>
-          </div>
+          {/* Ask about this (W4's one component): the questions open under the button, the answers show here */}
+          <AskAbout key={i.id} kind={i.kind === 'draft' ? 'draft' : 'event'} id={i.id} label={label} />
         </div>
       )}
     </Sheet>

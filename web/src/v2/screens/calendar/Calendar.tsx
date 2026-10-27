@@ -12,7 +12,7 @@
  *     calendar until it is confirmed;
  *   - the accounts and how fresh they are, with Refresh; honest states: nothing connected (offer to connect), one to
  *     reconnect, never synced, one calendar missing (named) — an unknown day is never called free;
- *   - an event opens in a sheet with Ask about this.
+ *   - an event opens in a sheet with Ask about this (W4's AskAbout: the answer shows in the sheet).
  */
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import type { CalendarItem } from '../../api/client';
@@ -26,58 +26,55 @@ import type { ActResult } from '../../store/core';
 import type { ScreenProps } from '../../shell/screens';
 import { Sheet } from '../../shell/sheets';
 import { Back, Chev, Spark } from '../../shell/icons';
-import { AskAboutSheet, QaBlock, useAskAbout, type AboutRef } from '../important/AskAbout';
+import { AskAbout } from '../ask/AskAbout';
 import { DayAgenda, EventSheet, Warn } from './Agenda';
 import { useNotNow } from './notnow';
 import './calendar.css';
 
 const DRAFT_NOTE_PREFILL = 'Draft a note asking to move one of them';
 
-/** "Draft the note" for a double-booking: its Important item's action (the server routes it to Ask), else Ask. */
+/**
+ * "Draft the note" for a double-booking: its Important item's action (the server routes it to Ask: the helper drafts
+ * the note when the person sends it), then the Ask sheet about it, prefilled. Without an item: the Ask sheet about the
+ * double-booking itself. Each tap opens it again (`n`).
+ */
 export function useDraftNote() {
   const store = useStore();
-  const [asking, setAsking] = useState<{ about: AboutRef; prefill: string } | null>(null);
-  const run = async (itemId: string | null, conflictId: string, label: string) => {
-    if (!itemId) { setAsking({ about: { kind: 'conflict', id: conflictId, label }, prefill: DRAFT_NOTE_PREFILL }); return; }
-    const r = await store.act('item.action', { id: itemId }, `Draft the note: ${label}`);
-    if (!r.ok) return; // refused (the store said why) or waiting in the outbox
-    const d = r.data as { done?: boolean; message?: string; route?: { view?: string } } | undefined;
-    if (d?.done) { store.notice(d.message ?? 'Done.'); return; }
-    // the note itself is drafted by the helper when the person sends it from Ask (the server says so)
-    setAsking({ about: { kind: 'item', id: itemId, label }, prefill: DRAFT_NOTE_PREFILL });
+  const [asking, setAsking] = useState<{ n: number } | null>(null);
+  const run = async (itemId: string | null, label: string) => {
+    if (itemId) {
+      const r = await store.act('item.action', { id: itemId }, `Draft the note: ${label}`);
+      if (!r.ok) return; // refused (the store said why) or waiting in the outbox
+      const d = r.data as { done?: boolean; message?: string } | undefined;
+      if (d?.done) { store.notice(d.message ?? 'Done.'); return; }
+    }
+    setAsking({ n: Date.now() });
   };
-  const ask = (about: AboutRef) => setAsking({ about, prefill: '' });
-  return { asking, run, ask, close: () => setAsking(null) };
+  return { asking, run };
 }
 
-/** The Ask sheet tied to a double-booking (or its item), and the answers shown under the card. */
-export function ConflictAsk({ about, open, prefill, onClose, idp }: { about: AboutRef | null; open: boolean; prefill?: string; onClose: () => void; idp: string }) {
+/** "Ask about this" for a double-booking (W4's one component; through its Important item when it has one). */
+export function ConflictAskAbout({ conflictId, itemId, label, asking, sheetId }: { conflictId: string; itemId: string | null; label: string; asking: { n: number } | null; sheetId: string }) {
   const items = useItems();
-  const ask = useAskAbout(about, about?.kind === 'item' ? items.byId[about.id] ?? null : null);
   return (
-    <>
-      <QaBlock qa={ask.qa} idp={idp} />
-      <AskAboutSheet id={`about-${idp}`} open={open} onClose={onClose} ask={ask} prefill={prefill} />
-    </>
+    <AskAbout key={`${itemId ?? conflictId}:${asking?.n ?? 0}`} kind={itemId ? 'item' : 'conflict'} id={itemId ?? conflictId} label={label}
+      item={itemId ? items.byId[itemId] ?? null : null} form="sheet" sheetId={sheetId} prefill={asking ? DRAFT_NOTE_PREFILL : null} />
   );
 }
 
 function ConflictCard({ c, today, itemId, onNotNow }: { c: CalendarConflict; today: number; itemId: string | null; onNotNow: () => void }) {
   const note = useDraftNote();
-  const [about, setAbout] = useState<AboutRef>({ kind: 'conflict', id: c.id });
   const title = conflictTitle(c, today);
   const idp = `cf-${c.id.replace(/[^a-z0-9]/gi, '-')}`;
-  useEffect(() => { if (note.asking) setAbout(note.asking.about); }, [note.asking]);
   return (
     <div className="card needcard conflictcard" role="group" aria-labelledby={`${idp}-h`}>
       <h3 id={`${idp}-h`}><Warn /> {title}</h3>
       <p>{conflictText(c)}</p>
       <div className="acts">
-        {itemId && <button type="button" className="vbtn vbtn-primary" onClick={() => void note.run(itemId, c.id, title)}>Draft the note</button>}
-        <button type="button" className="vbtn vbtn-helper" onClick={() => note.ask(itemId ? { kind: 'item', id: itemId, label: title } : { kind: 'conflict', id: c.id, label: title })}><Spark />Ask about this</button>
+        {itemId && <button type="button" className="vbtn vbtn-primary" onClick={() => void note.run(itemId, title)}>Draft the note</button>}
         <button type="button" className="vbtn vbtn-quiet" onClick={onNotNow}>Not now</button>
       </div>
-      <ConflictAsk about={about} open={!!note.asking} prefill={note.asking?.prefill} onClose={note.close} idp={idp} />
+      <ConflictAskAbout conflictId={c.id} itemId={itemId} label={title} asking={note.asking} sheetId={`about-${idp}`} />
     </div>
   );
 }
@@ -87,7 +84,7 @@ function useCalView(): ['day' | 'week', (v: 'day' | 'week') => void] {
   return [v, (x) => { setV(x); try { localStorage.setItem('mwa-v2-calview', x); } catch { /* private mode */ } }];
 }
 
-export function Calendar({ desk, go, ask }: ScreenProps) {
+export function Calendar({ desk, go }: ScreenProps) {
   const store = useStore();
   const now = useNow();
   const { fixtures, connection } = useMeta();
@@ -240,8 +237,7 @@ export function Calendar({ desk, go, ask }: ScreenProps) {
           </div>
         </>
       )}
-      <EventSheet item={open} conflicts={conflicts} fixtures={fixtures} onClose={() => setOpen(null)}
-        onAsk={(label) => { setOpen(null); ask({ label, projectId: null }); /* TODO(W4): <AskAbout kind="event" id label/> */ }} />
+      <EventSheet item={open} conflicts={conflicts} fixtures={fixtures} onClose={() => setOpen(null)} />
       <NewDraftSheet open={creating} day={selected} onClose={() => setCreating(false)}
         onDone={(r, day) => {
           setCreating(false);
