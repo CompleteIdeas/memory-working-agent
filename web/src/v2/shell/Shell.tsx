@@ -17,8 +17,10 @@ import { WorkingSheet, type AskAbout } from './sheets';
 import { Calendar, Important, Settings, Today, type View } from './screens';
 import { AskSheet } from '../screens/ask/AskSheet';
 import { Projects } from '../screens/projects/Projects';
-import { Arrow, Mic, Person, Spark, TabCalendar, TabImportant, TabProjects, TabToday, Close } from './icons';
+import { Arrow, Person, Spark, TabCalendar, TabImportant, TabProjects, TabToday, Close } from './icons';
 import { useStartGate } from '../screens/start/Start';
+import { MicButton } from '../screens/ask/voice/Mic';
+import { useDictation } from '../screens/ask/voice/useDictation';
 
 const TABS: { view: View; label: string; icon: ReactNode }[] = [
   { view: 'today', label: 'Today', icon: <TabToday /> },
@@ -166,6 +168,8 @@ export function Shell() {
   const first = useRef(true);
   const go = useCallback((v: View) => { setView(v); window.scrollTo(0, 0); }, []);
   useEffect(() => { if (first.current) { first.current = false; return; } main.current?.focus({ preventScroll: true }); }, [view]);
+  // P4: one voice controller; the dock's mic opens the Ask sheet already listening
+  const voice = useDictation();
   const ask = useCallback((a?: AskAbout) => { setWorkOpen(false); setAbout(a ?? contextRef.current); setAskOpen(true); }, []);
 
   // W5: sign in, pair this phone, or first run on the computer, before the app itself (screens/start)
@@ -197,8 +201,8 @@ export function Shell() {
 
       <div className="askdock" id="askdock"><div className="askcap">
         <button type="button" className="askfield" onClick={() => ask()}><span>Ask, or hand over a job</span></button>
-        {/* voice arrives with P4; until then holding the mic opens the Ask sheet to type */}
-        <button type="button" className="dockmic" id="dock-mic" aria-label="Hold to talk" onClick={() => ask()}><Mic /></button>
+        {/* P4: tap or hold the mic: the Ask sheet opens listening (hidden where voice is off or not in this browser) */}
+        {voice.available && <MicButton d={voice} className="dockmic" id="dock-mic" describedBy="mic-hint" before={() => ask()} />}
         <span className="docksend" aria-hidden="true" onClick={() => ask()}><Arrow /></span>
       </div></div>
 
@@ -213,7 +217,7 @@ export function Shell() {
       <Toasts />
       <UpdateBar />
       <WorkingSheet open={workOpen} onClose={() => setWorkOpen(false)} onAskAbout={ask} />
-      <AskSheet open={askOpen} about={about} onClose={() => setAskOpen(false)} onShowWork={() => { setAskOpen(false); setWorkOpen(true); }} />
+      <AskSheet open={askOpen} about={about} dictation={voice} onClose={() => setAskOpen(false)} onShowWork={() => { setAskOpen(false); setWorkOpen(true); }} />
     </div>
   );
 }

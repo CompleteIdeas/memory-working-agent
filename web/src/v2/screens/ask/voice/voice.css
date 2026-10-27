@@ -1,0 +1,19 @@
+/* Voice input (v2 build, slice P4). The ring and the pulse are the prototype's (shell/v2.css); this adds the listening
+   panel, the pressed look, and a still ring for reduced motion (v2.css turns every animation off there). */
+.voice-listen { align-items: center; padding: 4px 4px 10px; }
+.voice-listen .pulse { flex: none; }
+.voice-words { flex: 1; min-width: 0; color: var(--dim); font-size: 15.5px; line-height: 1.4; overflow-wrap: anywhere; max-height: 7.2em; overflow: auto; }
+.voice-heard { color: var(--ink); }
+.voice-interim { color: var(--dim); font-style: italic; }
+.voice-stop { flex: none; min-height: 44px; }
+.voice-note { margin: 0 0 8px; }
+.ask-row .micbtn.listening, .ask-row .micbtn[aria-pressed='true'] { background: var(--signal); color: var(--onsignal); }
+.dockmic[aria-pressed='true'] { color: var(--signal); }
+.ask-input[readonly] { color: var(--dim); }
+@media (prefers-reduced-motion: reduce) {
+  .micbtn.listening, .dockmic.listening { box-shadow: 0 0 0 4px var(--glow); }
+  .voice-listen .pulse { opacity: 1; }
+}
+.voice-langrow select { max-width: 100%; }
+/* the Ask box is a textarea (P4): one line like the prototype's field, growing to show a whole spoken ask */
+textarea.ask-input { display: block; resize: none; padding: 13px 18px; line-height: 23px; font: inherit; font-size: 17px; color: var(--ink); overflow-y: auto; max-height: 150px; }

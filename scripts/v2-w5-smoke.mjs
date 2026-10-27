@@ -269,7 +269,8 @@ try {
       check(`${L}: phone: one line says why some parts can't be changed`, await visible(main.getByRole('note')));
       check(`${L}: phone: this device marked`, await visible(main.getByText('This device')) && /Robert’s Pixel/.test((await main.locator('#sec-devices').textContent()) ?? ''));
       check(`${L}: phone: no admin controls`, !(await main.getByRole('button', { name: 'Pair a new device' }).count()) && !(await main.getByRole('button', { name: 'Connect Outlook' }).count())
-        && !(await main.getByRole('switch').count()) && !(await main.getByRole('heading', { name: 'Saved logins' }).count()));
+        // P4: Settings › Voice is this device's own switch, not an admin one
+        && (await main.getByRole('switch').count()) === (await main.locator('#sec-voice').getByRole('switch').count()) && !(await main.getByRole('heading', { name: 'Saved logins' }).count()));
       await shot(page, `${L}-12-phone-settings`);
       await axe(page, `${L} phone settings`);
       await noOverflow(page, `${L} phone settings`);

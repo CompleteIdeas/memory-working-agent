@@ -21,6 +21,8 @@ import { AskOutcomeView, PlanCard, findAnswer } from '../web/src/v2/screens/ask/
 import { AskAbout } from '../web/src/v2/screens/ask/AskAbout';
 import { AskSheet } from '../web/src/v2/screens/ask/AskSheet';
 import { ProjectThread } from '../web/src/v2/screens/projects/ProjectThread';
+import { Dictation } from '../web/src/v2/screens/ask/voice/dictation';
+import { dictationApi } from '../web/src/v2/screens/ask/voice/useDictation';
 import { Projects } from '../web/src/v2/screens/projects/Projects';
 
 const MIN = 60_000;
@@ -263,7 +265,9 @@ describe('the components, rendered', () => {
   });
   it('the Ask sheet keeps the prototype\'s names; about one thing, the chip and no files', () => {
     const w = filled();
-    const plain = render(w.store, h(AskSheet, { open: false, about: null, onClose: () => {} }));
+    // P4: the mic shows where the browser can listen (node has no speech recognition: a fake one stands in)
+    const voice = dictationApi(new Dictation({ create: () => ({}) as never, support: 'ok', continuous: true, lang: () => 'en-US' }));
+    const plain = render(w.store, h(AskSheet, { open: false, about: null, onClose: () => {}, dictation: voice }));
     for (const name of ['Message your helper', 'aria-label="Hold to talk"', 'aria-label="Add files"', 'aria-label="Close"', 'id="ask-dlg"', 'id="ask-file"']) expect(plain).toContain(name);
     const about = render(w.store, h(AskSheet, { open: false, about: { label: 'Gathering this week’s AI news', projectId: 'ainews', kind: 'job', id: 'j_news' }, onClose: () => {} }));
     expect(text(about)).toContain('About: Gathering this week’s AI news');
