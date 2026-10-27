@@ -59,12 +59,16 @@ describe('the receipts log', () => {
     expect(deliveryLine('nochat')).toMatch(/\): nothing could send it: no chat to send it to — ⚠ the last 3 results reached no one/);
   });
 
+  // 4000 real appends (each a stat, a 1-byte read and an append) is ~2 s alone, but on Windows under the full suite,
+  // with every other file writing beside it, it has run past 60 s on every run since 2026-10-26. The cap logic is
+  // what these test, not the speed of the disk, so they get room.
+  const BULK_MS = 240_000;
   it('a busy job never pushes a quiet job\u2019s only receipts out of the capped file', () => {
     recordReceipt({ job: 'daily', fire: 'd1', channel: 'telegram', status: 'sent', ts: 1 });
     const big = 'x'.repeat(190);
     for (let i = 0; i < 4000; i++) recordReceipt({ job: 'minutely', fire: `m${i}`, channel: 'none', status: 'not-sent', detail: big });
     expect(deliveryLine('daily')).toMatch(/sent to Telegram/);
-  }, 60_000);
+  }, BULK_MS);
 
   it('the time carries the date when it is not today', () => {
     recordReceipt({ job: 'old', fire: 'o', channel: 'telegram', status: 'sent', ts: Date.now() - 3 * 86_400_000 });
@@ -90,7 +94,7 @@ describe('the receipts log', () => {
     for (let i = 0; i < 4000; i++) recordReceipt({ job: 'bulk', fire: `b${i}`, channel: 'app', status: 'stored', detail: big });
     expect(statSync(join(dir, 'deliveries-test.jsonl')).size).toBeLessThan(1_000_000);
     expect(readReceipts().some((r) => r.fire === 'b3999')).toBe(true); // the newest survive the cap
-  }, 60_000);
+  }, BULK_MS);
 });
 
 describe('the scheduler and the channels record receipts', () => {
