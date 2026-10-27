@@ -12,7 +12,7 @@ import { Back, Chev, ProjectIcon, Spark } from './icons';
 export { Important };
 import type { AskAbout } from './sheets';
 
-export type View = 'today' | 'calendar' | 'inbox' | 'projects' | 'settings';
+export type View = 'today' | 'calendar' | 'inbox' | 'projects' | 'settings' | 'plugins';
 export interface ScreenProps {
   desk: boolean; wide: boolean; go: (v: View) => void; ask: (a?: AskAbout) => void;
   /** W2: open the working sheet (a waiting job's card on Today) */
@@ -77,3 +77,5 @@ function ProjectPane({ p, back, ask }: { p: Project; back?: () => void; ask: (a?
 
 // W5: Settings has its own screen (screens/settings)
 export { Settings } from '../screens/settings/Settings';
+// S1: Settings › Plug-ins, its own screen (?view=plugins)
+export { Plugins } from '../screens/settings/Plugins';

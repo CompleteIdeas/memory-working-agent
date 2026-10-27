@@ -23,6 +23,8 @@ export interface RiskReport {
   integrity?: string;
   pinnedVersion?: string;
   model: string;
+  /** false when the reviewing model could not be reached: only the automated checks ran, there is no AI judgement */
+  aiReviewed?: boolean;
 }
 
 const RANK: Record<Verdict, number> = { safe: 0, caution: 1, dangerous: 2 };
@@ -54,7 +56,7 @@ export async function reviewConnector(source: string, cfg: MwaConfig): Promise<R
     const res = await resolveProvider(model).chat({ system: sys, messages: [{ role: 'user', content: user }], maxTokens: 700 });
     parsed = parseJsonLoose(res.text) ?? {};
   } catch (e) {
-    return { source, verdict: 'caution', summary: `The reviewing model couldn't be reached (${(e as Error).message.slice(0, 80)}) — treat with caution and review it yourself.`, capabilities: [], redFlags: allFindings.filter((f) => f.severity !== 'info').map((f) => f.label), analysis, deepScan: deep, integrity: m.integrity, pinnedVersion: m.version, model };
+    return { source, verdict: 'caution', summary: `The reviewing model couldn't be reached (${(e as Error).message.slice(0, 80)}) — treat with caution and review it yourself.`, capabilities: [], redFlags: allFindings.filter((f) => f.severity !== 'info').map((f) => f.label), analysis, deepScan: deep, integrity: m.integrity, pinnedVersion: m.version, model, aiReviewed: false };
   }
 
   let verdict: Verdict = (['safe', 'caution', 'dangerous'] as const).includes(parsed.verdict) ? parsed.verdict : 'caution';
@@ -66,6 +68,6 @@ export async function reviewConnector(source: string, cfg: MwaConfig): Promise<R
     summary: typeof parsed.summary === 'string' ? parsed.summary : 'No summary returned.',
     capabilities: Array.isArray(parsed.capabilities) ? parsed.capabilities.slice(0, 8).map(String) : [],
     redFlags: Array.isArray(parsed.redFlags) && parsed.redFlags.length ? parsed.redFlags.slice(0, 8).map(String) : allFindings.filter((f) => f.severity !== 'info').map((f) => f.label),
-    analysis, deepScan: deep, integrity: m.integrity, pinnedVersion: m.version, model,
+    analysis, deepScan: deep, integrity: m.integrity, pinnedVersion: m.version, model, aiReviewed: true,
   };
 }

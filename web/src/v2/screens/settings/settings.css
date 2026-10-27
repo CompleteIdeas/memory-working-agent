@@ -81,3 +81,26 @@ select.setinput { appearance: auto; }
 #notify-card input[type="time"] { min-height: 44px; font: inherit; padding: 0 8px; }
 #notify-card .notifyquiet .setrow { flex-wrap: wrap; gap: 8px; align-items: center; }
 #notify-privacy { margin-top: 14px; }
+
+/* S1: Settings › Plug-ins */
+.plugintro { color: var(--dim); margin: 4px 0 8px; }
+.plugrow { gap: 4px; }
+.plugrow .plughead { display: flex; align-items: center; gap: 12px; width: 100%; }
+.plugrow .plughead .grow { flex: 1; min-width: 0; }
+.plugrow .acts { margin-top: 6px; }
+.plugtouch b { color: var(--ink); }
+.plugsrc { align-self: flex-start; min-height: 32px; font-size: 14.5px; }
+.plugcmd code { font-family: var(--mono); font-size: 13.5px; overflow-wrap: anywhere; word-break: break-all; }
+.plugkeys { padding: 8px 0 4px; }
+.plugkey { display: flex; flex-direction: column; gap: 4px; }
+.plugreview { margin-top: 12px; padding: 12px; border-radius: 8px; background: var(--card-2); border-left: 4px solid var(--ok); }
+.plugreview.warn { border-left-color: var(--edge); }
+.plugreview.bad { border-left-color: var(--signal); }
+.plugreview > p { margin: 6px 0; overflow-wrap: anywhere; }
+.plugverdict { font-size: 17px; }
+.pluglist { margin: 2px 0 6px 20px; padding: 0; list-style: disc; }
+.plugtrust { display: flex; align-items: center; gap: 8px; min-height: 44px; font-weight: 600; }
+.plugtrust input { width: 20px; height: 20px; flex: none; }
+.plugentry { width: 100%; text-align: left; background: none; border: 0; color: inherit; font: inherit; padding: 0; display: flex; align-items: center; gap: 12px; min-height: 56px; }
+.plugentry .grow { flex: 1; min-width: 0; }
+.plugclear { display: flex; }

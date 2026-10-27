@@ -14,6 +14,7 @@
  * EVERYTHING HERE IS EXAMPLE DATA.
  */
 import type { Account, Device, FileRow, HelperSettings, Me, Spending, VaultEntry } from '../api/client';
+import { PluginFixtures } from './fixtures-plugins';
 
 type Resp = { status: number; body: unknown; headers?: Record<string, string> };
 const err = (status: number, code: string, message: string): Resp => ({ status, body: { error: { code, message } } });
@@ -30,7 +31,9 @@ const norm = (c: string) => c.toUpperCase().replace(/[^A-Z0-9]/g, '');
 /** Which requests answer with nobody signed in (the server's public routes). */
 const PUBLIC = new Set(['GET /meta', 'GET /me', 'POST /session', 'POST /pair']);
 /** Which need admin (a paired phone gets 403). */
-const ADMIN: RegExp[] = [/^POST \/session\/sign-out-everywhere$/, /^POST \/pair\/codes$/, /^GET \/devices$/, /^(DELETE|PATCH) \/devices\/[^/]+$/, /^PATCH \/(settings|spending)$/, /^POST \/accounts\/[^/]+\/connect$/, /^GET \/vault$/, /^POST \/vault\/forget$/, /^PATCH \/push\/settings$/];
+const ADMIN: RegExp[] = [/^POST \/session\/sign-out-everywhere$/, /^POST \/pair\/codes$/, /^GET \/devices$/, /^(DELETE|PATCH) \/devices\/[^/]+$/, /^PATCH \/(settings|spending)$/, /^POST \/accounts\/[^/]+\/connect$/, /^GET \/vault$/, /^POST \/vault\/forget$/, /^PATCH \/push\/settings$/,
+  // S1: every plug-in change
+  /^(POST|PUT|DELETE) \/plugins(\/|$)/];
 
 export class SettingsFixtures {
   passwordSet: boolean;
@@ -43,6 +46,8 @@ export class SettingsFixtures {
   accounts: Account[];
   vault: VaultEntry[];
   files = new Map<string, FileRow[]>();
+  /** S1: Settings › Plug-ins (./fixtures-plugins.ts) */
+  plugins: PluginFixtures;
   push = { kinds: { approval: true, waiting: true, result: true, morning: true }, morning: '07:30', timeZone: 'America/New_York', quietHours: { value: '22:00-07:00' as string | null, fixed: false, invalid: false } };
   private codes = new Set<string>([norm(FIXTURE_PAIR_CODE)]);
   private n = 0;
@@ -86,6 +91,7 @@ export class SettingsFixtures {
       { name: 'USEF', site: 'usef.example', fields: ['member number', 'password'], savedAt: now - 30 * DAY },
     ];
     this.files.set('general', []);
+    this.plugins = new PluginFixtures(scenario, clock);
   }
 
   me(): Me {
@@ -106,6 +112,8 @@ export class SettingsFixtures {
 
   read(path: string, q: URLSearchParams): Resp | null {
     if (path === '/me') return { status: 200, body: this.me() };
+    const pl = this.plugins.read(path, this.kind !== 'device');
+    if (pl) return pl;
     if (path === '/devices') return { status: 200, body: { devices: this.devices } };
     if (path === '/settings') return { status: 200, body: this.settings };
     if (path === '/spending') return { status: 200, body: this.spending };
@@ -123,6 +131,8 @@ export class SettingsFixtures {
   write(method: string, path: string, body: unknown, query?: URLSearchParams): Resp | null {
     const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
     let m: RegExpExecArray | null;
+    const pl = this.plugins.write(method, path, body);
+    if (pl) return pl;
     if (method === 'POST' && path === '/session') {
       if (!this.passwordSet) return err(409, 'no_password', 'No password is set on this helper. Pair this device with a code from the computer instead.');
       if (typeof b.password !== 'string' || !b.password) return err(400, 'bad_body', 'Type your password.');

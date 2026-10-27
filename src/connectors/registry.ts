@@ -167,7 +167,7 @@ export function enableConnector(id: string): { ok: boolean; message: string } {
 export function disableConnector(id: string): void {
   const raw = readConfigRaw();
   const servers = serversOf(raw);
-  if (servers[id]) { delete servers[id]; writeConfigRaw(raw); }
+  if (Object.prototype.hasOwnProperty.call(servers, id)) { delete servers[id]; writeConfigRaw(raw); }
 }
 
 /** All MCP servers currently wired in config (curated, external, or hand-added). */
@@ -179,7 +179,8 @@ export function listMcpServers(): Record<string, McpServerSpec> {
 export function removeMcpServer(name: string): boolean {
   const raw = readConfigRaw();
   const servers = serversOf(raw);
-  if (servers[name]) { delete servers[name]; writeConfigRaw(raw); return true; }
+  // own keys only: "__proto__" or "constructor" must not count as a server (review of S1)
+  if (Object.prototype.hasOwnProperty.call(servers, name)) { delete servers[name]; writeConfigRaw(raw); return true; }
   return false;
 }
 

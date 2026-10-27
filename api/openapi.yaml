@@ -1257,6 +1257,90 @@ components:
         name: { type: string }
         size: { type: integer }
         mtime: { type: number }
+    PluginKey:
+      type: object
+      required: [name, label, help, optional, saved]
+      additionalProperties: false
+      properties:
+        name: { type: string, description: The key's name (an environment variable). Its value is never sent. }
+        label: { type: string }
+        help: { type: [string, 'null'] }
+        optional: { type: boolean }
+        saved: { type: boolean, description: A value is saved on the server. }
+    Plugin:
+      type: object
+      description: 'S1: a plug-in from the curated library.'
+      required: [id, name, category, description, access, tier, source, on, keys, missing]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        name: { type: string }
+        category: { type: string }
+        description: { type: string }
+        access: { type: string, description: What it can touch, in plain words. }
+        tier: { type: string, enum: [curated, known, arbitrary] }
+        source: { type: [string, 'null'] }
+        on: { type: boolean }
+        keys: { type: array, items: { $ref: '#/components/schemas/PluginKey' } }
+        missing: { type: array, items: { type: string }, description: Names of required keys not saved yet. }
+    CustomPlugin:
+      type: object
+      description: 'S1: a plug-in the owner added (by hand, or from npm). Env values are never sent, and arguments that look like secrets are shown as •••.'
+      required: [id, command, argsHidden, package, envNames]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        command: { type: string, description: 'An admin gets the command with its arguments (secrets masked); any other caller the command name only.' }
+        argsHidden: { type: boolean, description: The arguments were left out because this caller has no admin. }
+        package: { type: [string, 'null'] }
+        envNames: { type: array, items: { type: string } }
+    AddFromNpm:
+      type: object
+      required: [available, reason, reviewer]
+      additionalProperties: false
+      properties:
+        available: { type: boolean }
+        reason: { type: string, description: Why it is off, or who reviews packages when it is on. }
+        reviewer: { type: [string, 'null'] }
+    PluginList:
+      type: object
+      required: [plugins, custom, addFromNpm, applies]
+      additionalProperties: false
+      properties:
+        plugins: { type: array, items: { $ref: '#/components/schemas/Plugin' } }
+        custom: { type: array, items: { $ref: '#/components/schemas/CustomPlugin' } }
+        addFromNpm: { $ref: '#/components/schemas/AddFromNpm' }
+        applies: { type: string }
+    PluginChange:
+      type: object
+      required: [plugin, message]
+      additionalProperties: false
+      properties:
+        plugin: { $ref: '#/components/schemas/Plugin' }
+        message: { type: string }
+    PluginReview:
+      type: object
+      required: [package, version, verdict, summary, capabilities, redFlags, scan, reviewer, expiresAt, aiReviewed]
+      additionalProperties: false
+      properties:
+        package: { type: string }
+        version: { type: [string, 'null'], description: The version reviewed; approving installs exactly this one. }
+        verdict: { type: string, enum: [safe, caution, dangerous] }
+        summary: { type: string }
+        capabilities: { type: array, items: { type: string } }
+        redFlags: { type: array, items: { type: string } }
+        scan:
+          type: object
+          required: [ran, files, checksum, note]
+          additionalProperties: false
+          properties:
+            ran: { type: boolean }
+            files: { type: [integer, 'null'] }
+            checksum: { type: string, enum: [verified, mismatch, unknown] }
+            note: { type: [string, 'null'] }
+        reviewer: { type: string }
+        expiresAt: { type: integer, description: Approve before this time (ms), or review again. }
+        aiReviewed: { type: boolean, description: 'False when the reviewing model could not be reached (only the automated checks ran); approving then needs acceptRisk.' }
   responses:
     Error:
       description: An error.
@@ -2872,5 +2956,148 @@ paths:
                         id: { type: string }
                         outcome: { type: string, enum: [accepted, gone, retry, failed] }
                         status: { type: integer }
+                  message: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /plugins:
+    get:
+      operationId: listPlugins
+      summary: 'S1: plug-ins (MCP servers): the library with on/off, what each can touch and which keys are saved (names only), the owner''s own, and whether adding from npm is available.'
+      responses:
+        '200':
+          description: The plug-ins.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PluginList' }
+        default: { $ref: '#/components/responses/Error' }
+  /plugins/{id}/enable:
+    post:
+      operationId: enablePlugin
+      summary: 'S1: turn a library plug-in on (admin). 409 needs_keys while a required key is missing. Takes effect on the next message.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200':
+          description: On.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PluginChange' }
+        default: { $ref: '#/components/responses/Error' }
+  /plugins/{id}/disable:
+    post:
+      operationId: disablePlugin
+      summary: 'S1: turn a library plug-in off (admin). Takes effect on the next message.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200':
+          description: Off.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PluginChange' }
+        default: { $ref: '#/components/responses/Error' }
+  /plugins/{id}/keys:
+    put:
+      operationId: savePluginKeys
+      summary: 'S1: save a library plug-in''s keys (admin, write-only). Only the key names that plug-in declares (400 unknown_key otherwise); values are never sent back.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [keys]
+              properties:
+                keys: { type: object, additionalProperties: { type: string } }
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PluginChange' }
+        default: { $ref: '#/components/responses/Error' }
+  /plugins/{id}/keys/{name}:
+    delete:
+      operationId: clearPluginKey
+      summary: 'S1: clear one saved key of a library plug-in (admin). Only a name that plug-in declares (400 unknown_key); 409 in_use while the plug-in is on and needs it; 404 not_saved.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { name: id, in: path, required: true, schema: { type: string } }, { name: name, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200':
+          description: Cleared.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PluginChange' }
+        default: { $ref: '#/components/responses/Error' }
+  /plugins/{id}:
+    delete:
+      operationId: removePlugin
+      summary: 'S1: remove one of the owner''s own plug-ins (admin). A library plug-in is turned off instead (400 library_plugin).'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200':
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [removed, message]
+                additionalProperties: false
+                properties:
+                  removed: { type: string }
+                  message: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /plugins/review:
+    post:
+      operationId: reviewPlugin
+      summary: 'S1: the safety review of an npm package by the reviewing model (admin). Installs nothing. 409 npm_unavailable (with the reason) when adding from npm is off.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [package]
+              properties:
+                package: { type: string }
+      responses:
+        '200':
+          description: The review.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [review]
+                additionalProperties: false
+                properties:
+                  review: { $ref: '#/components/schemas/PluginReview' }
+        default: { $ref: '#/components/responses/Error' }
+  /plugins/approve:
+    post:
+      operationId: approvePlugin
+      summary: 'S1: install a package this server reviewed in the last 30 minutes, at the reviewed version (admin). 409 review_first without one; a dangerous verdict (409 risky) or a review the AI reviewer could not run (409 unreviewed) needs acceptRisk true; 409 name_taken when a plug-in of that name exists.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [package]
+              properties:
+                package: { type: string }
+                acceptRisk: { type: boolean }
+      responses:
+        '200':
+          description: Installed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [plugin, message]
+                additionalProperties: false
+                properties:
+                  plugin:
+                    oneOf:
+                      - { $ref: '#/components/schemas/CustomPlugin' }
+                      - { type: 'null' }
                   message: { type: string }
         default: { $ref: '#/components/responses/Error' }
