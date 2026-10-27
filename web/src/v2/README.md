@@ -1,7 +1,7 @@
 # MWA v2 web app (W1: shell, client, store, fixture mode · W2: Today and the Calendar · W3: Important and the mail reader · W4: Ask and Projects · P1/P2: install, offline, updates)
 
 The v2 app is opt-in until W6: open the app with `?ui=v2` (remembered on the device; `?ui=v1` goes back), or use
-Settings › "Use the current app". v1 is unchanged: v2 is a lazy chunk with its own stylesheet that v1 never loads.
+Settings › "Use the classic app" (W6: v2 is the default; v1 at `?ui=v1` for one release). v1 is unchanged: v2 is a lazy chunk with its own stylesheet that v1 never loads.
 
 ```
 web/src/v2/

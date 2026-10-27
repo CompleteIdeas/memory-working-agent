@@ -87,15 +87,17 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
   const say = (text: string) => store.notice(text);
   const toCalendar = (date: string | undefined, id: string | null = null) => { openCalendarOn(date ?? dayKey(now), id); go('calendar'); };
   /** Where a card or a line opens, in place. */
+  const CLASSIC = `${location.pathname}?ui=v1`;
   const open = (o: TodayOpen) => {
     switch (o.kind) {
       case 'job': case 'jobs': if (openWork) openWork(); else say('Open the pill at the top to see the job.'); return;
       case 'calendar': toCalendar(o.date, o.id); return;
       case 'item': if (o.date) toCalendar(o.date); else go('inbox'); return;
       case 'mail': go('inbox'); return; // TODO(W3 follow-up): open this message in the reader directly
-      case 'reconnect': go('settings'); say('Reconnecting from the new app comes with the next update. For now, use Settings in the current app.'); return;
-      case 'approval': case 'approvals': say('Approvals are reviewed in the current app for now (Settings › Use the current app).'); return;
-      default: say('That is in your helper’s activity list in the current app.');
+      // W6: what the new app can't do yet opens the classic app for this visit only (`?ui=v1` is not remembered)
+      case 'reconnect': say('Reconnecting from the new app comes with the next update. Opening Settings in the classic app…'); location.assign(CLASSIC); return;
+      case 'approval': case 'approvals': say('Approvals open in the classic app for now…'); location.assign(CLASSIC); return;
+      default: say('That is in your helper’s activity list in the classic app.');
     }
   };
   const runNeed = async (n: TodayNeed) => {

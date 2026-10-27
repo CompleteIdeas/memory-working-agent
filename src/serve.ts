@@ -1962,10 +1962,10 @@ button{width:100%;margin-top:10px;border:0;border-radius:3px;background:var(--si
 <button type="submit">Unlock</button>
 <div class="err" id="err"></div>
 </form><script>
-try{if(localStorage.getItem('mwa-ui')==='v2'&&!/[?&]ui=/.test(location.search)){location.replace('/?ui=v2');}}catch(_){}
+try{if(localStorage.getItem('mwa-ui')!=='v1'&&location.pathname==='/'&&!location.search){location.replace('/?ui=v2');}}catch(_){}
 async function go(e){e.preventDefault();var err=document.getElementById('err');err.textContent='';
 try{var r=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:document.getElementById('pw').value})});
-if(r.ok){location.href='/';}else{var d=await r.json().catch(function(){return{}});err.textContent=d.message||'Wrong password.';}}
+if(r.ok){location.replace(location.pathname+location.search);}else{var d=await r.json().catch(function(){return{}});err.textContent=d.message||'Wrong password.';}}
 catch(_){err.textContent='Could not reach the server.';}return false;}
 </script></body></html>`;
 

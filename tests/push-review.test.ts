@@ -18,7 +18,7 @@ import { saveSubscription, listSubscriptions, prunePushRecords, sentState, setLo
 import { pushTick, setPushDeps, payloadFor, liveSubscriptions, resetPushPrune } from '../src/v2/push.js';
 import { createJob, claimTry, endTry, addTry } from '../src/v2/jobs.js';
 import { readReceipts, jobDeliveries, deliveryLine, recordReceipt } from '../src/receipts.js';
-import { uiToRemember } from '../web/src/v2/choose';
+import { chooseUi, uiToRemember } from '../web/src/v2/choose';
 import { pushState, pushWords, type PushFacts } from '../web/src/pwa/push';
 
 const T0 = Date.UTC(2020, 0, 1);
@@ -307,8 +307,19 @@ describe('fix 11: a notification tap opens v2 for that visit only', () => {
   it('?ui=v2&from=notification is not remembered; ?ui=v2 by choice is', () => {
     expect(uiToRemember('?ui=v2&from=notification')).toBeNull();
     expect(uiToRemember('?ui=v2')).toBe('v2');
-    expect(uiToRemember('?ui=v1')).toBe('v1');
+    expect(uiToRemember('?ui=v1')).toBeNull(); // W6: a link into the classic app is that visit only
     expect(uiToRemember('?view=settings')).toBeNull();
+  });
+});
+
+describe('W6: the new app is the default', () => {
+  it('the installed app’s start URL does not undo a classic choice; ?ui=v1 is never remembered', () => {
+    expect(uiToRemember('?ui=v2&source=pwa')).toBeNull();
+    expect(chooseUi('?ui=v2&source=pwa', 'v1')).toBe('v2'); // that launch is v2 …
+    expect(chooseUi('', 'v1')).toBe('v1');                  // … and the classic choice still holds afterwards
+    expect(chooseUi('', null)).toBe('v2');
+    expect(chooseUi('', 'v2')).toBe('v2');
+    expect(chooseUi('?ui=v1', null)).toBe('v1');
   });
 });
 

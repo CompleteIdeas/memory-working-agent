@@ -214,13 +214,17 @@ try {
     await ctx.close();
   }
 
-  // v1 is untouched: no ?ui → the v1 app (its header says MWA and it has a Chat tab), and v2 CSS is not loaded
+  // W6: no ?ui → the new app; ?ui=v1 → the classic app for that visit (no v2 shell or styles, a way back), not remembered
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await ctx.newPage();
   await page.goto(`${BASE}/`);
+  const byDefault = await page.locator('.v2app').waitFor({ timeout: 15_000 }).then(() => true, () => false);
+  check('W6: the new app by default', byDefault);
+  await page.goto(`${BASE}/?ui=v1`);
   await page.waitForTimeout(1500);
-  const v1 = await page.evaluate(() => ({ v2: !!document.querySelector('.v2app'), mwaV2: document.documentElement.classList.contains('mwa-v2'), sheets: [...document.styleSheets].length }));
-  check('v1 by default: no v2 shell, no v2 styles', !v1.v2 && !v1.mwaV2, JSON.stringify(v1));
+  const v1 = await page.evaluate(() => ({ v2: !!document.querySelector('.v2app'), mwaV2: document.documentElement.classList.contains('mwa-v2'), stored: localStorage.getItem('mwa-ui') }));
+  const back = await page.getByRole('link', { name: 'Back to the new app' }).isVisible().catch(() => false);
+  check('?ui=v1: the classic app, no v2 shell or styles, a link back, and not remembered', !v1.v2 && !v1.mwaV2 && back && v1.stored !== 'v1', JSON.stringify({ ...v1, back }));
   await ctx.close();
 } finally {
   await browser.close();
