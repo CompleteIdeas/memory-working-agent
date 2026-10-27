@@ -57,7 +57,7 @@ export function captureDeploymentEnv(env: NodeJS.ProcessEnv = process.env): void
 captureDeploymentEnv();
 
 /** A name as stored: a string only (anything else is ignored), control characters out, trimmed, capped. */
-const cleanName = (s: unknown): string => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_NAME) : '');
+const cleanName = (s: unknown): string => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff<>]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_NAME) : ''); // no angle brackets either (W5 re-review)
 
 type Raw = Record<string, unknown> & { owner?: { name?: unknown }; helper?: Record<string, unknown> };
 function readRaw(): { raw: Raw; error: string | null } {

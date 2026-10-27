@@ -128,5 +128,14 @@ export function revokeAllSessions(): number {
   setAppSetting('sessions_cutoff', String(now));
   return appDb().prepare('UPDATE sessions SET revoked_at = ? WHERE revoked_at IS NULL').run(now).changes;
 }
+/**
+ * Forget sessions that can't come back (W5 re-review): ones older than a session can live, and revoked ones issued
+ * since the table existed. Called at server start and daily. Returns how many rows went. A revoked session's token
+ * stays refused without its row (an unknown session issued after the table existed is refused); a revoked session
+ * from before the table keeps its row until it would have expired, or its token would be adopted again.
+ */
+export function pruneSessions(now = Date.now()): number {
+  return appDb().prepare('DELETE FROM sessions WHERE created_at < ? OR (revoked_at IS NOT NULL AND created_at >= ?)').run(now - SESSION_MS, migratedAt()).changes;
+}
 /** Tests. */
 export function sessionCount(): number { return (appDb().prepare('SELECT COUNT(*) n FROM sessions WHERE revoked_at IS NULL').get() as { n: number }).n; }

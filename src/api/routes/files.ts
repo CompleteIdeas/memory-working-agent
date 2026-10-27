@@ -18,7 +18,8 @@ import { ApiError, type Route } from '../router.js';
 import { projectRouteDeps } from './projects.js';
 import { getProject, sessionOf, GENERAL } from '../../v2/projects.js';
 import { cleanName, insideRoot, listFiles, saveUpload, sessionFolder, MAX_UPLOAD } from '../../files.js';
-import { documentSize, docxReadable } from '../../tools/builtins.js';
+import { documentSize } from '../../tools/builtins.js';
+import { inflateZipBounded, UnsafeDocument } from '../../tools/safe-zip.js';
 
 const MULTIPART_SLACK = 64 * 1024; // the part headers and boundaries around the file
 const COUNT_TIMEOUT_MS = 5_000;
@@ -64,8 +65,8 @@ export function firstFilePart(raw: Buffer, contentType: string): { filename: str
 }
 
 // W5 security review (3): pages are counted here only for files read_document reads cheaply — a PDF (its own bounded
-// parser), text, and a .docx whose parts unzip to at most 20 MB (checked from the zip's directory before inflating).
-// Anything else, or a bigger .docx, gets no count (null): /ask estimates it from the size.
+// parser), text, and a .docx (inflated with a hard 20 MB output ceiling, safe-zip.ts). Anything else gets no count
+// (null), and a .docx that can't be opened safely is counted by its size: /ask estimates it from that.
 const TEXT_LIKE = new Set(['.txt', '.md', '.csv', '.tsv', '.json', '.jsonl', '.log', '.yaml', '.yml', '.xml', '.ics', '.eml', '.html', '.htm']);
 /** At most 2 uploads at a time from one caller, 4 in all; the uploads may use MWA_UPLOAD_QUOTA_MB (2 GB) of disk. */
 const PER_CALLER = 2, IN_ALL = 4;
@@ -93,7 +94,6 @@ async function pagesOf(abs: string): Promise<number | null> {
     const ext = extname(abs).toLowerCase();
     if (ext !== '.pdf' && ext !== '.docx' && !TEXT_LIKE.has(ext)) return null;
     const buf = readFileSync(abs);
-    if (ext === '.docx' && !docxReadable(buf)) return null;
     return await Promise.race([
       documentSize(abs, buf).then((s) => s.pages).catch(() => null),
       new Promise<null>((r) => { const t = setTimeout(() => r(null), COUNT_TIMEOUT_MS); (t as { unref?: () => void }).unref?.(); }),
@@ -125,6 +125,10 @@ export const fileRoutes: Route[] = [
       if (!name.trim()) throw new ApiError(400, 'no_name', 'Send the file’s name (`name`).');
       if (data.length > MAX_UPLOAD) throw new ApiError(413, 'too_large', tooLarge());
       if (!data.length) throw new ApiError(400, 'empty_file', 'That file is empty.');
+      // a Word file is opened with a hard ceiling before it is kept (W5 re-review): one that can't be is refused
+      if (/\.docx$/i.test(name.trim())) {
+        try { inflateZipBounded(data); } catch (e) { if (e instanceof UnsafeDocument) throw new ApiError(400, 'unsafe_document', e.message); throw e; }
+      }
       const ws = root();
       const quota = uploadQuotaBytes();
       if (uploadsUsed(ws) + data.length > quota) throw new ApiError(507, 'storage_full', `Your helper’s space for added files is full (${Math.round(quota / 1048576)} MB). Remove some files from your projects and try again.`, true);

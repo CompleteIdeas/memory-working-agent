@@ -17,12 +17,14 @@ import { makeAuthenticate, fromThisMachine, createPairCode, redeemPairCode, rena
 import { resetAppDb, appDb } from '../src/v2/db.js';
 import { setProjectRouteDeps } from '../src/api/routes/projects.js';
 import { setSettingsRouteDeps } from '../src/api/routes/settings.js';
-import { hostAllowed, relayedMode, sourceOf, cookieSecure, detectTailscaleServe } from '../src/api/trust.js';
+import { hostAllowed, relayedMode, sourceOf, cookieSecure, detectTailscaleServe, tailscaleForwardsTo } from '../src/api/trust.js';
 import { legacyApiScope } from '../src/api/legacy.js';
 import { captureDeploymentEnv, readSettings, updateSettings } from '../src/v2/settings.js';
-import { configureSessions, issueSession, sessionIdOf, secretEquals, SESSION_MS } from '../src/api/sessions.js';
+import { configureSessions, issueSession, sessionIdOf, secretEquals, SESSION_MS, pruneSessions } from '../src/api/sessions.js';
 import { cleanName } from '../src/files.js';
-import { zipUnpackedSize, docxReadable, documentSize } from '../src/tools/builtins.js';
+import { documentSize } from '../src/tools/builtins.js';
+import { inflateZipBounded, docxText, storedZip, UnsafeDocument } from '../src/tools/safe-zip.js';
+import { deflateRawSync } from 'node:zlib';
 import { catchOAuthCode } from '../src/connect/oauth-catcher.js';
 import { fileRoutes } from '../src/api/routes/files.js';
 
@@ -162,30 +164,69 @@ describe('(3) uploads: what is counted, at what size, how many at once, how much
     z.file('word/document.xml', '<w:document><w:body>' + para.repeat(Math.round(mb * 1048576 / para.length)) + '</w:body></w:document>');
     return z.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 9 } });
   }
-  it('reads the zip directory without inflating: a 150 MB .docx in a few hundred KB is "too big"', async () => {
-    const b = await bomb(150);
-    expect(b.length).toBeLessThan(2 * 1048576);
-    expect(zipUnpackedSize(b)!).toBeGreaterThan(150 * 1000 * 1000);
-    expect(docxReadable(b)).toBe(false);
-    const small = await bomb(1);
-    expect(docxReadable(small)).toBe(true);
-    expect(zipUnpackedSize(Buffer.from('not a zip'))).toBeNull();
-  });
-  it('the bomb uploads without being inflated: no page count, memory stays small, the server keeps answering', async () => {
-    const b = await bomb(150);
+  /** A hand-built .docx (bomb3-style): word/document.xml inflates to `mb` megabytes but BOTH size fields say `lie`. */
+  function forged(mb: number, lie: number): Buffer {
+    const head = Buffer.from('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>');
+    const tail = Buffer.from('</w:t></w:r></w:p></w:body></w:document>');
+    const plain = Buffer.concat([head, Buffer.alloc(mb * 1048576, 0x41), tail]);
+    const body = deflateRawSync(plain, { level: 9 });
+    if (lie < 0) lie = plain.length; // tell the truth
+    const files = [
+      { name: '[Content_Types].xml', data: Buffer.from('<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'), method: 0, usize: -1 },
+      { name: 'word/document.xml', data: body, method: 8, usize: lie },
+    ];
+    const parts: Buffer[] = [], cds: Buffer[] = []; let off = 0;
+    for (const f of files) {
+      const nm = Buffer.from(f.name), us = f.usize < 0 ? f.data.length : f.usize;
+      const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(f.method, 8); lh.writeUInt32LE(f.data.length, 18); lh.writeUInt32LE(us, 22); lh.writeUInt16LE(nm.length, 26);
+      parts.push(lh, nm, f.data);
+      const cd = Buffer.alloc(46); cd.writeUInt32LE(0x02014b50, 0); cd.writeUInt16LE(20, 4); cd.writeUInt16LE(20, 6); cd.writeUInt16LE(f.method, 10); cd.writeUInt32LE(f.data.length, 20); cd.writeUInt32LE(us, 24); cd.writeUInt16LE(nm.length, 28); cd.writeUInt32LE(off, 42);
+      cds.push(cd, nm); off += 30 + nm.length + f.data.length;
+    }
+    const cdBuf = Buffer.concat(cds), e = Buffer.alloc(22);
+    e.writeUInt32LE(0x06054b50, 0); e.writeUInt16LE(files.length, 8); e.writeUInt16LE(files.length, 10); e.writeUInt32LE(cdBuf.length, 12); e.writeUInt32LE(off, 16);
+    return Buffer.concat([...parts, cdBuf, e]);
+  }
+  it('a forged directory (1 GB inside, "1,716 bytes" claimed) is refused with plain words, inflating at most 20 MB', async () => {
+    const b = forged(1000, 1716);
+    expect(b.length).toBeLessThan(1.5 * 1048576);
     const before = process.memoryUsage().rss;
     const t0 = Date.now();
-    const r = await (await up('bomb.docx', b)).json() as { pages: number | null; path: string };
-    expect(r.pages).toBeNull();
+    expect(() => inflateZipBounded(b)).toThrow(UnsafeDocument);
+    await expect(docxText(b)).rejects.toThrow(/too big to read here once unzipped/);
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    expect(process.memoryUsage().rss - before).toBeLessThan(120 * 1048576);
+    // the truth told about a 1 MB part: read; a lie about a small one (real size differs): refused
+    expect(inflateZipBounded(forged(1, -1)).map((p) => p.name)).toEqual(['[Content_Types].xml', 'word/document.xml']);
+    expect(() => inflateZipBounded(forged(1, 1716))).toThrow(UnsafeDocument);
+    // an honest 150 MB part is over the ceiling too
+    expect(() => inflateZipBounded(forged(150, -1))).toThrow(UnsafeDocument);
+    expect(() => inflateZipBounded(Buffer.from('not a zip'))).toThrow(UnsafeDocument);
+  });
+  it('the forged bomb is refused at upload (400, plain words) and read_document/documentSize never inflate it', async () => {
+    const b = forged(1000, 1716);
+    const before = process.memoryUsage().rss;
+    const t0 = Date.now();
+    const r = await up('bomb3.docx', b);
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as { error: { code: string; message: string } }).error).toMatchObject({ code: 'unsafe_document', message: expect.stringMatching(/too big to read here once unzipped/) });
     expect(Date.now() - t0).toBeLessThan(5_000);
-    expect(process.memoryUsage().rss - before).toBeLessThan(80 * 1048576);
-    // and an ask that attaches it counts it by size, never inflating it
-    const t1 = Date.now();
-    const file = readFileSync(join(ws, r.path));
-    const size = await documentSize(join(ws, r.path), file);
-    expect(Date.now() - t1).toBeLessThan(1_000);
-    expect(size.chars).toBe(file.length); // its size in bytes stands in; it was never unzipped
+    expect(process.memoryUsage().rss - before).toBeLessThan(120 * 1048576);
+    expect(existsSync(join(ws, 'serve/p-general/uploads/bomb3.docx'))).toBe(false);
+    const size = await documentSize('x.docx', b); // e.g. an attachment from mail
+    expect(size.chars).toBe(b.length); // counted by its size; never unzipped
     expect((await fetch(`${base}/meta`)).status).toBe(200);
+  });
+  it('a real Word file still reads (mammoth on the checked, re-stored parts)', async () => {
+    const z = new JSZip();
+    z.file('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>');
+    z.file('_rels/.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
+    z.file('word/document.xml', '<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Entries close Friday.</w:t></w:r></w:p></w:body></w:document>');
+    const real = await z.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    expect((await docxText(real)).trim()).toBe('Entries close Friday.');
+    const r = await (await up('rules.docx', real)).json() as { pages: number };
+    expect(r.pages).toBe(1);
+    expect(storedZip([{ name: 'a.txt', data: Buffer.from('hi') }]).readUInt32LE(0)).toBe(0x04034b50);
   });
   it('counts PDFs and text; not images or other binaries', async () => {
     expect((await (await up('notes.txt', 'x'.repeat(7000))).json() as { pages: number }).pages).toBe(3);
@@ -402,5 +443,50 @@ describe('(9) the LOWs', () => {
       expect(JSON.parse(res.body).error.code).toBe('too_large');
       expect(existsSync(join(ws, 'serve/p-general/uploads/big.bin'))).toBe(false);
     } finally { srv.close(); setProjectRouteDeps(null); }
+  });
+});
+
+describe('the security re-review (2026-10-26)', () => {
+  it('M-1: `tailscale serve` detection matches loopback targets exactly ([::1] escaped; 10.0.0.1 is not 1)', () => {
+    expect(tailscaleForwardsTo('{"Proxy":"http://[::1]:7788"}', 7788)).toBe(true);
+    expect(tailscaleForwardsTo('{"TCPForward":"localhost:7788"}', 7788)).toBe(true);
+    expect(tailscaleForwardsTo('{"Proxy":"http://127.0.0.1:77881"}', 7788)).toBe(false);
+    expect(tailscaleForwardsTo('{"Proxy":"http://10.0.0.1:7788"}', 7788)).toBe(false); // the unescaped class matched "1:7788"
+    expect(tailscaleForwardsTo('{"Proxy":"http://192.168.1.1:7788"}', 7788)).toBe(false);
+    expect(tailscaleForwardsTo('{"Proxy":"http://0.0.0.0:7788"}', 7788)).toBe(true);
+  });
+  it('L-1: pruning forgets expired sessions and revoked ones issued since the table, never one that could be re-adopted', () => {
+    resetAppDb(':memory:');
+    configureSessions({ password: 'pw-for-tests' });
+    const live = issueSession(), gone = issueSession();
+    appDb().prepare('UPDATE sessions SET revoked_at = ? WHERE id = ?').run(Date.now(), gone.id);
+    const now = Date.now();
+    appDb().prepare('INSERT INTO sessions (id, created_at, revoked_at, via) VALUES (?, ?, ?, ?)').run('old-expired-id-0001', now - SESSION_MS - 1000, null, 'password');
+    appDb().prepare('INSERT INTO sessions (id, created_at, revoked_at, via) VALUES (?, ?, ?, ?)').run('adopted-revoked-001', now - 10 * 86_400_000, now, 'adopted');
+    appDb().prepare(`UPDATE migrations SET at = ? WHERE name = '013-sessions'`).run(now - 86_400_000);
+    expect(pruneSessions(now)).toBe(2);
+    const left = (appDb().prepare('SELECT id FROM sessions ORDER BY id').all() as { id: string }[]).map((r) => r.id).sort();
+    expect(left).toEqual([live.id, 'adopted-revoked-001'].sort());
+    expect(sessionIdOf(gone.token)).toBeNull(); // still refused without its row
+    expect(sessionIdOf(live.token)).toBe(live.id);
+  });
+  it('L-2: names lose angle brackets on the server (device names and the helper and owner names)', () => {
+    resetAppDb(':memory:');
+    process.env.MWA_CONFIG_PATH = join(mkdtempSync(join(tmpdir(), 'mwa-cfg-')), 'mwa.config.json'); captureDeploymentEnv();
+    const { code } = createPairCode('t');
+    const d = redeemPairCode(code, '<img src=x onerror=alert(1)>Pixel')!;
+    expect(listDevices().find((x) => x.id === d.deviceId)!.name).toBe('img src=x onerror=alert(1) Pixel');
+    expect(renameDevice(d.deviceId, '<b>Kitchen</b>')!.name).toBe('b Kitchen /b');
+    expect(updateSettings({ helperName: '<script>Juniper', ownerName: 'Rob<>ert' })).toMatchObject({ helperName: 'script Juniper', ownerName: 'Rob ert' });
+    delete process.env.MWA_CONFIG_PATH;
+  });
+  it('MWA_TRUSTED_PROXY takes CIDR ranges as well as addresses', () => {
+    const r = (addr: string, xff: string) => req({ addr, headers: { 'x-forwarded-for': xff } });
+    const env = { MWA_TRUSTED_PROXY: '127.0.0.1, 10.0.0.0/8, fd7a:115c:a1e0::/48, nonsense, 1.2.3.4/99' };
+    expect(sourceOf(r('10.20.30.40', '100.64.0.9'), env)).toBe('100.64.0.9');
+    expect(sourceOf(r('127.0.0.1', '100.64.0.9, 10.1.1.1'), env)).toBe('100.64.0.9'); // right-most untrusted hop
+    expect(sourceOf(r('fd7a:115c:a1e0::5', '100.64.0.10'), env)).toBe('100.64.0.10');
+    expect(sourceOf(r('11.0.0.1', '100.64.0.9'), env)).toBe('11.0.0.1');
+    expect(sourceOf(r('::ffff:10.0.0.7', '6.6.6.6'), env)).toBe('6.6.6.6');
   });
 });

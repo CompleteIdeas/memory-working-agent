@@ -14,14 +14,15 @@
  *                         MWA_PUBLIC_URL (something forwards that name here). In relayed mode nobody is "this machine":
  *                         the owner signs in with the password or uses a paired device.
  *   sourceOf(req)         the address a throttle counts against: the socket peer. X-Forwarded-For is believed only when
- *                         the peer is a trusted proxy (MWA_TRUSTED_PROXY, comma-separated IPs; none by default), and then
+ *                         the peer is a trusted proxy (MWA_TRUSTED_PROXY, comma-separated IPs or CIDR ranges such as
+ *                         10.0.0.0/8 or fd7a:115c:a1e0::/48; none by default), and then
  *                         the right-most address that is not itself a trusted proxy.
  *   cookieSecure(req)     whether a cookie may carry Secure: only over HTTPS (directly, or X-Forwarded-Proto: https).
  *                         Plain http on localhost gets no Secure flag (some browsers then drop the cookie).
  */
 import type { IncomingMessage } from 'node:http';
 import { hostname } from 'node:os';
-import { isIP } from 'node:net';
+import { isIP, BlockList } from 'node:net';
 import { isHosted } from '../hosting.js';
 
 type Env = Record<string, string | undefined>;
@@ -79,13 +80,32 @@ export function relayedMode(env: Env = process.env, hosted: () => boolean = () =
   return hosted();
 }
 
-const norm = (a: string) => a.replace(/^::ffff:/, '').toLowerCase();
+const norm = (a: string) => a.replace(/^::ffff:/, '').replace(/^\[|\]$/g, '').toLowerCase();
+/** MWA_TRUSTED_PROXY as a BlockList: exact addresses and CIDR ranges ("127.0.0.1, 10.0.0.0/8, fd7a:115c:a1e0::/48").
+ *  An entry that is neither is ignored. Cached per value. */
+let trustCache: { raw: string; list: BlockList } | null = null;
+export function trustedProxies(env: Env = process.env): BlockList {
+  const raw = String(env.MWA_TRUSTED_PROXY ?? '');
+  if (trustCache?.raw === raw) return trustCache.list;
+  const bl = new BlockList();
+  for (const item of list(raw)) {
+    const [addr, bits] = item.split('/');
+    const a = norm(addr), fam = isIP(a);
+    if (!fam) continue;
+    const type = fam === 6 ? 'ipv6' : 'ipv4';
+    if (bits === undefined) bl.addAddress(a, type);
+    else { const n = Number(bits); if (Number.isInteger(n) && n >= 0 && n <= (fam === 6 ? 128 : 32)) bl.addSubnet(a, n, type); }
+  }
+  trustCache = { raw, list: bl };
+  return bl;
+}
+const isTrusted = (bl: BlockList, a: string) => { const fam = isIP(a); return !!fam && bl.check(a, fam === 6 ? 'ipv6' : 'ipv4'); };
 export function sourceOf(req: IncomingMessage, env: Env = process.env): string {
   const peer = norm(String(req.socket?.remoteAddress ?? 'unknown'));
-  const trusted = new Set(list(env.MWA_TRUSTED_PROXY).map(norm));
-  if (!trusted.has(peer)) return peer;
+  const trusted = trustedProxies(env);
+  if (!isTrusted(trusted, peer)) return peer;
   const hops = String(req.headers['x-forwarded-for'] ?? '').split(',').map((s) => norm(s.trim())).filter(Boolean);
-  for (let i = hops.length - 1; i >= 0; i--) if (!trusted.has(hops[i])) return hops[i];
+  for (let i = hops.length - 1; i >= 0; i--) if (!isTrusted(trusted, hops[i])) return hops[i];
   return peer;
 }
 
@@ -104,9 +124,15 @@ export async function detectTailscaleServe(port: number, run: (cmd: string, args
   if (String(process.env.MWA_RELAYED ?? '').trim() !== '') return false;
   let out = '';
   try { out = await run('tailscale', ['serve', 'status', '--json']); } catch { return false; }
-  const hit = new RegExp(`(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0):${port}(?![0-9])`).test(out);
+  const hit = tailscaleForwardsTo(out, port);
   if (hit) process.env.MWA_RELAYED = '1';
   return hit;
+}
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Whether `tailscale serve status --json` output forwards to this port on this machine (any loopback spelling). */
+export function tailscaleForwardsTo(statusJson: string, port: number): boolean {
+  const hosts = ['127.0.0.1', 'localhost', '[::1]', '::1', '0.0.0.0'].map(escapeRe).join('|');
+  return new RegExp(`(?:^|[^0-9A-Za-z.:])(?:${hosts}):${port}(?![0-9])`).test(statusJson);
 }
 async function defaultRun(cmd: string, args: string[]): Promise<string> {
   const { execFile } = await import('node:child_process');

@@ -110,3 +110,16 @@ the real model, each capped at $1.
   only over https. Signed-out `/me` keeps `passwordSet`: the start screen needs it to offer the password or pairing
   only, and the lock page shows the same.
 
+## Notes from the W5 security re-review (2026-10-26), fixed on v2-w5
+- **Zip bombs with a lying directory**: a .docx's stated sizes are never trusted. Every part is inflated with a hard
+  output ceiling (zlib maxOutputLength; 20 MB in all), a part whose real size differs from the directory is refused,
+  and mammoth reads a fresh stored zip of the checked parts (src/tools/safe-zip.ts `docxText`). Used by
+  read_document, document sizes, uploads (an unsafe .docx is refused with 400 `unsafe_document`), mail attachments
+  (Gmail, Google, Outlook) and onboarding scans.
+- Generic forwarders (socat, portproxy, ssh -R, nginx stream) need `MWA_RELAYED=1`: documented in
+  docs/configuration.md and onboarding-and-pairing.html, and said in the start-up log when there is no password on
+  loopback. `tailscale serve` detection runs every 5 minutes, with the loopback targets matched exactly.
+- Sessions are pruned at start and daily (expired ones; revoked ones that could not be adopted again).
+- Device, helper and owner names lose `<` and `>` on the server.
+- `MWA_TRUSTED_PROXY` takes CIDR ranges (node:net BlockList).
+

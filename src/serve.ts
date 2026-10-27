@@ -61,7 +61,7 @@ import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, ru
 import { logger, readLogs, type LogLevel } from './logger.js';
 import { createV1Handler } from './api/v1.js';
 import { makeAuthenticate, hasValidDeviceCookie } from './api/auth.js';
-import { configureSessions, sessionValid, secretEquals } from './api/sessions.js';
+import { configureSessions, sessionValid, secretEquals, pruneSessions } from './api/sessions.js';
 import { signInWithPassword } from './api/signin.js';
 import { hostAllowed, relayedMode, detectTailscaleServe } from './api/trust.js';
 import { setSettingsRouteDeps } from './api/routes/settings.js';
@@ -1792,7 +1792,17 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   if (relayedMode() && !ACCESS_PW) {
     logger.warn('serve', 'This helper can be reached through the network or a relay and has no password: nobody can sign in or pair a phone. Set MWA_ACCESS_PASSWORD.');
     console.warn('  [mwa] No password is set and this helper is reachable through the network or a relay: set MWA_ACCESS_PASSWORD to sign in and pair your phone.');
+  } else if (!ACCESS_PW) {
+    // W5 re-review (M-1): MWA can't see a hand-made forwarder; whoever adds one must say so
+    const note = 'No password is set, so this computer is trusted as "this machine". If you expose MWA through socat, netsh portproxy, ssh -R or an nginx stream, set MWA_RELAYED=1 (and MWA_ACCESS_PASSWORD): every request through such a forwarder looks local.';
+    logger.info('serve', note);
+    console.log(`  [mwa] ${note}`);
   }
+  // W5 re-review: `tailscale serve` may be switched on after MWA starts — look again every 5 minutes. Sessions that
+  // can't come back are pruned now and daily.
+  { const t = setInterval(() => { void detectTailscaleServe(port).then((hit) => { if (hit) logger.info('serve', `tailscale serve now forwards to port ${port}: relayed mode`); }).catch(() => {}); }, 5 * 60_000); t.unref?.(); }
+  try { pruneSessions(); } catch { /* app.db unavailable: next time */ }
+  { const t = setInterval(() => { try { pruneSessions(); } catch { /* next time */ } }, 24 * 3_600_000); t.unref?.(); }
   // v2 (A8): mail headers for "All email" and triage — every 15 minutes (and on app open via POST /api/v1/mail/refresh).
   // Headers only, no model calls; nothing happens while no mail account is connected.
   // It starts once v2 is ready (the jobs migration at server start), like the rest of v2.

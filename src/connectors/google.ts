@@ -9,6 +9,7 @@
  * loopback consent flow and stores the token at data/google-token.json (local only).
  */
 import { google } from 'googleapis';
+import { docxText } from '../tools/safe-zip.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { catchOAuthCode, newPkce } from '../connect/oauth-catcher.js';
@@ -234,12 +235,7 @@ async function extractDoc(filename: string, buf: Buffer): Promise<string> {
       const { text } = await extractText(pdf, { mergePages: true });
       return Array.isArray(text) ? text.join('\n') : String(text ?? '');
     }
-    if (lower.endsWith('.docx')) {
-      const m: any = await import('mammoth');
-      const fn = m.extractRawText ?? m.default?.extractRawText;
-      const { value } = await fn({ buffer: buf });
-      return String(value ?? '');
-    }
+    if (lower.endsWith('.docx')) return docxText(buf); // bounded inflate (W5 re-review): a lying zip can't blow up memory
     return buf.toString('utf8');
   } catch { return ''; }
 }

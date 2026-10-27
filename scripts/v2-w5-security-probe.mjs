@@ -151,10 +151,32 @@ try {
   const upMs = Date.now() - t0;
   const t1 = Date.now(); const h = await req('GET', A, '/api/health'); const hMs = Date.now() - t1;
   const afterMb = ws();
-  check('(3) the bomb (150 MB of XML in a small .docx) is saved without a page count', up.status === 201 && JSON.parse(up.body).pages === null, `${up.status} ${up.body.slice(0, 120)}`);
+  // re-review: a .docx over 20 MB unzipped is refused at upload (it would be unreadable anyway)
+  check('(3) the bomb (150 MB of XML in a small .docx) is refused in plain words, never fully inflated', up.status === 400 && /unsafe_document/.test(up.body), `${up.status} ${up.body.slice(0, 120)}`);
   check('(3) quickly, and /api/health answers at once', upMs < 5000 && h.status === 200 && hMs < 1000, `upload ${upMs}ms, health ${hMs}ms`);
   check('(3) memory stays small (under 120 MB more)', before < 0 || afterMb - before < 120, `${before} MB → ${afterMb} MB`);
   console.log(`     (working set ${before} MB → ${afterMb} MB, ${(bomb.length / 1024).toFixed(0)} KB file)`);
+  // the re-review's bomb: the directory lies (1 GB inside, "1,716 bytes" claimed)
+  const zlib = await import('node:zlib');
+  const plain = Buffer.concat([Buffer.from('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>'), Buffer.alloc(1000 * 1048576, 0x41), Buffer.from('</w:t></w:r></w:p></w:body></w:document>')]);
+  const deflated = zlib.deflateRawSync(plain, { level: 9 });
+  const entry = (name, data, method, usize, off) => {
+    const nm = Buffer.from(name);
+    const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(method, 8); lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(usize, 22); lh.writeUInt16LE(nm.length, 26);
+    const cd = Buffer.alloc(46); cd.writeUInt32LE(0x02014b50, 0); cd.writeUInt16LE(20, 4); cd.writeUInt16LE(20, 6); cd.writeUInt16LE(method, 10); cd.writeUInt32LE(data.length, 20); cd.writeUInt32LE(usize, 24); cd.writeUInt16LE(nm.length, 28); cd.writeUInt32LE(off, 42);
+    return { local: Buffer.concat([lh, nm, data]), cd: Buffer.concat([cd, nm]) };
+  };
+  const ct = Buffer.from('<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>');
+  const e1 = entry('[Content_Types].xml', ct, 0, ct.length, 0), e2 = entry('word/document.xml', deflated, 8, 1716, e1.local.length);
+  const cdb = Buffer.concat([e1.cd, e2.cd]), eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(2, 8); eocd.writeUInt16LE(2, 10); eocd.writeUInt32LE(cdb.length, 12); eocd.writeUInt32LE(e1.local.length + e2.local.length, 16);
+  const forged = Buffer.concat([e1.local, e2.local, cdb, eocd]);
+  const b3before = ws(), t3 = Date.now();
+  const up3 = await req('POST', A, '/api/v1/files?name=bomb3.docx', { ...B_, 'Idempotency-Key': key(), 'content-type': 'application/octet-stream' }, forged);
+  const up3ms = Date.now() - t3, b3after = ws();
+  check('(3, re-review) a forged-directory .docx (1 GB inside, "1,716 bytes") is refused in plain words', up3.status === 400 && /unsafe_document/.test(up3.body) && /too big to read here once unzipped/.test(up3.body), `${up3.status} ${up3.body.slice(0, 160)}`);
+  check('(3, re-review) quickly, without the memory growing', up3ms < 5000 && (b3before < 0 || b3after - b3before < 120), `${up3ms}ms, ${b3before} MB → ${b3after} MB`);
+  console.log(`     (forged ${(forged.length / 1024).toFixed(0)} KB; working set ${b3before} MB → ${b3after} MB; ${up3ms} ms)`);
 
   // ---------- (5) DNS rebinding (B, no password, one computer) ----------
   console.log('== (5) host allowlist, this machine');
