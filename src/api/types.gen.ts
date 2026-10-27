@@ -306,7 +306,10 @@ export interface paths {
          * @description Events: `hello` {cursor, head}; `change` {seq, entity, id, op, data?} with `id: <seq>` (a job's change carries
          *     its current view in `data`); `live` {session, type, stage, at} — a running try's progress, at most once a
          *     second per run; `reset` {cursor, reason} — the cursor was older than what is kept: call /sync without
-         *     `since`. A comment every 15 s keeps the connection open. Reconnect with Last-Event-ID (EventSource does it).
+         *     `since`. A `change` with entity `today` and no data (at most every 5 s) means Today changed (a job,
+         *     calendar, item or action changed, an approval or a sync's state moved, or the day passed midnight, 05:00, noon
+         *     or 17:00):
+         *     GET /today again. A comment every 15 s keeps the connection open. Reconnect with Last-Event-ID (EventSource does it).
          *
          */
         get: operations["openStream"];
@@ -1030,6 +1033,74 @@ export interface paths {
         put?: never;
         /** A plan's choice, made once: now (main model, its limit), background (a Job on the background model tier, with the default limit or capUsd), or a narrower ask (which is asked in turn). The same choice again answers what the first did (200); another choice is 409 already_chosen; an archived project or a file gone is 409; a plan older than a day is 410 expired. */
         post: operations["chooseAsk"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/today": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The Today screen in one read: Needs you, Next up, Done for you, Worth a look, the check-in or the wrap, the week line, the month and the status pill. */
+        get: operations["getToday"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/today/seen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** This caller looked at Today: Done for you lists only what comes after. Per caller (each device keeps its own). */
+        post: operations["markTodaySeen"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/today/checkin/done": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** "Done — show my day": the morning check-in is gone for today, on every device. */
+        post: operations["finishCheckin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/today/wrap/done": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** "Good night": the evening wrap is gone for today, on every device. */
+        post: operations["finishWrap"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1821,6 +1892,209 @@ export interface components {
             } | null;
             updatedSeq: number;
         };
+        /** @description Where a card or line opens, in place: a job, the waiting jobs, an approval, the approvals, a calendar item (on `date`), an Important item, an account to reconnect, an action in the activity log. */
+        TodayOpen: {
+            /** @enum {string} */
+            kind: "job" | "jobs" | "approval" | "approvals" | "calendar" | "item" | "reconnect" | "activity" | "mail";
+            /** @description The thing's id (a job, approval, calendar item, Important item, account or action); "waiting" for jobs; null for all approvals. */
+            id: string | null;
+            /** @description calendar and item: the local day to open (YYYY-MM-DD). */
+            date?: string;
+            /**
+             * @description reconnect: which part of the account.
+             * @enum {string}
+             */
+            resource?: "calendar" | "mail";
+        };
+        /** @description One "Needs you" card. At most one per kind — approvals, jobs waiting for you, the next double-booking, an
+         *     account to reconnect — with `count` when there are more. Never made from mail, so a phishing-flagged message is
+         *     never one. A card shown here is not repeated in `worthALook`. Titles that came from outside (an invite, a staged
+         *     action) are `trust: untrusted`: plain text, auto-linking off.
+         *      */
+        TodayNeed: {
+            id: string;
+            /** @enum {string} */
+            kind: "approval" | "job" | "conflict" | "reconnect";
+            count: number;
+            /** @description "Thursday at 4 is double-booked", "Google Calendar needs to be reconnected". */
+            title: string;
+            text: string;
+            action: {
+                /** @description review-approval, a job action (continue, review…), draft-note (only when the double-booking has its Important item; otherwise the card has no action and only opens the day), reconnect. */
+                kind: string;
+                /** @description "Review", "Finish the last 10 pages · about 3¢", "Draft the note", "Reconnect". */
+                label: string;
+            } | null;
+            open: components["schemas"]["TodayOpen"];
+            /** @description The Important item this card stands for, when there is one (its action runs through POST /items/{id}/action). */
+            itemId: string | null;
+            /** @enum {string} */
+            trust: "trusted" | "untrusted";
+        };
+        /** @description Next up: one of today's remaining timed events (on the calendar; open drafts are not plans). */
+        TodayEvent: {
+            /** @description A CalendarItem id. */
+            id: string;
+            /** @enum {string} */
+            kind: "event" | "draft";
+            title: string;
+            /** @description UTC instant. */
+            start: string;
+            /** @description UTC instant. */
+            end: string;
+            location: string | null;
+            /** @description "8:15 AM" in the person's zone. */
+            startLabel: string;
+            /** @description "Now", "in 25 min" (within the hour), else null. */
+            soon: string | null;
+        };
+        /** @description One "Done for you" line: something the helper did since this caller last looked, in plain words, opening the thing in place. */
+        TodayDone: {
+            id: string;
+            /** @enum {string} */
+            kind: "draft-event" | "event-added" | "job-finished" | "reminder" | "reply-drafted" | "email-sent" | "file-saved" | "preference";
+            /** @description "I added “Riley’s dentist” on Wed Nov 11 at 3:30pm as a draft. Confirm it when you see it." */
+            text: string;
+            at: number;
+            open: components["schemas"]["TodayOpen"];
+            /** @enum {string} */
+            trust: "trusted" | "untrusted";
+        };
+        /** @description Everything the Today screen needs, in one read, for the person's day in their own time zone (day boundaries are
+         *     real local midnights). Read-only: no model call is made. The phone shows greeting, Needs you, Next up, Done for
+         *     you, Worth a look and the week line; the desktop puts `worthALook` (the Important list) on the left and `agenda`
+         *     on the right. When `freshness.calendar` is not_connected or not_synced, `nextUp` is empty because the day is
+         *     UNKNOWN, not free: show `freshness.calendarNote` instead of "Nothing else today".
+         *      */
+        Today: {
+            /**
+             * @description The one document of the /sync `today` collection.
+             * @constant
+             */
+            id: "today";
+            /** @description The local date (YYYY-MM-DD). */
+            date: string;
+            /** @description "Monday". */
+            weekday: string;
+            /** @description "Monday, November 9". */
+            dateLabel: string;
+            /** @description The person's IANA zone. */
+            tz: string;
+            /** @description The server's now (ms) this was computed at. */
+            now: number;
+            greetingName: string | null;
+            /** @description "Good morning, Robert". */
+            greeting: string;
+            /** @enum {string} */
+            part: "morning" | "afternoon" | "evening" | "night";
+            /** @description The morning check-in, 5:00 until noon local, until the person taps "Done — show my day" (POST /today/checkin/done). Counts only: each thing appears once, in its own card below. */
+            checkin: {
+                title: string;
+                /** @description "Here’s your Monday: 5 things on your calendar, 1 thing needs you, and I did 3 things overnight. It’s all below." Events still ahead (or all day) count. */
+                text: string;
+                /** @description For "Read it to me": the counts, the first thing's time, and the first card in the helper's own words ("Something needs your OK.") — never an event title or a staged action's summary. */
+                spoken: string;
+                /**
+                 * @description Whether text holds anything that came from outside (it does not: counts only).
+                 * @enum {string}
+                 */
+                trust: "trusted" | "untrusted";
+                counts: {
+                    events: number;
+                    needsYou: number;
+                    overnight: number;
+                };
+            } | null;
+            /** @description The evening wrap, from 17:00 local when the day had activity, until "Good night" (POST /today/wrap/done). */
+            wrap: {
+                /** @description "That’s Monday". */
+                title: string;
+                /** @description What got done today; how tomorrow starts ("Tomorrow starts at 8:15 AM with an event called “School drop-off”" — a title is quoted, filtered and at most 60 characters). */
+                lines: string[];
+                /** @description For "Read it to me": the same, with times only — no titles. */
+                spoken: string;
+                /**
+                 * @description untrusted when `lines` quote an event title (it came from the calendar, perhaps from an invitation): plain text, auto-linking off.
+                 * @enum {string}
+                 */
+                trust: "trusted" | "untrusted";
+                counts: {
+                    eventsConfirmed: number;
+                    repliesDrafted: number;
+                    jobsFinished: number;
+                    doneToday: number;
+                };
+            } | null;
+            needsYou: components["schemas"]["TodayNeed"][];
+            nextUp: components["schemas"]["TodayEvent"][];
+            /** @description More events later today than nextUp shows ("See your whole day"). */
+            nextUpMore: number;
+            /** @description The whole local day: events and drafts (the desktop's right-hand column). */
+            agenda: components["schemas"]["CalendarItem"][];
+            doneForYou: components["schemas"]["TodayDone"][];
+            /** @description "and N more earlier". */
+            doneMore: number;
+            /** @description Done for you lists what happened after this (ms): when this caller last looked, at most a week back; a day back for a first look. */
+            doneSince: number;
+            /** @description The top open Important items, minus what a Needs-you card shows. */
+            worthALook: components["schemas"]["ImportantItem"][];
+            /** @description "See all (N)": every open item on the Important list. */
+            worthALookTotal: number;
+            weekLine: {
+                /** @description "In the last 7 days: 6 replies drafted, 4 events added, 2 documents learned." Counts only. */
+                text: string;
+                counts: {
+                    repliesDrafted: number;
+                    /** @description Drafts confirmed onto a calendar. */
+                    eventsAdded: number;
+                    /** @description Finished jobs that worked through a document page by page. */
+                    documentsLearned: number;
+                    jobsFinished: number;
+                };
+            };
+            month: {
+                usedUsd: number;
+                limitUsd: number | null;
+                /** @enum {string} */
+                state: "none" | "ok" | "warn" | "over";
+            };
+            /** @description The status pill: the same computation everywhere (src/v2/status.ts statusPill). */
+            status: {
+                /** @description "Working on 1 thing", "Working on 1 · 1 waiting for you", "Helper is resting". */
+                text: string;
+                /** @enum {string} */
+                tone: "needs" | "working" | "resting";
+                working: number;
+                waiting: number;
+                ready: number;
+            };
+            freshness: {
+                /** @description The oldest last successful calendar sync among connected calendars (ms). */
+                calendarAsOf: number | null;
+                mailAsOf: number | null;
+                /**
+                 * @description partial: one calendar synced and another never has (named in calendarNote); the day shown is incomplete.
+                 * @enum {string}
+                 */
+                calendar: "ok" | "stale" | "partial" | "not_synced" | "reconnect" | "not_connected";
+                /** @enum {string} */
+                mail: "ok" | "stale" | "partial" | "not_synced" | "reconnect" | "not_connected";
+                /** @description Say this when the calendar is not ok: "Your calendar hasn't synced yet, so I can't tell what's next." */
+                calendarNote: string | null;
+                mailNote: string | null;
+                needsReconnect: {
+                    account: string;
+                    /** @enum {string} */
+                    resource: "calendar" | "mail";
+                    label: string;
+                }[];
+            };
+        };
+        TodayAck: {
+            /** @description "Morning check-in done. Have a good Monday.", "See you in the morning." */
+            message: string;
+            today: components["schemas"]["Today"];
+        };
     };
     responses: {
         /** @description An error. */
@@ -2276,7 +2550,7 @@ export interface operations {
         parameters: {
             query?: {
                 since?: string;
-                /** @description Comma-separated: jobs, calendar, mail (mail is headers only), projects (archived included), turns (a snapshot holds each active project's latest 50), important (the Important list; handled items for 30 days). */
+                /** @description Comma-separated: jobs, calendar, mail (mail is headers only), projects (archived included), turns (a snapshot holds each active project's latest 50), important (the Important list; handled items for 30 days), today (one document: the Today composite for this caller; a delta holds it only when something it is made of changed). */
                 collections?: string;
             };
             header?: never;
@@ -2303,6 +2577,7 @@ export interface operations {
                             projects?: components["schemas"]["Project"][];
                             turns?: components["schemas"]["Turn"][];
                             important?: components["schemas"]["ImportantItem"][];
+                            today?: components["schemas"]["Today"][];
                         };
                         deletes: {
                             jobs?: string[];
@@ -2311,6 +2586,7 @@ export interface operations {
                             projects?: string[];
                             turns?: string[];
                             important?: string[];
+                            today?: string[];
                         };
                     };
                 };
@@ -3548,6 +3824,98 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AskChosen"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getToday: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Today for this caller. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Today"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    markTodaySeen: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recorded. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        seenAt: number;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    finishCheckin: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done, with Today as it is now. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TodayAck"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    finishWrap: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done, with Today as it is now. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TodayAck"];
                 };
             };
             default: components["responses"]["Error"];

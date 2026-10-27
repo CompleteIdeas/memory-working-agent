@@ -8,7 +8,7 @@
  *   working          working                      Working now
  *   continuing       working (queued to go on)    Working now
  *   waiting          waiting for you              Waiting for you
- *   done + ready     result ready                 Finished
+ *   any + ready      result ready (a repeating job's new result too) Finished
  *   done             –                            Finished (recent)
  *   partly_done      –                            Stopped (recent; it offers Finish the rest)
  *   stopped_by_you   –                            Stopped (recent)
@@ -20,28 +20,19 @@
  */
 import type { Job, JobState } from '../api/client';
 
-export type PillTone = 'needs' | 'working' | 'resting';
-export interface Pill { text: string; tone: PillTone; working: number; waiting: number; ready: number }
+import { statusPill, type StatusPill, type PillTone } from '../../../../src/v2/pill';
 
-const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
-const WORKING: ReadonlySet<JobState> = new Set(['working', 'continuing']);
+export type { PillTone };
+export type Pill = StatusPill;
 
 /** Jobs the pill and the sheet consider: not archived. */
 export function activeJobs(jobs: Iterable<Job>): Job[] {
   return [...jobs].filter((j) => !j.archived);
 }
 
+/** The pill: the server's own computation (src/v2/pill.ts), over the jobs that are not archived. */
 export function pillFor(jobs: Iterable<Job>): Pill {
-  const list = activeJobs(jobs);
-  const working = list.filter((j) => WORKING.has(j.status.state)).length;
-  const waiting = list.filter((j) => j.status.state === 'waiting').length;
-  const ready = list.filter((j) => j.status.state === 'done' && j.status.resultReady === true).length;
-  const parts: string[] = [];
-  if (working) parts.push(waiting || ready ? `Working on ${working}` : `Working on ${plural(working, 'thing', 'things')}`);
-  if (waiting) parts.push(`${waiting} waiting for you`);
-  if (ready) parts.push(plural(ready, 'result', 'results') + ' ready');
-  const tone: PillTone = waiting || ready ? 'needs' : working ? 'working' : 'resting';
-  return { text: parts.length ? parts.join(' · ') : 'Helper is resting', tone, working, waiting, ready };
+  return statusPill(activeJobs(jobs).map((j) => j.status));
 }
 
 export type GroupKey = 'waiting' | 'working' | 'finished' | 'stopped' | 'scheduled';

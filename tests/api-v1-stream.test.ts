@@ -133,10 +133,11 @@ describe('/stream', () => {
     createJob({ kind: 'background', title: 'Visible' });
     who = PHONE;
     const phone = await listen(`/stream?cursor=${from}`, (m) => changes(m).some((x) => x.data.entity === 'job'), undefined, {}, 2500);
-    expect(changes(phone).map((x) => x.data.entity)).toEqual(['job']);
+    // (A10: a job change is also followed by the coarse 'today' notice, which carries no data)
+    expect(changes(phone).map((x) => x.data.entity).filter((e) => e !== 'today')).toEqual(['job']);
     who = ADMIN;
     const admin = await listen(`/stream?cursor=${from}`, (m) => changes(m).length >= 2, undefined, {}, 2500);
-    expect(changes(admin).map((x) => x.data.entity).sort()).toEqual(['device', 'job']);
+    expect(changes(admin).map((x) => x.data.entity).filter((e) => e !== 'today').sort()).toEqual(['device', 'job']);
   });
   it('forwards a running job\'s progress, at most once a second per run', async () => {
     const session = `job_live_${Date.now()}`;

@@ -88,6 +88,7 @@ import { queueContinuation, dropQueuedTry, linkTry, finishTry, tryEndFromResult 
 import { usdText, DEFAULT_STEP } from './v2/estimate.js';
 import { metered, newLedger, withLedger, spendLedger, type Ledger } from './spend.js';
 import { normalizeRemaining } from './v2/status.js';
+import { logToolAction } from './v2/actions.js';
 
 /** A per-step fade factor in (0, 1]; anything else (unset, 0, negative, > 1, not a number) is off. */
 export function primeDecayFrom(opt?: number, env?: string): number {
@@ -2371,7 +2372,8 @@ export async function runAgent(opts: {
         const rec = { verb: plainVerb(action.action), tool: action.action, effect: effectOf(action.action), ...(allowedLogin ? { allowed: true } : {}) };
         if (allowedLogin) allowedLogins++;
         runActions.push(rec);
-        try { await memory.logAction({ verb: rec.verb, summary: result.slice(0, 200).replace(/\n/g, ' '), effect: rec.effect, tool: rec.tool }); } catch { /* */ }
+        // the Glass Box history and app.db's per-action row (Today's counts); a staged action is neither (A10 review H1)
+        await logToolAction(memory, { verb: rec.verb, tool: rec.tool, effect: rec.effect, result, person: opts.personId, session: opts.session, runId });
         const tw = checkTripwires(runActions.filter((a) => !a.allowed)); // an allowed login is logged, not counted
         if (tw.tripped) {
           emit('escalate', { reason: tw.reason });

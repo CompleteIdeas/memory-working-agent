@@ -642,7 +642,7 @@ export function dayLabel(date: string): string {
 }
 const weekdayLong = (date: string) => new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', weekday: 'long' }).format(new Date(`${date}T12:00:00Z`));
 /** A UTC instant as the person's "Thu Nov 12 at 4pm". */
-function atLabel(ms: number, tz: string): string {
+export function atLabel(ms: number, tz: string): string {
   const date = localDate(ms, tz);
   const hm = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(ms);
   return `${dayLabel(date)} at ${timeRange(hm, null)}`;
