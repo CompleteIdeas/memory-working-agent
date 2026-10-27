@@ -250,6 +250,23 @@ try {
       await ctx.close();
     }
 
+    // 1b. the Settings list's Connect Outlook: Close on the code card cancels the sign-in on the server too
+    {
+      const { ctx, page, errors } = await open(vp, '/?ui=v2&view=settings', 'N00');
+      const main = page.locator('#main');
+      const cancels = [];
+      page.on('request', (r) => { if (r.method() === 'POST' && /\/api\/v1\/accounts\/outlook\/cancel$/.test(r.url())) cancels.push(r.url()); });
+      await main.getByRole('button', { name: 'Connect Outlook' }).click();
+      const steps = main.locator('.connectsteps');
+      check(`${L}: Settings list: the Outlook code card shows`, await visible(steps.getByText('QWER-TY12')));
+      await steps.getByRole('button', { name: 'Close' }).click();
+      check(`${L}: Close hides the card`, await gone(steps));
+      await page.waitForTimeout(300);
+      check(`${L}: …and cancels the sign-in on the server`, cancels.length === 1, String(cancels.length));
+      check(`${L}: close-cancel: no page errors`, !errors.length, errors.join(' | '));
+      await ctx.close();
+    }
+
     // 2. Today's Reconnect lands on Connections at Google (not the classic app)
     {
       const { ctx, page, errors } = await open(vp, '/?ui=v2', 'reconnect');

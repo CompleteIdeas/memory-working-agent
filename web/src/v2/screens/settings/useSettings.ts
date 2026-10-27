@@ -143,6 +143,8 @@ export function useSettingsData() {
         let started: ConnectStart | null = null;
         return act((key) => client.connectAccount(provider, { key }), (r) => { started = r; }, (r) => r.message).then((o) => ({ ...o, start: started as ConnectStart | null }));
       },
+      /** S3: stop waiting for a sign-in that was started (Close on the code / browser card); a failure is ignored */
+      cancelConnect: async (provider: 'google' | 'outlook') => { try { await client.cancelConnect(provider, { key: newKey() }); } catch { /* the card is closed either way */ } },
       refreshAccounts: async () => { try { const r = await client.listAccounts(); setData((d) => ({ ...d, accounts: r.accounts })); return r.accounts; } catch { return null; } },
       renameDevice: (id: string, name: string) => act((key) => client.renameDevice(id, name, { key }), (r) => setData((d) => ({ ...d, devices: (d.devices ?? []).map((x) => (x.id === id ? r.device : x)) })), () => 'Renamed.'),
       removeDevice: (dv: Device) => act((key) => client.revokeDevice(dv.id, { key }), () => setData((d) => ({ ...d, devices: (d.devices ?? []).map((x) => (x.id === dv.id ? { ...x, revokedAt: store.now() } : x)) })), () => `Removed ${dv.name}. It can’t reach your helper any more.`),

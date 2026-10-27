@@ -171,7 +171,12 @@ function Accounts({ data, admin, go }: { data: ReturnType<typeof useSettingsData
           <Chev />
         </button>
       </div>
-      {started && <ConnectSteps s={started} onClose={() => setStarted(null)} onSetup={() => toConnections(started.provider)} />}
+      {started && <ConnectSteps s={started} onSetup={() => toConnections(started.provider)} onClose={() => {
+        // S3: closing the code / browser card stops the sign-in on the server too, so it can't connect later
+        if (poll.current) clearInterval(poll.current);
+        if (started.kind !== 'setup') void data.cancelConnect(started.provider);
+        setStarted(null);
+      }} />}
       <Note said={note} />
     </Section>
   );
