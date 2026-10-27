@@ -87,9 +87,9 @@ const CALLS: Record<string, (c: MwaClient) => unknown> = {
   runItemAction: (c) => c.runItemAction('i1'),
   refreshImportant: (c) => c.refreshImportant(),
   getToday: (c) => c.getToday(),
-  markTodaySeen: (c) => c.markTodaySeen(),
-  finishCheckin: (c) => c.finishCheckin(),
-  finishWrap: (c) => c.finishWrap(),
+  markTodaySeen: (c) => c.markTodaySeen({ seenAt: 1_700_000_000_000 }),
+  finishCheckin: (c) => c.finishCheckin({ day: '2026-11-09' }),
+  finishWrap: (c) => c.finishWrap({ day: '2026-11-09' }),
   listTriageRules: (c) => c.listTriageRules(),
   deleteTriageRule: (c) => c.deleteTriageRule('r1'),
 };

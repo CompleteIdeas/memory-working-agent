@@ -90,6 +90,7 @@ const ACTION_WORD: Partial<Record<ActionKind, string>> = {
   'job.resume': 'Resume', 'job.cancel': 'Cancel', 'draft.confirm': 'Confirm', 'draft.remove': 'Remove', 'message.send': 'Send',
   ask: 'Ask', 'ask.choose': 'Choose', 'turn.move': 'Move', 'project.create': 'Create', 'project.update': 'Change', 'project.stop': 'Stop',
   'project.steer': 'Add to', 'project.offer': 'Work on',
+  'today.checkin': 'Done', 'today.wrap': 'Good night', 'draft.create': 'Add',
 };
 
 export function useStatusPill() {

@@ -154,7 +154,7 @@ export function Shell() {
       </header>
 
       <main id="main" ref={main} className="main" tabIndex={-1}>
-        <Screen desk={desk} wide={wide} go={go} ask={ask} onContext={setContext} />
+        <Screen desk={desk} wide={wide} go={go} ask={ask} onContext={setContext} openWork={() => setWorkOpen(true)} />
       </main>
 
       <div className="askdock" id="askdock"><div className="askcap">

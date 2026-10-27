@@ -539,9 +539,14 @@ export const READ_DOCUMENT_CHARS = 8000;
 /**
  * v2 A6 (the big-ask plan): how big a document is, counted the way read_document reads it — no model call. `pages`: a
  * PDF's own page count, else the text in 3,000-character pages; `reads`: the read_document calls it takes at the
- * default window (each is one "page read" in the run log, the unit estimates price by). A file it cannot parse counts
- * as one page of its size in bytes.
+ * default window (each is one "page read" in the run log, the unit estimates price by). A file it cannot parse is
+ * sized from its bytes (sizeFromBytes), the same as one whose count takes too long.
  */
+/** A document that could not be counted (unreadable, or its count took too long): sized from its bytes, about 25 KB
+ *  a page. The ONE rule for both cases (an ask's estimate must not depend on which happened first). */
+export function sizeFromBytes(bytes: number): { pages: number; chars: number; reads: number } {
+  return { pages: Math.max(1, Math.round(bytes / 25_000)), chars: bytes, reads: Math.max(1, Math.round(bytes / 25_000 * 3000 / 8000)) };
+}
 export async function documentSize(src: string, buf: Buffer): Promise<{ pages: number; chars: number; reads: number }> {
   const sized = (chars: number, pages?: number) => ({ pages: Math.max(1, pages ?? Math.ceil(chars / 3000)), chars, reads: Math.max(1, Math.ceil(chars / READ_DOCUMENT_CHARS)) });
   try {
@@ -560,7 +565,7 @@ export async function documentSize(src: string, buf: Buffer): Promise<{ pages: n
     const text = buf.toString('utf8');
     return sized(/<!doctype html|<html[\s>]/i.test(text.slice(0, 1024)) ? htmlToText(text).length : text.length);
   } catch {
-    return sized(buf.length);
+    return sizeFromBytes(buf.length);
   }
 }
 const MAX_DOCUMENT_LOOKS = Math.max(0, Number(process.env.MWA_DOCUMENT_LOOKS ?? 6) || 0);

@@ -245,9 +245,15 @@ describe('the LOWs', () => {
     expect((await send('/ask', { text: 'x', files: Array.from({ length: 11 }, (_, i) => `up/f${i}.txt`) })).status).toBe(400);
     // a "PDF" whose parse never finishes: counted from its size within the time limit
     writeFileSync(join(ws, 'up', 'slow.pdf'), Buffer.concat([Buffer.from('%PDF-1.7\n'), Buffer.alloc(250_000, 32)]));
-    setAskRouteDeps({ workspace: () => ws, history: () => NONE, now: () => clock, tz: () => 'America/New_York', countTimeoutMs: 1 });
+    // (W2 review: a count that never finishes, injected — the real parser could fail before the 1 ms limit, and a
+    // failure and a timeout used to size it differently: 84 pages vs 10)
+    setAskRouteDeps({ workspace: () => ws, history: () => NONE, now: () => clock, tz: () => 'America/New_York', countTimeoutMs: 1, documentSize: () => new Promise(() => {}) });
     const out = await (await send('/ask', { text: 'what does it say?', files: ['up/slow.pdf'], projectId: GENERAL })).json();
     expect(getAsk(out.askId)!.files).toContain('"pages":10');
+    // a count that fails at once is sized by the same rule
+    setAskRouteDeps({ workspace: () => ws, history: () => NONE, now: () => clock, tz: () => 'America/New_York', countTimeoutMs: 60_000 });
+    const out2 = await (await send('/ask', { text: 'and this one?', files: ['up/slow.pdf'], projectId: GENERAL })).json();
+    expect(getAsk(out2.askId)!.files).toContain('"pages":10');
   }, 30_000);
 
   it('an ask about one thing goes to its project, else General — never routed by its (untrusted) title', async () => {

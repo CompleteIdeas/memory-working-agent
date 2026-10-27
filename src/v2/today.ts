@@ -23,6 +23,9 @@
  * Words the helper SAYS (the check-in, the wrap, "Read it to me") never carry text that came from outside — an
  * invitation's title, a staged action's summary — as the helper's own: spoken text is counts and times only, and a
  * title shown in the wrap is quoted as "an event called “…”" (60 characters, filtered) with `trust: untrusted`.
+ * Every line and card also comes as PARTS (W2 review): `[{text, outside}]`, the outside ones filtered (plainWhy) with
+ * any quote marks inside them made plain, so a screen renders someone else's words as theirs without ever parsing
+ * quotes out of a string (a title holding "”" could otherwise break out of its quote). `text` stays for older clients.
  *
  * Ownership: every v1 caller acts for the owner (jobs.ts ownerOwns), so another person's jobs, items, approvals and
  * actions are never counted or shown. "Last looked" is per caller (the password session, this machine, each paired
@@ -156,7 +159,14 @@ export function clockLabel(ms: number, tz: string): string {
   return new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' }).format(ms).replace(/ /g, ' ').replace(/:00(?=\s)/, '');
 }
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
-const quote = (s: string, max = 80) => `“${plainWhy(s, max) || 'untitled'}”`;
+/** One piece of a line: the helper's own words, or words that came from outside (a title, a summary, a why). */
+export interface Part { text: string; outside: boolean }
+const QUOTE_MARKS = /[“”„‟"«»]/g;
+/** Outside words: filtered, and any quote mark inside made plain (it can never close the quote it is shown in). */
+export const outsidePart = (s: string, max = 80): Part => ({ text: (plainWhy(s, max) || 'untitled').replace(QUOTE_MARKS, "'"), outside: true });
+const ours = (text: string): Part => ({ text, outside: false });
+/** The flat text older clients show: outside parts in typographic quotes, or as they are (`bare`: a card's words). */
+export const flatText = (parts: Part[], bare = false): string => parts.map((p) => (p.outside && !bare ? `“${p.text}”` : p.text)).join('');
 /** The part of the day: night (before 5), morning (to noon), afternoon (to 17:00), evening. */
 const partOf = (mins: number): 'night' | 'morning' | 'afternoon' | 'evening' => (mins < CHECKIN_FROM_MIN ? 'night' : mins < CHECKIN_UNTIL_MIN ? 'morning' : mins < WRAP_FROM_MIN ? 'afternoon' : 'evening');
 
@@ -166,17 +176,19 @@ const partOf = (mins: number): 'night' | 'morning' | 'afternoon' | 'evening' => 
 export interface OpenRef { kind: 'job' | 'jobs' | 'approval' | 'approvals' | 'calendar' | 'item' | 'reconnect' | 'activity' | 'mail'; id: string | null; date?: string; resource?: string }
 export interface NeedCard {
   id: string; kind: 'approval' | 'job' | 'conflict' | 'reconnect'; count: number; title: string; text: string;
+  /** the same as parts: what came from outside is marked (an approval's summary, a tainted job's title, event titles) */
+  titleParts: Part[]; textParts: Part[];
   action: { label: string; kind: string } | null; open: OpenRef; itemId: string | null; trust: 'trusted' | 'untrusted';
 }
 export interface NextUp { id: string; kind: 'event' | 'draft'; title: string; start: string; end: string; location: string | null; startLabel: string; soon: string | null }
-export interface DoneLine { id: string; kind: 'draft-event' | 'event-added' | 'job-finished' | 'reminder' | 'reply-drafted' | 'email-sent' | 'file-saved' | 'preference'; text: string; at: number; open: OpenRef; trust: 'trusted' | 'untrusted' }
+export interface DoneLine { id: string; kind: 'draft-event' | 'event-added' | 'job-finished' | 'reminder' | 'reply-drafted' | 'email-sent' | 'file-saved' | 'preference'; text: string; parts: Part[]; at: number; open: OpenRef; trust: 'trusted' | 'untrusted' }
 export interface WeekCounts { repliesDrafted: number; eventsAdded: number; documentsLearned: number; jobsFinished: number }
 export type Freshness = 'ok' | 'stale' | 'partial' | 'not_synced' | 'reconnect' | 'not_connected';
 export interface Today {
   id: 'today'; date: string; weekday: string; dateLabel: string; tz: string; now: number;
   greetingName: string | null; greeting: string; part: 'morning' | 'afternoon' | 'evening' | 'night';
   checkin: { title: string; text: string; spoken: string; trust: 'trusted' | 'untrusted'; counts: { events: number; needsYou: number; overnight: number } } | null;
-  wrap: { title: string; lines: string[]; spoken: string; trust: 'trusted' | 'untrusted'; counts: { eventsConfirmed: number; repliesDrafted: number; jobsFinished: number; doneToday: number } } | null;
+  wrap: { title: string; lines: string[]; lineParts: Part[][]; spoken: string; trust: 'trusted' | 'untrusted'; counts: { eventsConfirmed: number; repliesDrafted: number; jobsFinished: number; doneToday: number } } | null;
   needsYou: NeedCard[];
   nextUp: NextUp[]; nextUpMore: number; agenda: CalendarItem[];
   doneForYou: DoneLine[]; doneMore: number; doneSince: number;
@@ -315,11 +327,13 @@ function needsYou(views: JobView[], approvals: PendingView[], cal: ReturnType<ty
   const mine = approvals.filter((a) => ownerOwns(a.personId) && !phishing(`approval:${a.id}`)).sort((a, b) => a.createdAt - b.createdAt);
   if (mine.length) {
     const a = mine[0];
-    const what = plainWhy(a.summary, 120) || 'Something needs your OK';
+    // a staged action's summary was written by a run (perhaps after reading outside content): outside words
+    const what = plainWhy(a.summary, 120) ? outsidePart(a.summary, 120) : ours('Something needs your OK');
+    const titleParts = mine.length === 1 ? [what] : [ours(`${mine.length} things need your OK`)];
+    const textParts = mine.length === 1 ? [ours('Your helper needs your OK before it goes on.')] : [ours('The first: '), what];
     cards.push({
       id: 'need:approvals', kind: 'approval', count: mine.length,
-      title: mine.length === 1 ? what : `${mine.length} things need your OK`,
-      text: mine.length === 1 ? 'Your helper needs your OK before it goes on.' : `The first: ${what}`,
+      title: flatText(titleParts, true), text: flatText(textParts, true), titleParts, textParts,
       action: { kind: 'review-approval', label: 'Review' }, open: mine.length === 1 ? { kind: 'approval', id: a.id } : { kind: 'approvals', id: null },
       itemId: items.get(`approval:${a.id}`)?.id ?? null, trust: mine.some((x) => x.tainted) ? 'untrusted' : 'trusted',
       spoken: mine.length === 1 ? 'Something needs your OK.' : `${mine.length} things need your OK.`,
@@ -329,10 +343,13 @@ function needsYou(views: JobView[], approvals: PendingView[], cal: ReturnType<ty
   const waiting = views.filter((v) => v.status.state === 'waiting').sort((a, b) => b.job.updated_seq - a.job.updated_seq);
   if (waiting.length) {
     const v = waiting[0];
+    // a job set up from (or that read) outside content: its title is outside words
+    const titleOf = (max: number): Part => (jobTrust(v) === 'untrusted' ? outsidePart(v.job.title, max) : ours(plainWhy(v.job.title, max) || 'A job'));
+    const titleParts = waiting.length === 1 ? [titleOf(120)] : [ours(`${waiting.length} jobs are waiting for you`)];
+    const textParts = waiting.length === 1 ? [ours(v.status.detail)] : [ours('The first: '), titleOf(100), ours(` — ${v.status.detail}`)];
     cards.push({
       id: 'need:jobs', kind: 'job', count: waiting.length,
-      title: waiting.length === 1 ? plainWhy(v.job.title, 120) || 'A job' : `${waiting.length} jobs are waiting for you`,
-      text: waiting.length === 1 ? v.status.detail : `The first: ${plainWhy(v.job.title, 100)} — ${v.status.detail}`,
+      title: flatText(titleParts, true), text: flatText(textParts, true), titleParts, textParts,
       action: v.status.primaryAction ? { kind: v.status.primaryAction.action, label: v.status.primaryAction.label } : null,
       open: waiting.length === 1 ? { kind: 'job', id: v.job.id } : { kind: 'jobs', id: 'waiting' }, itemId: null, trust: jobTrust(v),
       spoken: waiting.length === 1 ? 'A job is waiting for you.' : `${waiting.length} jobs are waiting for you.`,
@@ -344,13 +361,17 @@ function needsYou(views: JobView[], approvals: PendingView[], cal: ReturnType<ty
     const c = open[0];
     const key = `conflict:${c.id}`;
     const it = items.get(key);
-    const a = plainWhy(c.a.title, 60) || 'An event', b = plainWhy(c.b.title, 60) || 'another event';
     const more = open.length > 1 ? ` ${plural(open.length - 1, 'more double-booking', 'more double-bookings')} in the next two weeks.` : '';
     const when = `${atLabel(Date.parse(c.start), tz)} is double-booked`;
+    // event titles came from the calendar (an invitation can say anything); an untrusted item's words likewise
+    const itemOutside = !!it && it.trust === 'untrusted';
+    const titleParts = it?.title ? [itemOutside ? outsidePart(it.title, 120) : ours(it.title)] : [ours(when)];
+    const textParts = it?.why
+      ? [itemOutside ? outsidePart(it.why, 200) : ours(it.why), ...(more ? [ours(more)] : [])]
+      : [plainWhy(c.a.title, 60) ? outsidePart(c.a.title, 60) : ours('An event'), ours(' and '), plainWhy(c.b.title, 60) ? outsidePart(c.b.title, 60) : ours('another event'), ours(` overlap.${more}`)];
     cards.push({
       id: `need:${key}`, kind: 'conflict', count: open.length,
-      title: it?.title ?? when,
-      text: `${it?.why ?? `${a} and ${b} overlap.`}${more}`,
+      title: flatText(titleParts, true), text: flatText(textParts, true), titleParts, textParts,
       // the action runs through its Important item; with none yet, the card only opens the day
       action: it ? { kind: 'draft-note', label: 'Draft the note' } : null,
       open: it ? { kind: 'item', id: it.id, date: localDate(Date.parse(c.start), tz) } : { kind: 'calendar', id: c.a.id, date: localDate(Date.parse(c.start), tz) },
@@ -364,7 +385,7 @@ function needsYou(views: JobView[], approvals: PendingView[], cal: ReturnType<ty
     const title = re.length === 1 ? `${ACCOUNT_LABEL(r.account, r.resource)} needs to be reconnected` : `${re.length} accounts need to be reconnected`;
     cards.push({
       id: 'need:reconnect', kind: 'reconnect', count: re.length, title,
-      text: "I can't check it until you sign in again.", action: { kind: 'reconnect', label: 'Reconnect' },
+      text: "I can't check it until you sign in again.", titleParts: [ours(title)], textParts: [ours("I can't check it until you sign in again.")], action: { kind: 'reconnect', label: 'Reconnect' },
       open: { kind: 'reconnect', id: r.account, resource: r.resource }, itemId: null, trust: 'trusted', spoken: `${title}.`,
     });
   }
@@ -426,30 +447,31 @@ const lastEnded = (v: JobView) => Math.max(0, ...v.tries.filter((t) => t.state =
 
 function doneLines(a: Activity, now: number, tz: string): DoneLine[] {
   const lines: DoneLine[] = [];
+  const said = (...parts: Part[]) => ({ text: flatText(parts), parts });
   for (const x of a.drafts) {
     const s = Date.parse(x.start_utc);
     lines.push({ id: `draft:${x.id}`, kind: 'draft-event', at: x.created_at, trust: x.suggested_after_outside ? 'untrusted' : 'trusted',
-      text: `I added ${quote(x.title)} ${x.all_day ? `on ${atLabel(s, tz).replace(/ at .*$/, '')}` : `on ${atLabel(s, tz)}`} as a draft. Confirm it when you see it.`,
+      ...said(ours('I added '), outsidePart(x.title), ours(` ${x.all_day ? `on ${atLabel(s, tz).replace(/ at .*$/, '')}` : `on ${atLabel(s, tz)}`} as a draft. Confirm it when you see it.`)),
       open: { kind: 'calendar', id: x.id, date: localDate(s, x.all_day ? x.tz || tz : tz) } });
   }
   for (const x of a.confirmed) {
     const s = Date.parse(x.start_utc);
     lines.push({ id: `added:${x.id}`, kind: 'event-added', at: x.confirmed_at ?? x.created_at, trust: x.suggested_after_outside ? 'untrusted' : 'trusted',
-      text: `${quote(x.title)} is on your calendar now. No invites were sent.`, open: { kind: 'calendar', id: x.id, date: localDate(s, x.all_day ? x.tz || tz : tz) } });
+      ...said(outsidePart(x.title), ours(' is on your calendar now. No invites were sent.')), open: { kind: 'calendar', id: x.id, date: localDate(s, x.all_day ? x.tz || tz : tz) } });
   }
   for (const v of a.finished) {
     const recurring = v.job.kind === 'recurring' || v.job.kind === 'reminder';
     lines.push({ id: `job:${v.job.id}`, kind: 'job-finished', at: lastEnded(v), trust: jobTrust(v),
-      text: recurring ? `${quote(v.job.title)} has a new result.` : `I finished ${quote(v.job.title)}.`, open: { kind: 'job', id: v.job.id } });
+      ...(recurring ? said(outsidePart(v.job.title), ours(' has a new result.')) : said(ours('I finished '), outsidePart(v.job.title), ours('.'))), open: { kind: 'job', id: v.job.id } });
   }
   for (const v of a.reminders) {
     const j = v.job;
     lines.push({ id: `reminder:${j.id}`, kind: 'reminder', at: j.created_at, trust: jobTrust(v),
-      text: `I set a reminder: ${quote(j.title)}${j.next_due_at ? `, ${whenSaid(j.next_due_at, now, tz)}` : ''}.`, open: { kind: 'job', id: j.id } });
+      ...said(ours('I set a reminder: '), outsidePart(j.title), ours(`${j.next_due_at ? `, ${whenSaid(j.next_due_at, now, tz)}` : ''}.`)), open: { kind: 'job', id: j.id } });
   }
   for (const x of a.actions) {
     const l = ACTION_LINE[x.tool];
-    lines.push({ id: `action:${x.id}`, kind: l.kind, at: x.ts, trust: 'trusted', text: x.via === 'approval' && l.approved ? l.approved : l.text, open: { kind: 'activity', id: String(x.id) } });
+    lines.push({ id: `action:${x.id}`, kind: l.kind, at: x.ts, trust: 'trusted', ...said(ours(x.via === 'approval' && l.approved ? l.approved : l.text)), open: { kind: 'activity', id: String(x.id) } });
   }
   return lines.sort((p, q) => q.at - p.at || (p.id < q.id ? -1 : 1));
 }
@@ -559,11 +581,13 @@ export async function buildToday(caller: string, o: { now?: number; tz?: string 
       const at = (x: CalendarItem) => clockLabel(Date.parse(x.start), tz);
       const unknown = !calKnown ? "I can't see tomorrow's calendar yet." : !tomorrow.length ? 'Nothing is on your calendar tomorrow yet.' : null;
       // shown: the first event quoted as one ("an event called “…”"), filtered and short; said: times only
-      const line2 = unknown ?? `Tomorrow starts at ${at(tomorrow[0])} with an event called ${quote(tomorrow[0].title, QUOTE_MAX)}${tomorrow[1] ? `, then something at ${at(tomorrow[1])}` : ''}.`;
+      const line2Parts: Part[] = unknown ? [ours(unknown)]
+        : [ours(`Tomorrow starts at ${at(tomorrow[0])} with an event called `), outsidePart(tomorrow[0].title, QUOTE_MAX), ours(`${tomorrow[1] ? `, then something at ${at(tomorrow[1])}` : ''}.`)];
       const said2 = unknown ?? `Tomorrow starts at ${at(tomorrow[0])}${tomorrow[1] ? `, then ${at(tomorrow[1])}` : ''}.`;
-      const lines = [line1, line2].filter(Boolean);
+      const lineParts: Part[][] = [...(line1 ? [[ours(line1)]] : []), line2Parts];
+      const lines = lineParts.map((ps) => flatText(ps));
       wrap = {
-        title: `That’s ${weekdayOf(day)}`, lines, spoken: [line1, said2].filter(Boolean).join(' '), trust: unknown ? 'trusted' : 'untrusted',
+        title: `That’s ${weekdayOf(day)}`, lines, lineParts, spoken: [line1, said2].filter(Boolean).join(' '), trust: unknown ? 'trusted' : 'untrusted',
         counts: { eventsConfirmed: today.confirmed.length, repliesDrafted: replies, jobsFinished: today.finished.length, doneToday },
       };
     }

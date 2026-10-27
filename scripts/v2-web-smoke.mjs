@@ -126,7 +126,7 @@ try {
 
       // the tabs
       const bar = page.locator(vp.mobile ? '#tabbar' : '#topbar');
-      const H1 = { Today: /^Good (morning|afternoon|evening)$/, Calendar: /^Calendar$/, Important: /^Worth a look$/, Projects: /^Projects$/ };
+      const H1 = { Today: /^Good (morning|afternoon|evening)(, .+)?$/, Calendar: /^Calendar$/, Important: /^Worth a look$/, Projects: /^Projects$/ };
       for (const [tab, re] of Object.entries(H1).reverse()) {
         await bar.getByRole('button', { name: tab, exact: true }).click();
         const h1 = (await page.locator('#main h1').first().textContent())?.trim() ?? '';

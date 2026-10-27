@@ -11,14 +11,18 @@
  *
  * Scenarios (`?scenario=`): N00 (default: one job working), N06 (+ a job waiting for you at its 15¢ limit),
  * states (one job in each of the eight server states), old-client (the server wants a newer app: 426), sorting (W3:
- * sorting held back). Writes it acts on: jobs stop / continue / open, calendar drafts confirm / remove, project
- * messages (a simulated answer follows on the stream); W3's Important list, the reader's reply drafts and about-asks
- * are ./fixtures-important.ts. Everything else answers 404 not_found. All of it is example data.
+ * sorting held back); W2's Today scenarios (N05 check-in, midday, N09 wrap, partial, not-connected,
+ * reconnect) are ./fixtures-today.ts. Writes it acts on: jobs stop / continue / open, calendar drafts confirm / remove,
+ * project messages (a simulated answer follows on the stream); W3's Important list, the reader's reply drafts and
+ * about-asks are ./fixtures-important.ts; Today's marks and new calendar drafts are ./fixtures-today.ts. Everything
+ * else answers 404 not_found. All of it is example data.
  */
 import type { CalendarItem, Job, JobStatus, MailHeader, MailMessage, Meta, Project, Schemas, Turn } from '../api/client';
 import { CATS, EMAILS, EVENTS, FIXTURE_NOW, PROJECTS, THREADS, at, dayStart } from './fixture-data';
 import { w4Read, w4Seed, w4Write } from './fixtures-w4';
 import { ImportantFixtures } from './fixtures-important';
+import { TodayFixtures, TODAY_SCENARIOS } from './fixtures-today';
+import { scenarioClock } from './fixture-clock';
 
 export interface FixtureRequest { method: string; path: string; query: URLSearchParams; headers: Record<string, string | undefined>; body: unknown }
 export interface FixtureResponse { status: number; body: unknown; headers?: Record<string, string> }
@@ -26,7 +30,7 @@ export interface StreamMessage { event: string; data: unknown; id?: number }
 type Entity = 'job' | 'calendar' | 'project' | 'turn' | 'mail' | 'item' | 'ask';
 interface Ev { seq: number; entity: Entity; id: string; op: 'upsert' | 'delete' }
 
-export const FIXTURE_SCENARIOS = ['N00', 'N06', 'states', 'old-client', 'sorting', 'thread-long'] as const;
+export const FIXTURE_SCENARIOS = ['N00', 'N06', 'states', 'old-client', 'sorting', 'thread-long', ...TODAY_SCENARIOS] as const;
 export type FixtureScenario = (typeof FIXTURE_SCENARIOS)[number];
 export const FIXTURE_SERVER_VERSION = 'fixtures';
 
@@ -53,10 +57,13 @@ export class FixtureServer {
   private clock: () => number;
   /** W3: the Important list, the reader's extras and about-asks (./fixtures-important.ts) */
   readonly important: ImportantFixtures;
+  /** W2: Today, the calendar's accounts and new drafts (./fixtures-today.ts) */
+  readonly today: TodayFixtures;
 
-  constructor(scenario: string | null = 'N00', clock: () => number = () => FIXTURE_NOW) {
+  /** The clock defaults to the scenario's (./fixture-clock.ts): 9:10 AM, or 7:30 AM / 12:30 PM / 6:30 PM for Today's. */
+  constructor(scenario: string | null = 'N00', clock?: () => number) {
     this.scenario = (FIXTURE_SCENARIOS as readonly string[]).includes(String(scenario)) ? (scenario as FixtureScenario) : 'N00';
-    this.clock = clock;
+    this.clock = clock ?? (() => scenarioClock(this.scenario));
     if (this.scenario === 'old-client') this.minClient = '99.0.0';
     this.important = new ImportantFixtures({
       clock: () => this.clock(), seq: () => this.seq, emit: (e, id, op) => this.emit(e, id, op),
@@ -64,7 +71,13 @@ export class FixtureServer {
       later: (fn, ms) => this.later(fn, ms), answerDelay: () => this.answerDelay,
       mail: this.mail, projects: this.projects, turns: this.turns, bodyOf: (id) => this.bodies.get(id),
     }, this.scenario);
+    this.today = new TodayFixtures({
+      clock: () => this.clock(), jobs: this.jobs, calendar: this.calendar, putCal: (c) => this.putCal(c), later: (fn, ms) => this.later(fn, ms),
+      important: () => this.important.snapshot(),
+      notify: () => { for (const s of this.subs) s({ event: 'change', data: { seq: this.seq, entity: 'today', id: 'today', op: 'upsert' } }); },
+    }, this.scenario);
     this.seed();
+    this.today.seed();
   }
 
   // ---------- the world ----------
@@ -74,6 +87,7 @@ export class FixtureServer {
     this.events.push(e);
     const data = op === 'delete' ? undefined : entity === 'mail' ? undefined : this.current(entity, id);
     for (const s of this.subs) s({ event: 'change', id: e.seq, data: { seq: e.seq, entity, id, op: data || entity === 'mail' ? op : 'delete', ...(data ? { data } : {}) } });
+    if (entity !== 'mail' && entity !== 'project') this.today?.changed(); // W2: what Today is made of changed
     return e.seq;
   }
   private current(entity: Entity, id: string): unknown {
@@ -141,11 +155,11 @@ export class FixtureServer {
       const fp = `${method} ${req.path}\n${JSON.stringify(req.body ?? null)}`;
       const seen = this.idem.get(key);
       if (seen) return seen.fp === fp ? { ...seen.res, headers: { ...(seen.res.headers ?? {}), 'idempotent-replay': 'true' } } : err(409, 'idempotency_key_reused', 'That Idempotency-Key was already used for a different request.');
-      const res = this.write(method, req.path, req.body);
+      const res = this.today.write(method, req.path, req.body) ?? this.write(method, req.path, req.body);
       if (res.status < 500) this.idem.set(key, { fp, res });
       return res;
     }
-    return this.read(req.path, req.query);
+    return this.today.read(req.path) ?? this.read(req.path, req.query);
   }
 
   private read(path: string, q: URLSearchParams): FixtureResponse {
@@ -153,7 +167,7 @@ export class FixtureServer {
     const imp = this.important.read(path, q);
     if (imp) return imp;
     if (path === '/meta') {
-      const meta: Meta = { api: 'v1', server: FIXTURE_SERVER_VERSION, minClient: this.minClient, secure: true, features: ['jobs', 'calendar', 'mail', 'projects', 'important', 'ask'], importing: null };
+      const meta: Meta = { api: 'v1', server: FIXTURE_SERVER_VERSION, minClient: this.minClient, secure: true, features: ['jobs', 'calendar', 'mail', 'projects', 'important', 'ask', 'today'], importing: null };
       return { status: 200, body: meta };
     }
     const w4 = w4Read(this, path, q);

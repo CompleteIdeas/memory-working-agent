@@ -1,0 +1,80 @@
+/* MWA v2, slice W2: the Calendar screen and the agenda Today shares. The prototype's look (.agenda, .evcard, .weekstrip,
+   .daybtn, .nowline, .helpsay…) is already in shell/v2.css; this adds the calendar colours, the double-booking, drafts'
+   origin, the week list, the toolbar and the New event form. */
+
+/* a calendar's colour (events carry no category in the API: the colour says which calendar) */
+.evcard.cal-google { background: var(--c-family); } .evcard.cal-google::before { background: var(--b-family); }
+.evcard.cal-outlook { background: var(--c-work); } .evcard.cal-outlook::before { background: var(--b-work); }
+.evcard.cal-none { background: var(--card); box-shadow: var(--shadow); } .evcard.cal-none::before { background: var(--edge); }
+button.evcard { width: 100%; text-align: left; border: 0; color: var(--ink); font: inherit; }
+.agenda > li > .evcard { flex: 1; min-width: 0; }
+
+/* the double-booking */
+.evcard.clash { box-shadow: inset 0 0 0 2px var(--warn-edge, #8c6d00); }
+.clashline { display: flex; gap: 6px; align-items: flex-start; margin-top: 6px; font-size: 14.5px; font-weight: 600; color: var(--ink); }
+.clashline svg { color: var(--warn-edge, #8c6d00); flex: none; margin-top: 2px; }
+.conflictcard { margin: 0 0 12px; }
+.conflictcard h3 { display: flex; align-items: center; gap: 8px; }
+.conflictcard h3 svg { color: var(--warn-edge, #8c6d00); flex: none; }
+.daybtn.hasclash .dots i:first-child { background: var(--warn-edge, #8c6d00); }
+
+/* drafts */
+.draftline.outside-origin { color: var(--ink); }
+.originnote { display: block; margin-top: 2px; font-size: 14px; color: var(--dim); }
+.pendingline { display: block; margin-top: 10px; font-weight: 600; font-size: 15px; }
+.icslink { display: inline-flex; align-items: center; min-height: 44px; margin-top: 2px; color: var(--ink); font-size: 14.5px; font-weight: 500; text-decoration: underline; text-underline-offset: 3px; }
+
+/* the accounts line, honest notes, the toolbar */
+.calacct { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 14.5px; margin: 2px 0 8px; }
+.calacct .quietlink { min-height: 40px; font-size: 14.5px; }
+.calnote { margin: 4px 0 12px; border-left: 4px solid var(--edge); }
+.calnote.not_connected, .calnote.reconnect { border-left-color: var(--accent); }
+.caltools { display: flex; align-items: center; gap: 6px; margin: 4px 0 10px; }
+.caltools .grow { flex: 1; }
+.calseg button { min-height: 40px; }
+.newev { min-height: 40px; padding: 0 14px; }
+@media (pointer: coarse) { .calseg button, .newev, .calacct .quietlink { min-height: 44px; } }
+@media (max-width: 380px) { .newev { padding: 0 10px; font-size: 15px; } .caltools { gap: 2px; } }
+
+/* the week as a list by day (a seven-column grid on a desktop) */
+.weeklist { display: flex; flex-direction: column; gap: 4px; }
+.wkday { padding: 6px 0 10px; border-bottom: 1px solid var(--line); }
+.wkhead { font-size: 17px; font-weight: 700; }
+.wkdaybtn { background: none; border: 0; color: var(--ink); font: inherit; font-weight: 700; min-height: 44px; padding: 0; text-align: left; }
+.wkday.today .wkdaybtn { text-decoration: underline; text-underline-offset: 4px; }
+.wkitems { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.wkitem { display: flex; gap: 10px; width: 100%; min-height: 44px; align-items: center; text-align: left; border: 0; border-radius: 8px; padding: 6px 10px; color: var(--ink); font: inherit; font-size: 15px; position: relative; }
+.wkitem.cal-google { background: var(--c-family); } .wkitem.cal-outlook { background: var(--c-work); } .wkitem.cal-none { background: var(--card); }
+.wkitem.draft { background: var(--card); border: 2px dashed var(--signal); }
+.wkitem.clash { box-shadow: inset 0 0 0 2px var(--warn-edge, #8c6d00); }
+.wkitem .wt { flex: none; width: 74px; color: var(--dim); font-variant-numeric: tabular-nums; font-size: 14px; }
+.wkitem .wn { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.wkdraft { color: var(--signal); }
+.wkempty { color: var(--dim); font-size: 14.5px; padding: 4px 0; }
+@media (min-width: 900px) {
+  .calwide.calweek { max-width: 1240px; }
+  .calweek .weeklist { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; }
+  .calweek .wkday { border: 0; background: var(--card-2); border-radius: 10px; padding: 6px 6px 10px; }
+  .calweek .wkhead { text-align: center; }
+  .calweek .wkdaybtn { width: 100%; text-align: center; }
+  .calweek .wkdaybtn .dn { color: var(--dim); font-weight: 500; font-size: 14px; }
+  .calweek .wkitem { flex-direction: column; align-items: flex-start; gap: 0; padding: 6px 8px; font-size: 14px; }
+  .calweek .wkitem .wt { width: auto; font-size: 13px; }
+  .calweek .wkempty { text-align: center; }
+}
+
+/* New event */
+.draftform { display: flex; flex-direction: column; gap: 12px; }
+.fld { display: flex; flex-direction: column; gap: 4px; font-weight: 600; font-size: 15px; flex: 1; min-width: 0; }
+.fld input { min-height: 44px; border: 1.5px solid var(--edge); border-radius: 8px; background: var(--card); color: var(--ink); padding: 0 10px; font: inherit; font-weight: 400; width: 100%; }
+.fld input[aria-invalid="true"] { border-color: var(--signal); }
+.fldrow { display: flex; gap: 12px; }
+.chk { display: flex; align-items: center; gap: 10px; min-height: 44px; font-weight: 600; }
+.chk input { width: 22px; height: 22px; accent-color: var(--ink); }
+.draftform .errline { font-weight: 600; }
+.draftform .acts { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* titles and places came from outside: isolated (a right-to-left title cannot reorder what is around it) and
+   wrapped anywhere (a long one cannot push the page sideways) — W2 review */
+.evcard .t, .evcard .s, .wkitem .wn, .conflictcard p, .clashline span, #event-dlg .sheet-title, .evsheet p, .aboutchip bdi { unicode-bidi: isolate; overflow-wrap: anywhere; }
+.aboutchip { unicode-bidi: isolate; }
