@@ -22,7 +22,7 @@ import type { ApprovalOutcome } from '../../store/core';
 import { Sheet } from '../../shell/sheets';
 import { Chev, Back } from '../../shell/icons';
 import { WarnIcon } from '../important/icons';
-import { reviewerLine, stateLine, sureLine, waitsLine } from './words';
+import { groupPending, reviewerLine, stateLine, sureLine, waitsLine } from './words';
 import './approvals.css';
 
 type Phase = 'view' | 'confirm' | 'sending' | 'outcome';
@@ -64,7 +64,7 @@ export function ApprovalSheet({ request, onClose }: { request: { id: string | nu
     <Sheet id="approval-dlg" titleId="approval-title" title="Needs your OK" open={open} onClose={onClose}>
       <div className="sheet-body ap-body">
         {sel ? (
-          current ? <ApprovalDetail key={current.id} a={current} next={pending.find((x) => x.id !== current.id) ?? null}
+          current ? <ApprovalDetail key={current.id} a={current} next={groupPending(pending).mine.find((x) => x.id !== current.id) ?? null}
             back={fromList ? () => setSel(null) : null} onNext={(id) => setSel(id)} onDone={onClose} />
             : missing ? <><p className="ap-gone" role="status">This request is no longer there. It may have been decided somewhere else, or cleared after a day.</p>
               <div className="ap-acts"><button type="button" className="vbtn vbtn-primary" onClick={onClose}>Close</button></div></>
@@ -78,33 +78,48 @@ export function ApprovalSheet({ request, onClose }: { request: { id: string | nu
   );
 }
 
+function ApprovalRows({ list, pick, quiet }: { list: ApprovalView[]; pick: (id: string) => void; quiet?: boolean }) {
+  return (
+    <ul className={`ap-list${quiet ? ' quiet' : ''}`}>
+      {list.map((a) => {
+        const top = a.risks.find((r) => r.level === 'high');
+        return (
+          <li key={a.id}>
+            <button type="button" className={`ap-row${top && !quiet ? ' high' : ''}`} onClick={() => pick(a.id)}>
+              <span className="grow">
+                <span className="t">{a.title}</span>
+                {top && <span className="ap-tag high"><WarnIcon size={14} />{top.text.split(/(?<=\.)\s/)[0]}</span>}
+                {a.job && <span className="s">For: {a.job.title}</span>}
+              </span>
+              <Chev />
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function ApprovalList({ pending, recent, loaded, pick }: { pending: ApprovalView[]; recent: ApprovalView[]; loaded: boolean; pick: (id: string) => void }) {
+  // as Today and push: a phishing-flagged one is not listed (its Important item's detail leads to it, behind the
+  // warning); someone else's are a quieter group of their own
+  const { mine, others } = groupPending(pending);
   if (!loaded && !pending.length) return <p className="empty" role="status">Getting what is waiting…</p>;
   return (
     <>
-      {pending.length ? (
+      {mine.length ? (
         <section aria-labelledby="ap-wait-h">
-          <h3 className="jg-h" id="ap-wait-h">Waiting for your OK · {pending.length}</h3>
-          <ul className="ap-list">
-            {pending.map((a) => {
-              const top = a.risks.find((r) => r.level === 'high');
-              return (
-                <li key={a.id}>
-                  <button type="button" className={`ap-row${a.caution === 'phishing' ? ' phish' : top ? ' high' : ''}`} onClick={() => pick(a.id)}>
-                    <span className="grow">
-                      <span className="t">{a.title}</span>
-                      {a.caution === 'phishing' ? <span className="ap-tag phish"><WarnIcon size={14} />Looks like phishing</span>
-                        : top ? <span className="ap-tag high"><WarnIcon size={14} />{top.text.split(/(?<=\.)\s/)[0]}</span> : null}
-                      {a.job && <span className="s">For: {a.job.title}</span>}
-                    </span>
-                    <Chev />
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+          <h3 className="jg-h" id="ap-wait-h">Waiting for your OK · {mine.length}</h3>
+          <ApprovalRows list={mine} pick={pick} />
         </section>
       ) : <p className="empty" role="status">Nothing is waiting for your OK.</p>}
+      {others.length > 0 && (
+        <section aria-labelledby="ap-others-h">
+          <h3 className="jg-h quiet" id="ap-others-h">From others · {others.length}</h3>
+          <p className="ap-why">Asked for in someone else’s conversation with your helper.</p>
+          <ApprovalRows list={others} pick={pick} quiet />
+        </section>
+      )}
       {recent.length > 0 && (
         <section aria-labelledby="ap-recent-h">
           <h3 className="jg-h" id="ap-recent-h">Decided today</h3>
@@ -129,15 +144,18 @@ function ApprovalDetail({ a, next, back, onNext, onDone }: {
   const [note, setNote] = useState('');
   const sureRef = useRef<HTMLHeadingElement>(null);
   const outRef = useRef<HTMLParagraphElement>(null);
+  // review of S4: a double tap on Approve must not also say yes to "Are you sure?" — its yes ignores taps for a moment
+  const confirmAt = useRef(0);
+  const CONFIRM_GUARD_MS = 600;
   // after the tap's own focus handling (the button tapped is gone): a moment later
   useEffect(() => {
     const t = setTimeout(() => { if (phase === 'confirm') sureRef.current?.focus(); if (phase === 'outcome') outRef.current?.focus(); }, 0);
     return () => clearTimeout(t);
   }, [phase]);
 
-  const decide = async (approve: boolean) => {
+  const decide = async (approve: boolean, confirmed = false) => {
     setDoing(approve ? 'approve' : 'deny'); setPhase('sending');
-    const r = await store.decideApproval(a.id, approve, approve ? undefined : note.trim() || undefined);
+    const r = await store.decideApproval(a.id, approve, approve ? undefined : note.trim() || undefined, confirmed);
     setOut(r); setDoing(null); setPhase('outcome');
   };
   const pendingNow = a.state === 'pending' && phase !== 'outcome';
@@ -186,11 +204,11 @@ function ApprovalDetail({ a, next, back, onNext, onDone }: {
         <>
           <details className="ap-note">
             <summary>Add a note for your helper (if you say no)</summary>
-            <label htmlFor={`ap-note-${a.id}`} className="ap-note-l">Why not? It reads this on its next run.</label>
+            <label htmlFor={`ap-note-${a.id}`} className="ap-note-l">Why not? Your note is kept with this decision; your helper may see it next time it checks.</label>
             <textarea id={`ap-note-${a.id}`} maxLength={500} rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
           </details>
           <div className="ap-acts">
-            <button type="button" className="vbtn vbtn-primary ap-big" onClick={() => (a.confirm ? setPhase('confirm') : void decide(true))}>Approve</button>
+            <button type="button" className="vbtn vbtn-primary ap-big" onClick={() => { if (a.confirm) { confirmAt.current = Date.now(); setPhase('confirm'); } else void decide(true); }}>Approve</button>
             <button type="button" className="vbtn ap-big" onClick={() => void decide(false)}>Not this time</button>
           </div>
         </>
@@ -199,9 +217,10 @@ function ApprovalDetail({ a, next, back, onNext, onDone }: {
         <div className="ap-confirm" role="group" aria-labelledby="ap-sure">
           <h4 id="ap-sure" ref={sureRef} tabIndex={-1}>Are you sure?</h4>
           <p>{sureLine(a)}</p>
+          {/* Go back where Approve was (a second tap lands on it), Yes elsewhere, and Yes ignores taps for a moment */}
           <div className="ap-acts">
-            <button type="button" className="vbtn ap-big ap-danger" onClick={() => void decide(true)}>Yes, approve it</button>
             <button type="button" className="vbtn ap-big" onClick={() => setPhase('view')}>Go back</button>
+            <button type="button" className="vbtn ap-big ap-danger" onClick={() => { if (Date.now() - confirmAt.current < CONFIRM_GUARD_MS) return; void decide(true, true); }}>Yes, approve it</button>
           </div>
         </div>
       )}
@@ -212,7 +231,7 @@ function ApprovalDetail({ a, next, back, onNext, onDone }: {
       )}
 
       {(phase === 'outcome' || a.state !== 'pending') && (
-        <div className={`ap-outcome ${out ? (out.ok ? (out.outcome === 'declined' ? 'no' : out.outcome === 'failed' ? 'err' : 'ok') : 'err') : a.state === 'done' || a.state === 'approved' ? 'ok' : a.state === 'failed' ? 'err' : 'no'}`}>
+        <div className={`ap-outcome ${out ? (out.ok ? (out.outcome === 'declined' ? 'no' : out.outcome === 'failed' || out.outcome === 'not_done' ? 'err' : 'ok') : 'err') : a.state === 'done' || a.state === 'approved' ? 'ok' : a.state === 'failed' ? 'err' : 'no'}`}>
           <p ref={outRef} tabIndex={-1} role="status" className="ap-out-h">{out ? out.message : stateLine(a)}</p>
           {(out?.approval ?? a).result && <p className="ap-result">{(out?.approval ?? a).result}</p>}
           {out && !out.ok && out.approval && out.approval.state !== 'pending' && <p className="ap-result">{stateLine(out.approval)}</p>}

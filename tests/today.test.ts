@@ -459,7 +459,7 @@ describe('ownership: only the owner’s data', () => {
       const text = JSON.stringify(t);
       expect(text).not.toMatch(/Contact job|Contact finished|contact list|ap_contact|contact thing/);
       expect(t.needsYou.map((c) => [c.kind, c.title])).toEqual([['approval', 'Save notes.md'], ['job', 'Owner job']]);
-      expect(t.status.waiting).toBe(1);
+      expect(t.status.waiting).toBe(2); // S4 review: the owner's job, and the owner's chat approval (no job) — never the contact's
       expect(t.worthALookTotal).toBe(1);
       expect(t.weekLine.counts.repliesDrafted).toBe(1); // the contact's run drafted one too: not the owner's
     }

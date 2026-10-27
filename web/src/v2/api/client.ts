@@ -407,8 +407,9 @@ export class MwaClient {
   // ---- S4: approvals (what your helper asks your OK for, and your decision) ----
   listApprovals() { return this.get<ApprovalList>('/approvals'); }
   getApproval(id: string) { return this.get<{ approval: ApprovalView }>('/approvals/{id}', { path: { id } }); }
-  /** Runs it now, once. 409 when it was already decided or expired. */
-  approve(id: string, o: { key?: string } = {}) { return this.post<ApprovalDecision>('/approvals/{id}/approve', { path: { id }, key: o.key }); }
+  /** Runs it now, once. `confirmed`: the person said yes to "Are you sure?" (needed when the approval's confirm is true).
+   *  409 when it was already decided or expired, or confirm_needed. */
+  approve(id: string, o: { key?: string; confirmed?: boolean } = {}) { return this.post<ApprovalDecision>('/approvals/{id}/approve', { path: { id }, body: o.confirmed ? { confirmed: true } : {}, key: o.key }); }
   /** Not this time; the note tells the helper why. */
   deny(id: string, note?: string, o: { key?: string } = {}) { return this.post<ApprovalDecision>('/approvals/{id}/deny', { path: { id }, body: note ? { note } : {}, key: o.key }); }
 }

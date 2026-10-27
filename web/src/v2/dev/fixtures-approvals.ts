@@ -11,6 +11,7 @@
  *   ap_phish   Run a command that sends your contacts to a site — the run read the phishing-flagged PayPal message:
  *              never a Needs-you card (Today counts the other two), in Important with the phishing caution, and the
  *              strongest warning on its screen
+ *   ap_contact a standing preference asked for in someone else's conversation (a Telegram contact): "From others"
  *   ap_old     a request that expired this morning (in "recent")
  * Any other scenario: no approvals. EVERYTHING HERE IS EXAMPLE DATA.
  */
@@ -94,6 +95,13 @@ export class ApprovalFixtures {
       ],
       reviewer: { decision: 'ask', by: 'tainted-network', reason: 'it reaches the network after this run read outside content' },
     }));
+    put(base({
+      id: 'ap_contact', tool: 'policy_save', kind: 'captured-policy', title: 'Save a standing preference', createdAt: now - 3 * MINUTE, forOwner: false,
+      rows: [{ label: 'Preference', value: 'Reply to the barn group in Spanish' }, { label: 'Applies to', value: 'every future task, in every conversation' }],
+      ifApprove: 'It is kept under your standing preferences, where you can remove it.', ifDecline: 'Nothing is saved; it applies to this conversation only.',
+      risks: [{ kind: 'standing', level: 'warn', text: 'It applies to every future task until you remove it.' }, { kind: 'someone-else', level: 'warn', text: 'It was asked for in someone else’s conversation with your helper.' }],
+      reviewer: { decision: 'ask', by: 'standing-rule', reason: 'it saves a standing rule for every future task' },
+    }));
     put(base({ id: 'ap_old', tool: 'policy_save', kind: 'captured-policy', title: 'Save a standing preference', state: 'expired', createdAt: at(0, '06:10'), expiresAt: at(0, '06:20'), expiresInSec: 0, decidedAt: at(0, '06:20'),
       rows: [{ label: 'Preference', value: 'Sign off as Rob' }], ifApprove: 'It is kept under your standing preferences.', ifDecline: 'Nothing is saved.' }));
     this.h.putApprovalItem('ap_clean', 'Delete old-drafts', false);
@@ -102,7 +110,9 @@ export class ApprovalFixtures {
   }
 
   /** As the server's Needs-you rule: the owner's waiting ones, minus any with a phishing caution. */
-  needsYou(): ApprovalView[] { return this.pending().filter((a) => a.caution !== 'phishing'); }
+  needsYou(): ApprovalView[] { return this.pending().filter((a) => a.caution !== 'phishing' && a.forOwner); }
+  /** yours, waiting, that no job asked for: the pill counts them (src/v2/today.ts looseApprovals) */
+  loose(): number { return this.needsYou().filter((a) => !a.job).length; }
   pending(): ApprovalView[] { return [...this.items.values()].filter((a) => a.state === 'pending').sort((a, b) => a.createdAt - b.createdAt); }
   current(id: string): ApprovalView | undefined {
     const a = this.items.get(id);
@@ -128,6 +138,9 @@ export class ApprovalFixtures {
     if (!a) return err(404, 'not_found', 'There is no such request.');
     if (a.state !== 'pending') return a.state === 'expired' ? err(409, 'expired', SAID.expired) : err(409, 'already_decided', SAID.already);
     const note = (body as { note?: unknown } | null)?.note;
+    if (m[2] === 'approve' && a.confirm && (body as { confirmed?: unknown } | null)?.confirmed !== true) {
+      return err(409, 'confirm_needed', `Confirm first (send confirmed: true): ${a.risks.filter((r) => r.level === 'high').map((r) => r.text.split(/(?<=\.)\s/)[0].replace(/\.$/, '')).join('; ')}.`);
+    }
     if (note !== undefined && typeof note !== 'string') return err(400, 'bad_note', 'The note must be text.');
     const now = this.h.clock();
     const approve = m[2] === 'approve';

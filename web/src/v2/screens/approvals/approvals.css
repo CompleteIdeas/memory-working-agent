@@ -81,6 +81,8 @@
 .ap-tag.high { color: var(--ap-danger-ink); }
 .ap-tag.phish { color: var(--ap-danger-ink); font-weight: 800; }
 .ap-recent li { font-size: 15px; padding: 4px 0; }
+.jg-h.quiet { color: var(--dim); }
+.ap-list.quiet .ap-row { background: transparent; border-style: dashed; }
 .ap-recent .s { color: var(--dim); }
 
 /* the working sheet's "Needs your OK" group */

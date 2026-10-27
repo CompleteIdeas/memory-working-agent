@@ -19,6 +19,10 @@ import { readBody } from '../src/serve.js';
 import { upsertItem, itemId } from '../src/v2/important.js';
 import { setStreamDeps } from '../src/api/routes/stream.js';
 import { approvalView, plainApproval } from '../src/v2/approvals.js';
+import { createJob, claimTry, endTry, listJobs, viewJobs } from '../src/v2/jobs.js';
+import { looseApprovals } from '../src/v2/today.js';
+import { statusPill } from '../src/v2/pill.js';
+import { listPendingActions } from '../src/tools/approval.js';
 
 const NET = { 'x-forwarded-for': '100.64.0.7' };
 const as = (token: string) => ({ ...NET, authorization: `Bearer ${token}` });
@@ -53,6 +57,8 @@ function stage(o: { summary?: string; tool?: string; args?: Record<string, unkno
 beforeAll(async () => {
   process.env.MWA_LOG = logFile;
   registerExecutor('s4_exec', async (args) => { ran.push(String(args.path ?? args.command ?? 'x')); return `ok ${String(args.path ?? '')}`; });
+  // a tool whose own guard refuses when it runs (the person approved, nothing happened)
+  registerExecutor('s4_refuses', async () => '(refused: that path is outside the folders you granted)');
   setApprovalAudit((event, a) => { audit.push({ event, id: a.id }); });
   const authenticate = makeAuthenticate({ passwordSet: false, sessionValid: () => false });
   const sameOrigin = (req: { headers: Record<string, unknown> }) => !req.headers.origin;
@@ -195,6 +201,78 @@ describe('what the screen shows', () => {
     const v = approvalView(id)!;
     expect(v.confirm).toBe(false);
     expect(v.reviewer).toMatchObject({ decision: 'ask', by: 'standing-rule' });
+  });
+});
+
+describe('review of S4', () => {
+  it('a high-risk one needs confirmed: true (409 confirm_needed naming the risks); with it, it runs', async () => {
+    const id = stage({ ctx: { tainted: true } });
+    const r = await post(`/approvals/${id}/approve`, undefined, as(phone));
+    expect(r.status).toBe(409);
+    expect(r.body.error.code).toBe('confirm_needed');
+    expect(r.body.error.message).toMatch(/outside content/);
+    expect(approvalStatus(id)?.status).toBe('pending');
+    expect(ran).toEqual([]);
+    const ok = await post(`/approvals/${id}/approve`, { confirmed: true }, as(phone));
+    expect(ok.status).toBe(200);
+    expect(ok.body.outcome).toBe('done');
+    // the classic app is unchanged: no confirm there
+    const id2 = stage({ ctx: { tainted: true }, args: { path: 'C:/x2.md', content: 'x' }, summary: 'Create the file C:/x2.md (1 bytes) in a folder you granted.' });
+    expect((await legacy('/api/approvals/confirm', { id: id2 })).body.ok).toBe(true);
+  });
+  it('approved, but the tool refused when it ran: not_done with the reason, not done', async () => {
+    const id = stageAction({ tool: 'write_file', executor: 's4_refuses', summary: 'Create the file C:/r.md (1 bytes) in a folder you granted.', args: { path: 'C:/r.md', content: 'r' }, ctx: { sandboxDir: '.', interactive: true } });
+    const r = await post(`/approvals/${id}/approve`, undefined, as(phone));
+    expect(r.status).toBe(200);
+    expect(r.body.outcome).toBe('not_done');
+    expect(r.body.message).toBe('Approved, but it didn’t run: that path is outside the folders you granted.');
+    expect(r.body.approval.state).toBe('failed');
+  });
+  it('a caller without approve sees the file text and the exact action cut to 300 characters; a phone sees it whole', async () => {
+    const long = 'x'.repeat(1200);
+    const id = stage({ args: { path: 'C:/Users/me/Notes/long.md', content: long }, summary: `Create the file C:/Users/me/Notes/long.md (1200 bytes) in a folder you granted. ${'y'.repeat(600)}` });
+    const ro = (await get(`/approvals/${id}`, as(reader))).body.approval;
+    expect(ro.content.length).toBe(300);
+    expect(ro.exact.length).toBe(300);
+    expect((await get('/approvals', as(reader))).body.pending[0].content.length).toBe(300);
+    expect((await get(`/approvals/${id}`, as(phone))).body.approval.content).toBe(long);
+  });
+  it('the pill counts your chat approvals (no job), not a job\'s, a phishing one or someone else\'s', () => {
+    const chat = stage({ ctx: { session: 'chat-1' } });
+    const jobAp = stage({ args: { path: 'C:/j.md', content: 'j' }, summary: 'Create the file C:/j.md (1 bytes) in a folder you granted.' });
+    const j = createJob({ kind: 'background', title: 'Report' }, { trigger: 'first' });
+    claimTry(j.try!.id, {}); endTry(j.try!.id, { reason: 'done', outcome: 'changed', staged: [jobAp] });
+    const phish = stage({ args: { path: 'C:/p.md', content: 'p' }, summary: 'Create the file C:/p.md (1 bytes) in a folder you granted.' });
+    upsertItem({ source: 'approval', sourceRef: phish, dedupeKey: `approval:${phish}`, ts: Date.now(), from: 'Your helper', title: 'x', trust: 'untrusted', caution: 'phishing' }, 'America/New_York');
+    stage({ args: { path: 'C:/o.md', content: 'o' }, summary: 'Create the file C:/o.md (1 bytes) in a folder you granted.', ctx: { personId: 'tg-424242' } });
+    const views = viewJobs(listJobs({}), { running: new Set(), pending: new Set(listPendingActions().map((a) => a.id)) });
+    const n = looseApprovals(listPendingActions(), views);
+    expect(n).toBe(1);
+    expect(chat).toBeTruthy();
+    expect(statusPill(views.map((v) => v.status), n).text).toBe('2 waiting for you');
+  });
+  it('a decision also sends the job that waited on it, no longer waiting', async () => {
+    const pendingNow = () => new Set(listPendingActions().map((a) => a.id));
+    setStreamDeps({ running: () => new Set(), pending: pendingNow });
+    const id = stage();
+    const j = createJob({ kind: 'background', title: 'Write the report' }, { trigger: 'first' });
+    claimTry(j.try!.id, {}); endTry(j.try!.id, { reason: 'done', outcome: 'changed', staged: [id] });
+    expect(viewJobs([j.job], { running: new Set(), pending: pendingNow() })[0].status.state).toBe('waiting');
+    const head = (appDb().prepare('SELECT COALESCE(MAX(seq), 0) s FROM events').get() as { s: number }).s;
+    const ac = new AbortController();
+    const res = await fetch(`${base}/stream?cursor=${head}`, { headers: as(phone), signal: ac.signal });
+    const rd = res.body!.getReader();
+    await post(`/approvals/${id}/approve`, undefined, as(phone));
+    let text = '';
+    const until = Date.now() + 5000;
+    const jobChange = () => text.split('\n').filter((l) => l.startsWith('data: ') && l.includes('"entity":"job"')).map((l) => JSON.parse(l.slice(6))).filter((m) => m.id === j.job.id).pop();
+    while (Date.now() < until && !(jobChange()?.data?.status?.state && jobChange().data.status.state !== 'waiting')) {
+      const { value, done } = await rd.read();
+      if (done) break;
+      text += new TextDecoder().decode(value);
+    }
+    ac.abort();
+    expect(jobChange()?.data.status.state).not.toBe('waiting');
   });
 });
 

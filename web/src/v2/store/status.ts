@@ -30,9 +30,10 @@ export function activeJobs(jobs: Iterable<Job>): Job[] {
   return [...jobs].filter((j) => !j.archived);
 }
 
-/** The pill: the server's own computation (src/v2/pill.ts), over the jobs that are not archived. */
-export function pillFor(jobs: Iterable<Job>): Pill {
-  return statusPill(activeJobs(jobs).map((j) => j.status));
+/** The pill: the server's own computation (src/v2/pill.ts), over the jobs that are not archived. `looseApprovals`
+ *  (S4 review): your approvals waiting that no job asked for — they wait for you too. */
+export function pillFor(jobs: Iterable<Job>, looseApprovals = 0): Pill {
+  return statusPill(activeJobs(jobs).map((j) => j.status), looseApprovals);
 }
 
 export type GroupKey = 'waiting' | 'working' | 'finished' | 'stopped' | 'scheduled';

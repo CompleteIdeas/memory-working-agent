@@ -180,7 +180,9 @@ export function approvalView(id: string, now = Date.now()): ApprovalView | null 
   const plain = plainApproval(a);
   const phishing = itemPhishing(a.id) || phishingSource(a.taintSources);
   const risks = risksOf(a, plain, phishing);
-  const state = STATE[a.status] ?? 'expired';
+  // approved, but the tool's own guard refused when it ran: nothing happened, so not "done" (review of S4)
+  const refusedRun = a.status === 'done' && !!a.result && /^\s*\((refused|blocked)\b/.test(a.result);
+  const state: ApprovalState = refusedRun ? 'failed' : STATE[a.status] ?? 'expired';
   const logged = reviewFor(a.id);
   const rule = logged ? null : fixedRule({ tool: a.tool, summary: a.summary, kind: a.kind, command: plain.command ?? undefined, tainted: a.tainted, sandboxDir: a.sandboxDir });
   const because = /\(Needs approval because ([^)]+)\.\)/.exec(a.summary)?.[1];
@@ -196,6 +198,14 @@ export function approvalView(id: string, now = Date.now()): ApprovalView | null 
     forOwner: ownerOwns(a.personId), ranIn: a.owner && state === 'approved' ? a.ownerLabel : null,
     result: state === 'pending' ? null : a.result ? clip(shortenPaths(a.result), 600) : null,
   };
+}
+
+/** What a caller without the `approve` scope sees (review of S4): what the classic card showed — the summary, and at
+ *  most 300 characters of the file's text, the exact action and what it printed. */
+export function forViewer(v: ApprovalView, canApprove: boolean): ApprovalView {
+  if (canApprove) return v;
+  const cut = (s: string | null) => (s && s.length > 300 ? `${s.slice(0, 299)}…` : s);
+  return { ...v, exact: cut(v.exact), content: cut(v.content), result: cut(v.result) };
 }
 
 /** The actions waiting (the one waiting longest first) and those decided in the last day (newest first, at most 20). */

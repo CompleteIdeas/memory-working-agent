@@ -51,6 +51,20 @@ export function sureLine(a: Pick<ApprovalView, 'risks' | 'caution'>): string {
   return `Approve it even though ${list}?`;
 }
 
+/**
+ * What waits, as the lists show it (review of S4, matching Today and push): `mine` — yours, not phishing-flagged;
+ * `others` — asked for in someone else's conversation (a Telegram contact), shown quieter. A phishing-flagged one is in
+ * neither: it is reached only from its Important item's detail, behind the warning.
+ */
+export function groupPending(pending: ApprovalView[]): { mine: ApprovalView[]; others: ApprovalView[] } {
+  const ok = pending.filter((a) => a.caution !== 'phishing');
+  return { mine: ok.filter((a) => a.forOwner), others: ok.filter((a) => !a.forOwner) };
+}
+/** Yours, waiting, that no job asked for (a chat's): the status pill counts them as waiting for you. */
+export function looseCount(pending: ApprovalView[]): number {
+  return pending.filter((a) => a.state === 'pending' && !a.job && a.forOwner && a.caution !== 'phishing').length;
+}
+
 /** The pending ones for the working sheet's Review of a job: that job's, else all. */
 export function forJob(pending: ApprovalView[], jobId: string): ApprovalView[] {
   return pending.filter((a) => a.job?.id === jobId);

@@ -310,6 +310,19 @@ function upcomingConflicts(now: number): ReturnType<typeof findConflicts> {
   return value;
 }
 
+/** S4 review: the owner's approvals waiting that no job staged (a chat's), minus phishing-flagged ones — the pill counts
+ *  them as waiting for the person (a job's approval is already its job's "waiting"). */
+export function looseApprovals(approvals: PendingView[], views: JobView[]): number {
+  const staged = new Set<string>(), runs = new Set<string>();
+  for (const v of views) for (const t of v.tries) {
+    if (t.run_id) runs.add(t.run_id);
+    try { for (const s of (t.staged ? JSON.parse(t.staged) as string[] : [])) staged.add(s); } catch { /* */ }
+  }
+  const d = appDb();
+  const flagged = (id: string) => { try { return (d.prepare('SELECT caution FROM items WHERE id = ?').get(itemId(`approval:${id}`)) as { caution: string | null } | undefined)?.caution === 'phishing'; } catch { return false; } };
+  return approvals.filter((a) => ownerOwns(a.personId) && !staged.has(a.id) && !(a.runId && runs.has(a.runId)) && !phishingSource(a.taintSources) && !flagged(a.id)).length;
+}
+
 /** A card and the words the helper may SAY for it (counts, times and our own labels — never outside text). */
 type Card = NeedCard & { spoken: string };
 
@@ -604,7 +617,7 @@ export async function buildToday(caller: string, o: { now?: number; tz?: string 
     worthALook: top, worthALookTotal: items.length,
     weekLine: { text: weekText(counts), counts },
     month: monthLine(now),
-    status: statusPill(views.filter((v) => v.job.archived !== 1).map((v) => v.status)),
+    status: statusPill(views.filter((v) => v.job.archived !== 1).map((v) => v.status), looseApprovals(approvals, views)),
     freshness: {
       calendarAsOf: cal.asOf, mailAsOf: mail.asOf, calendar: cal.state, mail: mail.state, calendarNote: cal.note, mailNote: mail.note,
       needsReconnect: [

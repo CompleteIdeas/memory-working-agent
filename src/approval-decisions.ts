@@ -26,7 +26,8 @@ export type DecisionOutcome =
   | 'expired'         // too late: it expired
   | 'step_up'         // the person's identity must be confirmed first (it stays waiting)
   | 'refused'         // the store refused (the run that staged it, an unattended caller)
-  | 'not_here';       // this app has no way to run it
+  | 'not_here'        // this app has no way to run it
+  | 'not_done';       // approved, but the action itself refused when it ran (a guard inside the tool): nothing happened
 
 export interface Decision { outcome: DecisionOutcome; message: string; tool?: string }
 
@@ -43,7 +44,7 @@ export async function decideApproval(id: string, approve: boolean, o: { via: str
     // context it was staged in (BL-03), so the ctx here only gates.
     message = await confirmPending(key, { sandboxDir: o.sandboxDir ?? resolve('.'), interactive: true });
     outcome = message.startsWith('[CONFIRMED')
-      ? (/^\[CONFIRMED [^\]]*\] but it failed:/.test(message) ? 'failed' : 'done')
+      ? (/^\[CONFIRMED [^\]]*\] but it failed:/.test(message) ? 'failed' : refusedInside(message) ? 'not_done' : 'done')
       : message.startsWith('[APPROVED') ? 'approved'
         : refusal(message, before?.status);
   } else {
@@ -53,6 +54,14 @@ export async function decideApproval(id: string, approve: boolean, o: { via: str
   const tool = meta?.tool;
   logger.info('approvals', approve ? 'approve' : 'decline', { id: key, ...(tool ? { tool } : {}), outcome, via: o.via, ...(o.note && !approve ? { note: true } : {}) });
   return { outcome, message, ...(tool ? { tool } : {}) };
+}
+
+/** "[CONFIRMED tool]\n(refused: …)" / "(blocked: …)": the person approved, but the tool's own guard said no when it
+ *  ran (review of S4: this used to count as done). The reason, or null when it ran. */
+export function refusedInside(message: string): string | null {
+  const body = message.replace(/^\[CONFIRMED [^\]]*\]\s*/, '').trim();
+  const m = /^\((refused|blocked)\b:?\s*([\s\S]*?)\)?$/.exec(body);
+  return m ? (m[2] || m[1]).replace(/\s+/g, ' ').trim().slice(0, 300) : null;
 }
 
 function refusal(message: string, before: string | undefined): DecisionOutcome {

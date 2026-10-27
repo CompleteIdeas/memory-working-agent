@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useApprovals, useJobs, useProjectMap, useStatusPill, useStore } from '../store/react';
 import { openApproval } from '../screens/approvals/open';
-import { forJob } from '../screens/approvals/words';
+import { forJob, groupPending } from '../screens/approvals/words';
 import { jobLine, money } from '../store/status';
 import type { Job } from '../api/client';
 import { Close, Spark } from './icons';
@@ -56,11 +56,13 @@ export function WorkingSheet({ open, onClose, onAskAbout }: { open: boolean; onC
   const jobs = useJobs();
   const store = useStore();
   const approvals = useApprovals();
+  // S4 review: as Today and push — no phishing-flagged ones here, and someone else's in their own, quieter group
+  const groups = groupPending(approvals.pending);
   // S4: what waits for the person's OK, read when the sheet opens (the stream keeps it current after)
   useEffect(() => { if (open) void store.loadApprovals(); }, [open, store]);
   // a waiting job's Review: its one approval, or the list when it has several (or the list has not caught up yet)
   const review = async (j: Job) => {
-    const mine = forJob(approvals.pending, j.id);
+    const mine = forJob(groups.mine, j.id);
     openApproval(mine.length === 1 ? mine[0].id : null);
   };
   const projects = useProjectMap();
@@ -80,21 +82,32 @@ export function WorkingSheet({ open, onClose, onAskAbout }: { open: boolean; onC
     <Sheet id="work-dlg" titleId="work-title" title={pill.text} open={open} onClose={onClose}>
       <div className="sheet-body" id="work-body">
         <p className="monthline">{jobs.monthLine}</p>
-        {approvals.pending.length > 0 && (
+        {groups.mine.length > 0 && (
           <section className="jobgroup approvals" aria-labelledby="jg-approvals">
-            <h3 className="jg-h" id="jg-approvals">Needs your OK · {approvals.pending.length}</h3>
-            {approvals.pending.map((a) => (
+            <h3 className="jg-h" id="jg-approvals">Needs your OK · {groups.mine.length}</h3>
+            {groups.mine.map((a) => (
               <article key={a.id} className={`job${a.confirm ? '' : ' plain'}`} aria-labelledby={`apt-${a.id}`}>
                 {a.job && <span className="ptag">{a.job.title}</span>}
                 <h4 id={`apt-${a.id}`}>{a.title}</h4>
-                {a.caution === 'phishing' ? <p className="ask">Looks like phishing — check it before anything else.</p>
-                  : a.confirm ? <p className="ask">{a.risks.find((r) => r.level === 'high')?.text.split(/(?<=\.)\s/)[0]}</p> : <p style={{ marginTop: 6 }}>{a.ifApprove}</p>}
+                {a.confirm ? <p className="ask">{a.risks.find((r) => r.level === 'high')?.text.split(/(?<=\.)\s/)[0]}</p> : <p style={{ marginTop: 6 }}>{a.ifApprove}</p>}
                 <div className="acts"><button type="button" className="vbtn vbtn-primary" onClick={() => openApproval(a.id)}>Review</button></div>
               </article>
             ))}
           </section>
         )}
-        {!jobs.groups.length && !approvals.pending.length && <p className="empty">Nothing running. I’ll keep an eye on your day.</p>}
+        {groups.others.length > 0 && (
+          <section className="jobgroup others" aria-labelledby="jg-others">
+            <h3 className="jg-h quiet" id="jg-others">From others · {groups.others.length}</h3>
+            {groups.others.map((a) => (
+              <article key={a.id} className="job" aria-labelledby={`apt-${a.id}`}>
+                <h4 id={`apt-${a.id}`}>{a.title}</h4>
+                <p style={{ marginTop: 6 }}>Asked for in someone else’s conversation with your helper.</p>
+                <div className="acts"><button type="button" className="vbtn" onClick={() => openApproval(a.id)}>Look at it</button></div>
+              </article>
+            ))}
+          </section>
+        )}
+        {!jobs.groups.length && !groups.mine.length && !groups.others.length && <p className="empty">Nothing running. I’ll keep an eye on your day.</p>}
         {jobs.groups.map((g) => (
           <section key={g.key} className={`jobgroup ${GROUP_CLASS[g.key]}`} aria-labelledby={`jg-${g.key}`}>
             <h3 className="jg-h" id={`jg-${g.key}`}>{g.title} · {g.jobs.length}</h3>

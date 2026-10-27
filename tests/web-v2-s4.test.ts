@@ -9,7 +9,7 @@ import { parse } from 'yaml';
 import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 import { FixtureServer } from '../web/src/v2/dev/fixtures';
-import { forJob, reviewerLine, stateLine, sureLine, waitsLine } from '../web/src/v2/screens/approvals/words';
+import { forJob, groupPending, looseCount, reviewerLine, stateLine, sureLine, waitsLine } from '../web/src/v2/screens/approvals/words';
 import { parseNotifyHash } from '../web/src/v2/shell/notifyRoute';
 import type { ApprovalView } from '../web/src/v2/api/client';
 
@@ -35,7 +35,14 @@ describe('S4 fixture mode answers like the server', () => {
   it('the list, one, approve and deny have the contract\'s shapes; a decision is final', () => {
     const s = new FixtureServer('approvals');
     const list = valid('/approvals', 'get', get(s, '/approvals')).body;
-    expect(list.pending.map((a: ApprovalView) => a.id)).toEqual(['ap_report', 'ap_clean', 'ap_phish']);
+    expect(list.pending.map((a: ApprovalView) => a.id)).toEqual(['ap_report', 'ap_clean', 'ap_phish', 'ap_contact']);
+    // review of S4: a high-risk one needs confirmed: true
+    expect(valid('/approvals/{id}/approve', 'post', call(s, 'POST', '/approvals/ap_clean/approve')).body.error.code).toBe('confirm_needed');
+    // the lists: yours (no phishing), others apart; the pill counts yours that no job asked for
+    const g = groupPending(list.pending);
+    expect([g.mine.map((a) => a.id), g.others.map((a) => a.id)]).toEqual([['ap_report', 'ap_clean'], ['ap_contact']]);
+    expect(looseCount(list.pending)).toBe(1);
+    expect((get(s, '/today').body as { status: { text: string } }).status.text).toBe('Working on 1 · 2 waiting for you');
     expect(list.recent.map((a: ApprovalView) => a.state)).toEqual(['expired']);
     const one = valid('/approvals/{id}', 'get', get(s, '/approvals/ap_phish')).body.approval as ApprovalView;
     expect(one).toMatchObject({ caution: 'phishing', confirm: true });

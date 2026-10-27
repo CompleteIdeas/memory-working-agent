@@ -615,6 +615,13 @@ export class V2Store {
     if (v) next[id] = v; else delete next[id];
     this.set({ approvals: next });
   }
+  /** Read the approvals once per page (the status pill counts a chat's approvals; the stream keeps them current). */
+  private approvalsAsked = false;
+  ensureApprovals(): void {
+    if (this.approvalsAsked || this.s.approvalsLoaded) return;
+    this.approvalsAsked = true;
+    void this.loadApprovals();
+  }
   /** The waiting approvals and those decided in the last day (the stream keeps them current after). */
   async loadApprovals(): Promise<void> {
     try {
@@ -637,10 +644,10 @@ export class V2Store {
   /** Approve (it runs now, once) or not this time (with an optional note). Sent at once with its own key, never queued:
    *  a decision taken offline could run later on what is no longer true. A refusal (decided elsewhere, expired) says so
    *  and brings the approval up to date. */
-  async decideApproval(id: string, approve: boolean, note?: string): Promise<ApprovalOutcome> {
+  async decideApproval(id: string, approve: boolean, note?: string, confirmed = false): Promise<ApprovalOutcome> {
     const key = newKey(this.now());
     try {
-      const r = approve ? await this.client.approve(id, { key }) : await this.client.deny(id, note, { key });
+      const r = approve ? await this.client.approve(id, { key, confirmed }) : await this.client.deny(id, note, { key });
       this.putApproval(id, r.approval);
       this.today.changed();
       return { ok: true, outcome: r.outcome, message: r.message, approval: r.approval };

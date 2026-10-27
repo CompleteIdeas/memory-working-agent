@@ -25,9 +25,10 @@ export interface StatusPill {
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-/** The pill from job statuses (archived jobs left out by the caller). */
-export function statusPill(statuses: readonly { state: string; resultReady?: boolean | null }[]): StatusPill {
-  let working = 0, waiting = 0, ready = 0;
+/** The pill from job statuses (archived jobs left out by the caller). `looseApprovals` (S4 review): the owner's
+ *  approvals waiting that no job staged (a chat's), not phishing-flagged — they wait for the person too. */
+export function statusPill(statuses: readonly { state: string; resultReady?: boolean | null }[], looseApprovals = 0): StatusPill {
+  let working = 0, waiting = Math.max(0, Math.floor(looseApprovals)), ready = 0;
   for (const s of statuses) {
     if (s.state === 'working' || s.state === 'continuing') { working++; continue; }
     if (s.state === 'waiting') waiting++;

@@ -282,7 +282,7 @@ try {
       const card = main(page).locator('.needcard', { hasText: '2 things need your OK' });
       check(`${L} approvals: Needs you says "2 things need your OK"`, await seen(card));
       await card.getByRole('button', { name: 'Review' }).click();
-      check(`${L} approvals: Review opens the approval sheet here, not the classic app`, await seen(page.locator('#approval-dlg').getByRole('heading', { name: 'Waiting for your OK · 3' })) && !/ui=v1/.test(page.url()), page.url());
+      check(`${L} approvals: Review opens the approval sheet here, not the classic app`, await seen(page.locator('#approval-dlg').getByRole('heading', { name: 'Waiting for your OK · 2' })) && !/ui=v1/.test(page.url()), page.url());
       await shot(page, `approvals-${L}-sheet`);
       await axe(page, `${L} approvals sheet`);
       check(`${L} approvals: no page errors`, errors.length === 0, errors.join(' | '));

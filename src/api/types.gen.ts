@@ -1814,7 +1814,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** S4: approve it: it runs now, once, as the classic app's Approve does (approve). 409 already_decided, expired, step_up_required (it stays waiting), refused or not_here; 404 when there is none. */
+        /** S4: approve it: it runs now, once, as the classic app's Approve does (approve). A high-risk one (its view says confirm: true) needs confirmed: true, else 409 confirm_needed naming the risks (the app's "Are you sure?" sends it; the classic app and Telegram are unchanged). 409 already_decided, expired, step_up_required (it stays waiting), refused or not_here; 404 when there is none. */
         post: operations["approveApproval"];
         delete?: never;
         options?: never;
@@ -3226,7 +3226,7 @@ export interface components {
             connections: components["schemas"]["Connections"];
             message: string;
         };
-        /** @description S4: an action your helper staged for your OK, said plainly (src/v2/approvals.ts). */
+        /** @description S4: an action your helper staged for your OK, said plainly (src/v2/approvals.ts). A caller without the approve scope gets exact, content and result cut to 300 characters. */
         ApprovalView: {
             id: string;
             /** @description The tool that would run (run_command, write_file, policy_save, add_mcp_server, and so on). */
@@ -3301,8 +3301,11 @@ export interface components {
             recent: components["schemas"]["ApprovalView"][];
         };
         ApprovalDecision: {
-            /** @enum {string} */
-            outcome: "done" | "failed" | "approved" | "declined";
+            /**
+             * @description not_done: approved, but the action's own check refused when it ran; nothing happened (the message says why).
+             * @enum {string}
+             */
+            outcome: "done" | "failed" | "approved" | "declined" | "not_done";
             message: string;
             approval: components["schemas"]["ApprovalView"];
         };
@@ -6507,7 +6510,14 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description The person answered "Are you sure?" with yes. Required when the approval's confirm is true. */
+                    confirmed?: boolean;
+                };
+            };
+        };
         responses: {
             /** @description Decided. outcome done (it ran), failed (it ran and failed) or approved (it runs in the app that asked). */
             200: {

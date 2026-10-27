@@ -296,7 +296,7 @@ export class TodayFixtures {
       worthALook: worth.top, worthALookTotal: worth.total,
       weekLine: { text: 'In the last 7 days: 6 replies drafted, 4 events added, 2 documents learned, 3 jobs finished.', counts: weekCounts },
       month: { usedUsd: 1.29, limitUsd: 20, state: 'ok' },
-      status: statusPill([...this.h.jobs.values()].filter((j) => !j.archived).map((j) => j.status)),
+      status: statusPill([...this.h.jobs.values()].filter((j) => !j.archived).map((j) => j.status), (this.h.approvals?.() ?? []).filter((a) => !a.job).length),
       freshness: {
         calendarAsOf: cal.asOf, mailAsOf: now - 5 * MINUTE, calendar: cal.state, mail: 'ok', calendarNote: cal.note, mailNote: null,
         needsReconnect: this.scenario === 'reconnect' ? [{ account: GOOGLE, resource: 'calendar', label: 'Google Calendar' }] : [],

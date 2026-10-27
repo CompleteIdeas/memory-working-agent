@@ -53,7 +53,7 @@ import { triageNow, triageTz } from '../../v2/triage.js';
 import { apiProject, apiTurn, getProject, getTurn, listProjects, recentTurns } from '../../v2/projects.js';
 import { buildToday, todaySignature, TODAY_SOURCES } from '../../v2/today.js';
 import { apiAsk, getAsk } from '../../v2/ask.js';
-import { approvalView } from '../../v2/approvals.js';
+import { approvalView, forViewer } from '../../v2/approvals.js';
 
 export const EVENT_RETENTION_MS = 7 * 24 * 3_600_000;
 const POLL_MS = 1_000, KEEPALIVE_MS = 15_000, BATCH = 500, STEP_EVERY_MS = 1_000;
@@ -142,7 +142,14 @@ function present(rows: EventRow[], who: Caller | null) {
       // S4: an approval as it is now (staged, decided, done, expired); one per approval per batch
       if (rows.findLastIndex((x) => x.entity === 'approval' && x.entity_id === e.entity_id) !== i) return;
       const v = approvalView(e.entity_id);
-      out.push({ seq: e.seq, entity: 'approval', id: e.entity_id, op: v ? 'upsert' : 'delete', ...(v ? { data: v } : {}) });
+      out.push({ seq: e.seq, entity: 'approval', id: e.entity_id, op: v ? 'upsert' : 'delete', ...(v ? { data: forViewer(v, !!who?.scopes.has('approve')) } : {}) });
+      // review of S4: the job that staged it waits on it — its status ("Waiting for you") moves with the approval, and job
+      // views are otherwise recomputed only on job and try events. Sent unless the batch sends that job anyway.
+      const jid = v?.job?.id;
+      if (jid && !lastForJob.has(jid) && !out.some((x) => x.entity === 'job' && x.id === jid)) {
+        const data = jobOut(jid, c);
+        if (data) out.push({ seq: e.seq, entity: 'job', id: jid, op: 'upsert', data });
+      }
       return;
     }
     if (e.entity === 'ask') {

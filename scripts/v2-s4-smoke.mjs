@@ -14,7 +14,8 @@
  *      demand, the reviewer's opinion, no confirm step; Approve → "Done. It ran." → Done closes; the job is no longer
  *      waiting; deciding it again is impossible (the sheet shows the outcome)
  *   3. a high-risk one (Delete old-drafts, after outside content): the red warnings; Approve asks "Are you sure?" (the
- *      focus moves to it); Go back; Not this time with a note → "OK — it won't run", Next offers the phishing one
+ *      focus moves to it) — a fast double click on Approve does not approve; Go back; Not this time with a note
+ *      → "OK — it won't run"; no Next (the phishing one is never offered)
  *   4. the phishing one: the alert first ("Warning: this may be a phishing trick"), confirm step, Not this time
  *   5. the working sheet (the pill): "Needs your OK" group and a waiting job's Review open the right approval
  *   6. Important: the phishing approval's Review opens it in the sheet
@@ -115,8 +116,9 @@ try {
       const dlg = sheet(page);
       check(`${L}: Review opens the approval sheet in place`, await visible(dlg.getByRole('heading', { name: 'Needs your OK', level: 2 })));
       check(`${L}: …in the new app (no hand-off to the classic app)`, !/ui=v1/.test(page.url()), page.url());
-      check(`${L}: the list: three waiting`, await visible(dlg.getByRole('heading', { name: 'Waiting for your OK · 3' })));
-      check(`${L}: the list marks the phishing one`, await visible(dlg.locator('.ap-row.phish').getByText('Looks like phishing')));
+      check(`${L}: the list: yours, two waiting`, await visible(dlg.getByRole('heading', { name: 'Waiting for your OK · 2' })));
+      check(`${L}: the list: the phishing one is not listed (only behind Important's warning)`, (await dlg.getByText('contacts.csv').count()) === 0);
+      check(`${L}: the list: someone else's apart, "From others · 1"`, await visible(dlg.getByRole('heading', { name: 'From others · 1' })));
       check(`${L}: the list says what was decided today`, await visible(dlg.getByText(/Save a standing preference/)));
       await shot(page, `${L}-02-list`);
       await axe(page, `${L} list`, '#approval-dlg');
@@ -161,7 +163,13 @@ try {
       await shot(page, `${L}-05-clean`, false);
       await axe(page, `${L} clean`, '#approval-dlg');
       await noOverflow(page, `${L} clean`);
-      await cl.getByRole('button', { name: 'Approve', exact: true }).click();
+      // a fast double click on Approve: the second click must not say yes to "Are you sure?"
+      await cl.getByRole('button', { name: 'Approve', exact: true }).dblclick();
+      await page.waitForTimeout(400);
+      // (the second click lands on Go back, or on Yes while it still ignores taps: either way nothing is approved)
+      check(`${L}: clean: a double click on Approve does not approve`, (await api('/approvals/ap_clean')).approval.state === 'pending');
+      if (!(await cl.getByRole('heading', { name: 'Are you sure?' }).count())) await cl.getByRole('button', { name: 'Approve', exact: true }).click();
+      check(`${L}: clean: Go back sits where Approve was, Yes after it`, await cl.locator('.ap-confirm .ap-acts button').first().textContent() === 'Go back');
       check(`${L}: clean: Approve asks "Are you sure?" first`, await visible(cl.getByRole('heading', { name: 'Are you sure?' })));
       check(`${L}: clean: …with the reasons`, await visible(cl.getByText(/Approve it even though it was proposed after reading outside content, it deletes something and it reaches outside its own folder\?/)));
       check(`${L}: clean: the focus moves to the question`, (await focusedText(page)) === 'Are you sure?', await focusedText(page));
@@ -170,15 +178,30 @@ try {
       await axe(page, `${L} confirm`, '#approval-dlg');
       await cl.getByRole('button', { name: 'Go back' }).click();
       await cl.getByText('Add a note for your helper (if you say no)').click();
-      await cl.getByLabel('Why not? It reads this on its next run.').fill('Keep the drafts until Friday');
+      await cl.getByLabel(/Your note is kept with this decision/).fill('Keep the drafts until Friday');
       await cl.getByRole('button', { name: 'Not this time' }).click();
       check(`${L}: clean: Not this time → "OK — it won’t run"`, await visible(cl.getByText('OK — it won’t run. Nothing was changed.')));
       const after = (await api('/approvals/ap_clean')).approval;
       check(`${L}: clean: declined with the note`, after.state === 'declined' && after.result === 'declined by the person: Keep the drafts until Friday', JSON.stringify(after));
-      check(`${L}: clean: Next offers the phishing one`, await visible(cl.getByRole('button', { name: 'Next: Run a command on contacts.csv' })));
-      await cl.getByRole('button', { name: 'Next: Run a command on contacts.csv' }).click();
+      check(`${L}: clean: no Next (the phishing one is never offered)`, (await cl.getByRole('button', { name: /^Next: / }).count()) === 0);
+      await cl.getByRole('button', { name: 'Done' }).click();
+      check(`${L}: Today: nothing needs your OK any more`, await hidden(main.locator('.needcard', { hasText: 'need your OK' })) && await hidden(main.locator('.needcard', { hasText: 'Delete old-drafts' })));
+      check(`${L}: Today: no page errors`, !errors.length, errors.join(' | '));
+      await ctx.close();
+    }
 
-      // 4. the phishing one
+    // 4. the phishing one: only from its Important item's detail, behind the warning
+    {
+      const { ctx, page, errors } = await open(vp, '/?ui=v2&view=inbox');
+      const main = page.locator('#main');
+      const dlg = sheet(page);
+      const row = main.locator('.item', { hasText: 'Run a command on contacts.csv' });
+      check(`${L}: Important: the phishing approval is listed with its caution`, await visible(row));
+      check(`${L}: Important: no action button on the phishing row itself`, (await row.getByRole('button', { name: 'Review' }).count()) === 0);
+      await row.locator('.itemrow').click();
+      const detail = page.locator('#item-dlg');
+      check(`${L}: Important: its detail warns first`, await visible(detail.getByRole('note')));
+      await detail.getByRole('button', { name: 'Review' }).click();
       const ph = dlg.locator('article.ap[data-approval="ap_phish"]');
       check(`${L}: phish: the alert comes first`, await visible(ph.getByRole('alert').getByText('Warning: this may be a phishing trick')));
       const order = await ph.evaluate((el) => { const a = el.querySelector('.ap-phish'); const t = el.querySelector('.ap-title'); return !!a && !!t && !!(a.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING); });
@@ -187,14 +210,17 @@ try {
       await axe(page, `${L} phish`, '#approval-dlg');
       await noOverflow(page, `${L} phish`);
       await ph.getByRole('button', { name: 'Approve', exact: true }).click();
+      await page.waitForTimeout(700);
       check(`${L}: phish: Approve asks first, naming phishing`, await visible(ph.getByText(/looks like phishing/)) && await visible(ph.getByRole('button', { name: 'Yes, approve it' })));
       await ph.getByRole('button', { name: 'Go back' }).click();
       await ph.getByRole('button', { name: 'Not this time' }).click();
       check(`${L}: phish: declined`, await visible(ph.getByText('OK — it won’t run. Nothing was changed.')) && (await api('/approvals/ap_phish')).approval.state === 'declined');
-      check(`${L}: phish: nothing left: Done is the only way on`, (await ph.getByRole('button', { name: /^Next: / }).count()) === 0);
       await ph.getByRole('button', { name: 'Done' }).click();
-      check(`${L}: Today: nothing needs your OK any more`, await hidden(main.locator('.needcard', { hasText: 'need your OK' })) && await hidden(main.locator('.needcard', { hasText: 'Delete old-drafts' })));
-      check(`${L}: Today: no page errors`, !errors.length, errors.join(' | '));
+      const ordinary = main.locator('.item', { hasText: 'Delete old-drafts' });
+      if (await page.locator('#item-dlg[open]').count()) await page.locator('#item-dlg').getByRole('button', { name: 'Close' }).click();
+      await ordinary.getByRole('button', { name: 'Review' }).click();
+      check(`${L}: Important: an ordinary approval's row Review opens it`, await visible(dlg.locator('article.ap[data-approval="ap_clean"]')));
+      check(`${L}: Important: no page errors`, !errors.length, errors.join(' | '));
       await ctx.close();
     }
 
@@ -203,7 +229,10 @@ try {
       const { ctx, page, errors } = await open(vp, '/?ui=v2');
       await page.locator('#statuspill').click();
       const work = page.locator('#work-dlg');
-      check(`${L}: pill: the working sheet lists "Needs your OK · 3" first`, await visible(work.getByRole('heading', { name: 'Needs your OK · 3' })));
+      check(`${L}: pill: counts your chat approval too ("2 waiting for you")`, /2 waiting for you/.test(await page.locator('#statuspill').textContent() ?? ''), await page.locator('#statuspill').textContent());
+      check(`${L}: pill: the working sheet lists "Needs your OK · 2" first`, await visible(work.getByRole('heading', { name: 'Needs your OK · 2' })));
+      check(`${L}: pill: no phishing one in the group`, (await work.getByText('contacts.csv').count()) === 0);
+      check(`${L}: pill: someone else's in a quieter "From others · 1"`, await visible(work.getByRole('heading', { name: 'From others · 1' })));
       const firstGroup = await work.locator('.jobgroup').first().getAttribute('class');
       check(`${L}: pill: …above the jobs`, /approvals/.test(firstGroup ?? ''), firstGroup);
       await axe(page, `${L} working sheet`, '#work-dlg');
@@ -214,30 +243,9 @@ try {
       check(`${L}: pill: the job's Review opens its approval`, await visible(sheet(page).locator('article.ap[data-approval="ap_report"]')) && await hidden(work));
       await sheet(page).getByRole('button', { name: 'Close' }).click();
       await page.locator('#statuspill').click();
-      await work.locator('article', { has: page.locator('#apt-ap_phish') }).getByRole('button', { name: 'Review' }).click();
-      check(`${L}: pill: the group's Review opens that approval`, await visible(sheet(page).locator('article.ap[data-approval="ap_phish"]')));
+      await work.locator('article', { has: page.locator('#apt-ap_clean') }).getByRole('button', { name: 'Review' }).click();
+      check(`${L}: pill: the group's Review opens that approval`, await visible(sheet(page).locator('article.ap[data-approval="ap_clean"]')));
       check(`${L}: pill: no page errors`, !errors.length, errors.join(' | '));
-      await ctx.close();
-    }
-
-    // 6. Important: the phishing approval's item, its Review
-    {
-      const { ctx, page, errors } = await open(vp, '/?ui=v2&view=inbox');
-      const main = page.locator('#main');
-      const row = main.locator('.item', { hasText: 'Run a command on contacts.csv' });
-      check(`${L}: Important: the phishing approval is listed with its caution`, await visible(row));
-      check(`${L}: Important: no action button on the phishing row itself`, (await row.getByRole('button', { name: 'Review' }).count()) === 0);
-      await row.locator('.itemrow').click();
-      const detail = page.locator('#item-dlg');
-      check(`${L}: Important: its detail warns first`, await visible(detail.getByRole('note')));
-      await detail.getByRole('button', { name: 'Review' }).click();
-      check(`${L}: Important: Review opens it in the approval sheet`, await visible(sheet(page).locator('article.ap[data-approval="ap_phish"]')));
-      const ordinary = main.locator('.item', { hasText: 'Delete old-drafts' });
-      await sheet(page).getByRole('button', { name: 'Close' }).click();
-      if (await page.locator('#item-dlg[open]').count()) await page.locator('#item-dlg').getByRole('button', { name: 'Close' }).click();
-      await ordinary.getByRole('button', { name: 'Review' }).click();
-      check(`${L}: Important: an ordinary approval's row Review opens it too`, await visible(sheet(page).locator('article.ap[data-approval="ap_clean"]')));
-      check(`${L}: Important: no page errors`, !errors.length, errors.join(' | '));
       await ctx.close();
     }
 
@@ -246,6 +254,12 @@ try {
       const { ctx, page, errors } = await open(vp, '/?ui=v2&from=notification#/approval/ap_clean');
       check(`${L}: notification: opens that approval`, await visible(sheet(page).locator('article.ap[data-approval="ap_clean"]')));
       check(`${L}: notification: the hash is not kept`, !page.url().includes('#/approval'), page.url());
+      // the confirmed path: Approve, Are you sure? (a moment), Yes — the server gets confirmed: true and it runs
+      const cl = sheet(page).locator('article.ap[data-approval="ap_clean"]');
+      await cl.getByRole('button', { name: 'Approve', exact: true }).click();
+      await page.waitForTimeout(700);
+      await cl.getByRole('button', { name: 'Yes, approve it' }).click();
+      check(`${L}: notification: Yes, approve it runs it (confirmed)`, await visible(cl.getByText('Done. It ran.')) && (await api('/approvals/ap_clean')).approval.state === 'done');
       await page.goto(`${BASE}/?ui=v2#/approval/ap_gone`);
       check(`${L}: notification: one that is gone says so`, await visible(sheet(page).getByText(/This request is no longer there/)));
       check(`${L}: notification: no page errors`, !errors.length, errors.join(' | '));

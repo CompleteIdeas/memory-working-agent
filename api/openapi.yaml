@@ -1483,7 +1483,7 @@ components:
         message: { type: string }
     ApprovalView:
       type: object
-      description: 'S4: an action your helper staged for your OK, said plainly (src/v2/approvals.ts).'
+      description: 'S4: an action your helper staged for your OK, said plainly (src/v2/approvals.ts). A caller without the approve scope gets exact, content and result cut to 300 characters.'
       required: [id, tool, kind, state, title, rows, ifApprove, ifDecline, exact, content, why, job, createdAt, expiresAt, expiresInSec, decidedAt, risks, confirm, caution, trust, reviewer, forOwner, ranIn, result]
       additionalProperties: false
       properties:
@@ -1552,7 +1552,7 @@ components:
       required: [outcome, message, approval]
       additionalProperties: false
       properties:
-        outcome: { type: string, enum: [done, failed, approved, declined] }
+        outcome: { type: string, enum: [done, failed, approved, declined, not_done], description: 'not_done: approved, but the action''s own check refused when it ran; nothing happened (the message says why).' }
         message: { type: string }
         approval: { $ref: '#/components/schemas/ApprovalView' }
   responses:
@@ -3672,8 +3672,17 @@ paths:
       - { name: id, in: path, required: true, schema: { type: string } }
     post:
       operationId: approveApproval
-      summary: 'S4: approve it: it runs now, once, as the classic app''s Approve does (approve). 409 already_decided, expired, step_up_required (it stays waiting), refused or not_here; 404 when there is none.'
+      summary: 'S4: approve it: it runs now, once, as the classic app''s Approve does (approve). A high-risk one (its view says confirm: true) needs confirmed: true, else 409 confirm_needed naming the risks (the app''s "Are you sure?" sends it; the classic app and Telegram are unchanged). 409 already_decided, expired, step_up_required (it stays waiting), refused or not_here; 404 when there is none.'
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                confirmed: { type: boolean, description: 'The person answered "Are you sure?" with yes. Required when the approval''s confirm is true.' }
       responses:
         '200':
           description: Decided. outcome done (it ran), failed (it ran and failed) or approved (it runs in the app that asked).
