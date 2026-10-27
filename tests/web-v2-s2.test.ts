@@ -61,7 +61,7 @@ describe('S2 fixture mode answers like the server', () => {
     expect(valid('/assistant/access', 'put', call(s, 'PUT', '/assistant/access', { preset: 'locked-down' })).body.assistant.access.preset).toBe('locked-down');
     expect(valid('/assistant/access', 'put', call(s, 'PUT', '/assistant/access', { preset: 'root' })).body.error.code).toBe('bad_preset');
     expect(valid('/assistant/folders', 'post', call(s, 'POST', '/assistant/folders', { path: '/Users/robert/Documents/Show results' })).body.message).toMatch(/Granted/);
-    for (const [path, code] of [['Documents', 'bad_folder'], ['/', 'refused'], ['C:\\', 'refused'], ['\\\\nas\\share', 'refused'], ['/Users/robert', 'refused'], ['/Users/robert/mwa', 'refused'], ['/Users/robert/missing', 'not_found']]) {
+    for (const [path, code] of [['Documents', 'bad_folder'], ['/', 'refused'], ['C:\\', 'refused'], ['\\\\nas\\share', 'refused'], ['/Users/robert', 'refused'], ['/Users/robert/mwa', 'refused'], ['/Users/robert/mwa/data/browser', 'refused'], ['/Users/robert/missing', 'not_found']]) {
       expect(valid('/assistant/folders', 'post', call(s, 'POST', '/assistant/folders', { path })).body.error.code, path).toBe(code);
     }
     expect(valid('/assistant/folders/remove', 'post', call(s, 'POST', '/assistant/folders/remove', { path: '/Users/robert/Old project' })).body.assistant.access.folders.map((f: any) => f.path))
@@ -123,7 +123,7 @@ describe('Your assistant\'s words', () => {
     expect(PRESETS.map((p) => p.id)).toEqual(['locked-down', 'assistant', 'developer']);
     expect(PRESETS[2].detail).toMatch(/without asking/);
     expect(STYLES.map((s) => s.label)).toEqual(['Guided', 'Direct']);
-    expect(folderPlaceholder(true)).toBe('/data/files');
+    expect(folderPlaceholder(true)).toBe('/mnt/files');
     expect(folderPlaceholder(false, 'Mozilla/5.0 (Windows NT 10.0)')).toBe('C:\\Users\\you\\Documents');
     expect(folderPlaceholder(false, 'Mozilla/5.0 (iPhone)')).toBe('/Users/you/Documents');
   });

@@ -18,7 +18,7 @@
  */
 import { ApiError, type Route } from '../router.js';
 import {
-  assistantState, saveBrain, saveImage, saveAccess, saveStyle, modelChoices, folderProblem, type Outcome,
+  assistantState, saveBrain, saveImage, saveAccess, saveStyle, modelChoices, folderProblem, samePath, type Outcome,
 } from '../../assistant-settings.js';
 import { accessPolicy } from '../../tools/access.js';
 import { isHosted, hostName } from '../../hosting.js';
@@ -97,7 +97,7 @@ export const assistantRoutes: Route[] = [
       if (typeof path !== 'string') throw new ApiError(400, 'bad_folder', 'Type the folder’s full path.');
       const p = path.trim();
       const pol = accessPolicy();
-      if (pol.grantedRoots.some((f) => f === resolve(p))) return { body: { assistant: assistantView(), message: 'That folder is already granted.' } };
+      if (pol.grantedRoots.some((f) => samePath(f, p))) return { body: { assistant: assistantView(), message: 'That folder is already granted.' } };
       // the v1 path refuses a folder outright (the classic one saves the rest and lists what it left out)
       const problem = folderProblem(p);
       if (problem) throw new ApiError(400, problem.code, problem.message);
@@ -112,8 +112,9 @@ export const assistantRoutes: Route[] = [
     handler: ({ body }) => {
       const path = bodyOf(body).path;
       const pol = accessPolicy();
-      if (typeof path !== 'string' || !pol.grantedRoots.includes(path)) throw new ApiError(404, 'not_granted', 'That folder isn’t granted, or it was already removed.');
-      const o = saveAccess(pol.preset, pol.grantedRoots.filter((f) => f !== path));
+      const match = typeof path === 'string' ? pol.grantedRoots.find((f) => f === path) ?? pol.grantedRoots.find((f) => samePath(f, path)) : undefined;
+      if (match === undefined) throw new ApiError(404, 'not_granted', 'That folder isn’t granted, or it was already removed.');
+      const o = saveAccess(pol.preset, pol.grantedRoots.filter((f) => f !== match));
       if (o.ok) logger.info('assistant', 'folder removed', { path });
       return done(o.ok ? { ok: true, message: `Removed. ${APPLIES}` } : o);
     },

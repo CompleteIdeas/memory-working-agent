@@ -244,7 +244,7 @@ function Access({ a, data }: { a: AssistantSettings; data: Data }) {
                 onChange={(e) => setFolder(e.target.value)} aria-describedby="as-folder-help" />
               <button type="submit" className="vbtn" disabled={busy}>Add</button>
             </span>
-            <span className="s" id="as-folder-help">{a.access.hosted ? 'The full path of a folder on the server. Only /data lasts across a redeploy.' : 'The full path of a folder on this computer, like your Documents.'}</span>
+            <span className="s" id="as-folder-help">{a.access.hosted ? 'The full path of a folder on the server, outside your helper’s own data folder.' : 'The full path of a folder on this computer, like your Documents.'}</span>
             <Note said={fnote} />
           </form>
         )}

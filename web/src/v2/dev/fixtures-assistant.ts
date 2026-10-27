@@ -90,6 +90,7 @@ export class AssistantFixtures {
     if (/missing/i.test(path)) return err(400, 'not_found', `I couldn’t find a folder at ${path.slice(0, 200)}.`);
     const clean = path.replace(/[\\/]+$/, '');
     if (FIXTURE_HELPER_HOME === clean || FIXTURE_HELPER_HOME.startsWith(clean + '/')) return err(400, 'refused', 'That folder holds your helper’s own keys and settings, so it can’t be granted. Pick a folder that doesn’t contain them.');
+    if (clean === `${FIXTURE_HELPER_HOME}/data` || clean.startsWith(`${FIXTURE_HELPER_HOME}/data/`)) return err(400, 'refused', 'That folder is part of your helper’s own data (its memory, sign-ins and saved logins), so it can’t be granted. Pick a folder outside it.');
     return null;
   }
 

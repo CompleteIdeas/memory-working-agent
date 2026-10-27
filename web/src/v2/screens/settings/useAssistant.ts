@@ -57,7 +57,7 @@ export function noModelsLine(p: Provider | undefined, kind: 'chat' | 'image'): s
 export function presetOf(id: AccessPreset) { return PRESETS.find((p) => p.id === id) ?? PRESETS[1]; }
 export function styleOf(id: InteractionStyle) { return STYLES.find((s) => s.id === id) ?? STYLES[0]; }
 export function folderPlaceholder(hosted: boolean, ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''): string {
-  if (hosted) return '/data/files';
+  if (hosted) return '/mnt/files';
   return /Win/i.test(ua) ? 'C:\\Users\\you\\Documents' : '/Users/you/Documents';
 }
 

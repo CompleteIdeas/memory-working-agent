@@ -42,9 +42,16 @@ export function setAccess(preset: AccessPreset, grantedRoots?: string[]): { pres
   for (const g of requested) {
     try { if (existsSync(g) && statSync(g).isDirectory()) kept.push(resolve(g)); else dropped.push(g); } catch { dropped.push(g); }
   }
-  raw.tools.access = { preset: ACCESS_PRESETS.includes(preset) ? preset : 'assistant', grantedRoots: [...new Set(kept)] };
+  raw.tools.access = { preset: ACCESS_PRESETS.includes(preset) ? preset : 'assistant', grantedRoots: dedupeFolders(kept) };
   writeFileSync(configPath(), JSON.stringify(raw, null, 2) + '\n');
   return { preset: raw.tools.access.preset, grantedRoots: raw.tools.access.grantedRoots, dropped };
+}
+
+/** One entry per folder: on Windows "C:\Docs" and "c:\docs" are the same folder (review of S2); the first spelling wins. */
+export function dedupeFolders(paths: string[], win = process.platform === 'win32'): string[] {
+  const seen = new Set<string>(); const out: string[] = [];
+  for (const p of paths) { const k = win ? p.toLowerCase() : p; if (!seen.has(k)) { seen.add(k); out.push(p); } }
+  return out;
 }
 
 /** Folders the file tools may touch: the agent's workspace + any granted folders. */

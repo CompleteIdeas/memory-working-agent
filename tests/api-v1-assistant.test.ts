@@ -12,7 +12,9 @@ import { createV1 } from '../src/api/router.js';
 import { v1Routes } from '../src/api/v1.js';
 import { makeAuthenticate, createPairCode, redeemPairCode } from '../src/api/auth.js';
 import { resetAppDb } from '../src/v2/db.js';
-import { setAssistantDeps, legacySave, folderProblem } from '../src/assistant-settings.js';
+import { setAssistantDeps, legacySave, folderProblem, credentialsForCheck, isMetadataHost, protectedFolders, samePath } from '../src/assistant-settings.js';
+import { dedupeFolders } from '../src/tools/access.js';
+import { symlinkSync } from 'node:fs';
 
 const NET = { 'x-forwarded-for': '100.64.0.7' };
 const as = (token: string) => ({ ...NET, authorization: `Bearer ${token}` });
@@ -33,6 +35,7 @@ function device(scopes: ('read' | 'act' | 'approve' | 'admin')[]): string {
   return redeemPairCode(code, 'Pixel', 'android')!.token;
 }
 
+const SAVED_KEYS = { OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY, OLLAMA_BASE_URL: process.env.OLLAMA_BASE_URL, MWA_VAULT_PATH: process.env.MWA_VAULT_PATH };
 const SAVED = { cfg: process.env.MWA_CONFIG_PATH, model: process.env.MWA_MODEL, image: process.env.MWA_MODEL_IMAGE, anthropic: process.env.ANTHROPIC_API_KEY, data: process.env.MWA_DATA_DIR };
 beforeAll(async () => {
   const authenticate = makeAuthenticate({ passwordSet: false, sessionValid: () => false });
@@ -50,7 +53,7 @@ function freshConfig(content = '{}\n') {
 beforeEach(() => {
   resetAppDb(':memory:');
   freshConfig();
-  for (const k of ['MWA_MODEL', 'MWA_MODEL_IMAGE', 'ANTHROPIC_API_KEY', 'MWA_DATA_DIR']) delete process.env[k];
+  for (const k of ['MWA_MODEL', 'MWA_MODEL_IMAGE', 'ANTHROPIC_API_KEY', 'MWA_DATA_DIR', 'OPENROUTER_API_KEY', 'OLLAMA_BASE_URL', 'MWA_VAULT_PATH']) delete process.env[k];
   env.clear(); checks.length = 0;
   setAssistantDeps({
     // the live check fails for a key containing "bad", quoting the key the way some providers do
@@ -61,6 +64,7 @@ beforeEach(() => {
   });
 });
 afterAll(() => {
+  for (const [k, v] of Object.entries(SAVED_KEYS)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   server?.close(); setAssistantDeps(null);
   for (const [k, v] of Object.entries({ MWA_CONFIG_PATH: SAVED.cfg, MWA_MODEL: SAVED.model, MWA_MODEL_IMAGE: SAVED.image, ANTHROPIC_API_KEY: SAVED.anthropic, MWA_DATA_DIR: SAVED.data })) {
     if (v === undefined) delete process.env[k]; else process.env[k] = v;
@@ -248,7 +252,7 @@ describe('what it can touch', () => {
     }
     expect(cfg().tools?.access?.grantedRoots ?? []).toEqual([]);
     mkdirSync(join(data, 'data', 'files'));
-    expect(folderProblem(join(data, 'data', 'files'))).toBeNull(); // a folder inside the data folder is fine
+    expect(folderProblem(join(data, 'data', 'files'))?.code).toBe('refused'); // review of S2: inside the data folder too
   });
   it('a folder granted before the stricter rule is kept when the level changes', async () => {
     freshConfig(JSON.stringify({ tools: { access: { preset: 'assistant', grantedRoots: [resolve('.')] } } }));
@@ -323,5 +327,85 @@ describe('the classic page and the new app leave the same settings behind', () =
     expect(r.aCfg.tools.access.grantedRoots).toEqual([]);
     expect(r.b.body.error.code).toBe('refused');
     expect(r.bCfg).toEqual({});
+  });
+});
+
+describe('review of S2', () => {
+  it('1. the live check uses the saved key when none is typed (the key resolution itself, no stub)', () => {
+    const env = { OPENROUTER_API_KEY: 'sk-or-saved', AZURE_GPT_BASE_URL: 'https://x.openai.azure.com/openai/v1', AZURE_GPT_API_KEY: 'az-saved' } as NodeJS.ProcessEnv;
+    expect(credentialsForCheck('openrouter', undefined, undefined, env)).toEqual({ key: 'sk-or-saved', baseUrl: undefined });
+    expect(credentialsForCheck('openrouter', 'sk-or-typed', undefined, env).key).toBe('sk-or-typed');
+    expect(credentialsForCheck('openai', undefined, undefined, env).key).toBeUndefined();
+    expect(credentialsForCheck('ollama', undefined, undefined, env)).toEqual({ key: undefined, baseUrl: undefined });
+    expect(credentialsForCheck('azure', undefined, undefined, env)).toEqual({ key: 'az-saved', baseUrl: 'https://x.openai.azure.com/openai/v1' });
+  });
+  it('1. changing only the model works with the saved key, on both paths, and the key is not written again', async () => {
+    // a check that behaves like wizard.ts testProvider: no key, no check
+    setAssistantDeps({ testProvider: async (_p, m, k) => (k ? { ok: true, message: `${m} works ✓` } : { ok: false, message: 'a key is required for this provider' }),
+      saveEnv: (kv) => { for (const [k, v] of Object.entries(kv)) env.set(k, v); }, hasEnv: (n) => env.has(n) });
+    process.env.OPENROUTER_API_KEY = SECRET;
+    const r = await send('PUT', '/assistant/brain', { provider: 'openrouter', model: 'openai/gpt-6.1-sol' });
+    expect(r.status).toBe(200);
+    expect(r.text).not.toContain(SECRET);
+    expect(env.size).toBe(0);
+    expect((await legacySave({ which: 'provider', provider: 'openrouter', model: 'anthropic/claude-sonnet-5' })).ok).toBe(true);
+    expect(cfg().models.fetch).toBe('openrouter:anthropic/claude-sonnet-5');
+    delete process.env.OPENROUTER_API_KEY;
+    const none = await send('PUT', '/assistant/brain', { provider: 'openrouter', model: 'openai/gpt-6.1-sol' });
+    expect(none.body.error).toMatchObject({ code: 'check_failed', message: 'a key is required for this provider' });
+  });
+  it('2. a folder inside any of the helper\'s data places is refused, wherever an env var moved it', async () => {
+    const vaultHome = mkdtempSync(join(tmpdir(), 'mwa-s2-vault-'));
+    mkdirSync(join(vaultHome, 'inner'));
+    process.env.MWA_VAULT_PATH = join(vaultHome, 'vault.json');
+    expect(protectedFolders().data.map((f) => resolve(f))).toContain(resolve(vaultHome));
+    for (const p of [vaultHome, join(vaultHome, 'inner')]) expect((await send('POST', '/assistant/folders', { path: p })).body.error.code, p).toBe('refused');
+    expect(protectedFolders().data.map((f) => resolve(f))).toContain(resolve('data')); // ./data: memory, browser profiles, tokens
+  });
+  it('3. a link or junction that leads to the helper\'s folder is refused', async () => {
+    const box = mkdtempSync(join(tmpdir(), 'mwa-s2-link-'));
+    const link = join(box, 'looks-harmless');
+    symlinkSync(resolve('.'), link, 'junction');
+    const r = await send('POST', '/assistant/folders', { path: link });
+    expect(r.status).toBe(400);
+    expect(r.body.error.code).toBe('refused');
+    const data = mkdtempSync(join(tmpdir(), 'mwa-s2-dl-'));
+    mkdirSync(join(data, 'data', 'browser'), { recursive: true });
+    process.env.MWA_DATA_DIR = join(data, 'data');
+    symlinkSync(join(data, 'data', 'browser'), join(box, 'pics'), 'junction');
+    expect(folderProblem(join(box, 'pics'))?.code).toBe('refused');
+  });
+  it('4. an image setting can\'t move an Ollama brain, and only Ollama takes an address', async () => {
+    freshConfig(JSON.stringify({ models: { fetch: 'ollama:llama3.3-70b', reason: 'ollama:llama3.3-70b' } }));
+    process.env.OLLAMA_BASE_URL = 'http://localhost:11434';
+    const moved = await send('PUT', '/assistant/image', { provider: 'ollama', model: 'flux', baseUrl: 'http://10.0.0.9:11434' });
+    expect(moved.body.error.code).toBe('bad_base_url');
+    expect(env.has('OLLAMA_BASE_URL')).toBe(false);
+    expect((await legacySave({ which: 'image-model', provider: 'openrouter', model: 'x/y', baseUrl: 'http://10.0.0.9:11434' })).ok).toBe(false);
+    expect((await send('PUT', '/assistant/image', { provider: 'ollama', model: 'flux', baseUrl: 'http://localhost:11434' })).status).toBe(200);
+    freshConfig();
+    expect((await send('PUT', '/assistant/image', { provider: 'ollama', model: 'flux', baseUrl: 'http://10.0.0.9:11434' })).status).toBe(200);
+    expect(env.get('OLLAMA_BASE_URL')).toBe('http://10.0.0.9:11434');
+  });
+  it('5. an address may not be a cloud metadata service; localhost and the local network are fine', async () => {
+    for (const u of ['http://169.254.169.254/latest', 'http://metadata.google.internal/', 'http://[fd00:ec2::254]/', 'http://2852039166/', 'http://0xa9fea9fe/', 'http://[fe80::1]/', 'http://100.100.100.200/']) {
+      const r = await send('PUT', '/assistant/brain', { provider: 'ollama', model: 'llama3', baseUrl: u });
+      expect(r.body.error?.code, u).toBe('bad_base_url');
+    }
+    expect(checks).toEqual([]);
+    for (const u of ['http://localhost:11434', 'http://192.168.1.5:11434', 'http://127.0.0.1:11434']) expect((await send('PUT', '/assistant/brain', { provider: 'ollama', model: 'llama3', baseUrl: u })).status, u).toBe(200);
+    expect(isMetadataHost('ollama.local')).toBe(false);
+  });
+  it('6. the same folder in another case is one folder on Windows', async () => {
+    expect(dedupeFolders(['C:\\Docs', 'c:\\docs', 'C:\\Other'], true)).toEqual(['C:\\Docs', 'C:\\Other']);
+    expect(dedupeFolders(['/a', '/A'], false)).toEqual(['/a', '/A']);
+    if (process.platform !== 'win32') return;
+    const f = mkdtempSync(join(tmpdir(), 'mwa-s2-Case-'));
+    await send('POST', '/assistant/folders', { path: f });
+    expect((await send('POST', '/assistant/folders', { path: f.toUpperCase() })).body.message).toMatch(/already granted/);
+    expect(cfg().tools.access.grantedRoots).toHaveLength(1);
+    expect(samePath(f, f.toLowerCase())).toBe(true);
+    expect((await send('POST', '/assistant/folders/remove', { path: f.toLowerCase() })).status).toBe(200);
+    expect(cfg().tools.access.grantedRoots).toEqual([]);
   });
 });
