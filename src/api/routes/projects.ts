@@ -29,11 +29,33 @@ export type ChatStart =
   | { state: 'offer'; turnId?: string; message: string }
   | { state: 'busy'; message: string };
 
+/** What an ask (A6, src/api/routes/ask.ts) adds to a project send: the run is the same, these shape it. */
+export interface ChatExtras {
+  /** the ask this run answers (its answer is kept on the ask, and under an item) */
+  askId?: string;
+  /** what it is about: recorded on the turn */
+  about?: { kind: string; id: string };
+  /** said before the person's words in the instruction (never the thing's own text) */
+  framing?: string;
+  /** fenced context (the thing an item-scoped ask is about), and whether the run starts tainted */
+  carried?: string;
+  startTainted?: boolean;
+  /** a budget other than a chat's (an item-scoped ask: 8 steps, 5¢; a big ask done now: its limit and room for every
+   *  read, up to 120 steps and 30 minutes) */
+  budget?: { maxSteps?: number; maxUsd?: number; maxWallMs?: number };
+  /** said after the person's words: fixed wording only (a narrower ask's focus, how many files are attached) */
+  note?: string;
+  /** voice: the words came from the browser's speech recognition (recorded on the turn) */
+  source?: 'voice' | 'typed';
+  /** files attached to the ask (workspace paths): their list reaches the run fenced, in `carried` */
+  files?: { path: string; pages: number }[];
+}
+
 export interface ProjectRouteDeps {
   /** the workspace root (files are listed under it) */
   workspace: () => string;
   /** start a chat run in a project's thread (serve.ts) */
-  startChat?: (projectId: string, text: string, o: { stay?: boolean; person?: string }) => Promise<ChatStart>;
+  startChat?: (projectId: string, text: string, o: { stay?: boolean; person?: string; extras?: ChatExtras }) => Promise<ChatStart>;
   /** a turn moved: the server forgets what it carried for both threads (and the older conversation it left), so their
    *  next run reads them again */
   onTurnMoved?: (fromProjectId: string, toProjectId: string, legacySession: string | null) => void;
@@ -48,6 +70,8 @@ export interface ProjectRouteDeps {
 }
 let deps: ProjectRouteDeps | null = null;
 export function setProjectRouteDeps(d: ProjectRouteDeps | null): void { deps = d; }
+/** The send path an ask reuses (A6). */
+export function projectRouteDeps(): ProjectRouteDeps | null { return deps; }
 
 function load(id: string) {
   const p = getProject(id);

@@ -42,6 +42,7 @@
     "build:awm": "npm run build --workspace=agent-working-memory",
     "build:ui": "npm run build --workspace=mwa-web",
     "dev:ui": "npm run dev --workspace=mwa-web",
+    "smoke:v2-web": "node scripts/v2-web-smoke.mjs",
     "build": "npm run build:awm && tsc && npm run build:ui",
     "typecheck": "tsc --noEmit",
     "setup": "tsx src/setup.ts",

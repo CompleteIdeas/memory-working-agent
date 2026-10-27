@@ -114,6 +114,8 @@ export interface TurnMeta {
   archivedFrom?: string;
   /** an imported conversation's divider still waits for the first thing the person typed, to be titled by it */
   untitled?: boolean;
+  /** A6: the person spoke it (browser speech recognition); absent: typed */
+  source?: 'voice';
 }
 
 export const sessionOf = (projectId: string) => `p-${projectId}`;
@@ -150,6 +152,7 @@ export function apiTurn(t: TurnRow, d: AppDb = appDb(), o: { summary?: boolean }
     about: t.about_kind && t.about_id ? { kind: t.about_kind, id: t.about_id } : null,
     provenance: apiProvenance(parse<Provenance[]>(t.provenance) ?? [], d),
     offer: meta.offer ?? null, legacySession: t.legacy_session ?? t.origin_session, movedFrom: t.moved_from, updatedSeq: t.updated_seq,
+    source: meta.source ?? 'typed',
   };
 }
 

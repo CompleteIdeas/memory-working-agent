@@ -964,6 +964,79 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/ask": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The asks about one thing, oldest first: the answers shown in place under it ("You asked"). */
+        get: operations["listAsksAbout"];
+        put?: never;
+        /** Ask, or hand over a job. Routed to the project given, the project of the thing it is about, or a suggestion. An ordinary ask runs now in that thread; a big one (more than 20 steps, more than 30¢, more than 40 attached pages, or "learn everything / go through all / review all / triage") comes back as a plan; mode background hands it to a job at once. POST only: what is asked never sits in a URL. */
+        post: operations["ask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ask/suggestions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 2–3 questions specific to one thing ("Remind me the day before", "Who else is going?"), from templates by kind: no model call. */
+        get: operations["askSuggestions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ask/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** An ask as it stands, with its turn in the thread once there is one. */
+        get: operations["getAsk"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ask/{id}/choose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** A plan's choice, made once: now (main model, its limit), background (a Job on the background model tier, with the default limit or capUsd), or a narrower ask (which is asked in turn). The same choice again answers what the first did (200); another choice is 409 already_chosen; an archived project or a file gone is 409; a plan older than a day is 410 expired. */
+        post: operations["chooseAsk"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/today": {
         parameters: {
             query?: never;
@@ -1461,6 +1534,11 @@ export interface components {
             /** @description The project it was last moved out of. */
             movedFrom: string | null;
             updatedSeq: number;
+            /**
+             * @description voice: the person spoke it (the browser turned speech into text).
+             * @enum {string}
+             */
+            source: "typed" | "voice";
         };
         /** @description Where a message should go. Inside a project: that project ("this project"), and at most one alternative — a hint
          *     to offer, never a switch. From Now/Today or General: the best project ("suggested"), or General ("not sure") with
@@ -1637,6 +1715,180 @@ export interface components {
                 messages: number;
                 senders: number;
             };
+        };
+        /** @description Where an ask went: "To: Family & school · suggested". given = the project the person chose; about = the project of the thing it is about; suggested / not sure = the routing suggestion (not sure goes to General). */
+        AskRoute: {
+            projectId: string;
+            name: string;
+            /** @enum {string} */
+            confidence: "given" | "about" | "suggested" | "not sure";
+            alternatives: {
+                projectId: string;
+                name: string;
+                score: number;
+            }[];
+        };
+        /** @description The thing an ask is about. `label` is the chip ("About: Book fair · Sat Nov 14"), for the screen only. */
+        AskAbout: {
+            /** @enum {string} */
+            kind: "item" | "mail" | "event" | "draft" | "job" | "conflict";
+            id: string;
+            label: string;
+        };
+        AskFile: {
+            /** @description A workspace path, as an upload returns it. */
+            path: string;
+            name: string;
+            /** @description Counted as read_document counts them (a PDF's own pages), no model call. */
+            pages: number;
+            /** @description read_document calls it takes at the default window: the unit estimates price by. */
+            reads: number;
+        };
+        AskPlanOption: {
+            /** @description Rounded as said: whole cents under $1, 5-cent steps above. */
+            usd: number;
+            ms: number;
+            /** @description "Do it now · about 40¢"; "a first guess, about …" when the estimate rests on the default or a single sample. */
+            label: string;
+            firstGuess: boolean;
+            /** @description The spending limit this choice gets unless the person sets one. */
+            capDefault: number;
+            /** @description In the background only: when it should be ready (epoch ms). */
+            readyAt?: number;
+            /** @description Do it now only: the steps the run is given (its reads + 2; 40 to 120). */
+            steps?: number;
+            /** @description Do it now only: false when it would not finish within 120 steps or 30 minutes (it then carries on in the background). */
+            fits?: boolean;
+            note?: string;
+        };
+        /** @description A big ask, not started (SCENARIOS N04): what it is, what it would cost now (main model) and in the background
+         *     (background model), narrower asks, and the limit it would stop at. Shown with "Or narrow it…" and "Details"
+         *     ("Stop if it costs more than $…").
+         *      */
+        AskPlan: {
+            size: {
+                pages?: number;
+                sources?: number;
+            };
+            /** @description "This is a big read — 149 pages, about 20 minutes. Do it now, or in the background for less and I'll tell you when it's done?" */
+            message: string;
+            reasons: ("steps" | "cost" | "pages" | "wording")[];
+            now: components["schemas"]["AskPlanOption"];
+            background: components["schemas"]["AskPlanOption"];
+            narrow: {
+                /** @description "Only ICP Eventing Handbook · 61 pages, about 8¢" (the name cleaned and capped). */
+                label: string;
+                /** @description What the run is told to focus on, in fixed words: "the first attached file (61 pages)" — never a file name. For a model's proposal it is the label itself, given to the run fenced (and the run starts tainted). */
+                focus: string;
+                files: string[];
+                /** @description Counted pages (file narrows only; a model's page claim is never used). */
+                pages?: number;
+                /** @description File narrows only: a model's proposal keeps all the files and claims no price. */
+                usd?: number;
+                /**
+                 * @description file: one per attached file, or the first 20 pages of one long file (deterministic); model: at most one label, proposed by the cheap model and checked.
+                 * @enum {string}
+                 */
+                by: "file" | "model";
+            }[];
+            capDefault: number;
+            /** @enum {string} */
+            basis: "this-job" | "history" | "default";
+        };
+        /** @description What an ask became. kind answer: it runs now in the project's thread (state started; or offer, the older offer
+         *     to work on it in the background) — follow it on /stream. kind plan: a big ask waiting for POST /ask/{id}/choose.
+         *     kind job: handed to the background (jobId, its limit, when it should be ready).
+         *      */
+        AskStart: {
+            askId: string;
+            projectId: string;
+            route: components["schemas"]["AskRoute"];
+            /** @enum {string} */
+            kind: "answer" | "plan" | "job";
+            about?: components["schemas"]["AskAbout"];
+            /** @enum {string} */
+            state?: "started" | "offer";
+            runId?: string;
+            turnId?: string;
+            message?: string;
+            plan?: components["schemas"]["AskPlan"];
+            jobId?: string;
+            /** @enum {string} */
+            tier?: "background";
+            capUsd?: number;
+            estimate?: {
+                usd: number;
+                ms: number;
+            };
+            readyAt?: number;
+            /** @description An ask about one thing: 8 steps, 5¢. */
+            budget?: {
+                maxSteps: number;
+                maxUsd: number;
+            };
+            /** @description An ask about one thing: the run starts tainted (the thing holds someone else's words), so any write it attempts waits for approval. */
+            tainted?: boolean;
+        };
+        AskChosen: {
+            askId: string;
+            /** @enum {string} */
+            chosen: "now" | "background" | "narrow";
+            /** @enum {string} */
+            kind?: "answer" | "job";
+            /** @enum {string} */
+            state?: "started" | "offer";
+            runId?: string;
+            turnId?: string;
+            message?: string;
+            capUsd?: number;
+            jobId?: string;
+            /** @enum {string} */
+            tier?: "background";
+            estimate?: {
+                usd: number;
+                ms: number;
+            };
+            readyAt?: number;
+            narrowed?: components["schemas"]["AskStart"];
+        };
+        Ask: {
+            id: string;
+            createdAt: number;
+            text: string;
+            projectId: string;
+            route: components["schemas"]["AskRoute"] | null;
+            /** @enum {string} */
+            kind: "answer" | "plan" | "job";
+            mode: string | null;
+            about: {
+                kind: string;
+                id: string;
+            } | null;
+            files: components["schemas"]["AskFile"][];
+            /** @enum {string} */
+            source: "typed" | "voice";
+            plan: components["schemas"]["AskPlan"] | null;
+            /**
+             * @description expired: a plan not chosen within a day (choose answers 410).
+             * @enum {string}
+             */
+            state: "planned" | "choosing" | "running" | "offered" | "answered" | "queued" | "narrowed" | "failed" | "expired";
+            choice: Record<string, never> | null;
+            jobId: string | null;
+            runId: string | null;
+            turnId: string | null;
+            /** @description The answer, once written (also on the thread's turn, and under an item). */
+            answer: string | null;
+            tainted: boolean | null;
+            capUsd: number | null;
+            /** @description A narrower ask: the plan it was chosen from. */
+            parentId: string | null;
+            /** @description A narrower ask: the fixed note said in the instruction, and a model's suggested focus (fenced). */
+            focus: {
+                note: string;
+                suggested?: string;
+            } | null;
+            updatedSeq: number;
         };
         /** @description Where a card or line opens, in place: a job, the waiting jobs, an approval, the approvals, a calendar item (on `date`), an Important item, an account to reconnect, an action in the activity log. */
         TodayOpen: {
@@ -3382,6 +3634,180 @@ export interface operations {
                         };
                         message: string;
                     };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listAsksAbout: {
+        parameters: {
+            query: {
+                /** @description kind:id */
+                about: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The asks. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        about: components["schemas"]["AskAbout"];
+                        asks: components["schemas"]["Ask"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    ask: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    text: string;
+                    projectId?: string;
+                    /** @description "Ask about this": the item (A9 Important), email, calendar event or draft, job, or double-booking (conflict:<a>|<b>). Its own text goes to the run fenced, never into the instruction; 8 steps, 5¢. */
+                    about?: {
+                        /** @enum {string} */
+                        kind: "item" | "mail" | "event" | "draft" | "job" | "conflict";
+                        id: string;
+                    };
+                    /** @description Workspace paths of uploaded files. */
+                    files?: string[];
+                    /**
+                     * @default auto
+                     * @enum {string}
+                     */
+                    mode?: "auto" | "now" | "background";
+                    /** @description The most it may spend (now: the run; background: the job). */
+                    capUsd?: number;
+                    /**
+                     * @description voice: the words came from the browser's speech recognition.
+                     * @default typed
+                     * @enum {string}
+                     */
+                    source?: "typed" | "voice";
+                };
+            };
+        };
+        responses: {
+            /** @description Answering, planned, or handed to the background. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AskStart"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    askSuggestions: {
+        parameters: {
+            query: {
+                /** @description kind:id */
+                about: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The chip and the questions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        about: components["schemas"]["AskAbout"];
+                        suggestions: string[];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getAsk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The ask. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ask: components["schemas"]["Ask"];
+                        turn: components["schemas"]["Turn"] | null;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    chooseAsk: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    mode?: "now" | "background";
+                    narrowIndex?: number;
+                    capUsd?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description The same choice again; what the first one did. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AskChosen"];
+                };
+            };
+            /** @description Chosen. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AskChosen"];
                 };
             };
             default: components["responses"]["Error"];

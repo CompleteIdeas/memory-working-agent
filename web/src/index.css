@@ -1,5 +1,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 @import "tailwindcss";
+/* the v2 app (slice W1) styles itself (src/v2/shell/v2.css); keep its class names out of v1's utilities */
+@source not "./v2";
 
 /* "Instrument" — a precise device for thinking. Bone + graphite, ONE signal color
    (signal-orange), a technical grotesque (Archivo) with mono numerals (Plex Mono),
