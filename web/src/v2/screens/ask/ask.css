@@ -1,0 +1,37 @@
+/* The Ask flow (v2 build, slice W4): the parts the shell's v2.css (the prototype's styles) does not have. */
+.routeto { display: block; font-size: 13.5px; color: var(--dim); margin-top: 2px; }
+.routeline { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 8px 6px 0; font-size: 14.5px; color: var(--dim); min-height: 44px; }
+.routeline b { color: var(--ink); font-weight: 600; }
+.routeline .quietlink { min-height: 44px; }
+.routeselect { min-height: 44px; border: 1.5px solid var(--edge); border-radius: 8px; background: var(--card); color: var(--ink); padding: 0 10px; font-size: 15px; max-width: 100%; }
+.ask-note.error, .refusal p { color: var(--signal); }
+.refusal { align-self: stretch; background: var(--card); border-radius: 8px; padding: 10px 14px; border-left: 3px solid var(--signal); }
+.refusal .acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.plancard { align-self: stretch; display: flex; flex-direction: column; gap: 4px; }
+.plancard > .msg-h { max-width: 100%; }
+.plancard .acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.plancard .acts .vbtn { white-space: normal; text-align: center; height: auto; min-height: 48px; padding-top: 8px; padding-bottom: 8px; }
+.plancard .acts-col .vbtn { text-align: left; }
+.plancard .planlinks { margin-top: 8px; }
+.plancard .planlinks .quietlink, .plancard > .quietlink, .plandetails .quietlink { min-height: 44px; }
+.plancard > .quietlink, .plandetails .quietlink { align-self: flex-start; }
+.narrowlead { margin-top: 8px; }
+.plandetails { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.plandetails .soft { font-size: 14.5px; }
+.youchose { font-size: 14px; color: var(--dim); margin-top: 6px; }
+.jobnote { margin-top: 8px; font-weight: 600; color: var(--ink); }
+.liveans .stage { font-size: 14.5px; color: var(--dim); }
+.liveans .acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.ask-row .micbtn { background: var(--ink); color: var(--bg); }
+.aboutchip svg { flex: none; color: var(--accent); }
+
+/* "Ask about this", in place */
+.askabout { margin-top: 12px; }
+.askabout-box { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.askabout-box .ask-sugg { padding: 0; }
+.askabout-form { display: flex; gap: 8px; align-items: center; width: 100%; }
+.askabout-form .ask-input { min-height: 48px; font-size: 16px; }
+.askabout-form .sendbtn { width: 48px; height: 48px; }
+.askabout-form .sendbtn:disabled { opacity: .45; }
+.qa-live .msg-h { max-width: 100%; }
+.qa-live .msg-h .who { display: none; }

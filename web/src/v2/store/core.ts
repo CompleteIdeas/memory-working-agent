@@ -21,7 +21,7 @@
 import {
   MwaClient, ApiError, Conflict, Forbidden, NetworkError, SignInRequired, UpdateRequired, TRANSIENT_CONFLICTS, newKey,
   type CalendarItem, type Job, type JobDetail, type MailHeader, type Meta, type Project, type SyncCollection, type SyncResult, type Turn,
-  type DraftResult, type MessageSent, type Schemas,
+  type DraftResult, type MessageSent, type Schemas, type AskBody, type AskChoice, type AskStart, type AskChosen, type TurnMoved,
 } from '../api/client';
 import type { CacheDb, StoreName } from './cache';
 
@@ -75,8 +75,14 @@ export type CalendarConflict = Schemas['CalendarConflict'];
 
 export type ActionKind =
   | 'job.stop' | 'job.continue' | 'job.startOver' | 'job.open' | 'job.pause' | 'job.resume' | 'job.cancel'
-  | 'draft.confirm' | 'draft.remove' | 'message.send';
-export interface ActionArgs { id?: string; capUsd?: number; text?: string; provider?: 'google' | 'outlook' }
+  | 'draft.confirm' | 'draft.remove' | 'message.send'
+  // W4: Ask, a plan's choice, projects and their threads
+  | 'ask' | 'ask.choose' | 'turn.move' | 'project.create' | 'project.update' | 'project.stop' | 'project.steer' | 'project.offer';
+export interface ActionArgs {
+  id?: string; capUsd?: number; text?: string; provider?: 'google' | 'outlook';
+  /** W4: the request body of an ask (`ask`), a plan's choice (`ask.choose`), a move ({projectId}), a project's fields */
+  body?: Record<string, unknown>;
+}
 export interface OutboxEntry {
   id: string;
   /** the Idempotency-Key, the same on every try */
@@ -90,9 +96,16 @@ export interface OutboxEntry {
   lastError?: string;
 }
 export type ActResult =
-  | { ok: true; queued: false; message?: string; data?: unknown }
-  | { ok: false; queued: true; message: string }
-  | { ok: false; queued: false; message: string; code?: string };
+  | { ok: true; queued: false; message?: string; data?: unknown; entryId?: string }
+  | { ok: false; queued: true; message: string; entryId?: string }
+  | { ok: false; queued: false; message: string; code?: string; entryId?: string };
+export interface ActOptions {
+  /** no notice for a refusal: the screen says it in place (a plan's "This plan is old — ask again") */
+  quiet?: boolean;
+}
+/** W4: what an ask (sent now, or replayed from the outbox) became, by its outbox entry id. */
+export interface AskOutcome { entryId: string; start: AskStart; text: string; at: number; replayed: boolean }
+export type AskRecord = Schemas['Ask'];
 
 export interface StoreState {
   ready: boolean;
@@ -109,6 +122,13 @@ export interface StoreState {
   threads: Record<string, Turn[]>;
   threadLoaded: Record<string, boolean>;
   live: Record<string, LiveInfo>;
+  /** W4: a thread's pages before its latest 50 (loaded on "Earlier messages"), and the cursor for the next one */
+  threadOlder: Record<string, Turn[]>;
+  threadNext: Record<string, string | null>;
+  /** W4: asks this device made, by outbox entry id; plan choices by ask id; asks as the server last said (stream) */
+  askOutcomes: Record<string, AskOutcome>;
+  askChoices: Record<string, AskChosen>;
+  asks: Record<string, AskRecord>;
   mail: MailState;
   outbox: OutboxEntry[];
   notices: Notice[];
@@ -129,6 +149,7 @@ export interface StoreOptions {
 const initial = (fixtures: boolean): StoreState => ({
   ready: false, connection: 'starting', auth: 'ok', updateReady: false, meta: null, cursor: 0, updatedAt: null,
   jobs: {}, calendar: {}, conflicts: {}, projects: {}, threads: {}, threadLoaded: {}, live: {},
+  threadOlder: {}, threadNext: {}, askOutcomes: {}, askChoices: {}, asks: {},
   mail: { headers: [], note: '', connected: false, loaded: false, loading: false, error: null },
   outbox: [], notices: [], fixtures,
 });
@@ -288,7 +309,7 @@ export class V2Store {
     if (r.reset) {
       const jobs = (up.jobs ?? []) as Job[], calendar = (up.calendar ?? []) as CalendarItem[], projects = (up.projects ?? []) as Project[];
       const threads = groupTurns((up.turns ?? []) as Turn[]);
-      this.set({ jobs: byId(jobs), calendar: byId(calendar), projects: byId(projects), threads, threadLoaded: {}, conflicts: {} });
+      this.set({ jobs: byId(jobs), calendar: byId(calendar), projects: byId(projects), threads, threadLoaded: {}, conflicts: {}, threadOlder: {}, threadNext: {} });
       this.persist(async (c) => {
         await c.replace('jobs', entries(jobs));
         await c.replace('calendar', entries(calendar));
@@ -334,12 +355,28 @@ export class V2Store {
       threads[pid] = turns.filter((t) => !gone.has(t.id));
       touched.add(pid);
     }
+    // W4: an earlier page loses a turn that moved away or was removed (it is shown where it is now)
+    let older = this.s.threadOlder;
+    for (const [pid, turns] of Object.entries(older)) {
+      if (!turns.some((t) => gone.has(t.id))) continue;
+      for (const t of turns) if (gone.has(t.id) && !held.has(t.id)) held.set(t.id, t);
+      older = { ...older, [pid]: turns.filter((t) => !gone.has(t.id)) };
+    }
     for (const t of ups) {
       const old = held.get(t.id);
       const keep = old && t.truncated && !old.truncated && old.updatedSeq >= t.updatedSeq && old.projectId === t.projectId ? old : t;
-      threads[t.projectId] = [...(threads[t.projectId] ?? []), keep].sort((a, b) => a.ts - b.ts || (a.id < b.id ? -1 : 1)).slice(-THREAD_KEEP);
+      const sorted = [...(threads[t.projectId] ?? []), keep].sort(byTs);
+      threads[t.projectId] = sorted.slice(-THREAD_KEEP);
+      // W4: a turn pushed out of the latest 50 (or moved back in older than them) stays on the thread's earlier
+      // pages once the thread is open, so neither the page the person is reading nor "Earlier messages" skips it
+      const spill = sorted.slice(0, Math.max(0, sorted.length - THREAD_KEEP));
+      if (spill.length && this.s.threadLoaded[t.projectId]) {
+        const ids = new Set(spill.map((x) => x.id));
+        older = { ...older, [t.projectId]: [...(older[t.projectId] ?? []).filter((x) => !ids.has(x.id)), ...spill].sort(byTs) };
+      }
       touched.add(t.projectId);
     }
+    if (older !== this.s.threadOlder) this.set({ threadOlder: older });
     this.set({ threads });
     this.persist((c) => c.put('threads', [...touched].map((pid) => ({ key: pid, value: { projectId: pid, turns: threads[pid] ?? [] } }))));
   }
@@ -394,6 +431,7 @@ export class V2Store {
       case 'project': this.upsert('projects', del ? [] : [m.data as Project], del ? [m.id] : []); break;
       case 'turn': this.applyTurns(del ? [] : [m.data as Turn], del ? [m.id] : []); break;
       case 'mail': this.mailChanged(); break;
+      case 'ask': if (!del && m.data) this.set({ asks: { ...this.s.asks, [m.id]: m.data as AskRecord } }); break;
       default: break; // devices and anything newer: nothing on these screens
     }
     if (seq) this.setCursor(seq);
@@ -405,10 +443,48 @@ export class V2Store {
     try {
       const r = await this.client.getProjectThread(projectId, { limit: THREAD_KEEP });
       const turns = r.turns.slice(-THREAD_KEEP);
-      this.set({ threads: { ...this.s.threads, [projectId]: turns }, threadLoaded: { ...this.s.threadLoaded, [projectId]: true } });
+      // W4: the cursor for the page before this one ("Earlier messages"); earlier pages start empty again
+      this.set({ threads: { ...this.s.threads, [projectId]: turns }, threadLoaded: { ...this.s.threadLoaded, [projectId]: true },
+        threadNext: { ...this.s.threadNext, [projectId]: r.next }, threadOlder: { ...this.s.threadOlder, [projectId]: [] } });
       this.upsert('projects', [r.project], []);
       this.persist((c) => c.put('threads', [{ key: projectId, value: { projectId, turns } }]));
     } catch (e) { this.noteError(e); }
+  }
+
+  /** W4: the page of a thread before what is shown ("Earlier messages"). Kept apart from the latest 50 (which the
+   *  stream keeps current) and not cached on the device. Resolves false when there is nothing earlier. */
+  async loadEarlier(projectId: string, limit = 30): Promise<boolean> {
+    const before = this.s.threadNext[projectId];
+    if (!before) return false;
+    try {
+      const r = await this.client.getProjectThread(projectId, { before, limit });
+      const have = new Set([...(this.s.threadOlder[projectId] ?? []), ...(this.s.threads[projectId] ?? [])].map((t) => t.id));
+      const fresh = r.turns.filter((t) => !have.has(t.id) && t.projectId === projectId);
+      this.set({
+        threadOlder: { ...this.s.threadOlder, [projectId]: [...fresh, ...(this.s.threadOlder[projectId] ?? [])].sort((a, b) => a.ts - b.ts || (a.id < b.id ? -1 : 1)) },
+        threadNext: { ...this.s.threadNext, [projectId]: r.next },
+      });
+      return true;
+    } catch (e) { this.noteError(e); return false; }
+  }
+
+  /** W4: a project's jobs (its Work tab); they join the store's jobs so the stream keeps them current. */
+  async loadProjectWork(projectId: string): Promise<string[] | null> {
+    try {
+      const r = await this.client.getProjectWork(projectId);
+      this.upsert('jobs', r.jobs, []);
+      return r.jobs.map((j) => j.id);
+    } catch (e) { this.noteError(e, true); return null; }
+  }
+
+  /** W4: an ask as it stands, and its turn (the answer whole, not the stream's 500-character summary). */
+  async loadAsk(askId: string): Promise<AskRecord | null> {
+    try {
+      const r = await this.client.getAsk(askId);
+      this.set({ asks: { ...this.s.asks, [askId]: r.ask } });
+      if (r.turn) this.applyTurns([r.turn], []);
+      return r.ask;
+    } catch (e) { this.noteError(e, true); return null; }
   }
 
   /** The calendar for a window, with its double-bookings (the server works those out). */
@@ -438,22 +514,23 @@ export class V2Store {
 
   // ---------- actions and the outbox ----------
   /** Do something now, or — when the network is down — keep it with its key and send it when back online. */
-  async act(kind: ActionKind, args: ActionArgs, label: string): Promise<ActResult> {
+  async act(kind: ActionKind, args: ActionArgs, label: string, opts: ActOptions = {}): Promise<ActResult> {
     const entry: OutboxEntry = { id: newKey(this.now()), key: newKey(this.now()), kind, args, label, createdAt: this.now(), attempts: 0 };
+    const entryId = entry.id;
     if (!this.env.online() || this.s.connection === 'offline') return this.enqueue(entry);
     if (this.s.updateReady) return this.enqueue(entry, 'Saved. It will be sent after you reload.');
     if (this.s.auth === 'signin') return this.enqueue(entry, 'Saved. It will be sent once you sign in again.');
     try {
       const data = await this.send(entry);
-      return { ok: true, queued: false, data, message: messageOf(data) };
+      return { ok: true, queued: false, data, message: messageOf(data), entryId };
     } catch (e) {
       if (e instanceof NetworkError) return this.enqueue(entry);
       if (e instanceof UpdateRequired) { this.set({ updateReady: true }); return this.enqueue(entry, 'Saved. It will be sent after you reload.'); }
       if (e instanceof SignInRequired) { this.set({ auth: 'signin' }); return this.enqueue(entry, 'Saved. It will be sent once you sign in again.'); }
       if (e instanceof Conflict && !TRANSIENT_CONFLICTS.has(e.code)) { await this.showCurrent(entry); }
       const message = e instanceof Error ? e.message : 'That didn’t work.';
-      this.notice(message, 'error');
-      return { ok: false, queued: false, message, code: e instanceof ApiError ? e.code : undefined };
+      if (!opts.quiet) this.notice(message, 'error');
+      return { ok: false, queued: false, message, code: e instanceof ApiError ? e.code : undefined, entryId };
     }
   }
 
@@ -461,7 +538,7 @@ export class V2Store {
     this.set({ outbox: [...this.s.outbox, entry] });
     this.persist((c) => c.put('outbox', [{ key: entry.id, value: entry }]));
     this.notice(message, 'info');
-    return { ok: false, queued: true, message };
+    return { ok: false, queued: true, message, entryId: entry.id };
   }
   private dropFromOutbox(id: string) {
     this.set({ outbox: this.s.outbox.filter((x) => x.id !== id) });
@@ -478,7 +555,7 @@ export class V2Store {
         for (const entry of [...this.s.outbox]) {
           const tried = { ...entry, attempts: entry.attempts + 1 };
           try {
-            await this.send(tried);
+            await this.send(tried, true);
             this.dropFromOutbox(entry.id);
           } catch (e) {
             if (e instanceof NetworkError) { this.keep(tried, e.message); break; }
@@ -502,8 +579,8 @@ export class V2Store {
   }
 
   /** One action → one API call, with the action's key. Its answer updates the store. */
-  private async send(e: OutboxEntry): Promise<unknown> {
-    const c = this.client, key = { key: e.key }, id = e.args.id ?? '';
+  private async send(e: OutboxEntry, replayed = false): Promise<unknown> {
+    const c = this.client, key = { key: e.key }, id = e.args.id ?? '', b = e.args.body ?? {};
     let out: unknown;
     switch (e.kind) {
       case 'job.stop': out = await c.stopJob(id, key); break;
@@ -516,11 +593,34 @@ export class V2Store {
       case 'draft.confirm': out = await c.confirmCalendarDraft(id, e.args.provider ? { provider: e.args.provider } : {}, key); break;
       case 'draft.remove': out = await c.removeCalendarDraft(id, key); break;
       case 'message.send': out = await c.sendProjectMessage(id, { text: e.args.text ?? '' }, key); break;
+      case 'ask': out = await c.ask(b as AskBody, key); break;
+      case 'ask.choose': out = await c.chooseAsk(id, b as AskChoice, key); break;
+      case 'turn.move': out = await c.moveTurn(id, { projectId: String(b.projectId ?? '') }, key); break;
+      case 'project.create': out = await c.createProject(b as { name: string; icon?: string | null }, key); break;
+      case 'project.update': out = await c.updateProject(id, b as { name?: string; icon?: string | null; archived?: boolean; sort?: number }, key); break;
+      case 'project.stop': out = await c.stopProjectRun(id, key); break;
+      case 'project.steer': out = await c.steerProjectRun(id, { text: e.args.text ?? '' }, key); break;
+      case 'project.offer': out = await c.acceptProjectOffer(id, e.args.text ? { message: e.args.text } : {}, key); break;
     }
-    this.applyResult(e.kind, out);
+    this.applyResult(e.kind, out, e, replayed);
     return out;
   }
-  private applyResult(kind: ActionKind, out: unknown) {
+  private applyResult(kind: ActionKind, out: unknown, e?: OutboxEntry, replayed = false) {
+    if (kind === 'ask' && e) {
+      const start = out as AskStart;
+      if (!start?.askId) return;
+      this.set({ askOutcomes: { ...this.s.askOutcomes, [e.id]: { entryId: e.id, start, text: String(e.args.body?.text ?? ''), at: this.now(), replayed } } });
+      // a plan sent from the outbox waits for a choice: say so, since the screen that asked may be gone
+      if (replayed && start.kind === 'plan') this.notice('Something you asked while offline needs a choice before I start. Open Ask to choose.', 'info');
+      return;
+    }
+    if (kind === 'ask.choose' && e?.args.id) {
+      const chosen = out as AskChosen;
+      if (chosen?.askId) this.set({ askChoices: { ...this.s.askChoices, [e.args.id]: chosen } });
+      return;
+    }
+    if (kind === 'turn.move') { const m = out as TurnMoved; if (m?.turn) this.applyTurns([m.turn], []); return; }
+    if (kind === 'project.create' || kind === 'project.update') { const p = (out as { project?: Project })?.project; if (p) this.upsert('projects', [p], []); return; }
     if (kind.startsWith('job.')) { const d = out as JobDetail; if (d?.job) this.upsert('jobs', [d.job], []); return; }
     if (kind.startsWith('draft.')) {
       const d = out as DraftResult;
@@ -552,6 +652,7 @@ export class V2Store {
   }
 }
 
+const byTs = (a: Turn, b: Turn) => a.ts - b.ts || (a.id < b.id ? -1 : 1);
 function groupTurns(turns: Turn[]): Record<string, Turn[]> {
   const out: Record<string, Turn[]> = {};
   for (const t of turns) (out[t.projectId] ??= []).push(t);

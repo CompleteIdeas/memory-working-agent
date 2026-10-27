@@ -1,0 +1,70 @@
+/* The Projects tab (v2 build, slice W4): the parts the shell's v2.css (the prototype's styles) does not have. */
+.projrows .rowbtn { gap: 12px; }
+.pbadge { flex: none; font-size: 13px; font-weight: 700; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--ink); white-space: nowrap; }
+.pbadge.needs { border-color: var(--signal); color: var(--signal); }
+.pbadge.working::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 6px; vertical-align: 1px; animation: breathe 2.4s ease-in-out infinite; }
+.newproj { margin-top: 8px; }
+.archived { margin-top: 20px; }
+.archived .skiplist { margin-top: 8px; }
+.projform { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.fl { font-weight: 600; font-size: 15px; }
+.textin { min-height: 48px; border: 1.5px solid var(--edge); border-radius: 8px; background: var(--card); color: var(--ink); padding: 0 12px; font-size: 16px; width: 100%; min-width: 0; }
+.textin.big { font-size: 26px; font-weight: 700; min-height: 56px; }
+.iconpick { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.iconpick legend { margin-bottom: 6px; }
+.iconopt { cursor: pointer; border-radius: 12px; padding: 2px; border: 2px solid transparent; }
+.iconopt.on { border-color: var(--ink); }
+.iconopt:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.iconopt .projico { width: 44px; height: 44px; }
+
+.projhead { display: flex; align-items: flex-start; gap: 8px; }
+.projhead .vh-text { flex: 1; min-width: 0; }
+.projhead h1 { overflow-wrap: anywhere; }
+.menuwrap { position: relative; flex: none; }
+.menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 200px; max-width: min(300px, calc(100vw - 32px)); background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 4px; display: flex; flex-direction: column; }
+.menu [role="menuitem"] { text-align: left; min-height: 44px; padding: 0 12px; border: 0; background: none; border-radius: 8px; color: var(--ink); font-size: 15.5px; }
+.menu [role="menuitem"]:hover, .menu [role="menuitem"]:focus-visible { background: var(--card-2); }
+.renameform { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.renameform .acts { display: flex; gap: 8px; }
+.confirm { margin-top: 12px; }
+.confirm .acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+.projtabs { display: flex; gap: 4px; margin-top: 22px; border-bottom: 1px solid var(--line); }
+.projtabs [role="tab"] { min-height: 44px; padding: 0 14px; border: 0; background: none; color: var(--dim); font-weight: 600; font-size: 15.5px; border-bottom: 3px solid transparent; margin-bottom: -1px; }
+.projtabs [role="tab"][aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); }
+.projpanel { padding-top: 14px; }
+.projpanel .projthread { margin-top: 0; }
+
+.earlier { margin: 0 auto 12px; display: flex; }
+.tdivider { display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: 13.5px; font-weight: 600; margin: 8px 0; }
+.tdivider::before, .tdivider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.tdivider span { max-width: 80%; text-align: center; }
+.turn { display: flex; flex-direction: column; gap: 8px; }
+.turn .msg-you { white-space: pre-wrap; overflow-wrap: anywhere; }
+.turn .msg-h { width: 100%; max-width: 100%; }
+.turn .msg-h .txt { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 92%; }
+.turnabout { display: flex; width: fit-content; margin-bottom: 6px; font-size: 13.5px; }
+.resultlead { font-weight: 600; }
+.msg-h .who .movewrap { margin-left: auto; }
+.movewrap { position: relative; }
+.movewrap .menu { right: 0; left: auto; }
+.movebtn { min-height: 36px; padding: 0 6px; font-size: 13.5px; font-weight: 500; color: var(--dim); text-decoration: none; }
+.movebtn:hover { color: var(--ink); text-decoration: underline; }
+@media (pointer: coarse) { .movebtn { min-height: 44px; } }
+.turn > .movewrap { align-self: flex-start; }
+.movednote { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; padding: 8px 12px; background: var(--card); border-radius: 8px; font-size: 14.5px; }
+.movednote .linkish { min-height: 44px; }
+.steerform { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.steerform .textin { flex: 1 1 180px; }
+.pendingask { margin-top: 12px; }
+.composer { display: flex; align-items: flex-end; gap: 8px; margin-top: 18px; }
+.composer-in { flex: 1; min-width: 0; min-height: 52px; max-height: 160px; resize: none; border-radius: 26px; border: 1.5px solid var(--edge); background: var(--card); padding: 14px 18px; font-size: 16px; line-height: 1.35; color: var(--ink); font-family: inherit; }
+.composer .sendbtn:disabled { opacity: .45; }
+
+.workpanel .projjob h3 { font-size: 17px; }
+.workpanel .projjob .state { margin-top: 2px; }
+.workpanel .projjob .detail { margin-top: 8px; }
+.workpanel .projjob .acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.workpanel .projjob .acts:empty { display: none; }
+.filelist { padding: 2px 12px; }
+.filelist .rowbtn { text-decoration: none; color: inherit; }

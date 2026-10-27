@@ -9,8 +9,10 @@
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useMeta, useNotices, useStatusPill } from '../store/react';
-import { AskSheet, WorkingSheet, type AskAbout } from './sheets';
-import { Calendar, Important, Projects, Settings, Today, type View } from './screens';
+import { WorkingSheet, type AskAbout } from './sheets';
+import { Calendar, Important, Settings, Today, type View } from './screens';
+import { AskSheet } from '../screens/ask/AskSheet';
+import { Projects } from '../screens/projects/Projects';
 import { Arrow, Mic, Person, Spark, TabCalendar, TabImportant, TabProjects, TabToday, Close } from './icons';
 
 const TABS: { view: View; label: string; icon: ReactNode }[] = [
@@ -157,7 +159,7 @@ export function Shell() {
       <Toasts />
       <UpdateBar />
       <WorkingSheet open={workOpen} onClose={() => setWorkOpen(false)} onAskAbout={ask} />
-      <AskSheet open={askOpen} about={about} onClose={() => setAskOpen(false)} />
+      <AskSheet open={askOpen} about={about} onClose={() => setAskOpen(false)} onShowWork={() => { setAskOpen(false); setWorkOpen(true); }} />
     </div>
   );
 }

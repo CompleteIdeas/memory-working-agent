@@ -13,9 +13,9 @@
  *   useNow()            the clock (fixture mode freezes it at the prototype's Monday 9:10)
  */
 import { createContext, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
-import type { V2Store, StoreState, ActionKind, ActionArgs } from './core';
+import type { V2Store, StoreState, ActionKind, ActionArgs, ActResult } from './core';
 import { groupJobs, pillFor, activeJobs, monthLine } from './status';
-import type { CalendarItem, Job, Project } from '../api/client';
+import type { AskBody, AskChoice, CalendarItem, Job, Project } from '../api/client';
 
 const Ctx = createContext<V2Store | null>(null);
 
@@ -32,7 +32,9 @@ export function useStore(): V2Store {
 /** A slice of the state. The selector must return something already in the state (not a new array or object). */
 function useSlice<T>(sel: (s: StoreState) => T): T {
   const store = useStore();
-  return useSyncExternalStore(store.subscribe, () => sel(store.getState()));
+  const get = () => sel(store.getState());
+  // the same snapshot on the server: screens render in node for tests (react-dom/server) without a browser
+  return useSyncExternalStore(store.subscribe, get, get);
 }
 
 export function useNow(tickMs = 30_000): number {
@@ -83,6 +85,8 @@ export function useJobs() {
 const ACTION_WORD: Record<ActionKind, string> = {
   'job.stop': 'Stop', 'job.continue': 'Continue', 'job.startOver': 'Start over', 'job.open': 'Open', 'job.pause': 'Pause',
   'job.resume': 'Resume', 'job.cancel': 'Cancel', 'draft.confirm': 'Confirm', 'draft.remove': 'Remove', 'message.send': 'Send',
+  ask: 'Ask', 'ask.choose': 'Choose', 'turn.move': 'Move', 'project.create': 'Create', 'project.update': 'Change', 'project.stop': 'Stop',
+  'project.steer': 'Add to', 'project.offer': 'Work on',
 };
 
 export function useStatusPill() {
@@ -136,9 +140,23 @@ export function useThread(projectId: string | null) {
   const store = useStore();
   const threads = useSlice((s) => s.threads);
   const loaded = useSlice((s) => s.threadLoaded);
+  const older = useSlice((s) => s.threadOlder);
+  const next = useSlice((s) => s.threadNext);
   const connection = useSlice((s) => s.connection);
   useEffect(() => { if (projectId && connection === 'live' && !store.getState().threadLoaded[projectId]) void store.loadThread(projectId); }, [store, projectId, connection]);
-  return { turns: projectId ? threads[projectId] ?? EMPTY : EMPTY, loaded: projectId ? !!loaded[projectId] : false };
+  const recent = projectId ? threads[projectId] ?? EMPTY : EMPTY;
+  const before = projectId ? older[projectId] ?? EMPTY : EMPTY;
+  // W4: earlier pages ("Earlier messages") above the latest 50; `turns` stays the latest 50 for W1's readers
+  const all = useMemo(() => {
+    if (!before.length) return recent;
+    const ids = new Set(recent.map((t) => t.id));
+    return [...before.filter((t) => !ids.has(t.id)), ...recent];
+  }, [before, recent]);
+  return {
+    turns: recent, loaded: projectId ? !!loaded[projectId] : false,
+    all, hasEarlier: projectId ? !!next[projectId] : false,
+    loadEarlier: () => (projectId ? store.loadEarlier(projectId) : Promise.resolve(false)),
+  };
 }
 const EMPTY: never[] = [];
 
@@ -169,4 +187,70 @@ export function useNotices() {
 export function useSendMessage() {
   const store = useStore();
   return (projectId: string, text: string) => store.act('message.send', { id: projectId, text }, 'Your message');
+}
+
+// ---------- W4: Ask, plans, projects and their threads ----------
+
+/**
+ * Asking, through the outbox (an ask made offline is kept with its key and sent when back online):
+ *   send(body)          POST /ask → the result's `entryId` finds what it became in `outcome(entryId)` (now or later)
+ *   choose(askId, c)    a plan's choice (quiet: the plan card says a refusal in place)
+ *   outcome(entryId)    what an ask became (AskStart), once the server has answered
+ *   choice(askId)       what a plan's choice became (AskChosen)
+ */
+export function useAsk() {
+  const store = useStore();
+  const outcomes = useSlice((s) => s.askOutcomes);
+  const choices = useSlice((s) => s.askChoices);
+  const asks = useSlice((s) => s.asks);
+  const outbox = useSlice((s) => s.outbox);
+  return useMemo(() => ({
+    send: (body: AskBody, label = 'Your question'): Promise<ActResult> => store.act('ask', { body: body as unknown as Record<string, unknown> }, label, { quiet: true }),
+    choose: (askId: string, c: AskChoice): Promise<ActResult> => store.act('ask.choose', { id: askId, body: c as Record<string, unknown> }, 'Your choice', { quiet: true }),
+    outcome: (entryId: string | null | undefined) => (entryId ? outcomes[entryId] : undefined),
+    choice: (askId: string | null | undefined) => (askId ? choices[askId] : undefined),
+    ask: (askId: string | null | undefined) => (askId ? asks[askId] : undefined),
+    load: (askId: string) => store.loadAsk(askId),
+    /** every ask the server told this device about (the stream's `ask` changes, GET /ask/{id}) */
+    records: asks,
+    /** still in the outbox (not sent yet); false once sent — or refused when it was replayed */
+    waiting: (entryId: string | null | undefined) => !!entryId && outbox.some((x) => x.id === entryId),
+    /** asks replayed from the outbox that came back as a plan, not chosen yet (the Ask sheet shows them) */
+    waitingPlans: Object.values(outcomes).filter((o) => o.replayed && o.start.kind === 'plan' && !choices[o.start.askId]),
+  }), [store, outcomes, choices, asks, outbox]);
+}
+
+/** The run being written in a project's thread, as the stream last said (`live` events of session p-<id>). */
+export function useLive(projectId: string | null) {
+  const live = useSlice((s) => s.live);
+  return projectId ? live[`p-${projectId}`] ?? null : null;
+}
+
+/** Projects and their threads: create, rename, archive, restore; move a turn; Stop and Steer a running answer; accept an offer. */
+export function useProjectActions() {
+  const store = useStore();
+  return useMemo(() => ({
+    create: (name: string, icon?: string | null) => store.act('project.create', { body: { name, ...(icon !== undefined ? { icon } : {}) } }, `Create “${name}”`),
+    rename: (p: Project, name: string) => store.act('project.update', { id: p.id, body: { name } }, `Rename “${p.name}”`),
+    setIcon: (p: Project, icon: string | null) => store.act('project.update', { id: p.id, body: { icon } }, `Change the icon of “${p.name}”`),
+    archive: (p: Project) => store.act('project.update', { id: p.id, body: { archived: true } }, `Archive “${p.name}”`),
+    restore: (p: Project) => store.act('project.update', { id: p.id, body: { archived: false } }, `Restore “${p.name}”`),
+    moveTurn: (turnId: string, projectId: string, quiet = false) => store.act('turn.move', { id: turnId, body: { projectId } }, 'Move a message', { quiet }),
+    stop: (projectId: string) => store.act('project.stop', { id: projectId }, 'Stop the answer'),
+    steer: (projectId: string, text: string) => store.act('project.steer', { id: projectId, text }, 'Add to the answer'),
+    acceptOffer: (projectId: string, message?: string) => store.act('project.offer', { id: projectId, ...(message ? { text: message } : {}) }, 'Work on it in the background'),
+    loadWork: (projectId: string) => store.loadProjectWork(projectId),
+    loadFiles: (projectId: string) => store.client.getProjectFiles(projectId),
+  }), [store]);
+}
+
+/** One calendar event or draft the store holds (a thread's "About Lesson with Ellen" chip), or undefined. */
+export function useCalendarItem(id: string | null): CalendarItem | undefined {
+  const all = useSlice((s) => s.calendar);
+  return id ? all[id] : undefined;
+}
+
+/** Every job by id, archived ones included (a project's Work tab lists what the server says is its own). */
+export function useJobMap(): Record<string, Job> {
+  return useSlice((s) => s.jobs);
 }
