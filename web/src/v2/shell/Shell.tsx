@@ -68,6 +68,7 @@ function Toasts() {
       {notices.map((n) => (
         <div key={n.id} className={`toast${n.tone === 'error' ? ' error' : ''}`}>
           <p>{n.text}</p>
+          {n.action && <button type="button" className="vbtn vbtn-quiet toastact" onClick={() => { dismiss(n.id); n.action!.run(); }}>{n.action.label}</button>}
           <button type="button" className="iconbtn" aria-label="Dismiss" onClick={() => dismiss(n.id)}><Close size={18} /></button>
         </div>
       ))}

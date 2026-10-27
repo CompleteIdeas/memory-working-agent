@@ -10,20 +10,22 @@
  *     served from anywhere shows the example day.
  *
  * Scenarios (`?scenario=`): N00 (default: one job working), N06 (+ a job waiting for you at its 15¢ limit),
- * states (one job in each of the eight server states), old-client (the server wants a newer app: 426).
- * Writes it acts on: jobs stop / continue / open, calendar drafts confirm / remove, project messages (a simulated
- * answer follows on the stream). Everything else answers 404 not_found. All of it is example data.
+ * states (one job in each of the eight server states), old-client (the server wants a newer app: 426), sorting (W3:
+ * sorting held back). Writes it acts on: jobs stop / continue / open, calendar drafts confirm / remove, project
+ * messages (a simulated answer follows on the stream); W3's Important list, the reader's reply drafts and about-asks
+ * are ./fixtures-important.ts. Everything else answers 404 not_found. All of it is example data.
  */
 import type { CalendarItem, Job, JobStatus, MailHeader, MailMessage, Meta, Project, Turn } from '../api/client';
 import { CATS, EMAILS, EVENTS, FIXTURE_NOW, PROJECTS, THREADS, at, dayStart } from './fixture-data';
+import { ImportantFixtures } from './fixtures-important';
 
 export interface FixtureRequest { method: string; path: string; query: URLSearchParams; headers: Record<string, string | undefined>; body: unknown }
 export interface FixtureResponse { status: number; body: unknown; headers?: Record<string, string> }
 export interface StreamMessage { event: string; data: unknown; id?: number }
-type Entity = 'job' | 'calendar' | 'project' | 'turn' | 'mail';
+type Entity = 'job' | 'calendar' | 'project' | 'turn' | 'mail' | 'item';
 interface Ev { seq: number; entity: Entity; id: string; op: 'upsert' | 'delete' }
 
-export const FIXTURE_SCENARIOS = ['N00', 'N06', 'states', 'old-client'] as const;
+export const FIXTURE_SCENARIOS = ['N00', 'N06', 'states', 'old-client', 'sorting'] as const;
 export type FixtureScenario = (typeof FIXTURE_SCENARIOS)[number];
 export const FIXTURE_SERVER_VERSION = 'fixtures';
 
@@ -47,11 +49,19 @@ export class FixtureServer {
   private subs = new Set<(m: StreamMessage) => void>();
   private n = 0;
   private clock: () => number;
+  /** W3: the Important list, the reader's extras and about-asks (./fixtures-important.ts) */
+  readonly important: ImportantFixtures;
 
   constructor(scenario: string | null = 'N00', clock: () => number = () => FIXTURE_NOW) {
     this.scenario = (FIXTURE_SCENARIOS as readonly string[]).includes(String(scenario)) ? (scenario as FixtureScenario) : 'N00';
     this.clock = clock;
     if (this.scenario === 'old-client') this.minClient = '99.0.0';
+    this.important = new ImportantFixtures({
+      clock: () => this.clock(), seq: () => this.seq, emit: (e, id, op) => this.emit(e, id, op),
+      putMail: (m, b) => this.putMail(m, b), putCal: (c) => this.putCal(c), putTurn: (t) => this.putTurn(t), makeTurn: turn,
+      later: (fn, ms) => this.later(fn, ms), answerDelay: () => this.answerDelay,
+      mail: this.mail, projects: this.projects, turns: this.turns, bodyOf: (id) => this.bodies.get(id),
+    }, this.scenario);
     this.seed();
   }
 
@@ -65,7 +75,7 @@ export class FixtureServer {
   }
   private current(entity: Entity, id: string): unknown {
     return entity === 'job' ? this.jobs.get(id) : entity === 'calendar' ? this.calendar.get(id) : entity === 'project' ? this.projects.get(id)
-      : entity === 'turn' ? summary(this.turns.get(id)) : this.mail.get(id);
+      : entity === 'turn' ? summary(this.turns.get(id)) : entity === 'item' ? this.important.current(id) : this.mail.get(id);
   }
   private putJob(j: Job) { j.updatedSeq = this.seq + 1; this.jobs.set(j.id, j); this.emit('job', j.id); }
   private putCal(c: CalendarItem) { this.calendar.set(c.id, c); this.emit('calendar', c.id); }
@@ -108,6 +118,7 @@ export class FixtureServer {
     this.putJob(newsJob(now));
     if (this.scenario === 'N06') this.putJob(learnJob(now));
     if (this.scenario === 'states') for (const j of allStates(now)) this.putJob(j);
+    this.important.seed();
   }
 
   // ---------- requests ----------
@@ -130,8 +141,10 @@ export class FixtureServer {
 
   private read(path: string, q: URLSearchParams): FixtureResponse {
     let m: RegExpExecArray | null;
+    const imp = this.important.read(path, q);
+    if (imp) return imp;
     if (path === '/meta') {
-      const meta: Meta = { api: 'v1', server: FIXTURE_SERVER_VERSION, minClient: this.minClient, secure: true, features: ['jobs', 'calendar', 'mail', 'projects'], importing: null };
+      const meta: Meta = { api: 'v1', server: FIXTURE_SERVER_VERSION, minClient: this.minClient, secure: true, features: ['jobs', 'calendar', 'mail', 'projects', 'important', 'ask'], importing: null };
       return { status: 200, body: meta };
     }
     if (path === '/jobs') {
@@ -185,6 +198,8 @@ export class FixtureServer {
   private write(method: string, path: string, body: unknown): FixtureResponse {
     let m: RegExpExecArray | null;
     const now = this.clock();
+    const imp = this.important.write(method, path, body);
+    if (imp) return imp;
     if (method === 'POST' && (m = /^\/jobs\/([^/]+)\/(stop|continue|open)$/.exec(path))) {
       const j = this.jobs.get(decodeURIComponent(m[1]));
       if (!j) return err(404, 'not_found', 'No such job.');
@@ -246,10 +261,10 @@ export class FixtureServer {
   private sync(q: URLSearchParams): FixtureResponse {
     const since = Number(q.get('since') ?? 0) || 0;
     const want = new Set((q.get('collections') ?? 'jobs').split(',').map((s) => s.trim()).filter(Boolean));
-    const known = ['jobs', 'calendar', 'mail', 'projects', 'turns'];
+    const known = ['jobs', 'calendar', 'mail', 'projects', 'turns', 'important'];
     const unknown = [...want].filter((w) => !known.includes(w));
     if (unknown.length) return err(400, 'unknown_collection', `Unknown collection: ${unknown.join(', ')}. Available: ${known.join(', ')}.`);
-    const COLL: Record<Entity, string> = { job: 'jobs', calendar: 'calendar', mail: 'mail', project: 'projects', turn: 'turns' };
+    const COLL: Record<Entity, string> = { job: 'jobs', calendar: 'calendar', mail: 'mail', project: 'projects', turn: 'turns', item: 'important' };
     const upserts: Record<string, unknown[]> = {}, deletes: Record<string, string[]> = {};
     // no cursor, or one from another fixture world (ahead of this one): a snapshot, as the server does for a cursor
     // it cannot serve
@@ -260,6 +275,7 @@ export class FixtureServer {
       if (want.has('mail')) upserts.mail = [...this.mail.values()];
       if (want.has('projects')) upserts.projects = [...this.projects.values()];
       if (want.has('turns')) upserts.turns = [...this.turns.values()].map(summary);
+      if (want.has('important')) upserts.important = this.important.snapshot();
       return { status: 200, body: { cursor: this.seq, reset: true, more: false, upserts, deletes } };
     }
     const last = new Map<string, Ev>();

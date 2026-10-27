@@ -1,0 +1,204 @@
+/**
+ * "Ask about this" (v2 build, slice W3) for an Important item or an email: the Ask sheet already tied to the thing (a
+ * chip "About: Book fair · Sat Nov 14" and 2–3 questions from GET /ask/suggestions), and the answers shown IN PLACE,
+ * under the thing, under "You asked" — not in a separate thread (SCENARIOS N11).
+ *
+ *   ask({text, about: {kind, id}})  → 202 answer; the run is answering in the thing's project
+ *   an item:   its question appears under it at once and its answer when written, through the stream (`item.qa`)
+ *   an email:  GET /ask?about=mail:<id> for what was asked before; an ask just made is followed with GET /ask/{id}
+ * Either way, each ask made here is also followed with GET /ask/{id} until answered, which also says which other
+ * project's knowledge the answer used ("using what I know from Eventing").
+ */
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { newKey, type Ask, type ImportantItem } from '../../api/client';
+import { useMeta, useStore } from '../../store/react';
+import { Sheet } from '../../shell/sheets';
+import { Spark } from '../../shell/icons';
+import { LinkIcon } from './icons';
+import { shortLabel } from '../../store/important';
+
+export type AboutKind = 'item' | 'mail' | 'conflict';
+export interface AboutRef { kind: AboutKind; id: string; label?: string }
+
+interface Pending { askId: string; q: string; ts: number; a: string | null; state: 'waiting' | 'answered' | 'failed'; cross: string[] }
+export interface QaView { key: string; q: string; a: string | null; state: 'waiting' | 'answered' | 'failed'; cross: string[] }
+export interface AskResult { ok: boolean; message?: string; closed?: boolean }
+
+const POLL_MS = 1_500, POLL_MAX = 120;
+
+/** The asks about one thing, and how to ask another. `item` (when the thing is an item) gives its live `qa`. */
+export function useAskAbout(about: AboutRef | null, item?: ImportantItem | null) {
+  const store = useStore();
+  const client = store.client;
+  const key = about ? `${about.kind}:${about.id}` : null;
+  const [history, setHistory] = useState<Ask[]>([]);
+  const [pending, setPending] = useState<Pending[]>([]);
+  const [label, setLabel] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+
+  useEffect(() => {
+    setHistory([]); setPending([]); setLabel(null); setSuggestions([]);
+    if (!key || about?.kind === 'item') return;
+    let on = true;
+    // an email's earlier asks (an item's are on the item itself)
+    client.listAsksAbout(key).then((r) => { if (on) { setHistory(r.asks); setLabel(r.about.label); } }, () => { /* offline: none shown */ });
+    return () => { on = false; };
+  }, [client, key, about?.kind]);
+
+  const loadSuggestions = useCallback(async () => {
+    if (!key) return;
+    try {
+      const r = await client.askSuggestions(key);
+      if (!alive.current) return;
+      setSuggestions(r.suggestions); setLabel(r.about.label);
+    } catch { if (alive.current) setSuggestions([]); }
+  }, [client, key]);
+
+  // follow each ask made here until it is answered (or fails), whatever the stream does meanwhile
+  const follow = useCallback((askId: string) => {
+    let n = 0;
+    const tick = async () => {
+      if (!alive.current) return;
+      n++;
+      try {
+        const r = await client.getAsk(askId);
+        const a = r.ask;
+        const done = a.state === 'answered' || (a.answer != null && a.state !== 'running');
+        const failed = a.state === 'failed' || a.state === 'expired';
+        if (done || failed) {
+          setPending((ps) => ps.map((p) => (p.askId !== askId ? p : {
+            ...p, a: a.answer ?? null, state: failed && !a.answer ? 'failed' : 'answered', cross: (r.turn?.provenance ?? []).map((x) => x.name),
+          })));
+          return;
+        }
+      } catch { /* offline for a moment: try again */ }
+      if (n < POLL_MAX && alive.current) setTimeout(() => { void tick(); }, POLL_MS);
+    };
+    setTimeout(() => { void tick(); }, POLL_MS / 2);
+  }, [client]);
+
+  const send = useCallback(async (text: string): Promise<AskResult> => {
+    if (!about) return { ok: false };
+    const words = text.trim();
+    if (!words) return { ok: false, message: 'Write a question first.' };
+    try {
+      const r = await client.ask({ text: words, about: { kind: about.kind, id: about.id } }, { key: newKey(store.now()) });
+      if (r.kind === 'answer') {
+        setPending((ps) => [...ps, { askId: r.askId, q: words, ts: store.now(), a: null, state: 'waiting', cross: [] }]);
+        follow(r.askId);
+        return { ok: true, closed: true };
+      }
+      // a plan or a background job: rare for a question about one thing; say what happened, in the sheet
+      return { ok: true, message: r.message ?? r.plan?.message ?? 'I handed it to the background. I’ll tell you when it’s done.' };
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : 'That didn’t go through. Try again.' };
+    }
+  }, [about, client, follow, store]);
+
+  const qa = useMemo<QaView[]>(() => {
+    if (!about) return [];
+    const crossFor = (q: string) => pending.find((p) => p.q === q)?.cross ?? [];
+    if (about.kind === 'item') {
+      const kept: QaView[] = (item?.qa ?? []).map((x) => ({ key: x.id, q: x.q, a: x.a, state: x.a != null ? 'answered' : 'waiting', cross: crossFor(x.q) }));
+      // an ask the stream has not brought yet, or one whose answer arrived first through GET /ask/{id}
+      for (const p of pending) {
+        const k = kept.find((x) => x.q === p.q && x.a == null);
+        if (k && p.a) { k.a = p.a; k.state = 'answered'; continue; }
+        if (!kept.some((x) => x.q === p.q)) kept.push({ key: p.askId, q: p.q, a: p.a, state: p.state, cross: p.cross });
+      }
+      return kept;
+    }
+    const out: QaView[] = history.map((a) => ({ key: a.id, q: a.text, a: a.answer, state: a.answer ? 'answered' : a.state === 'failed' ? 'failed' : 'waiting', cross: [] }));
+    for (const p of pending) {
+      const i = out.findIndex((x) => x.key === p.askId);
+      const v: QaView = { key: p.askId, q: p.q, a: p.a, state: p.state, cross: p.cross };
+      if (i >= 0) out[i] = v; else out.push(v);
+    }
+    return out;
+  }, [about, item?.qa, history, pending]);
+
+  const chip = label ?? about?.label ?? (item ? shortLabel(item.title) : null);
+  return { qa, send, suggestions, loadSuggestions, chip };
+}
+
+export function AskAboutButton({ onClick }: { onClick: () => void }) {
+  return <button type="button" className="vbtn vbtn-helper" onClick={onClick}><Spark />Ask about this</button>;
+}
+
+/** The answers under the thing: "You asked" — each question, then the helper's answer (or that it is answering). */
+export function QaBlock({ qa, idp }: { qa: QaView[]; idp: string }) {
+  const { fixtures } = useMeta();
+  if (!qa.length) return null;
+  return (
+    <section className="qa" aria-labelledby={`qa-${idp}`}>
+      <h3 className="qa-h" id={`qa-${idp}`}>You asked</h3>
+      {qa.map((x) => (
+        <div key={x.key} className="qa-pair">
+          <div className="qa-q"><span className="sr-only">You asked: </span>{x.q}</div>
+          {x.state === 'waiting'
+            ? <div className="qa-a"><span className="typing" aria-label="Your helper is answering"><i /><i /><i /></span></div>
+            : (
+              <div className="qa-a" role={x.state === 'failed' ? 'alert' : undefined}>
+                <p className="who"><Spark size={16} />Your helper{fixtures ? <span className="simmini">simulated</span> : null}</p>
+                <p className="qa-text">{x.state === 'failed' ? 'That didn’t get an answer. Try asking again.' : x.a}</p>
+                {x.cross.length > 0 && <p className="cross"><LinkIcon />using what I know from {x.cross.join(', ')}</p>}
+              </div>
+            )}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+/**
+ * The Ask sheet tied to one thing. A question goes with the thing (never pasted into the question); once the helper
+ * is answering, the sheet closes and the answer appears under the thing.
+ */
+export function AskAboutSheet({ id, open, onClose, ask, prefill }: {
+  /** one per screen place (the item sheet, the reader): ids stay unique */
+  id: string; open: boolean; onClose: () => void; ask: ReturnType<typeof useAskAbout>; prefill?: string;
+}) {
+  const [text, setText] = useState('');
+  const [note, setNote] = useState<{ text: string; error: boolean } | null>(null);
+  const [sending, setSending] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  const { loadSuggestions } = ask;
+  useEffect(() => {
+    if (!open) return;
+    setText(prefill ?? ''); setNote(null);
+    void loadSuggestions();
+    const t = setTimeout(() => input.current?.focus(), 30);
+    return () => clearTimeout(t);
+  }, [open, prefill, loadSuggestions]);
+  const go = async (words: string) => {
+    if (sending) return;
+    setSending(true); setNote(null);
+    const r = await ask.send(words);
+    setSending(false);
+    if (r.ok && r.closed) { setText(''); onClose(); return; }
+    if (r.message) setNote({ text: r.message, error: !r.ok });
+  };
+  const submit = (e: FormEvent) => { e.preventDefault(); void go(text); };
+  return (
+    <Sheet id={id} titleId={`${id}-title`} title="Ask about this" open={open} onClose={onClose}
+      head={ask.chip ? <span className="ask-ctx"><span className="aboutchip"><Spark size={14} />About: {ask.chip}</span></span> : null}>
+      <div className="sheet-body">
+        <div className="ask-sugg" role="group" aria-label="Suggested questions">
+          {ask.suggestions.map((s) => <button key={s} type="button" className="sugg" disabled={sending} onClick={() => void go(s)}>{s}</button>)}
+        </div>
+        {note && <p className={`ask-note${note.error ? ' errline' : ''}`} role={note.error ? 'alert' : 'status'}>{note.text}</p>}
+      </div>
+      <form className="ask-form" autoComplete="off" noValidate onSubmit={submit}>
+        <div className="ask-row">
+          <label htmlFor={`${id}-input`} className="sr-only">Message your helper</label>
+          <input ref={input} id={`${id}-input`} className="ask-input" type="text" placeholder="Ask about this…" enterKeyHint="send" value={text} onChange={(e) => setText(e.target.value)} />
+          <button type="submit" className="sendbtn" aria-label="Send" disabled={sending}>
+            <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </button>
+        </div>
+      </form>
+    </Sheet>
+  );
+}
