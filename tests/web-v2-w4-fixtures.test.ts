@@ -52,15 +52,15 @@ describe('W4 fixture reads have the contract\'s shapes', () => {
     valid('/projects/{id}/files', 'get', get(s, '/projects/health/files'), 200);
     valid('/projects/{id}/work', 'get', get(s, '/projects/ainews/work'), 200);
     valid('/projects/{id}/work', 'get', get(s, '/projects/general/work'), 200);
-    for (const about of ['job:j_news', 'item:i-bookfair', 'item:i-quotes', 'mail:m_m1', 'event:google:e5', 'draft:cd_e9', 'conflict:google:e10|google:e11']) {
+    for (const about of ['job:j_news', 'item:it_bookfair', 'mail:m_m1', 'event:google:e5', 'draft:cd_e9', 'conflict:google:e10|google:e11']) {
       valid('/ask/suggestions', 'get', get(s, '/ask/suggestions', `about=${encodeURIComponent(about)}`), 200);
       valid('/ask', 'get', get(s, '/ask', `about=${encodeURIComponent(about)}`), 200);
     }
     valid('/ask/suggestions', 'get', get(s, '/ask/suggestions', 'about=job:nope'), 404);
     valid('/ask', 'get', get(s, '/ask', 'about=bad'), 400);
-    const a = post(s, '/ask', { text: 'Who else is going?', about: { kind: 'item', id: 'i-bookfair' } }).body as AskStart;
+    const a = post(s, '/ask', { text: 'What has it cost?', about: { kind: 'job', id: 'j_news' } }).body as AskStart;
     valid('/ask/{id}', 'get', get(s, `/ask/${a.askId}`), 200);
-    valid('/ask', 'get', get(s, '/ask', 'about=item:i-bookfair'), 200);
+    valid('/ask', 'get', get(s, '/ask', 'about=job:j_news'), 200);
     valid('/ask/{id}', 'get', get(s, '/ask/nope'), 404);
   });
 

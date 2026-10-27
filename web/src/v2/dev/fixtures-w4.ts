@@ -76,7 +76,7 @@ function later(fx: FixtureServer, fn: () => void, frac: number) {
 export function w4Seed(fx: FixtureServer, now: number) {
   const s = st(fx);
   // Family & school: a question asked about the book fair (N11), answered with what was known from Eventing
-  fx.putTurn(turn({ id: 't_family_about', projectId: 'family', ts: now - 2 * HOUR, message: 'Who else is going?', about: { kind: 'item', id: 'i-bookfair' },
+  fx.putTurn(turn({ id: 't_family_about', projectId: 'family', ts: now - 2 * HOUR, message: 'Who else is going?', about: { kind: 'item', id: 'it_bookfair' },
     reply: 'Sam’s family is going — they’re heading over after the schooling day, so 3pm works.', provenance: [{ projectId: 'eventing', name: 'Eventing', n: 1 }], runId: 'run_seed_about' }));
   // Eventing: a conversation from before projects, imported (a divider, then its turns)
   const old = now - 18 * DAY;

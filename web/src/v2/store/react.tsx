@@ -8,14 +8,17 @@
  *   useProjects()       the person's projects, General first
  *   useThread(id)       a project's thread (its last 50 turns), loaded whole when opened
  *   useMail()           the plain mailbox's first page (headers only)
- *   useItems()          the Important list — only once the server has it (A9); `supported: false` until then
+ *   useItems()          the Important list (W3), live from /sync and the stream — `supported: false` on an older server
+ *   useItemActions()    Handled / Undo / Not important / the item's action / This was important / rules / reply drafts
+ *   useSkipped(group)   "Show them": a group's skipped mail;  useRules(open): the rules the person taught
  *   useNotices()        short notes for the person (receipts, refusals, "sent when you're back online")
  *   useNow()            the clock (fixture mode freezes it at the prototype's Monday 9:10)
  */
 import { createContext, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
-import type { V2Store, StoreState, ActionKind, ActionArgs, ActResult } from './core';
+import { IMPORTANT_FEATURE, type V2Store, type StoreState, type ActionKind, type ActionArgs, type ActResult, type NotImportantScope, type SkippedRow } from './core';
+import { groupItems, handledItems, rulesWithPending, skippedWithPending, withPending } from './important';
 import { groupJobs, pillFor, activeJobs, monthLine } from './status';
-import type { AskBody, AskChoice, CalendarItem, Job, Project } from '../api/client';
+import type { AskBody, AskChoice, CalendarItem, ImportantGroup, ImportantItem, Job, Project, TriageRule } from '../api/client';
 
 const Ctx = createContext<V2Store | null>(null);
 
@@ -82,7 +85,7 @@ export function useJobs() {
     };
   }, [all, store]);
 }
-const ACTION_WORD: Record<ActionKind, string> = {
+const ACTION_WORD: Partial<Record<ActionKind, string>> = {
   'job.stop': 'Stop', 'job.continue': 'Continue', 'job.startOver': 'Start over', 'job.open': 'Open', 'job.pause': 'Pause',
   'job.resume': 'Resume', 'job.cancel': 'Cancel', 'draft.confirm': 'Confirm', 'draft.remove': 'Remove', 'message.send': 'Send',
   ask: 'Ask', 'ask.choose': 'Choose', 'turn.move': 'Move', 'project.create': 'Create', 'project.update': 'Change', 'project.stop': 'Stop',
@@ -169,13 +172,97 @@ export function useMail() {
 }
 
 /**
- * The Important list. The /items routes arrive with slice A9 and are not in the v1 contract yet, so this asks the
- * server's `features` first and answers `supported: false` (screens show a plain "not available yet") until then.
+ * The Important list ("Worth a look", W3). Only once the server has it (`features` lists `important`, slice A9);
+ * until then `supported: false` and screens say so plainly. The items come from /sync and the stream (the `important`
+ * collection, the `item` entity) and are kept on the device; GET /items adds the skipped counts and how sorting is
+ * going. What the person tapped and is still on its way is already applied (an item leaves at once), and goes back
+ * by itself if the server refuses it.
  */
 export function useItems() {
+  const store = useStore();
   const meta = useSlice((s) => s.meta);
-  const supported = !!meta?.features.includes('items');
-  return { supported, items: EMPTY as unknown[], reason: supported ? null : 'The Important list arrives in a later update of your helper.' };
+  const items = useSlice((s) => s.items);
+  const inflight = useSlice((s) => s.inflight);
+  const outbox = useSlice((s) => s.outbox);
+  const important = useSlice((s) => s.important);
+  const connection = useSlice((s) => s.connection);
+  const supported = !!meta?.features.includes(IMPORTANT_FEATURE);
+  useEffect(() => {
+    const st = store.getState().important;
+    if (supported && connection === 'live' && !st.loaded && !st.loading) void store.loadImportant();
+  }, [store, supported, connection]);
+  return useMemo(() => {
+    const view = withPending(items, [...inflight, ...outbox], store.now());
+    const handled = handledItems(view);
+    return {
+      supported,
+      reason: supported ? null : 'The Important list arrives in a later update of your helper.',
+      /** the list can be shown: from the device's copy, or once the server answered */
+      loaded: important.loaded || Object.keys(items).length > 0,
+      loading: important.loading,
+      error: important.error,
+      byId: view,
+      groups: groupItems(view),
+      handled,
+      skipped: important.meta?.skipped ?? null,
+      sorting: important.meta?.sorting ?? null,
+      reload: () => store.loadImportant(),
+    };
+  }, [store, supported, items, inflight, outbox, important]);
+}
+
+/** The person's controls on the list. Each goes through the outbox (with its Idempotency-Key; kept when offline). */
+export function useItemActions() {
+  const store = useStore();
+  return useMemo(() => {
+    const undo = (it: ImportantItem) => store.act('item.unhandle', { id: it.id }, `Undo “${it.title}”`);
+    return {
+      /** Handled: it leaves the list at once, with "Marked handled: … · Undo" */
+      handled: async (it: ImportantItem): Promise<ActResult> => {
+        const note = store.notice(`Marked handled: ${it.title}`, 'info', { label: 'Undo', run: () => { void undo(it); } });
+        const r = await store.act('item.handled', { id: it.id }, `Mark “${it.title}” handled`);
+        if (!r.ok && !r.queued) store.dismiss(note);
+        return r;
+      },
+      undo,
+      /** Not important (a scope only for mail). Refusals come back in the server's words for the sheet to show. */
+      notImportant: (it: ImportantItem, scope?: NotImportantScope) =>
+        store.act('item.notImportant', { id: it.id, ...(scope ? { scope } : {}) }, `Not important: “${it.title}”`, { quiet: true }),
+      /** The item's one action (Add to calendar, Remind me…), only on the person's tap. */
+      run: (it: ImportantItem) => store.act('item.action', { id: it.id }, `${it.action?.label ?? 'Do it'}: “${it.title}”`),
+      /** "This was important" on a skipped message. */
+      markImportant: (row: SkippedRow, group: ImportantGroup) =>
+        store.act('mail.important', { id: row.mail.id, group }, `This was important: “${row.mail.subject}”`, { quiet: true }),
+      deleteRule: (r: TriageRule) => store.act('rule.delete', { id: r.id }, 'Remove a rule'),
+      /** Save a reply as a draft in the person's mail account. Never sent. */
+      saveDraft: (mailId: string, body: string) => store.act('mail.draft', { id: mailId, body }, 'Your reply draft', { quiet: true }),
+      notice: (text: string, tone: 'info' | 'error' = 'info') => store.notice(text, tone),
+    };
+  }, [store]);
+}
+
+/** "Show them": one group's skipped mail, loaded when asked for (null: closed). */
+export function useSkipped(group: ImportantGroup | null) {
+  const store = useStore();
+  const all = useSlice((s) => s.skipped);
+  const inflight = useSlice((s) => s.inflight);
+  const outbox = useSlice((s) => s.outbox);
+  useEffect(() => { if (group) void store.loadSkipped(group); }, [store, group]);
+  return useMemo(() => {
+    const st = group ? all[group] : undefined;
+    const rows = skippedWithPending(st?.rows ?? EMPTY, [...inflight, ...outbox]);
+    return { rows, count: st ? Math.max(0, st.count - ((st.rows.length) - rows.length)) : 0, loading: !!st?.loading, loaded: !!st?.loaded, error: st?.error ?? null };
+  }, [all, group, inflight, outbox]);
+}
+
+/** The rules the person taught, loaded when the sheet opens. */
+export function useRules(open: boolean) {
+  const store = useStore();
+  const rules = useSlice((s) => s.rules);
+  const inflight = useSlice((s) => s.inflight);
+  const outbox = useSlice((s) => s.outbox);
+  useEffect(() => { if (open) void store.loadRules(); }, [store, open]);
+  return useMemo(() => ({ ...rules, list: rulesWithPending(rules.list, [...inflight, ...outbox]) }), [rules, inflight, outbox]);
 }
 
 export function useNotices() {
@@ -207,8 +294,8 @@ export function useAsk() {
   const refused = useSlice((s) => s.refused);
   const dismissed = useSlice((s) => s.dismissedPlans);
   return useMemo(() => ({
-    send: (body: AskBody, label = 'Your question'): Promise<ActResult> => store.act('ask', { body: body as unknown as Record<string, unknown> }, label, { quiet: true }),
-    choose: (askId: string, c: AskChoice): Promise<ActResult> => store.act('ask.choose', { id: askId, body: c as Record<string, unknown> }, 'Your choice', { quiet: true }),
+    send: (body: AskBody, label = 'Your question'): Promise<ActResult> => store.act('ask', { payload: body as unknown as Record<string, unknown> }, label, { quiet: true }),
+    choose: (askId: string, c: AskChoice): Promise<ActResult> => store.act('ask.choose', { id: askId, payload: c as Record<string, unknown> }, 'Your choice', { quiet: true }),
     outcome: (entryId: string | null | undefined) => (entryId ? outcomes[entryId] : undefined),
     choice: (askId: string | null | undefined) => (askId ? choices[askId] : undefined),
     ask: (askId: string | null | undefined) => (askId ? asks[askId] : undefined),
@@ -251,15 +338,15 @@ export function useLive(projectId: string | null) {
 export function useProjectActions() {
   const store = useStore();
   return useMemo(() => ({
-    create: (name: string, icon?: string | null) => store.act('project.create', { body: { name, ...(icon !== undefined ? { icon } : {}) } }, `Create “${name}”`),
-    rename: (p: Project, name: string) => store.act('project.update', { id: p.id, body: { name } }, `Rename “${p.name}”`),
-    setIcon: (p: Project, icon: string | null) => store.act('project.update', { id: p.id, body: { icon } }, `Change the icon of “${p.name}”`),
-    archive: (p: Project) => store.act('project.update', { id: p.id, body: { archived: true } }, `Archive “${p.name}”`),
-    restore: (p: Project) => store.act('project.update', { id: p.id, body: { archived: false } }, `Restore “${p.name}”`),
-    moveTurn: (turnId: string, projectId: string, quiet = false) => store.act('turn.move', { id: turnId, body: { projectId } }, 'Move a message', { quiet }),
+    create: (name: string, icon?: string | null) => store.act('project.create', { payload: { name, ...(icon !== undefined ? { icon } : {}) } }, `Create “${name}”`),
+    rename: (p: Project, name: string) => store.act('project.update', { id: p.id, payload: { name } }, `Rename “${p.name}”`),
+    setIcon: (p: Project, icon: string | null) => store.act('project.update', { id: p.id, payload: { icon } }, `Change the icon of “${p.name}”`),
+    archive: (p: Project) => store.act('project.update', { id: p.id, payload: { archived: true } }, `Archive “${p.name}”`),
+    restore: (p: Project) => store.act('project.update', { id: p.id, payload: { archived: false } }, `Restore “${p.name}”`),
+    moveTurn: (turnId: string, projectId: string, quiet = false) => store.act('turn.move', { id: turnId, payload: { projectId } }, 'Move a message', { quiet }),
     /** Stop / Steer the run the person sees (`runId`): never kept for later; refused in place while offline */
-    stop: (projectId: string, runId?: string | null) => store.act('project.stop', { id: projectId, ...(runId ? { body: { runId } } : {}) }, 'Stop the answer', { quiet: true }),
-    steer: (projectId: string, text: string, runId?: string | null) => store.act('project.steer', { id: projectId, text, ...(runId ? { body: { runId } } : {}) }, 'Add to the answer', { quiet: true }),
+    stop: (projectId: string, runId?: string | null) => store.act('project.stop', { id: projectId, ...(runId ? { payload: { runId } } : {}) }, 'Stop the answer', { quiet: true }),
+    steer: (projectId: string, text: string, runId?: string | null) => store.act('project.steer', { id: projectId, text, ...(runId ? { payload: { runId } } : {}) }, 'Add to the answer', { quiet: true }),
     acceptOffer: (projectId: string, message?: string) => store.act('project.offer', { id: projectId, ...(message ? { text: message } : {}) }, 'Work on it in the background'),
     loadWork: (projectId: string) => store.loadProjectWork(projectId),
     loadFiles: (projectId: string) => store.client.getProjectFiles(projectId),

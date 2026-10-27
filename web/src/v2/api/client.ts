@@ -50,6 +50,9 @@ export type AskSuggestions = Json<'/ask/suggestions', 'get', 200>;
 export type AskView = Json<'/ask/{id}', 'get', 200>;
 export type ImportantGroup = 'today' | 'week' | 'earlier';
 export type ImportantList = Schemas['ImportantList'];
+export type ImportantItem = Schemas['ImportantItem'];
+export type TriageRule = Schemas['TriageRule'];
+export type Ask = Schemas['Ask'];
 export type SkippedList = Json<'/items/skipped', 'get', 200>;
 export type ItemChange = Schemas['ItemChange'];
 export type ItemActionResult = Schemas['ItemActionResult'];
@@ -66,7 +69,7 @@ export type JobList = Schemas['JobList'];
 export type Today = Schemas['Today'];
 export type TodayAck = Schemas['TodayAck'];
 export type TodaySeen = Json<'/today/seen', 'post', 200>;
-export type SyncCollection = 'jobs' | 'calendar' | 'mail' | 'projects' | 'turns';
+export type SyncCollection = 'jobs' | 'calendar' | 'mail' | 'projects' | 'turns' | 'important';
 
 /** The version this build reports; set by vite.config.ts from web/package.json. */
 declare const __MWA_WEB_VERSION__: string | undefined;

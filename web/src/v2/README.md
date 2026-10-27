@@ -1,4 +1,4 @@
-# MWA v2 web app (W1: shell, client, store, fixture mode · W4: Ask and Projects)
+# MWA v2 web app (W1: shell, client, store, fixture mode · W3: Important and the mail reader · W4: Ask and Projects)
 
 The v2 app is opt-in until W6: open the app with `?ui=v2` (remembered on the device; `?ui=v1` goes back), or use
 Settings › "Use the current app". v1 is unchanged: v2 is a lazy chunk with its own stylesheet that v1 never loads.
@@ -14,13 +14,18 @@ web/src/v2/
   store/idb.ts        the IndexedDB cache (the `idb` package)
   store/status.ts     the pill, the working sheet's groups and the month line, from the server's job states
   store/react.tsx     hooks: useJobs, useStatusPill, useCalendar, useProjects, useThread, useMail, useItems, useMeta…
+  store/important.ts  W3: the Important list's pure parts (pending taps applied, groups, skipped line, Not important choices)
   shell/              the app frame (header + pill, Ask bar, tabs, sheets) and the W1 screen frames; v2.css
+  screens/important/  W3: "Worth a look" — rows, the item sheet, Not important, Show them, Your rules
+  screens/mail/       W3: the reader (sanitised text, reply-to warning, Draft a reply) and All email
   screens/ask/        W4: the Ask sheet, what an ask became (answer followed live, plan card, job, offer),
-                      "Ask about this" (AskAbout), the words (logic.ts) and adding files (upload.ts); ask.css
+                      "Ask about this" (AskAbout, the one used everywhere), the words (logic.ts), answers as text
+                      (answerText.tsx) and adding files (upload.ts); ask.css
   screens/projects/   W4: the Projects tab — the list, a project's thread, its Work and Files; projects.css
   dev/fixture-data.ts the approved prototype's example day (Monday, November 9, 2026, 9:10 AM)
   dev/fixtures.ts     FixtureServer: /api/v1 answered from that day (shapes checked against the spec)
-  dev/fixtures-w4.ts  its projects, threads and Ask (plans, choices, runs with live progress, offers, moves)
+  dev/fixtures-important.ts  W3: its Important list, skipped mail, rules, reader extras and about-asks
+  dev/fixtures-w4.ts  W4: its projects, threads and Ask (plans, choices, runs with live progress, offers, moves)
   dev/vite-plugin.ts  the same server as Vite dev/preview middleware
 ```
 
@@ -72,10 +77,12 @@ Build screens before the backend slices land. Two ways, same data:
    `http://localhost:7788/?fixtures=1`. A fresh world on every load; nothing is kept on the device.
 
 Scenarios: `N00` (default: one job working), `N06` (+ a job waiting at its 15¢ limit), `states` (one job in each of
-the eight server states), `old-client` (the server wants a newer app: 426), `thread-long` (Eventing has 80 older turns:
-paging). Ask in fixture mode: two files or "learn everything / go through all / review all / triage / read all" give a
-plan (the prototype's PDFs are 76 and 73 pages); "[old]" in the text makes a plan that is a day old (410); a file whose
-name has "gone" in it is gone when chosen (409); "research …" gets the offer. The clock is frozen at the prototype's
+the eight server states), `old-client` (the server wants a newer app: 426), `sorting` (W3: sorting held back — "3
+messages are waiting to be sorted", "Older mail … wasn't sorted yet"), `thread-long` (W4: Eventing has 80 older turns:
+paging). Every scenario's Important list has the prototype's items plus a phishing message and an unverified urgent one,
+and a rule made last week. Ask in fixture mode: two files or "learn everything / go through all / review all / triage /
+read all" give a plan (the prototype's PDFs are 76 and 73 pages); "[old]" in the text makes a plan that is a day old
+(410); a file whose name has "gone" in it is gone when chosen (409); "research …" gets the offer. The clock is frozen at the prototype's
 Monday 9:10 AM (`&now=<ISO>` overrides it), a dashed **simulated** tag shows in the header, and `&theme=dark|light`
 forces a theme. Writes it acts on: job stop / continue / open, calendar draft confirm / remove, project messages and
 asks (a simulated answer follows on the stream, with its progress), plan choices, projects (create, rename, archive),
@@ -83,16 +90,19 @@ moving a turn, Stop, Steer and the offer.
 
 ## Tests
 
-- `npx vitest run tests/web-v2-client.test.ts tests/web-v2-store.test.ts tests/web-v2-fixtures.test.ts`
-- W4: `npx vitest run tests/web-v2-w4-store.test.ts tests/web-v2-w4-ui.test.ts tests/web-v2-w4-fixtures.test.ts`, and
-  `node scripts/v2-w4-smoke.mjs --axe <axe.min.js> [--out <dir>]` (Ask, the plan card, Projects, at 390 and 1440)
+- `npx vitest run tests/web-v2-client.test.ts tests/web-v2-store.test.ts tests/web-v2-fixtures.test.ts tests/web-v2-items.test.ts tests/web-v2-w3-fixtures.test.ts`
+- W4: `npx vitest run tests/web-v2-w4-store.test.ts tests/web-v2-w4-ui.test.ts tests/web-v2-w4-fixtures.test.ts tests/web-v2-w4-review.test.ts`,
+  and `node scripts/v2-w4-smoke.mjs --axe <axe.min.js> [--out <dir>]` (Ask, the plan card, Projects, at 390 and 1440)
 - `npm run build:ui && node scripts/v2-web-smoke.mjs --axe <path to axe.min.js> [--out <dir>]` — Playwright (the
   repo's playwright-core) against `vite preview` in fixture mode at 390×844 and 1440×900: pill and working sheet,
   tabs, Ask, IndexedDB, the offline outbox, the 426 path, axe and horizontal overflow; screenshots in `--out`.
+- `node scripts/v2-w3-smoke.mjs --axe <axe.min.js> [--out <dir>]` — the same for W3: the groups, phishing and
+  unverified items, Handled by swipe with Undo, the item sheet, Not important (and the server's 400), Show them, Ask
+  about this answered in place, the reader (Draft a reply, the reply-to warning), Your rules, offline, `sorting`.
 
 ## Not yet (later slices)
 
-The Important list (`useItems` answers `supported: false` until A9 adds `/items` and the `items` feature), Today's
-composite (A10), the month's spending limit (the API has no spending summary yet: the sheet shows what the jobs cost),
-voice (P4: the mic opens the Ask sheet), an /api/v1 upload (W4 uses the legacy one), sign-in
+Today's composite (A10; Today shows the Important list's top 3 meanwhile), rules in Settings (W5; "Your rules" opens
+from the bottom of Important until then), the month's spending limit (the API has no spending summary yet: the sheet shows what the jobs cost),
+voice (P4: the mic opens the Ask sheet), an /api/v1 upload (W4 uses the legacy one until W5), sign-in
 and pairing screens (W5: a 401 shows "Sign in to continue"), the service worker's offline shell for v2 (P1/P2).

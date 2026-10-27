@@ -198,7 +198,7 @@ describe('the components, rendered', () => {
   });
   it('an answer being written, then written (with provenance); a job; the offer', () => {
     const w = filled();
-    const start = post(w.fx, '/ask', { text: 'Who else is going?', about: { kind: 'item', id: 'i-bookfair' } }).body as AskStart;
+    const start = post(w.fx, '/ask', { text: 'What should I bring Saturday?', projectId: 'family' }).body as AskStart;
     const snap = () => (w.fx.handle({ method: 'GET', path: '/projects/family/thread', query: new URLSearchParams(), headers: H, body: undefined }).body as { turns: Turn[] }).turns;
     w.set({ threads: { ...w.store.getState().threads, family: snap() }, threadLoaded: { family: true } });
     const running = render(w.store, h(AskOutcomeView, { start, text: 'Who else is going?' }));
@@ -209,7 +209,7 @@ describe('the components, rendered', () => {
     flushRuns(w.fx);
     w.set({ threads: { ...w.store.getState().threads, family: snap() } });
     out = text(render(w.store, h(AskOutcomeView, { start, text: 'Who else is going?' })));
-    expect(out).toContain('Sam’s family is going');
+    expect(out).toContain('Willow’s studs and the cross-country vest');
     expect(out).toContain('using what I know from Eventing');
     const job = post(w.fx, '/ask', { text: 'sort the barn receipts', mode: 'background', projectId: 'house' }).body as AskStart;
     expect(text(render(w.store, h(AskOutcomeView, { start: job, text: 'x', onShowWork: () => {} })))).toContain('I’ll let you know · ready around 10:10 AM · stops at $0.30');

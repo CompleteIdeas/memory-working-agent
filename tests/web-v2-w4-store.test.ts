@@ -58,7 +58,7 @@ describe('W4: Ask through the store', () => {
   it('an answer: kept by entry id, its progress on the stream, then the answer as a new turn with the same run', async () => {
     const w = world('N00', { answerDelay: -1 });
     await w.start();
-    const r = await w.store.act('ask', { body: { text: 'Can Riley go to the book fair?' } }, 'ask');
+    const r = await w.store.act('ask', { payload: { text: 'Can Riley go to the book fair?' } }, 'ask');
     expect(r.ok).toBe(true);
     const out = w.store.getState().askOutcomes[r.entryId!];
     expect(out.start).toMatchObject({ kind: 'answer', state: 'started', projectId: 'family', route: { name: 'Family & school', confidence: 'suggested' } });
@@ -80,7 +80,7 @@ describe('W4: Ask through the store', () => {
   it('a plan (N04): its words, then background → a job with the limit, kept by ask id; the same choice again replays', async () => {
     const w = world();
     await w.start();
-    const r = await w.store.act('ask', { body: { text: 'learn everything from these two PDFs', files: PDFS } }, 'ask');
+    const r = await w.store.act('ask', { payload: { text: 'learn everything from these two PDFs', files: PDFS } }, 'ask');
     const start = w.store.getState().askOutcomes[r.entryId!].start as AskStart;
     expect(start.kind).toBe('plan');
     expect(start.plan!.message).toBe('This is a big read — 149 pages, about 20 minutes. Do it now, or in the background for less and I’ll tell you when it’s done?');
@@ -88,7 +88,7 @@ describe('W4: Ask through the store', () => {
     expect(start.plan!.background.label).toBe('In the background · about 15¢ · ready around 10:10 AM');
     expect(start.plan!.narrow.map((n) => n.label)).toEqual(['Only icp eventing handbook · 76 pages, about 8¢', 'Only usef eventing rules 2025 · 73 pages, about 8¢', 'Just the rules for moving up a level']);
     expect(start.plan!.narrow[2]).not.toHaveProperty('usd'); // a model's narrower ask claims no price
-    const c = await w.store.act('ask.choose', { id: start.askId, body: { mode: 'background', capUsd: 0.5 } }, 'choose', { quiet: true });
+    const c = await w.store.act('ask.choose', { id: start.askId, payload: { mode: 'background', capUsd: 0.5 } }, 'choose', { quiet: true });
     expect(c.ok).toBe(true);
     const chosen = w.store.getState().askChoices[start.askId] as AskChosen;
     expect(chosen).toMatchObject({ chosen: 'background', kind: 'job', capUsd: 0.5, readyAt: FIXTURE_NOW + 60 * 60_000 });
@@ -99,7 +99,7 @@ describe('W4: Ask through the store', () => {
     expect(again.jobId).toBe(chosen.jobId);
     // another choice: refused, quietly (the card says it in place, no notice)
     const before = w.store.getState().notices.length;
-    const other = await w.store.act('ask.choose', { id: start.askId, body: { mode: 'now' } }, 'choose', { quiet: true });
+    const other = await w.store.act('ask.choose', { id: start.askId, payload: { mode: 'now' } }, 'choose', { quiet: true });
     expect(other).toMatchObject({ ok: false, code: 'already_chosen' });
     expect(w.store.getState().notices.length).toBe(before);
     w.store.stop();
@@ -109,24 +109,24 @@ describe('W4: Ask through the store', () => {
     const w = world();
     await w.start();
     const plan = async (text: string, files?: string[]) => {
-      const r = await w.store.act('ask', { body: { text, ...(files ? { files } : {}) } }, 'ask');
+      const r = await w.store.act('ask', { payload: { text, ...(files ? { files } : {}) } }, 'ask');
       return w.store.getState().askOutcomes[r.entryId!].start;
     };
     const old = await plan('[old] go through all my newsletters');
     expect(old.plan!.now.label).toBe('Do it now · a first guess, about 60¢');
-    const e = await w.store.act('ask.choose', { id: old.askId, body: { mode: 'now' } }, 'c', { quiet: true });
+    const e = await w.store.act('ask.choose', { id: old.askId, payload: { mode: 'now' } }, 'c', { quiet: true });
     expect(e).toMatchObject({ ok: false, code: 'expired' });
     expect(refusalFor(e.ok ? undefined : (e as { code?: string }).code, e.message ?? '')).toMatchObject({ text: 'This plan is old — ask again.', again: true });
 
     const gone = await plan('learn everything from these two PDFs', PDFS);
     forgetFile(w.fx, PDFS[0]);
-    const g = await w.store.act('ask.choose', { id: gone.askId, body: { mode: 'background' } }, 'c', { quiet: true });
+    const g = await w.store.act('ask.choose', { id: gone.askId, payload: { mode: 'background' } }, 'c', { quiet: true });
     expect(g).toMatchObject({ ok: false, code: 'files_gone' });
     expect(refusalFor('files_gone', '').text).toBe('A file this plan reads isn’t there any more. Add it again and ask again.');
 
     const a2 = await w.client.ask({ text: 'review all the eventing rules', projectId: 'house' });
-    await w.store.act('project.update', { id: 'house', body: { archived: true } }, 'archive');
-    const ar = await w.store.act('ask.choose', { id: a2.askId, body: { mode: 'now' } }, 'c', { quiet: true });
+    await w.store.act('project.update', { id: 'house', payload: { archived: true } }, 'archive');
+    const ar = await w.store.act('ask.choose', { id: a2.askId, payload: { mode: 'now' } }, 'c', { quiet: true });
     expect(ar).toMatchObject({ ok: false, code: 'archived' });
     expect(refusalFor('archived', (ar as { message: string }).message)).toMatchObject({ text: 'House & garden is archived. Restore it, or ask again somewhere else.', restore: true });
     w.store.stop();
@@ -135,9 +135,9 @@ describe('W4: Ask through the store', () => {
   it('a narrower ask is asked in turn and answered', async () => {
     const w = world();
     await w.start();
-    const r = await w.store.act('ask', { body: { text: 'learn everything from these two PDFs', files: PDFS, projectId: 'eventing' } }, 'ask');
+    const r = await w.store.act('ask', { payload: { text: 'learn everything from these two PDFs', files: PDFS, projectId: 'eventing' } }, 'ask');
     const start = w.store.getState().askOutcomes[r.entryId!].start;
-    await w.store.act('ask.choose', { id: start.askId, body: { narrowIndex: 0 } }, 'c', { quiet: true });
+    await w.store.act('ask.choose', { id: start.askId, payload: { narrowIndex: 0 } }, 'c', { quiet: true });
     const chosen = w.store.getState().askChoices[start.askId];
     expect(chosen.chosen).toBe('narrow');
     expect(chosen.narrowed).toMatchObject({ kind: 'answer', state: 'started', projectId: 'eventing' });
@@ -149,7 +149,7 @@ describe('W4: Ask through the store', () => {
   it('the older offer: offered, then accepted into a background job', async () => {
     const w = world();
     await w.start();
-    const r = await w.store.act('ask', { body: { text: 'research summer camps for Riley', projectId: 'family' } }, 'ask');
+    const r = await w.store.act('ask', { payload: { text: 'research summer camps for Riley', projectId: 'family' } }, 'ask');
     const start = w.store.getState().askOutcomes[r.entryId!].start;
     expect(start).toMatchObject({ kind: 'answer', state: 'offer' });
     await until(() => (w.store.getState().threads.family ?? []).some((t) => t.kind === 'offer' && !t.offer));
@@ -189,7 +189,7 @@ describe('W4: threads and projects through the store', () => {
     await w.start();
     await w.store.loadThread('eventing');
     const oldest = w.store.getState().threads.eventing[0];
-    await w.store.act('ask', { body: { text: 'what should I bring?', projectId: 'eventing' } }, 'ask');
+    await w.store.act('ask', { payload: { text: 'what should I bring?', projectId: 'eventing' } }, 'ask');
     await until(() => (w.store.getState().threads.eventing ?? []).some((t) => t.message === 'what should I bring?' && t.kind === 'chat'));
     const s = w.store.getState();
     expect(s.threads.eventing).toHaveLength(50);
@@ -204,20 +204,20 @@ describe('W4: threads and projects through the store', () => {
     await w.store.loadThread('eventing');
     await w.store.loadEarlier('eventing');
     const older = w.store.getState().threadOlder.eventing[0];
-    const r = await w.store.act('turn.move', { id: older.id, body: { projectId: 'house' } }, 'move');
+    const r = await w.store.act('turn.move', { id: older.id, payload: { projectId: 'house' } }, 'move');
     expect(r).toMatchObject({ ok: true, data: { from: 'eventing', undo: { projectId: 'eventing' }, message: 'Moved to House & garden.' } });
     const s = w.store.getState();
     expect(s.threadOlder.eventing.some((t) => t.id === older.id)).toBe(false);
     expect(s.threads.house.find((t) => t.id === older.id)).toMatchObject({ projectId: 'house', movedFrom: 'eventing' });
-    await w.store.act('turn.move', { id: older.id, body: { projectId: 'eventing' } }, 'undo');
+    await w.store.act('turn.move', { id: older.id, payload: { projectId: 'eventing' } }, 'undo');
     // back where it was: older than the latest 50, so on the earlier page the person had open (not lost to the 50)
     expect(w.store.getState().threadOlder.eventing.some((t) => t.id === older.id)).toBe(true);
     expect(w.store.getState().threads.eventing.some((t) => t.id === older.id)).toBe(false);
     // a running answer can't move yet
     w.fx.answerDelay = -1;
-    const run = await w.store.act('ask', { body: { text: 'what next?', projectId: 'health' } }, 'ask');
+    const run = await w.store.act('ask', { payload: { text: 'what next?', projectId: 'health' } }, 'ask');
     const turnId = w.store.getState().askOutcomes[run.entryId!].start.turnId!;
-    expect(await w.store.act('turn.move', { id: turnId, body: { projectId: 'general' } }, 'move', { quiet: true })).toMatchObject({ ok: false, code: 'running' });
+    expect(await w.store.act('turn.move', { id: turnId, payload: { projectId: 'general' } }, 'move', { quiet: true })).toMatchObject({ ok: false, code: 'running' });
     w.store.stop();
   });
 
@@ -225,14 +225,14 @@ describe('W4: threads and projects through the store', () => {
     const w = world('N00', { answerDelay: -1 });
     await w.start();
     expect(await w.store.act('project.stop', { id: 'house' }, 'stop', { quiet: true })).toMatchObject({ ok: false, code: 'nothing_running' });
-    await w.store.act('ask', { body: { text: 'Compare the gutter quotes', projectId: 'house' } }, 'ask');
-    const busy = await w.store.act('ask', { body: { text: 'And the roof?', projectId: 'house' } }, 'ask', { quiet: true });
+    await w.store.act('ask', { payload: { text: 'Compare the gutter quotes', projectId: 'house' } }, 'ask');
+    const busy = await w.store.act('ask', { payload: { text: 'And the roof?', projectId: 'house' } }, 'ask', { quiet: true });
     expect(busy).toMatchObject({ ok: false, queued: false, code: 'busy' });
     expect(await w.store.act('project.steer', { id: 'house', text: 'only the Hillside one' }, 'steer')).toMatchObject({ ok: true });
     flushRuns(w.fx);
     await until(() => (w.store.getState().threads.house ?? []).some((t) => t.message === 'Compare the gutter quotes' && t.kind === 'chat'));
     expect(w.store.getState().threads.house.find((t) => t.message === 'Compare the gutter quotes' && t.kind === 'chat')!.reply).toContain('You added: only the Hillside one');
-    await w.store.act('ask', { body: { text: 'Find a roofer', projectId: 'house' } }, 'ask');
+    await w.store.act('ask', { payload: { text: 'Find a roofer', projectId: 'house' } }, 'ask');
     expect(await w.store.act('project.stop', { id: 'house' }, 'stop')).toMatchObject({ ok: true });
     flushRuns(w.fx);
     await until(() => (w.store.getState().threads.house ?? []).some((t) => t.message === 'Find a roofer' && t.kind === 'chat'));
@@ -243,16 +243,16 @@ describe('W4: threads and projects through the store', () => {
   it('projects: create (409 name_taken), rename, archive (not General), restore', async () => {
     const w = world();
     await w.start();
-    const c = await w.store.act('project.create', { body: { name: 'Garden club', icon: 'leaf' } }, 'create');
+    const c = await w.store.act('project.create', { payload: { name: 'Garden club', icon: 'leaf' } }, 'create');
     const p = (c as { data: { project: { id: string } } }).data.project;
     expect(w.store.getState().projects[p.id]).toMatchObject({ name: 'Garden club', icon: 'leaf', archived: false });
-    expect(await w.store.act('project.create', { body: { name: 'garden club' } }, 'create', { quiet: true })).toMatchObject({ ok: false, code: 'name_taken' });
-    await w.store.act('project.update', { id: p.id, body: { name: 'Garden & allotment' } }, 'rename');
+    expect(await w.store.act('project.create', { payload: { name: 'garden club' } }, 'create', { quiet: true })).toMatchObject({ ok: false, code: 'name_taken' });
+    await w.store.act('project.update', { id: p.id, payload: { name: 'Garden & allotment' } }, 'rename');
     expect(w.store.getState().projects[p.id].name).toBe('Garden & allotment');
-    expect(await w.store.act('project.update', { id: 'general', body: { archived: true } }, 'archive', { quiet: true })).toMatchObject({ ok: false, code: 'general' });
-    await w.store.act('project.update', { id: p.id, body: { archived: true } }, 'archive');
+    expect(await w.store.act('project.update', { id: 'general', payload: { archived: true } }, 'archive', { quiet: true })).toMatchObject({ ok: false, code: 'general' });
+    await w.store.act('project.update', { id: p.id, payload: { archived: true } }, 'archive');
     expect(w.store.getState().projects[p.id].archived).toBe(true);
-    await w.store.act('project.update', { id: p.id, body: { archived: false } }, 'restore');
+    await w.store.act('project.update', { id: p.id, payload: { archived: false } }, 'restore');
     expect(w.store.getState().projects[p.id].archived).toBe(false);
     w.store.stop();
   });
@@ -271,8 +271,8 @@ describe('W4: asks made offline wait in the outbox', () => {
     const w = world();
     await w.start();
     w.setOnline(false);
-    const a = await w.store.act('ask', { body: { text: 'When is my next checkup?', projectId: 'health' } }, 'When is my next checkup?');
-    const b = await w.store.act('ask', { body: { text: 'go through all my receipts', projectId: 'house' } }, 'receipts');
+    const a = await w.store.act('ask', { payload: { text: 'When is my next checkup?', projectId: 'health' } }, 'When is my next checkup?');
+    const b = await w.store.act('ask', { payload: { text: 'go through all my receipts', projectId: 'house' } }, 'receipts');
     expect(a).toMatchObject({ ok: false, queued: true });
     expect(b.queued).toBe(true);
     const keys = w.store.getState().outbox.map((x) => x.key);
@@ -294,7 +294,7 @@ describe('W4: asks made offline wait in the outbox', () => {
     const w = world();
     await w.start();
     w.setOnline(false);
-    const r = await w.store.act('ask', { body: { text: 'When is my next checkup?', projectId: 'health' } }, 'checkup');
+    const r = await w.store.act('ask', { payload: { text: 'When is my next checkup?', projectId: 'health' } }, 'checkup');
     expect(w.store.getState().outbox.map((x) => x.id)).toEqual([r.entryId]);
     w.fx.projects.set('health', { ...w.fx.projects.get('health')!, archived: true }); // archived meanwhile, elsewhere
     w.setOnline(true);
@@ -307,10 +307,10 @@ describe('W4: asks made offline wait in the outbox', () => {
   it('a choice made offline waits too, and is sent with the same key', async () => {
     const w = world();
     await w.start();
-    const r = await w.store.act('ask', { body: { text: 'learn everything from these two PDFs', files: PDFS } }, 'ask');
+    const r = await w.store.act('ask', { payload: { text: 'learn everything from these two PDFs', files: PDFS } }, 'ask');
     const start = w.store.getState().askOutcomes[r.entryId!].start;
     w.setOnline(false);
-    const c = await w.store.act('ask.choose', { id: start.askId, body: { mode: 'background' } }, 'choose', { quiet: true });
+    const c = await w.store.act('ask.choose', { id: start.askId, payload: { mode: 'background' } }, 'choose', { quiet: true });
     expect(c.queued).toBe(true);
     w.setOnline(true);
     await until(() => !!w.store.getState().askChoices[start.askId]);

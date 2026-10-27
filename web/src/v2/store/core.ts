@@ -22,6 +22,7 @@ import {
   MwaClient, ApiError, Conflict, Forbidden, NetworkError, SignInRequired, UpdateRequired, TRANSIENT_CONFLICTS, newKey,
   type CalendarItem, type Job, type JobDetail, type MailHeader, type Meta, type Project, type SyncCollection, type SyncResult, type Turn,
   type DraftResult, type MessageSent, type Schemas, type AskBody, type AskChoice, type AskStart, type AskChosen, type TurnMoved,
+  type ImportantItem, type ImportantGroup, type ImportantList, type ItemChange, type ItemActionResult, type SkippedList, type TriageRule,
 } from '../api/client';
 import type { CacheDb, StoreName } from './cache';
 
@@ -32,6 +33,9 @@ export const OLDER_KEEP = 300;
 /** The cursor that says "load the thread again, then page back" after earlier pages were trimmed. */
 export const RELOAD_THREAD = '__reload__';
 export const COLLECTIONS: SyncCollection[] = ['jobs', 'calendar', 'projects', 'turns'];
+/** W3: the Important list's collection, asked for only when the server has it (an older one answers 400 to it). */
+export const IMPORTANT_FEATURE = 'important';
+const collectionsFor = (meta: Meta | null): SyncCollection[] => (meta?.features.includes(IMPORTANT_FEATURE) ? [...COLLECTIONS, 'important'] : COLLECTIONS);
 
 // ---------- the event source and the environment, injectable for tests ----------
 
@@ -73,7 +77,9 @@ export function browserEnv(): StoreEnv {
 // ---------- state ----------
 
 export type Connection = 'starting' | 'connecting' | 'live' | 'offline' | 'unreachable';
-export interface Notice { id: string; text: string; tone: 'info' | 'error'; at: number }
+/** A notice may carry one action ("Marked handled: … · Undo"). */
+export interface NoticeAction { label: string; run: () => void }
+export interface Notice { id: string; text: string; tone: 'info' | 'error'; at: number; action?: NoticeAction }
 export interface LiveInfo { session: string; type: string; stage: unknown; at: number }
 export interface MailState { headers: MailHeader[]; note: string; connected: boolean; loaded: boolean; loading: boolean; error: string | null }
 export type CalendarConflict = Schemas['CalendarConflict'];
@@ -81,15 +87,36 @@ export type CalendarConflict = Schemas['CalendarConflict'];
 export type ActionKind =
   | 'job.stop' | 'job.continue' | 'job.startOver' | 'job.open' | 'job.pause' | 'job.resume' | 'job.cancel'
   | 'draft.confirm' | 'draft.remove' | 'message.send'
+  // W3: the Important list and the mail reader
+  | 'item.handled' | 'item.unhandle' | 'item.notImportant' | 'item.action' | 'mail.important' | 'mail.draft' | 'rule.delete'
   // W4: Ask, a plan's choice, projects and their threads
   | 'ask' | 'ask.choose' | 'turn.move' | 'project.create' | 'project.update' | 'project.stop' | 'project.steer' | 'project.offer';
+export type NotImportantScope = 'sender' | 'domain' | 'kind';
 export interface ActionArgs {
   id?: string; capUsd?: number; text?: string; provider?: 'google' | 'outlook';
-  /** W4: the request body of an ask (`ask`), a plan's choice (`ask.choose`), a move ({projectId}), a project's fields */
-  body?: Record<string, unknown>;
+  /** item.notImportant: what the filter learns (none: the server's default, the sender) */
+  scope?: NotImportantScope;
+  /** mail.draft: the reply's text */
+  body?: string;
+  /** mail.important: the skipped list it was picked from (its row leaves that list) */
+  group?: ImportantGroup;
+  /** W4: the request body of an ask (`ask`), a plan's choice (`ask.choose`), a move ({projectId}), a project's fields,
+   *  the run a Stop or a note is meant for ({runId}) */
+  payload?: Record<string, unknown>;
+}
+export interface ActOptions {
+  /** the screen shows a refusal itself (the Not important sheet, a plan card): no error notice as well */
+  quiet?: boolean;
 }
 /** W4: actions about a run happening NOW: never kept for later (a Stop sent an hour late could land on another run). */
 const NOW_ONLY: ReadonlySet<ActionKind> = new Set(['project.stop', 'project.steer']);
+
+// ---------- the Important list (W3) ----------
+export interface ImportantMeta { handledCount: number; skipped: ImportantList['skipped']; sorting: ImportantList['sorting'] }
+export interface ImportantState { meta: ImportantMeta | null; loading: boolean; loaded: boolean; error: string | null }
+export type SkippedRow = SkippedList['skipped'][number];
+export interface SkippedState { rows: SkippedRow[]; count: number; loading: boolean; loaded: boolean; error: string | null }
+export interface RulesState { list: TriageRule[]; loading: boolean; loaded: boolean; error: string | null }
 export interface OutboxEntry {
   id: string;
   /** the Idempotency-Key, the same on every try */
@@ -142,8 +169,18 @@ export interface StoreState {
   asks: Record<string, AskRecord>;
   mail: MailState;
   outbox: OutboxEntry[];
+  /** actions being sent right now (not queued): with the outbox, what the screens show optimistically */
+  inflight: OutboxEntry[];
   notices: Notice[];
   fixtures: boolean;
+  /** W3: the Important list's items by id (open, snoozed, and handled for 30 days), kept by /sync and the stream */
+  items: Record<string, ImportantItem>;
+  /** W3: what GET /items adds to the items: the skipped counts per group, Handled · N, how sorting is going */
+  important: ImportantState;
+  /** W3: "Show them" — the skipped mail of a group (headers only, never kept on the device) */
+  skipped: Partial<Record<ImportantGroup, SkippedState>>;
+  /** W3: the rules the person taught */
+  rules: RulesState;
 }
 
 export interface StoreOptions {
@@ -162,7 +199,9 @@ const initial = (fixtures: boolean): StoreState => ({
   jobs: {}, calendar: {}, conflicts: {}, projects: {}, threads: {}, threadLoaded: {}, live: {},
   threadOlder: {}, threadNext: {}, askOutcomes: {}, askChoices: {}, asks: {}, refused: {}, dismissedPlans: {},
   mail: { headers: [], note: '', connected: false, loaded: false, loading: false, error: null },
-  outbox: [], notices: [], fixtures,
+  outbox: [], inflight: [], notices: [], fixtures,
+  items: {}, important: { meta: null, loading: false, loaded: false, error: null }, skipped: {},
+  rules: { list: [], loading: false, loaded: false, error: null },
 });
 
 const byId = <T extends { id: string }>(xs: T[]) => Object.fromEntries(xs.map((x) => [x.id, x])) as Record<string, T>;
@@ -234,6 +273,7 @@ export class V2Store {
     for (const t of this.timers) this.env.clearTimeout(t);
     this.timers.clear();
     if (this.mailTimer) { this.env.clearTimeout(this.mailTimer); this.mailTimer = null; }
+    if (this.importantTimer) { this.env.clearTimeout(this.importantTimer); this.importantTimer = null; }
   }
 
   private later(fn: () => void, ms: number) {
@@ -244,13 +284,13 @@ export class V2Store {
   private async loadCache() {
     const c = this.cache;
     try {
-      const [jobs, calendar, projects, threads, outbox, cursor, updatedAt, meta] = await Promise.all([
+      const [jobs, calendar, projects, threads, outbox, cursor, updatedAt, meta, items] = await Promise.all([
         c.all<Job>('jobs'), c.all<CalendarItem>('calendar'), c.all<Project>('projects'),
         c.all<{ projectId: string; turns: Turn[] }>('threads'), c.all<OutboxEntry>('outbox'),
-        c.getMeta<number>('cursor'), c.getMeta<number>('updatedAt'), c.getMeta<Meta>('meta'),
+        c.getMeta<number>('cursor'), c.getMeta<number>('updatedAt'), c.getMeta<Meta>('meta'), c.all<ImportantItem>('items'),
       ]);
       this.set({
-        ready: true, jobs: byId(jobs), calendar: byId(calendar), projects: byId(projects),
+        ready: true, jobs: byId(jobs), calendar: byId(calendar), projects: byId(projects), items: byId(items),
         threads: Object.fromEntries(threads.map((t) => [t.projectId, t.turns])),
         outbox: outbox.sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1)),
         cursor: cursor ?? 0, updatedAt: updatedAt ?? null, meta: meta ?? null,
@@ -305,7 +345,7 @@ export class V2Store {
         do {
           this.syncAgain = false;
           for (let page = 0; page < 1000; page++) {
-            const r = await this.client.sync({ since: this.s.cursor || undefined, collections: COLLECTIONS });
+            const r = await this.client.sync({ since: this.s.cursor || undefined, collections: collectionsFor(this.s.meta) });
             this.applySync(r);
             if (!r.more) break;
           }
@@ -327,11 +367,18 @@ export class V2Store {
         await c.replace('projects', entries(projects));
         await c.replace('threads', Object.entries(threads).map(([projectId, turns]) => ({ key: projectId, value: { projectId, turns } })));
       });
+      // the Important list only when it was asked for (an older server's snapshot has no such collection)
+      if (up.important) {
+        const items = up.important as ImportantItem[];
+        this.set({ items: byId(items) });
+        this.persist((c) => c.replace('items', entries(items)));
+      }
     } else {
       this.upsert('jobs', (up.jobs ?? []) as Job[], del.jobs ?? []);
       this.upsert('calendar', (up.calendar ?? []) as CalendarItem[], del.calendar ?? []);
       this.upsert('projects', (up.projects ?? []) as Project[], del.projects ?? []);
       this.applyTurns((up.turns ?? []) as Turn[], del.turns ?? []);
+      this.upsert('items', (up.important ?? []) as ImportantItem[], del.important ?? []);
     }
     this.setCursor(r.cursor, true);
   }
@@ -343,7 +390,7 @@ export class V2Store {
     this.persist((c) => c.setMeta({ cursor: seq, updatedAt }));
   }
 
-  private upsert(coll: 'jobs' | 'calendar' | 'projects', ups: { id: string }[], dels: string[]) {
+  private upsert(coll: 'jobs' | 'calendar' | 'projects' | 'items', ups: { id: string }[], dels: string[]) {
     if (!ups.length && !dels.length) return;
     const next = { ...(this.s[coll] as Record<string, { id: string }>) };
     for (const x of ups) next[x.id] = x;
@@ -443,6 +490,7 @@ export class V2Store {
       case 'turn': this.applyTurns(del ? [] : [m.data as Turn], del ? [m.id] : []); break;
       case 'mail': this.mailChanged(); break;
       case 'ask': if (!del && m.data) this.set({ asks: { ...this.s.asks, [m.id]: m.data as AskRecord } }); break;
+      case 'item': this.upsert('items', del ? [] : [m.data as ImportantItem], del ? [m.id] : []); this.importantChanged(); break;
       default: break; // devices and anything newer: nothing on these screens
     }
     if (seq) this.setCursor(seq);
@@ -534,41 +582,136 @@ export class V2Store {
     this.mailTimer = this.env.setTimeout(() => { this.mailTimer = null; void this.loadMail(); }, 1_500);
   }
 
+  // ---------- the Important list (W3) ----------
+  /**
+   * The list as the server sorts it now: GET /items (open) and /items?state=handled. Its items replace what was held
+   * (one gone from both lists has left: a rule hid it, its source went away); a held copy newer than the answer (a
+   * stream change that raced the request) is kept. Also the skipped counts, Handled · N and how sorting is going.
+   */
+  async loadImportant(): Promise<void> {
+    if (this.importantLoading) return this.importantLoading;
+    this.set({ important: { ...this.s.important, loading: true } });
+    this.importantLoading = (async () => {
+      try {
+        const [open, handled] = await Promise.all([this.client.listImportant(), this.client.listImportant({ state: 'handled' })]);
+        const fresh = [...open.groups, ...handled.groups].flatMap((g) => g.items);
+        const next: Record<string, ImportantItem> = {};
+        for (const it of fresh) { const held = this.s.items[it.id]; next[it.id] = held && held.updatedSeq > it.updatedSeq ? held : it; }
+        this.set({
+          items: next,
+          important: { meta: { handledCount: open.handledCount, skipped: open.skipped, sorting: open.sorting }, loading: false, loaded: true, error: null },
+        });
+        this.persist((c) => c.replace('items', entries(Object.values(next))));
+      } catch (e) {
+        this.set({ important: { ...this.s.important, loading: false, error: e instanceof Error ? e.message : 'Could not load the list.' } });
+        this.noteError(e, true);
+      } finally { this.importantLoading = null; }
+    })();
+    return this.importantLoading;
+  }
+  private importantLoading: Promise<void> | null = null;
+  private importantTimer: unknown = null;
+  /** An item changed on the stream: the counts beside the list (skipped, sorting) may have too. */
+  private importantChanged() {
+    if (!this.s.important.loaded || this.importantTimer) return;
+    this.importantTimer = this.env.setTimeout(() => { this.importantTimer = null; void this.loadImportant(); }, 1_500);
+  }
+
+  /** "Show them": the skipped mail of one group, each with why it was skipped. */
+  async loadSkipped(group: ImportantGroup): Promise<void> {
+    const cur = this.s.skipped[group];
+    this.set({ skipped: { ...this.s.skipped, [group]: { rows: cur?.rows ?? [], count: cur?.count ?? 0, loaded: cur?.loaded ?? false, loading: true, error: null } } });
+    try {
+      const r = await this.client.listSkipped({ group });
+      this.set({ skipped: { ...this.s.skipped, [group]: { rows: r.skipped, count: r.count, loading: false, loaded: true, error: null } } });
+    } catch (e) {
+      this.set({ skipped: { ...this.s.skipped, [group]: { rows: cur?.rows ?? [], count: cur?.count ?? 0, loaded: cur?.loaded ?? false, loading: false, error: e instanceof Error ? e.message : 'Could not load them.' } } });
+      this.noteError(e, true);
+    }
+  }
+
+  /** The rules the person taught (Not important, This was important), each with what it decides now. */
+  async loadRules(): Promise<void> {
+    this.set({ rules: { ...this.s.rules, loading: true } });
+    try {
+      const r = await this.client.listTriageRules();
+      this.set({ rules: { list: r.rules, loading: false, loaded: true, error: null } });
+    } catch (e) {
+      this.set({ rules: { ...this.s.rules, loading: false, error: e instanceof Error ? e.message : 'Could not load your rules.' } });
+      this.noteError(e, true);
+    }
+  }
+
   // ---------- actions and the outbox ----------
   /** Do something now, or — when the network is down — keep it with its key and send it when back online. */
   async act(kind: ActionKind, args: ActionArgs, label: string, opts: ActOptions = {}): Promise<ActResult> {
-    // a plan's choice is made once: a second tap (or a second card) while one is on its way gets that one's answer
+    // W4: a plan's choice is made once: a second tap (or a second card) while one is on its way gets that one's answer
     if (kind === 'ask.choose' && args.id) {
       const going = this.choosing.get(args.id);
       if (going) return going;
       if (this.s.outbox.some((x) => x.kind === 'ask.choose' && x.args.id === args.id)) return { ok: false, queued: true, message: 'Your choice is waiting to be sent.' };
-      const p = this.act1(kind, args, label, opts);
+      const p = this.actInOrder(kind, args, label, opts);
       this.choosing.set(args.id, p);
       try { return await p; } finally { this.choosing.delete(args.id); }
     }
-    return this.act1(kind, args, label, opts);
+    return this.actInOrder(kind, args, label, opts);
   }
   private choosing = new Map<string, Promise<ActResult>>();
 
-  private async act1(kind: ActionKind, args: ActionArgs, label: string, opts: ActOptions): Promise<ActResult> {
+  /**
+   * Actions on the same thing (the same id) are serialised (review of W3: an Undo tapped while Handled was still on
+   * its way reached the server first): a new one waits until the one before it has landed, and while one waits in
+   * the outbox, the next waits behind it there — so the server sees them in the order the person tapped them, online
+   * or offline. Meanwhile both show at once, in that order.
+   */
+  private async actInOrder(kind: ActionKind, args: ActionArgs, label: string, opts: ActOptions): Promise<ActResult> {
     const entry: OutboxEntry = { id: newKey(this.now()), key: newKey(this.now()), kind, args, label, createdAt: this.now(), attempts: 0 };
-    const entryId = entry.id;
+    // while it is on its way the screens show it done (an item leaves the list at once); if it fails, it is dropped
+    // from here and what they show goes back to what the server holds
+    this.set({ inflight: [...this.s.inflight, entry] });
+    const id = args.id;
+    const before = id ? this.chains.get(id) : undefined;
+    let release!: () => void;
+    const mine = new Promise<void>((r) => { release = r; });
+    const chain = (before ?? Promise.resolve()).then(() => mine);
+    if (id) this.chains.set(id, chain);
+    try {
+      if (before) await before;
+      return await this.actNow(entry, opts);
+    } finally {
+      release();
+      if (id && this.chains.get(id) === chain) this.chains.delete(id);
+    }
+  }
+  private chains = new Map<string, Promise<void>>();
+
+  private async actNow(entry: OutboxEntry, opts: ActOptions): Promise<ActResult> {
+    const entryId = entry.id, kind = entry.kind;
+    const landed = () => this.set({ inflight: this.s.inflight.filter((x) => x.id !== entry.id) });
+    // queued: it moves from in flight to the outbox in one step, so the screen does not flicker back
+    const requeue = (m?: string, quietly = false) => { landed(); return this.enqueue(entry, m, quietly); };
+    // W4: Stop and "Add to it" are about the run going now: refused in place, never kept for later
     const nowOnly = NOW_ONLY.has(kind);
-    const cannot = (): ActResult => ({ ok: false, queued: false, code: 'offline', entryId,
-      message: kind === 'project.stop' ? 'You’re offline — I can’t stop it from here right now.' : 'You’re offline — I can’t add to it from here right now.' });
-    const later = (code: string, message: string): ActResult => ({ ok: false, queued: false, code, entryId, message });
-    if (!this.env.online() || this.s.connection === 'offline') return nowOnly ? cannot() : this.enqueue(entry);
-    if (nowOnly && this.s.updateReady) return later('client_too_old', 'Reload the app first.');
-    if (nowOnly && this.s.auth === 'signin') return later('locked', 'Sign in again first.');
-    if (this.s.updateReady) return this.enqueue(entry, 'Saved. It will be sent after you reload.');
-    if (this.s.auth === 'signin') return this.enqueue(entry, 'Saved. It will be sent once you sign in again.');
+    const refuse = (code: string, message: string): ActResult => { landed(); return { ok: false, queued: false, code, message, entryId }; };
+    const offline = () => refuse('offline', kind === 'project.stop' ? 'You’re offline — I can’t stop it from here right now.' : 'You’re offline — I can’t add to it from here right now.');
+    if (!this.env.online() || this.s.connection === 'offline') return nowOnly ? offline() : requeue();
+    if (this.s.updateReady) return nowOnly ? refuse('client_too_old', 'Reload the app first.') : requeue('Saved. It will be sent after you reload.');
+    if (this.s.auth === 'signin') return nowOnly ? refuse('locked', 'Sign in again first.') : requeue('Saved. It will be sent once you sign in again.');
+    // an earlier action on the same thing is still waiting in the outbox: this one goes behind it, in order
+    if (!nowOnly && entry.args.id && this.s.outbox.some((x) => x.args.id === entry.args.id)) {
+      const r = requeue('It will be sent right after the change before it.', true);
+      void this.replayOutbox();
+      return r;
+    }
     try {
       const data = await this.send(entry);
+      landed();
       return { ok: true, queued: false, data, message: messageOf(data), entryId };
     } catch (e) {
-      if (e instanceof NetworkError) return nowOnly ? cannot() : this.enqueue(entry);
-      if (e instanceof UpdateRequired) { this.set({ updateReady: true }); return nowOnly ? later('client_too_old', 'Reload the app first.') : this.enqueue(entry, 'Saved. It will be sent after you reload.'); }
-      if (e instanceof SignInRequired) { this.set({ auth: 'signin' }); return nowOnly ? later('locked', 'Sign in again first.') : this.enqueue(entry, 'Saved. It will be sent once you sign in again.'); }
+      if (e instanceof NetworkError) return nowOnly ? offline() : requeue();
+      if (e instanceof UpdateRequired) { this.set({ updateReady: true }); return nowOnly ? refuse('client_too_old', 'Reload the app first.') : requeue('Saved. It will be sent after you reload.'); }
+      if (e instanceof SignInRequired) { this.set({ auth: 'signin' }); return nowOnly ? refuse('locked', 'Sign in again first.') : requeue('Saved. It will be sent once you sign in again.'); }
+      landed();
       if (e instanceof Conflict && !TRANSIENT_CONFLICTS.has(e.code)) { await this.showCurrent(entry); }
       const message = e instanceof Error ? e.message : 'That didn’t work.';
       if (!opts.quiet) this.notice(message, 'error');
@@ -576,10 +719,10 @@ export class V2Store {
     }
   }
 
-  private enqueue(entry: OutboxEntry, message = 'You’re offline. I’ll send this when you’re back online.'): ActResult {
+  private enqueue(entry: OutboxEntry, message = 'You’re offline. I’ll send this when you’re back online.', quietly = false): ActResult {
     this.set({ outbox: [...this.s.outbox, entry] });
     this.persist((c) => c.put('outbox', [{ key: entry.id, value: entry }]));
-    this.notice(message, 'info');
+    if (!quietly) this.notice(message, 'info');
     return { ok: false, queued: true, message, entryId: entry.id };
   }
   private dropFromOutbox(id: string) {
@@ -594,7 +737,12 @@ export class V2Store {
     if (!this.s.outbox.length || !this.env.online() || this.s.auth === 'signin' || this.s.updateReady) return Promise.resolve();
     this.replaying = (async () => {
       try {
-        for (const entry of [...this.s.outbox]) {
+        // in order, until none is left: one queued while this runs (behind an earlier one on the same thing) is sent too
+        const done = new Set<string>();
+        for (;;) {
+          const entry = this.s.outbox.find((x) => !done.has(x.id));
+          if (!entry) break;
+          done.add(entry.id);
           const tried = { ...entry, attempts: entry.attempts + 1 };
           try {
             await this.send(tried, true);
@@ -625,7 +773,7 @@ export class V2Store {
 
   /** One action → one API call, with the action's key. Its answer updates the store. */
   private async send(e: OutboxEntry, replayed = false): Promise<unknown> {
-    const c = this.client, key = { key: e.key }, id = e.args.id ?? '', b = e.args.body ?? {};
+    const c = this.client, key = { key: e.key }, id = e.args.id ?? '', b = e.args.payload ?? {};
     let out: unknown;
     switch (e.kind) {
       case 'job.stop': out = await c.stopJob(id, key); break;
@@ -646,15 +794,23 @@ export class V2Store {
       case 'project.stop': out = await c.stopProjectRun(id, typeof b.runId === 'string' ? { runId: b.runId } : {}, key); break;
       case 'project.steer': out = await c.steerProjectRun(id, { text: e.args.text ?? '', ...(typeof b.runId === 'string' ? { runId: b.runId } : {}) }, key); break;
       case 'project.offer': out = await c.acceptProjectOffer(id, e.args.text ? { message: e.args.text } : {}, key); break;
+      case 'item.handled': out = await c.markItemHandled(id, key); break;
+      case 'item.unhandle': out = await c.unhandleItem(id, key); break;
+      case 'item.notImportant': out = await c.markItemNotImportant(id, e.args.scope ? { scope: e.args.scope } : {}, key); break;
+      case 'item.action': out = await c.runItemAction(id, key); break;
+      case 'mail.important': out = await c.markMailImportant(id, key); break;
+      case 'mail.draft': out = await c.saveMailDraft(id, { body: e.args.body ?? '' }, key); break;
+      case 'rule.delete': out = await c.deleteTriageRule(id, key); break;
     }
     this.applyResult(e.kind, out, e, replayed);
     return out;
   }
   private applyResult(kind: ActionKind, out: unknown, e?: OutboxEntry, replayed = false) {
+    const args: ActionArgs = e?.args ?? {};
     if (kind === 'ask' && e) {
       const start = out as AskStart;
       if (!start?.askId) return;
-      this.set({ askOutcomes: { ...this.s.askOutcomes, [e.id]: { entryId: e.id, start, text: String(e.args.body?.text ?? ''), at: this.now(), replayed } } });
+      this.set({ askOutcomes: { ...this.s.askOutcomes, [e.id]: { entryId: e.id, start, text: String(e.args.payload?.text ?? ''), at: this.now(), replayed } } });
       // a plan sent from the outbox waits for a choice: say so, since the screen that asked may be gone
       if (replayed && start.kind === 'plan') this.notice('Something you asked while offline needs a choice before I start. Open Ask to choose.', 'info');
       return;
@@ -667,6 +823,25 @@ export class V2Store {
     if (kind === 'turn.move') { const m = out as TurnMoved; if (m?.turn) this.applyTurns([m.turn], []); return; }
     if (kind === 'project.create' || kind === 'project.update') { const p = (out as { project?: Project })?.project; if (p) this.upsert('projects', [p], []); return; }
     if (kind.startsWith('job.')) { const d = out as JobDetail; if (d?.job) this.upsert('jobs', [d.job], []); return; }
+    if (kind.startsWith('item.') || kind === 'mail.important') {
+      const d = out as ItemChange | ItemActionResult | null;
+      if (d?.item) this.upsert('items', [d.item], []);
+      const draft = (d as ItemActionResult | null)?.draft;
+      if (draft) this.upsert('calendar', [draft], []);
+      if (kind === 'mail.important' && args.id) {
+        // the message leaves the skipped list it was picked from
+        const g = args.group, cur = g ? this.s.skipped[g] : undefined;
+        if (g && cur) this.set({ skipped: { ...this.s.skipped, [g]: { ...cur, rows: cur.rows.filter((r) => r.mail.id !== args.id), count: Math.max(0, cur.count - (cur.rows.some((r) => r.mail.id === args.id) ? 1 : 0)) } } });
+      }
+      // a rule changes the skipped counts beside the list
+      if ((kind === 'item.notImportant' || kind === 'mail.important') && this.s.important.loaded) void this.loadImportant();
+      return;
+    }
+    if (kind === 'rule.delete') {
+      if (args.id) this.set({ rules: { ...this.s.rules, list: this.s.rules.list.filter((r) => r.id !== args.id) } });
+      if (this.s.important.loaded) void this.loadImportant();
+      return;
+    }
     if (kind.startsWith('draft.')) {
       const d = out as DraftResult;
       if (!d?.draft) return;
@@ -687,9 +862,10 @@ export class V2Store {
   dismissPlan(askId: string) { this.set({ dismissedPlans: { ...this.s.dismissedPlans, [askId]: true } }); }
 
   // ---------- notices ----------
-  notice(text: string, tone: Notice['tone'] = 'info') {
-    const n: Notice = { id: newKey(this.now()), text, tone, at: this.now() };
+  notice(text: string, tone: Notice['tone'] = 'info', action?: NoticeAction): string {
+    const n: Notice = { id: newKey(this.now()), text, tone, at: this.now(), ...(action ? { action } : {}) };
     this.set({ notices: [...this.s.notices.slice(-3), n] });
+    return n.id;
   }
   dismiss(id: string) { this.set({ notices: this.s.notices.filter((n) => n.id !== id) }); }
   private noteError(e: unknown, quiet = false) {
