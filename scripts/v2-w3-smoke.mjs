@@ -109,6 +109,8 @@ try {
     const ellen = listCol.getByRole('button', { name: /Coach Ellen.*Saturday schooling/ });
     check(`${L}: an item is a button named by who, time, title and why`, await ellen.isVisible());
     check(`${L}: the sender's address beside the name on an outside item`, ((await ellen.textContent()) ?? '').includes('ellen@willowcreekfarm.example'));
+    const addr = await ellen.locator('.addrline').evaluate((el) => { const r = el.getBoundingClientRect(), row = el.closest('.itemrow').getBoundingClientRect(); return { text: el.textContent, clipped: el.scrollWidth > el.clientWidth + 1, inside: r.right <= row.right + 1 }; }).catch(() => null);
+    check(`${L}: the real address has its own line, never cut short (review of W3)`, addr && addr.text === 'ellen@willowcreekfarm.example' && !addr.clipped && addr.inside, JSON.stringify(addr));
     check(`${L}: the one action, filled when it needs you ("Add to calendar")`, await listCol.getByRole('button', { name: 'Add to calendar' }).first().isVisible()
       && /vbtn-primary/.test(await listCol.getByRole('button', { name: 'Add to calendar' }).first().getAttribute('class')));
     const skipLines = await listCol.locator('.skipline').allTextContents();
@@ -148,6 +150,13 @@ try {
     check(`${L}: it left the list at once`, !(await listCol.getByRole('button', { name: /Board call moved to Wednesday 2pm/ }).count()));
     check(`${L}: Handled · 1`, await visible(listCol.getByRole('button', { name: 'Handled · 1' })));
     await shot(page, `${L}-03-handled`);
+    if (!vp.mobile) {
+      await page.waitForTimeout(7_000);
+      check(`${L}: the Undo note is still there after 7 s (it lasts 10 s)`, await note.isVisible());
+      await note.hover();
+      await page.waitForTimeout(4_500);
+      check(`${L}: … and holds while hovered (11.5 s)`, await note.isVisible());
+    }
     await note.getByRole('button', { name: 'Undo' }).click();
     check(`${L}: Undo puts it back`, await visible(listCol.getByRole('button', { name: /Board call moved to Wednesday 2pm/ })) && await gone(listCol.getByRole('button', { name: /^Handled · / })));
     const srvBoard = (await api('/items')).groups.flatMap((g) => g.items).find((i) => i.id === 'it_board');
@@ -196,6 +205,11 @@ try {
     check(`${L}: the answer appears under the item ("Sam’s family is going")`, await visible(qa.getByText(/Sam’s family is going/), 10_000));
     check(`${L}: … with "using what I know from Eventing"`, await visible(qa.getByText('using what I know from Eventing'), 6_000));
     check(`${L}: … under "You asked", with the item still there`, await qa.getByRole('heading', { name: 'You asked' }).isVisible() && await pane.getByRole('heading', { name: 'Book fair this Saturday, 3–6pm' }).isVisible());
+    check(`${L}: an answer that read the email says so ("Based on what the email says — check before acting")`, await qa.getByText('Based on what the email says — check before acting').first().isVisible());
+    await pane.getByRole('button', { name: 'Ask about this' }).click();
+    await page.locator('dialog[open][id^="about-"]').getByRole('button', { name: 'What did the newsletter say about it?' }).click();
+    const linkAns = qa.getByText(/sign up at oakwoodpta\.example\./);
+    check(`${L}: a link in an answer shows as its host only`, await visible(linkAns, 10_000) && !/https?:\/\//.test((await qa.textContent()) ?? ''), await qa.textContent());
     await qa.scrollIntoViewIfNeeded();
     await shot(page, `${L}-07-answer-in-place`);
     // the item's action in the helper's note: the date as read, then a calendar DRAFT on the tap
@@ -231,6 +245,23 @@ try {
     await axe(page, `${L} phishing reader`);
     await noOverflow(page, `${L} phishing reader`);
     await backToList();
+
+    // review of W3: the same phishing message opened from All email keeps its caution, with no reply and no Ask
+    await listCol.getByRole('button', { name: 'All email', exact: true }).click();
+    const pxRow = listCol.locator('.mailrow', { hasText: 'Your account has been limited' });
+    check(`${L}: All email: the phishing row carries the caution tag`, await visible(pxRow.locator('.cautiontag.phishing')));
+    check(`${L}: All email: the unverified row carries its tag`, await listCol.locator('.mailrow', { hasText: 'Action required: confirm your payment details' }).locator('.cautiontag.unverified').isVisible());
+    check(`${L}: All email: the real address on its own line`, ((await pxRow.locator('.addrline').textContent()) ?? '') === 'service@paypa1-security.example');
+    await pxRow.click();
+    check(`${L}: m_px1 from All email: the caution box`, await visible(pane.locator('.cautionbox').filter({ hasText: 'This may not be who it says it is' })));
+    check(`${L}: m_px1 from All email: no Draft a reply, no Ask about this`, !(await pane.getByRole('button', { name: 'Draft a reply' }).count()) && !(await pane.getByRole('button', { name: 'Ask about this' }).count()));
+    await shot(page, `${L}-09b-phishing-from-all-email`);
+    await axe(page, `${L} phishing from All email`);
+    if (vp.mobile) await main.getByRole('button', { name: 'All email' }).first().click();
+    await listCol.locator('.mailrow', { hasText: 'Action required: confirm your payment details' }).click();
+    check(`${L}: an unverified message: the tag, and Ask about this is allowed`, await visible(pane.locator('.cautiontag.unverified')) && await pane.getByRole('button', { name: 'Ask about this' }).isVisible());
+    if (vp.mobile) await main.getByRole('button', { name: 'All email' }).first().click();
+    await listCol.getByRole('button', { name: 'Worth a look' }).first().click();
 
     // 7. Not important: the sheet, a free email domain not offered, the 400 shown plainly, the sender suggested
     await listCol.getByRole('button', { name: /Dana is waiting on your top 3 stories/ }).click();

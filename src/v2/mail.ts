@@ -15,7 +15,8 @@
  * collapsed.
  */
 import { appDb, recordEvent, registerMigrations, type AppDb } from './db.js';
-import { cleanLine, isAddrSpec, UNREADABLE_ADDRESS } from './mail-text.js';
+import { cleanLine, displayName, isAddrSpec, UNREADABLE_ADDRESS } from './mail-text.js';
+import { phishingSignal } from './mail-trust.js';
 import { recordSyncOk, deleteSyncState } from './sync-state.js';
 
 export { cleanLine, linksToHosts, hostOf, parseAddress, parseAddressList, INVISIBLE } from './mail-text.js';
@@ -258,15 +259,31 @@ export function splitByKey(key: string): { visible: MailRow[]; hidden: MailRow[]
   return { visible, hidden };
 }
 
-/** The API shape (api/openapi.yaml MailHeader). */
+export type MailCaution = 'phishing' | 'unverified' | null;
+/**
+ * The caution on a message wherever it is shown (review of W3: the reader opened from All email lost it). It is what
+ * A9's triage decided — its verdict's flags: `phishing:<reason>` from the deterministic header signal, `low-trust` for
+ * urgent language from a bulk or no-reply sender — and, for a message not sorted yet, the same phishing signal on its
+ * headers now (without the known-contact context triage adds, so it can only flag, never clear).
+ */
+export function mailCaution(r: MailRow, d: AppDb = appDb()): MailCaution {
+  let v: { flags: string | null } | undefined;
+  try { v = d.prepare('SELECT flags FROM triage_verdicts WHERE mail_id = ?').get(mailId(r.account, r.provider_id)) as { flags: string | null } | undefined; } catch { v = undefined; }
+  if (v?.flags?.startsWith('phishing:')) return 'phishing';
+  if (v?.flags === 'low-trust') return 'unverified';
+  if (v) return null;
+  return phishingSignal(r, { trustedDomains: new Set(), firstSeen: () => false }) ? 'phishing' : null;
+}
+
+/** The API shape (api/openapi.yaml MailHeader). The display name never carries an address (`displayName`). */
 export function apiMailHeader(r: MailRow) {
   let labels: string[] = [];
   try { labels = JSON.parse(r.labels); } catch { labels = []; }
   const copies = r.msg_key.startsWith('u:') ? [] : rowsWithKey(r.msg_key).filter((o) => isCopy(o, r));
   return {
     id: mailId(r.account, r.provider_id), account: r.account, provider: r.provider, threadId: r.thread_id,
-    from: { name: r.from_name, addr: r.from_addr }, subject: r.subject ?? '', snippet: r.snippet ?? '',
-    receivedAt: r.received_at, unread: r.unread === 1, labels, listId: r.list_id, hasUnsub: r.has_unsub === 1,
+    from: { name: displayName(r.from_name), addr: r.from_addr }, subject: r.subject ?? '', snippet: r.snippet ?? '',
+    receivedAt: r.received_at, unread: r.unread === 1, labels, listId: r.list_id, hasUnsub: r.has_unsub === 1, caution: mailCaution(r),
     alsoIn: [...new Set(copies.map((c) => c.account))].sort(),
     updatedSeq: r.updated_seq ?? 0,
   };

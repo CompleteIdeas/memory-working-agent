@@ -84,11 +84,11 @@ export class ImportantFixtures {
       return group === 'today' ? now - 60 * MINUTE : dayStart(-8);
     };
     // the two messages the prototype did not have: they are in the inbox too
-    this.ownMail({ id: 'm_px1', from: { name: 'PayPal', addr: 'service@paypa1-security.example' }, subject: 'Your account has been limited', receivedAt: at(0, '07:05'), unread: true, labels: ['INBOX'],
+    this.ownMail({ id: 'm_px1', from: { name: 'PayPal', addr: 'service@paypa1-security.example' }, subject: 'Your account has been limited', receivedAt: at(0, '07:05'), unread: true, labels: ['INBOX'], caution: 'phishing',
       snippet: 'We noticed unusual activity. Confirm your details within 24 hours to restore access.' },
     'Dear customer,\n\nWe noticed unusual activity on your account and have limited what you can do with it. To restore access, confirm your details within 24 hours using the secure page below.\n\nConfirm my details (paypa1-security.example)\n\nPayPal Security Team',
     { name: 'Account Recovery', addr: 'resolve-team@protonmail.com' });
-    this.ownMail({ id: 'm_px2', from: { name: 'Account Services', addr: 'no-reply@billing-notices.example' }, subject: 'Action required: confirm your payment details', receivedAt: at(-1, '08:30'), unread: false, labels: ['INBOX'],
+    this.ownMail({ id: 'm_px2', from: { name: 'Account Services', addr: 'no-reply@billing-notices.example' }, subject: 'Action required: confirm your payment details', receivedAt: at(-1, '08:30'), unread: false, labels: ['INBOX'], caution: 'unverified',
       snippet: 'Your payment method needs to be confirmed to avoid an interruption.' },
     'Your payment method needs to be confirmed to avoid an interruption of service. Sign in to review your billing details.\n\nAccount Services');
 
@@ -134,9 +134,9 @@ export class ImportantFixtures {
     this.rules.push({ id: 'tr_seed_medium', match: 'sender', value: 'news@medium.example', verdict: 'skip', createdAt: now - 6 * DAY });
   }
 
-  private ownMail(p: Pick<MailHeader, 'id' | 'from' | 'subject' | 'receivedAt' | 'unread' | 'labels' | 'snippet'> & { listId?: string | null }, body: string, replyTo?: { name: string | null; addr: string | null }, inInbox = true): MailHeader {
+  private ownMail(p: Pick<MailHeader, 'id' | 'from' | 'subject' | 'receivedAt' | 'unread' | 'labels' | 'snippet'> & { listId?: string | null; caution?: MailHeader['caution'] }, body: string, replyTo?: { name: string | null; addr: string | null }, inInbox = true): MailHeader {
     const header: MailHeader = { id: p.id, account: 'gmail', provider: 'gmail', threadId: null, from: p.from, subject: p.subject, snippet: p.snippet, receivedAt: p.receivedAt, unread: p.unread,
-      labels: p.labels, listId: p.listId ?? null, hasUnsub: !!p.listId, alsoIn: [], updatedSeq: 0 };
+      labels: p.labels, listId: p.listId ?? null, hasUnsub: !!p.listId, alsoIn: [], updatedSeq: 0, caution: p.caution ?? null };
     this.own.set(p.id, { header, body, replyTo });
     if (inInbox) this.h.putMail(header, body);
     return header;
@@ -448,7 +448,7 @@ export class ImportantFixtures {
     const it = about.kind === 'item' ? this.items.get(about.id) : undefined;
     const book = about.id === 'it_bookfair' || about.id === 'm_m2';
     if (/who else is going/.test(t) && book) return { text: 'Sam’s family is going — Sam mentioned it last week. You’re back from the Stable View schooling day by about 1pm, so 3pm works.', cross: 'Eventing' };
-    if (/newsletter say|volunteer/.test(t)) return { text: 'They want volunteers for 30-minute shifts and asked families to reply to the PTA email. I can draft a reply offering 3:30 — I won’t send it.' };
+    if (/newsletter say|volunteer/.test(t)) return { text: 'They want volunteers for 30-minute shifts: reply to the PTA email or sign up at https://oakwoodpta.example/volunteer?ref=newsletter. I can draft a reply offering 3:30 — I won’t send it.' };
     if (/remind me/.test(t)) return { text: 'This is the example app, so no reminder was set. In the real app I’d remind you the day before at 9am.' };
     if (/why does this matter/.test(t)) return { text: it?.why ?? `It’s from ${about.label}.` };
     if (/last time/.test(t)) return { text: 'Nothing earlier from them in the last three months.' };

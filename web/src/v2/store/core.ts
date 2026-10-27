@@ -547,22 +547,51 @@ export class V2Store {
 
   // ---------- actions and the outbox ----------
   /** Do something now, or — when the network is down — keep it with its key and send it when back online. */
+  /**
+   * Actions on the same thing (the same id) are serialised (review of W3: an Undo tapped while Handled was still on
+   * its way reached the server first): a new one waits until the one before it has landed, and while one waits in
+   * the outbox, the next waits behind it there — so the server sees them in the order the person tapped them, online
+   * or offline. Meanwhile both show at once, in that order.
+   */
   async act(kind: ActionKind, args: ActionArgs, label: string, opts: ActOptions = {}): Promise<ActResult> {
     const entry: OutboxEntry = { id: newKey(this.now()), key: newKey(this.now()), kind, args, label, createdAt: this.now(), attempts: 0 };
-    if (!this.env.online() || this.s.connection === 'offline') return this.enqueue(entry);
-    if (this.s.updateReady) return this.enqueue(entry, 'Saved. It will be sent after you reload.');
-    if (this.s.auth === 'signin') return this.enqueue(entry, 'Saved. It will be sent once you sign in again.');
     // while it is on its way the screens show it done (an item leaves the list at once); if it fails, it is dropped
     // from here and what they show goes back to what the server holds
     this.set({ inflight: [...this.s.inflight, entry] });
+    const id = args.id;
+    const before = id ? this.chains.get(id) : undefined;
+    let release!: () => void;
+    const mine = new Promise<void>((r) => { release = r; });
+    const chain = (before ?? Promise.resolve()).then(() => mine);
+    if (id) this.chains.set(id, chain);
+    try {
+      if (before) await before;
+      return await this.actNow(entry, opts);
+    } finally {
+      release();
+      if (id && this.chains.get(id) === chain) this.chains.delete(id);
+    }
+  }
+  private chains = new Map<string, Promise<void>>();
+
+  private async actNow(entry: OutboxEntry, opts: ActOptions): Promise<ActResult> {
+    // queued: it moves from in flight to the outbox in one step, so the screen does not flicker back
+    const requeue = (m?: string, quietly = false) => { this.set({ inflight: this.s.inflight.filter((x) => x.id !== entry.id) }); return this.enqueue(entry, m, quietly); };
     const landed = () => this.set({ inflight: this.s.inflight.filter((x) => x.id !== entry.id) });
+    if (!this.env.online() || this.s.connection === 'offline') return requeue();
+    if (this.s.updateReady) return requeue('Saved. It will be sent after you reload.');
+    if (this.s.auth === 'signin') return requeue('Saved. It will be sent once you sign in again.');
+    // an earlier action on the same thing is still waiting in the outbox: this one goes behind it, in order
+    if (entry.args.id && this.s.outbox.some((x) => x.args.id === entry.args.id)) {
+      const r = requeue('It will be sent right after the change before it.', true);
+      void this.replayOutbox();
+      return r;
+    }
     try {
       const data = await this.send(entry);
       landed();
       return { ok: true, queued: false, data, message: messageOf(data) };
     } catch (e) {
-      // queued: it moves from in flight to the outbox in one step, so the screen does not flicker back
-      const requeue = (m?: string) => { this.set({ inflight: this.s.inflight.filter((x) => x.id !== entry.id) }); return this.enqueue(entry, m); };
       if (e instanceof NetworkError) return requeue();
       if (e instanceof UpdateRequired) { this.set({ updateReady: true }); return requeue('Saved. It will be sent after you reload.'); }
       if (e instanceof SignInRequired) { this.set({ auth: 'signin' }); return requeue('Saved. It will be sent once you sign in again.'); }
@@ -574,10 +603,10 @@ export class V2Store {
     }
   }
 
-  private enqueue(entry: OutboxEntry, message = 'You’re offline. I’ll send this when you’re back online.'): ActResult {
+  private enqueue(entry: OutboxEntry, message = 'You’re offline. I’ll send this when you’re back online.', quietly = false): ActResult {
     this.set({ outbox: [...this.s.outbox, entry] });
     this.persist((c) => c.put('outbox', [{ key: entry.id, value: entry }]));
-    this.notice(message, 'info');
+    if (!quietly) this.notice(message, 'info');
     return { ok: false, queued: true, message };
   }
   private dropFromOutbox(id: string) {
@@ -592,7 +621,12 @@ export class V2Store {
     if (!this.s.outbox.length || !this.env.online() || this.s.auth === 'signin' || this.s.updateReady) return Promise.resolve();
     this.replaying = (async () => {
       try {
-        for (const entry of [...this.s.outbox]) {
+        // in order, until none is left: one queued while this runs (behind an earlier one on the same thing) is sent too
+        const done = new Set<string>();
+        for (;;) {
+          const entry = this.s.outbox.find((x) => !done.has(x.id));
+          if (!entry) break;
+          done.add(entry.id);
           const tried = { ...entry, attempts: entry.attempts + 1 };
           try {
             await this.send(tried);

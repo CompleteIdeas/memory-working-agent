@@ -9,6 +9,8 @@ import { useItemActions, useSkipped } from '../../store/react';
 import { GROUP_WHEN } from '../../store/important';
 import { Sheet } from '../../shell/sheets';
 import { CheckIcon } from './icons';
+import { CautionTag } from './ItemRow';
+import { showName } from '../../store/text';
 
 export function SkippedSheet({ group, onClose }: { group: ImportantGroup | null; onClose: () => void }) {
   const sk = useSkipped(group);
@@ -30,7 +32,9 @@ export function SkippedSheet({ group, onClose }: { group: ImportantGroup | null;
             {sk.rows.map((r) => (
               <li key={r.mail.id} className="skiprow">
                 <span className="grow">
-                  <b>{r.mail.from.name ?? r.mail.from.addr ?? 'Unknown sender'}</b>
+                  <b>{showName(r.mail.from.name) ?? r.mail.from.addr ?? 'Unknown sender'}</b>
+                  {r.mail.from.addr && showName(r.mail.from.name) && <span className="addrline">{r.mail.from.addr}</span>}
+                  {r.mail.caution && <CautionTag caution={r.mail.caution} />}
                   <span className="soft skipsub">{r.mail.subject}</span>
                   <span className="soft skipwhy">{r.reason}</span>
                 </span>

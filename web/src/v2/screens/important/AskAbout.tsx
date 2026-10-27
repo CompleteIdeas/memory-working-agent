@@ -4,48 +4,54 @@
  * under the thing, under "You asked" — not in a separate thread (SCENARIOS N11).
  *
  *   ask({text, about: {kind, id}})  → 202 answer; the run is answering in the thing's project
- *   an item:   its question appears under it at once and its answer when written, through the stream (`item.qa`)
- *   an email:  GET /ask?about=mail:<id> for what was asked before; an ask just made is followed with GET /ask/{id}
- * Either way, each ask made here is also followed with GET /ask/{id} until answered, which also says which other
- * project's knowledge the answer used ("using what I know from Eventing").
+ *   GET /ask?about=<kind>:<id>      → what was asked before, by id (for an item, again whenever the stream changes its
+ *                                     `qa`, which is how its answers arrive)
+ *   GET /ask/{id}                   → each ask made here, followed until answered (it also names the other project
+ *                                     whose knowledge the answer used: "using what I know from Eventing")
+ * Asks are matched by their id, never by their words (review of W3). An answer that read someone else's words
+ * (`tainted`) says so — "Based on what the email says — check before acting" — and any link in it shows as its host.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { newKey, type Ask, type ImportantItem } from '../../api/client';
 import { useMeta, useStore } from '../../store/react';
 import { Sheet } from '../../shell/sheets';
 import { Spark } from '../../shell/icons';
-import { LinkIcon } from './icons';
+import { LinkIcon, WarnIcon } from './icons';
 import { shortLabel } from '../../store/important';
+import { linksToHosts } from '../../store/text';
 
 export type AboutKind = 'item' | 'mail' | 'conflict';
 export interface AboutRef { kind: AboutKind; id: string; label?: string }
 
-interface Pending { askId: string; q: string; ts: number; a: string | null; state: 'waiting' | 'answered' | 'failed'; cross: string[] }
-export interface QaView { key: string; q: string; a: string | null; state: 'waiting' | 'answered' | 'failed'; cross: string[] }
+export interface PendingAsk { askId: string; q: string; ts: number; a: string | null; state: 'waiting' | 'answered' | 'failed'; cross: string[]; tainted: boolean }
+export interface QaView { key: string; q: string; a: string | null; state: 'waiting' | 'answered' | 'failed'; cross: string[]; tainted: boolean }
 export interface AskResult { ok: boolean; message?: string; closed?: boolean }
+export const TAINTED_NOTE = 'Based on what the email says — check before acting';
 
 const POLL_MS = 1_500, POLL_MAX = 120;
+const stateOf = (a: Pick<Ask, 'state' | 'answer'>): QaView['state'] => (a.answer != null && a.state !== 'running' ? 'answered' : a.state === 'failed' || a.state === 'expired' ? 'failed' : 'waiting');
 
-/** The asks about one thing, and how to ask another. `item` (when the thing is an item) gives its live `qa`. */
+/** The asks about one thing, and how to ask another. `item` (when the thing is an item) tells when its answers move. */
 export function useAskAbout(about: AboutRef | null, item?: ImportantItem | null) {
   const store = useStore();
   const client = store.client;
   const key = about ? `${about.kind}:${about.id}` : null;
   const [history, setHistory] = useState<Ask[]>([]);
-  const [pending, setPending] = useState<Pending[]>([]);
+  const [pending, setPending] = useState<PendingAsk[]>([]);
   const [label, setLabel] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  useEffect(() => { setHistory([]); setPending([]); setLabel(null); setSuggestions([]); }, [key]);
 
+  // what was asked before; for an item, again each time the stream changes its answers
+  const qaSig = (item?.qa ?? []).map((x) => `${x.id}:${x.a == null ? 0 : 1}`).join('|');
   useEffect(() => {
-    setHistory([]); setPending([]); setLabel(null); setSuggestions([]);
-    if (!key || about?.kind === 'item') return;
+    if (!key) return;
     let on = true;
-    // an email's earlier asks (an item's are on the item itself)
-    client.listAsksAbout(key).then((r) => { if (on) { setHistory(r.asks); setLabel(r.about.label); } }, () => { /* offline: none shown */ });
+    client.listAsksAbout(key).then((r) => { if (on) { setHistory(r.asks); setLabel(r.about.label); } }, () => { /* offline: what is held stays */ });
     return () => { on = false; };
-  }, [client, key, about?.kind]);
+  }, [client, key, qaSig]);
 
   const loadSuggestions = useCallback(async () => {
     if (!key) return;
@@ -64,12 +70,10 @@ export function useAskAbout(about: AboutRef | null, item?: ImportantItem | null)
       n++;
       try {
         const r = await client.getAsk(askId);
-        const a = r.ask;
-        const done = a.state === 'answered' || (a.answer != null && a.state !== 'running');
-        const failed = a.state === 'failed' || a.state === 'expired';
-        if (done || failed) {
+        const st = stateOf(r.ask);
+        if (st !== 'waiting') {
           setPending((ps) => ps.map((p) => (p.askId !== askId ? p : {
-            ...p, a: a.answer ?? null, state: failed && !a.answer ? 'failed' : 'answered', cross: (r.turn?.provenance ?? []).map((x) => x.name),
+            ...p, a: r.ask.answer ?? null, state: st, tainted: !!r.ask.tainted, cross: (r.turn?.provenance ?? []).map((x) => x.name),
           })));
           return;
         }
@@ -86,7 +90,7 @@ export function useAskAbout(about: AboutRef | null, item?: ImportantItem | null)
     try {
       const r = await client.ask({ text: words, about: { kind: about.kind, id: about.id } }, { key: newKey(store.now()) });
       if (r.kind === 'answer') {
-        setPending((ps) => [...ps, { askId: r.askId, q: words, ts: store.now(), a: null, state: 'waiting', cross: [] }]);
+        setPending((ps) => [...ps, { askId: r.askId, q: words, ts: store.now(), a: null, state: 'waiting', cross: [], tainted: !!r.tainted }]);
         follow(r.askId);
         return { ok: true, closed: true };
       }
@@ -97,30 +101,23 @@ export function useAskAbout(about: AboutRef | null, item?: ImportantItem | null)
     }
   }, [about, client, follow, store]);
 
-  const qa = useMemo<QaView[]>(() => {
-    if (!about) return [];
-    const crossFor = (q: string) => pending.find((p) => p.q === q)?.cross ?? [];
-    if (about.kind === 'item') {
-      const kept: QaView[] = (item?.qa ?? []).map((x) => ({ key: x.id, q: x.q, a: x.a, state: x.a != null ? 'answered' : 'waiting', cross: crossFor(x.q) }));
-      // an ask the stream has not brought yet, or one whose answer arrived first through GET /ask/{id}
-      for (const p of pending) {
-        const k = kept.find((x) => x.q === p.q && x.a == null);
-        if (k && p.a) { k.a = p.a; k.state = 'answered'; continue; }
-        if (!kept.some((x) => x.q === p.q)) kept.push({ key: p.askId, q: p.q, a: p.a, state: p.state, cross: p.cross });
-      }
-      return kept;
-    }
-    const out: QaView[] = history.map((a) => ({ key: a.id, q: a.text, a: a.answer, state: a.answer ? 'answered' : a.state === 'failed' ? 'failed' : 'waiting', cross: [] }));
-    for (const p of pending) {
-      const i = out.findIndex((x) => x.key === p.askId);
-      const v: QaView = { key: p.askId, q: p.q, a: p.a, state: p.state, cross: p.cross };
-      if (i >= 0) out[i] = v; else out.push(v);
-    }
-    return out;
-  }, [about, item?.qa, history, pending]);
-
+  const qa = useMemo<QaView[]>(() => mergeAsks(history, pending), [history, pending]);
   const chip = label ?? about?.label ?? (item ? shortLabel(item.title) : null);
   return { qa, send, suggestions, loadSuggestions, chip };
+}
+
+/** What was asked before and what was asked here, one entry per ask id (whichever knows the answer wins). */
+export function mergeAsks(history: Ask[], pending: PendingAsk[]): QaView[] {
+  const out: QaView[] = history.map((a) => ({ key: a.id, q: a.text, a: a.answer, state: stateOf(a), cross: [], tainted: !!a.tainted }));
+  for (const p of pending) {
+    const i = out.findIndex((x) => x.key === p.askId);
+    if (i < 0) { out.push({ key: p.askId, q: p.q, a: p.a, state: p.state, cross: p.cross, tainted: p.tainted }); continue; }
+    const h = out[i];
+    out[i] = h.state === 'waiting' && p.state !== 'waiting'
+      ? { ...h, a: p.a, state: p.state, tainted: p.tainted || h.tainted, cross: p.cross }
+      : { ...h, cross: p.cross.length ? p.cross : h.cross, tainted: h.tainted || p.tainted };
+  }
+  return out;
 }
 
 export function AskAboutButton({ onClick }: { onClick: () => void }) {
@@ -140,9 +137,10 @@ export function QaBlock({ qa, idp }: { qa: QaView[]; idp: string }) {
           {x.state === 'waiting'
             ? <div className="qa-a"><span className="typing" aria-label="Your helper is answering"><i /><i /><i /></span></div>
             : (
-              <div className="qa-a" role={x.state === 'failed' ? 'alert' : undefined}>
+              <div className={`qa-a${x.tainted ? ' tainted' : ''}`} role={x.state === 'failed' ? 'alert' : undefined}>
                 <p className="who"><Spark size={16} />Your helper{fixtures ? <span className="simmini">simulated</span> : null}</p>
-                <p className="qa-text">{x.state === 'failed' ? 'That didn’t get an answer. Try asking again.' : x.a}</p>
+                {x.tainted && x.state === 'answered' && <p className="taintnote"><WarnIcon size={15} />{TAINTED_NOTE}</p>}
+                <p className="qa-text">{x.state === 'failed' ? 'That didn’t get an answer. Try asking again.' : linksToHosts(x.a ?? '')}</p>
                 {x.cross.length > 0 && <p className="cross"><LinkIcon />using what I know from {x.cross.join(', ')}</p>}
               </div>
             )}

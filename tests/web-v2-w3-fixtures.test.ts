@@ -197,3 +197,16 @@ describe('W3 fixture mode behaves like the server', () => {
     expect(get(s, '/sync', 'collections=bogus').status).toBe(400);
   });
 });
+
+describe('review of W3: the caution travels with the message', () => {
+  it('All email, the reader and the skipped list carry each message’s caution', () => {
+    const s = world();
+    const mail = (get(s, '/mail').body as { mail: { id: string; caution: string | null }[] }).mail;
+    expect(mail.find((m) => m.id === 'm_px1')?.caution).toBe('phishing');
+    expect(mail.find((m) => m.id === 'm_px2')?.caution).toBe('unverified');
+    expect(mail.find((m) => m.id === 'm_m1')?.caution).toBeNull();
+    expect(get(s, '/mail/m_px1').body).toMatchObject({ caution: 'phishing', trust: 'untrusted' });
+    const sk = (get(s, '/items/skipped').body as { skipped: { mail: { caution: unknown } }[] }).skipped;
+    expect(sk.every((r) => r.mail.caution === null)).toBe(true);
+  });
+});

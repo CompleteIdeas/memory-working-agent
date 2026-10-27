@@ -111,7 +111,9 @@ beforeAll(async () => {
   setMailProviders(() => [{
     prefix: 'google', provider: 'gmail', label: 'Gmail', resolveAccount: async () => 'google:me@example.com',
     sync: async (_s, o) => ({ full: true, upserts: [header('c1', 'Saturday schooling', o.now - 60_000), header('c2', 'Old news', o.now - 120_000),
-      { ...header('c3', 'This week in AI', o.now - 180_000), fromName: 'The Batch', fromAddr: 'news@thebatch.example', listId: 'thebatch.example', hasUnsub: true }], deletes: [], cursor: '1', windowFrom: o.now - 14 * 86_400_000, windowTo: o.now }),
+      { ...header('c3', 'This week in AI', o.now - 180_000), fromName: 'The Batch', fromAddr: 'news@thebatch.example', listId: 'thebatch.example', hasUnsub: true },
+      // review of W3: a phishing message whose display name carries an address of its own
+      { ...header('c4', 'Your account has been limited', o.now - 240_000), fromName: 'PayPal Service <service@paypal.com>', fromAddr: 'x@evil.example' }], deletes: [], cursor: '1', windowFrom: o.now - 14 * 86_400_000, windowTo: o.now }),
     fetchBody: async (id) => { if (id === 'c2') throw new MessageGoneError(); return { html: '<p>Hi Robert, <a href="https://x.example/a">see this</a></p>', text: null, from: [{ name: 'Coach Ellen', addr: 'ellen@example.com' }], replyTo: [], to: [{ name: null, addr: 'robert@example.com' }] }; },
     saveReplyDraft: async () => ({ draftId: 'd-1', to: [{ name: 'Coach Ellen', addr: 'ellen@example.com' }], already: false }),
   }], { inlineSanitize: true });
@@ -184,6 +186,7 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /mail/refresh', path: '/mail/refresh', init: post, status: 200 },
   { op: 'GET /mail/{id}', path: () => `/mail/${ids.mail}`, status: 200 },
   { op: 'GET /mail/{id}', path: () => `/mail/${ids.mailGone}`, status: 404 },
+  { op: 'GET /mail/{id}', path: () => `/mail/${mailId('google:me@example.com', 'c4')}`, status: 200 },
   { op: 'GET /mail/{id}', path: '/mail/m_bm9wZQpub3Bl', status: 404 },
   { op: 'POST /mail/{id}/draft', path: () => `/mail/${ids.mail}/draft`, init: () => ({ ...post(), body: JSON.stringify({ body: 'Yes, count me in.' }) }), status: 201 },
   { op: 'POST /mail/{id}/draft', path: () => `/mail/${ids.mail}/draft`, init: post, status: 400 },
@@ -329,4 +332,14 @@ describe('responses match the contract', () => {
       expect(validate(schema!, await r.json())).toBeNull();
     });
   }
+  // review of W3: the caution travels with the message wherever it is shown, and a display name never holds an address
+  it('GET /mail/{id} and /mail carry the message caution; names never hold an address', async () => {
+    const phish = await (await fetch(`${base}/mail/${mailId('google:me@example.com', 'c4')}`)).json() as { caution: string | null; trust: string; from: { name: string | null; addr: string } };
+    expect(phish).toMatchObject({ caution: 'phishing', trust: 'untrusted', from: { name: 'PayPal Service', addr: 'x@evil.example' } });
+    const ok = await (await fetch(`${base}/mail/${ids.mail}`)).json() as { caution: string | null };
+    expect(ok.caution).toBeNull();
+    const list = await (await fetch(`${base}/mail`)).json() as { mail: { id: string; caution: string | null; from: { name: string | null } }[] };
+    expect(list.mail.find((m) => m.id === mailId('google:me@example.com', 'c4'))).toMatchObject({ caution: 'phishing', from: { name: 'PayPal Service' } });
+    expect(list.mail.every((m) => !(m.from.name ?? '').includes('@'))).toBe(true);
+  });
 });

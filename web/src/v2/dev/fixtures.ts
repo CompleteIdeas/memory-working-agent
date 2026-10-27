@@ -107,7 +107,7 @@ export class FixtureServer {
     EMAILS.forEach((m) => {
       const receivedAt = receivedAtOf(m.time, now);
       this.putMail({ id: `m_${m.id}`, account: 'gmail', provider: 'gmail', threadId: null, from: { name: m.from, addr: m.addr }, subject: m.subject, snippet: m.preview,
-        receivedAt, unread: !!m.unread, labels: m.list ? ['INBOX', 'CATEGORY_UPDATES'] : ['INBOX'], listId: m.list ?? null, hasUnsub: !!m.list, alsoIn: [], updatedSeq: 0 }, m.body.join('\n\n'));
+        receivedAt, unread: !!m.unread, labels: m.list ? ['INBOX', 'CATEGORY_UPDATES'] : ['INBOX'], listId: m.list ?? null, hasUnsub: !!m.list, alsoIn: [], updatedSeq: 0, caution: null }, m.body.join('\n\n'));
     });
     // jobs
     const month = (d: number) => new Date(new Date(now).getFullYear(), new Date(now).getMonth(), d, 10).getTime();

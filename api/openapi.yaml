@@ -335,7 +335,7 @@ components:
     MailHeader:
       type: object
       description: 'One message in the inbox, headers only (bodies are never synced or stored). The same email in two accounts is one MailHeader (the newest copy), with the others in alsoIn.'
-      required: [id, account, provider, threadId, from, subject, snippet, receivedAt, unread, labels, listId, hasUnsub, alsoIn, updatedSeq]
+      required: [id, account, provider, threadId, from, subject, snippet, receivedAt, unread, labels, listId, hasUnsub, alsoIn, updatedSeq, caution]
       additionalProperties: false
       properties:
         id: { type: string, pattern: '^m_[A-Za-z0-9_-]+$', description: Opaque. }
@@ -352,17 +352,18 @@ components:
         hasUnsub: { type: boolean, description: 'It carries an unsubscribe option (List-Unsubscribe).' }
         alsoIn: { type: array, items: { type: string }, description: 'Other accounts holding a copy of the same email.' }
         updatedSeq: { type: integer }
+        caution: { type: ['string', 'null'], enum: [phishing, unverified, null], description: 'The same caution as on its Important item, wherever the message is shown (All email, the skipped list, the reader): phishing (the header signal fired) — warn, no reply, no Ask; unverified (urgent language from a bulk or no-reply sender) — a quieter tag. Decided by triage; a message not sorted yet gets the phishing header signal now.' }
     MailFrom:
       type: object
       required: [name, addr]
       additionalProperties: false
       properties:
-        name: { type: ['string', 'null'] }
+        name: { type: ['string', 'null'], maxLength: 60, description: 'The display name for showing: never holds an address (anything with an "@" is removed), at most 60 characters. Always show addr as well.' }
         addr: { type: ['string', 'null'] }
     MailMessage:
       type: object
       description: 'A message opened in the reader. The body is fetched from the provider now, sanitised to plain text and kept only briefly in the server memory. It is UNTRUSTED content: show it as text, never as HTML, and fence it before a model reads it.'
-      required: [id, account, provider, threadId, from, subject, snippet, receivedAt, unread, labels, listId, hasUnsub, alsoIn, updatedSeq, to, replyTo, replyGoesElsewhere, replyNote, bodyText, truncated, tooComplex, quotedLinesHidden, imagesHidden, trackersRemoved, trust, fetchedAt]
+      required: [id, account, provider, threadId, from, subject, snippet, receivedAt, unread, labels, listId, hasUnsub, alsoIn, updatedSeq, caution, to, replyTo, replyGoesElsewhere, replyNote, bodyText, truncated, tooComplex, quotedLinesHidden, imagesHidden, trackersRemoved, trust, fetchedAt]
       additionalProperties: false
       properties:
         id: { type: string }
@@ -379,6 +380,7 @@ components:
         hasUnsub: { type: boolean }
         alsoIn: { type: array, items: { type: string } }
         updatedSeq: { type: integer }
+        caution: { type: ['string', 'null'], enum: [phishing, unverified, null], description: 'The same caution as on its Important item, wherever the message is shown (All email, the skipped list, the reader): phishing (the header signal fired) — warn, no reply, no Ask; unverified (urgent language from a bulk or no-reply sender) — a quieter tag. Decided by triage; a message not sorted yet gets the phishing header signal now.' }
         to: { type: string, description: 'The recipients line, cleaned; anything that is not a plain address shows as (unreadable address).' }
         replyTo: { type: array, items: { $ref: '#/components/schemas/MailFrom' }, description: 'Where a reply goes: the Reply-To, else the sender.' }
         replyGoesElsewhere: { type: boolean, description: 'A reply would go somewhere other than the sender (the Reply-To names another address).' }

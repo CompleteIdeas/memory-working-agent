@@ -56,20 +56,31 @@ function ConnLine() {
   );
 }
 
+/** A note fades after 6 s; one with an action (Undo) stays 10 s, and none fades while it is hovered or focused. */
+export const TOAST_MS = 6_000, TOAST_ACTION_MS = 10_000;
 function Toasts() {
   const { notices, dismiss } = useNotices();
+  const [paused, setPaused] = useState({ hover: false, focus: false });
+  const held = paused.hover || paused.focus;
+  // a note closed by its own button takes the focus with it (no blur follows): release the focus hold
+  const close = (id: string) => { setPaused((p) => ({ ...p, focus: false })); dismiss(id); };
+  // the last note gone: nothing is held any more
+  useEffect(() => { if (!notices.length) setPaused({ hover: false, focus: false }); }, [notices.length]);
   useEffect(() => {
-    if (!notices.length) return;
-    const t = setTimeout(() => dismiss(notices[0].id), 6_000);
+    if (!notices.length || held) return;
+    const t = setTimeout(() => dismiss(notices[0].id), notices[0].action ? TOAST_ACTION_MS : TOAST_MS);
     return () => clearTimeout(t);
-  }, [notices, dismiss]);
+  }, [notices, dismiss, held]);
   return (
-    <div className="toasts" id="toasts" role="status" aria-live="polite">
+    <div className="toasts" id="toasts" role="status" aria-live="polite" data-paused={held ? 'true' : undefined}
+      onMouseEnter={() => setPaused((p) => ({ ...p, hover: true }))} onMouseLeave={() => setPaused((p) => ({ ...p, hover: false }))}
+      onFocus={() => setPaused((p) => ({ ...p, focus: true }))}
+      onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setPaused((p) => ({ ...p, focus: false })); }}>
       {notices.map((n) => (
         <div key={n.id} className={`toast${n.tone === 'error' ? ' error' : ''}`}>
           <p>{n.text}</p>
-          {n.action && <button type="button" className="vbtn vbtn-quiet toastact" onClick={() => { dismiss(n.id); n.action!.run(); }}>{n.action.label}</button>}
-          <button type="button" className="iconbtn" aria-label="Dismiss" onClick={() => dismiss(n.id)}><Close size={18} /></button>
+          {n.action && <button type="button" className="vbtn vbtn-quiet toastact" onClick={() => { close(n.id); n.action!.run(); }}>{n.action.label}</button>}
+          <button type="button" className="iconbtn" aria-label="Dismiss" onClick={() => close(n.id)}><Close size={18} /></button>
         </div>
       ))}
     </div>

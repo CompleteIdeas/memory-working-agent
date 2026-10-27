@@ -13,6 +13,7 @@ import { AskAboutButton, AskAboutSheet, QaBlock, useAskAbout } from '../importan
 import { ActionPreview, CautionBox } from '../important/ItemDetail';
 import { CautionTag } from '../important/ItemRow';
 import { CheckIcon, WarnIcon } from '../important/icons';
+import { showName } from '../../store/text';
 
 export const NEVER_SENDS = 'Your helper reads and writes drafts. It never sends.';
 
@@ -114,7 +115,9 @@ export function MailReader({ mailId, item, back, heading = 'h1', idp, onHandled,
   const { fixtures } = useMeta();
   const [askOpen, setAskOpen] = useState(false);
   const ask = useAskAbout(item ? { kind: 'item', id: item.id } : { kind: 'mail', id: mailId }, item ?? null);
-  const phishing = item?.caution === 'phishing';
+  // the message's own caution (review of W3: opened from All email it had none), else the item's
+  const caution = (msg ? msg.caution ?? item?.caution : item?.caution) ?? null;
+  const phishing = caution === 'phishing';
   const H = heading;
   return (
     <>
@@ -125,13 +128,14 @@ export function MailReader({ mailId, item, back, heading = 'h1', idp, onHandled,
         {msg && (
           <>
             <H className="subject" id={`rd-subj-${idp}`}>{msg.subject || '(no subject)'}</H>
-            <p className="meta">
-              <b>{msg.from.name ?? msg.from.addr ?? 'Unknown sender'}</b>
-              {msg.from.addr && <span className="addr">{msg.from.addr}</span>}
-              <span>{when(msg.receivedAt)}</span>
-            </p>
-            {item?.caution === 'unverified' && <p style={{ marginTop: 8 }}><CautionTag it={item} /></p>}
-            {phishing && item && <CautionBox it={item} />}
+            <div className="meta sender">
+              {showName(msg.from.name) && <b className="sendername">{showName(msg.from.name)}</b>}
+              {/* the real address, on its own line, never cut short, at least as prominent as the name */}
+              {msg.from.addr ? <span className="addrline big">{msg.from.addr}</span> : !showName(msg.from.name) && <b>Unknown sender</b>}
+              <span className="when">{when(msg.receivedAt)}</span>
+            </div>
+            {caution === 'unverified' && <p style={{ marginTop: 8 }}><CautionTag caution={caution} /></p>}
+            <CautionBox caution={caution} why={item?.caution === 'phishing' ? item.why : null} />
             {msg.replyGoesElsewhere && msg.replyNote && (
               <p className="replywarn" role="note"><WarnIcon />{msg.replyNote}</p>
             )}
@@ -154,7 +158,7 @@ export function MailReader({ mailId, item, back, heading = 'h1', idp, onHandled,
             </section>
           </>
         )}
-        {!phishing && (
+        {msg && !phishing && (
           <>
             <div className="askrow"><AskAboutButton onClick={() => setAskOpen(true)} /></div>
             <QaBlock qa={ask.qa} idp={`rd-${idp}`} />

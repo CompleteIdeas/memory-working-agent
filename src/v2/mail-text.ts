@@ -157,7 +157,27 @@ export function parseAddress(s: string | null | undefined): Addr {
   return parseAddressList(s)[0] ?? { name: null, addr: null };
 }
 
+export const DISPLAY_NAME_MAX = 60;
+/**
+ * A sender's display name for SHOWING (review of W3): never a place an address can hide. Anything in angle brackets
+ * holding an "@" ("PayPal <service@paypal.com>") and any word with an "@" in it (an address, or one written backwards
+ * with direction overrides) goes; brackets left empty go; what remains is capped at 60 characters. The real address
+ * is always shown on its own. Null when nothing is left. The stored name is kept as it came, for the phishing signal.
+ */
+export function displayName(s: string | null | undefined): string | null {
+  if (!s || s === UNREADABLE_ADDRESS) return s ? s : null;
+  let t = cleanLine(s, 400)
+    .replace(/<[^<>]*@[^<>]*>/g, ' ')
+    .replace(/[^\s]*@[^\s]*/g, ' ')
+    .replace(/\(\s*\)|\[\s*\]|<\s*>|"\s*"|'\s*'/g, ' ')
+    .replace(/\s+/g, ' ').trim()
+    .replace(/^[\s·•|,;:\-–—]+|[\s·•|,;:\-–—]+$/g, '').trim();
+  if (!t) return null;
+  if (t.length > DISPLAY_NAME_MAX) t = `${t.slice(0, DISPLAY_NAME_MAX - 1).trimEnd()}…`;
+  return t;
+}
+
 /** Addresses for showing: "Name <addr>", invalid ones as "(unreadable address)". */
 export function showAddresses(list: Addr[]): string {
-  return list.map((a) => (a.addr ? (a.name && a.name !== UNREADABLE_ADDRESS ? `${a.name} <${a.addr}>` : a.addr) : UNREADABLE_ADDRESS)).join(', ');
+  return list.map((a) => { const n = displayName(a.name); return a.addr ? (n && n !== UNREADABLE_ADDRESS ? `${n} <${a.addr}>` : a.addr) : UNREADABLE_ADDRESS; }).join(', ');
 }

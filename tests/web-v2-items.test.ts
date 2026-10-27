@@ -9,6 +9,11 @@ import { MwaClient, type ImportantItem, type TriageRule } from '../web/src/v2/ap
 import { V2Store, type StoreEnv, type StreamLike, type OutboxEntry } from '../web/src/v2/store/core';
 import { MemoryCache } from '../web/src/v2/store/cache';
 import { groupItems, handledItems, ruleEffectLine, ruleLine, scopeChoice, skipLine, withPending, skippedWithPending, rulesWithPending } from '../web/src/v2/store/important';
+import { linksToHosts as clientLinksToHosts, showName } from '../web/src/v2/store/text';
+import { linksToHosts as serverLinksToHosts, displayName as serverDisplayName } from '../src/v2/mail-text';
+import { mergeAsks } from '../web/src/v2/screens/important/AskAbout';
+import { rowAction } from '../web/src/v2/screens/important/ItemRow';
+import type { Ask } from '../web/src/v2/api/client';
 
 // ---------- fakes ----------
 const NOW = Date.UTC(2026, 10, 9, 14, 10);
@@ -336,5 +341,165 @@ describe('what the screens show', () => {
     expect(ruleLine({ match: 'domain', value: 'y.example', verdict: 'important' })).toBe('Show everything from y.example');
     expect(ruleEffectLine({ verdict: 'skip', effect: { messages: 14, senders: 3 } })).toBe('Hides 14 messages from 3 senders in your recent mail.');
     expect(ruleEffectLine({ verdict: 'important', effect: { messages: 1, senders: 1 } })).toBe('Shows 1 message in your recent mail.');
+  });
+});
+
+// ---------- review of W3 ----------
+describe('actions on the same item keep the order they were tapped in (review of W3)', () => {
+  /** a server holding item a's real state */
+  function serverModel(h: ReturnType<typeof harness>, gate?: Promise<void>) {
+    let state: 'open' | 'handled' = 'open'; let seq = 10;
+    const order: string[] = [];
+    h.on('POST', '/items/a/handled', async () => { if (gate) await gate; order.push('handled'); state = 'handled'; return change(item('a', { state, handledAt: NOW, updatedSeq: ++seq }), 'Marked handled: Item a'); });
+    h.on('POST', '/items/a/unhandle', async () => { order.push('unhandle'); state = 'open'; return change(item('a', { state, updatedSeq: ++seq }), 'Back on your list: Item a'); });
+    return { get: () => state, order };
+  }
+  async function started() {
+    const h = harness();
+    h.on('GET', '/sync', () => sync(10, [item('a')], { reset: true }));
+    await h.store.start();
+    h.streams.at(-1)!.emit('hello', { cursor: 10, head: 10 });
+    return h;
+  }
+
+  it('probe P1: Undo tapped while Handled is still on its way waits for it; the server ends open, as the person meant', async () => {
+    const h = await started();
+    const gate = deferred<void>();
+    const srv = serverModel(h, gate.p);
+    const p1 = h.store.act('item.handled', { id: 'a' }, 'Mark handled');
+    await Promise.resolve();
+    const p2 = h.store.act('item.unhandle', { id: 'a' }, 'Undo');
+    await new Promise((r) => setTimeout(r, 5));
+    expect(h.view().a.state).toBe('open'); // both shown at once, in order
+    expect(h.writes().map((c) => c.path)).toEqual(['/items/a/handled']); // the Undo waits
+    gate.resolve();
+    expect((await p1).ok).toBe(true);
+    expect((await p2).ok).toBe(true);
+    await h.store.idle();
+    expect(srv.order).toEqual(['handled', 'unhandle']);
+    expect(srv.get()).toBe('open');
+    expect(h.view().a.state).toBe('open');
+    expect(h.store.getState().inflight).toEqual([]);
+  });
+
+  it('probe P2: Handled queued offline, the network back, Undo before the replay: it goes behind Handled; both reach the server in order', async () => {
+    const h = await started();
+    const srv = serverModel(h);
+    h.setOnline(false);
+    await h.store.act('item.handled', { id: 'a' }, 'Mark handled');
+    // the network is back (the browser says online) but the store has not replayed yet: the person taps Undo now
+    const env = (h.store as unknown as { env: { online: () => boolean } }).env;
+    const was = env.online;
+    env.online = () => true;
+    const r = await h.store.act('item.unhandle', { id: 'a' }, 'Undo');
+    env.online = was;
+    expect(r).toMatchObject({ ok: false, queued: true });
+    expect(h.view().a.state).toBe('open');
+    h.setOnline(true);
+    await new Promise((res) => setTimeout(res, 30));
+    await h.store.idle();
+    expect(srv.order).toEqual(['handled', 'unhandle']);
+    expect(srv.get()).toBe('open');
+    expect(h.store.getState().outbox).toEqual([]);
+    expect(h.view().a.state).toBe('open');
+  });
+
+  it('both made offline: replayed in order', async () => {
+    const h = await started();
+    const srv = serverModel(h);
+    h.setOnline(false);
+    await h.store.act('item.handled', { id: 'a' }, 'Mark handled');
+    await h.store.act('item.unhandle', { id: 'a' }, 'Undo');
+    expect(h.view().a.state).toBe('open');
+    h.setOnline(true);
+    await new Promise((res) => setTimeout(res, 30));
+    await h.store.idle();
+    expect(srv.order).toEqual(['handled', 'unhandle']);
+    expect(srv.get()).toBe('open');
+  });
+
+  it('probe P4: Handled lost to the network mid-flight (queued), then Undo online: Undo waits behind it in the outbox', async () => {
+    const h = await started();
+    const order: string[] = [];
+    let first = true;
+    h.on('POST', '/items/a/handled', () => { if (first) { first = false; return 'network'; } order.push('handled'); return change(item('a', { state: 'handled', handledAt: NOW, updatedSeq: 20 }), 'ok'); });
+    h.on('POST', '/items/a/unhandle', () => { order.push('unhandle'); return change(item('a', { updatedSeq: 21 }), 'Back on your list: Item a'); });
+    const r1 = await h.store.act('item.handled', { id: 'a' }, 'Mark handled');
+    expect(r1.queued).toBe(true);
+    const r2 = await h.store.act('item.unhandle', { id: 'a' }, 'Undo');
+    expect(r2.queued).toBe(true);
+    await h.store.replayOutbox();
+    await h.store.idle();
+    expect(order).toEqual(['handled', 'unhandle']);
+    expect(h.store.getState().items.a.state).toBe('open');
+    expect(h.store.getState().outbox).toEqual([]);
+  });
+
+  it('actions on different items do not wait for each other', async () => {
+    const h = harness();
+    h.on('GET', '/sync', () => sync(10, [item('a'), item('b')], { reset: true }));
+    await h.store.start();
+    const gate = deferred<{ status: number; body?: unknown }>();
+    h.on('POST', '/items/a/handled', () => gate.p);
+    h.on('POST', '/items/b/handled', () => change(item('b', { state: 'handled' }), 'ok'));
+    const pa = h.store.act('item.handled', { id: 'a' }, 'a');
+    expect((await h.store.act('item.handled', { id: 'b' }, 'b')).ok).toBe(true);
+    gate.resolve(change(item('a', { state: 'handled' }), 'ok'));
+    expect((await pa).ok).toBe(true);
+  });
+});
+
+describe('answers about a thing (review of W3)', () => {
+  const ask = (id: string, text: string, answer: string | null, extra: Partial<Ask> = {}): Ask => ({
+    id, createdAt: NOW, text, projectId: 'general', route: null, kind: 'answer', mode: null, about: { kind: 'item', id: 'it_a' }, files: [], source: 'typed', plan: null,
+    state: answer ? 'answered' : 'running', choice: null, jobId: null, runId: null, turnId: null, answer, tainted: true, capUsd: null, parentId: null, focus: null, updatedSeq: 1, ...extra,
+  });
+  it('asks are matched by id, not by their words: the same question asked twice keeps both answers', () => {
+    const qa = mergeAsks([ask('ask_1', 'Why does this matter?', 'First answer.')], [
+      { askId: 'ask_2', q: 'Why does this matter?', ts: NOW, a: 'Second answer.', state: 'answered', cross: ['Eventing'], tainted: true },
+      { askId: 'ask_1', q: 'Why does this matter?', ts: NOW, a: 'First answer.', state: 'answered', cross: [], tainted: true },
+    ]);
+    expect(qa.map((x) => [x.key, x.a])).toEqual([['ask_1', 'First answer.'], ['ask_2', 'Second answer.']]);
+    expect(qa[1].cross).toEqual(['Eventing']);
+  });
+  it('an answer still running in the list takes the answer the follow-up found; tainted carries through', () => {
+    const qa = mergeAsks([ask('ask_1', 'Q', null)], [{ askId: 'ask_1', q: 'Q', ts: NOW, a: 'A.', state: 'answered', cross: [], tainted: true }]);
+    expect(qa).toEqual([{ key: 'ask_1', q: 'Q', a: 'A.', state: 'answered', cross: [], tainted: true }]);
+    expect(mergeAsks([ask('ask_3', 'Q', 'A.', { tainted: false })], [])[0].tainted).toBe(false);
+  });
+  it('links in an answer show as their host, by the same rule as the server sanitiser', () => {
+    const samples = [
+      'Sign in at https://evil.example/login?x=1 now.',
+      'See hxxps://evil.example/path and www.evil.example/path and evil.example/login?x=1',
+      'Go to <https://pay.example/a>, or //cdn.example/x.',
+      'redirect url=https://evil.example/r and ftp://files.example/a',
+      'Nothing to change here.',
+    ];
+    for (const t of samples) expect(clientLinksToHosts(t)).toBe(serverLinksToHosts(t));
+    expect(clientLinksToHosts('Sign in at https://evil.example/login?x=1 now.')).toBe('Sign in at evil.example now.');
+  });
+});
+
+describe('sender names never hide the address, client side too (review of W3)', () => {
+  it('the probe cases, the same as the server', () => {
+    const cases = [
+      'Coach Ellen Park <ellen@willowcreekfarm.example> · Willow Creek Farm Office',
+      'PayPal Service moc.lapyap@ecivres <service@paypal.com>',
+      'PayPal Support Team (service@paypal.com) Account Security Department Notifications Center',
+      'service@paypal.com', 'Coach Ellen',
+    ];
+    for (const c of cases) expect(showName(c)).toBe(serverDisplayName(c));
+    expect(showName(cases[0])).toBe('Coach Ellen Park · Willow Creek Farm Office');
+    expect(showName(cases[1])).toBe('PayPal Service');
+    expect(showName(cases[2])!.length).toBeLessThanOrEqual(60);
+  });
+});
+
+describe('a phishing item never offers its action; an unverified one keeps it (review of W3)', () => {
+  it('rowAction', () => {
+    const add = { kind: 'add-to-calendar' as const, label: 'Add to calendar' };
+    expect(rowAction(item('a', { caution: 'phishing', action: add }))).toBeNull();
+    expect(rowAction(item('a', { caution: 'unverified', action: add }))).toEqual(add);
+    expect(rowAction(item('a', { action: { kind: 'review-reply', label: 'Open' } }))).toBeNull(); // the row itself opens it
   });
 });

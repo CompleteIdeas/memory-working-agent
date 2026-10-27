@@ -5,6 +5,8 @@
 import { useMail, useMeta } from '../../store/react';
 import { Back } from '../../shell/icons';
 import { NEVER_SENDS } from './Reader';
+import { CautionTag } from '../important/ItemRow';
+import { showName } from '../../store/text';
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 const DAY = 86_400_000;
@@ -35,7 +37,9 @@ export function AllEmail({ back, open, selected, now }: { back: () => void; open
             {list.map((m) => (
               <li key={m.id}>
                 <button type="button" className={`mailrow${m.unread ? ' unread' : ''}${selected === m.id ? ' on' : ''}`} onClick={() => open(m.id)}>
-                  <span className="top"><span className="from">{m.from.name ?? m.from.addr ?? 'Unknown sender'}</span><span className="time">{rowTime(m.receivedAt, now)}</span></span>
+                  <span className="top"><span className="from">{showName(m.from.name) ?? m.from.addr ?? 'Unknown sender'}</span><span className="time">{rowTime(m.receivedAt, now)}</span></span>
+                  {m.from.addr && showName(m.from.name) && <span className="addrline">{m.from.addr}</span>}
+                  {m.caution && <CautionTag caution={m.caution} />}
                   <span className="subj" style={{ display: 'block' }}>{m.subject}</span>
                   {m.snippet && <span className="prev" style={{ display: 'block' }}>{m.snippet}</span>}
                 </button>

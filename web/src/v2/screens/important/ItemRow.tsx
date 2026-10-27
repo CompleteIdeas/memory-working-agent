@@ -12,6 +12,7 @@
 import { useEffect, useRef, type PointerEvent as RPointerEvent } from 'react';
 import type { ImportantItem } from '../../api/client';
 import { CheckIcon, SourceIcon, WarnIcon } from './icons';
+import { showName } from '../../store/text';
 
 const DAY = 86_400_000;
 const startOfDay = (ms: number) => { const d = new Date(ms); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
@@ -37,20 +38,28 @@ export function rowAction(it: ImportantItem): ImportantItem['action'] {
 /** An action that needs the person (adds to the calendar, drafts a note) is filled; a reminder or a link is outlined. */
 const primaryAction = (it: ImportantItem) => it.action?.kind === 'add-to-calendar' || it.action?.kind === 'draft-note' || it.action?.kind === 'review-approval' || it.action?.kind === 'reconnect';
 
+/**
+ * Who it is from: the name (which never holds an address: the server strips it) and, on anything from outside, the
+ * REAL address on its own line, never cut short (review of W3: a long display name could push it out of sight).
+ */
 export function SenderLine({ it, now, cls = 'srcmark' }: { it: ImportantItem; now: number; cls?: string }) {
   const showAddr = it.trust === 'untrusted' && !!it.fromAddress && it.caution !== 'phishing';
   return (
-    <span className={cls}>
-      <SourceIcon source={it.source} />
-      <span className="srcname">{it.from ?? 'Your helper'}{showAddr && <span className="srcaddr"> {it.fromAddress}</span>}</span>
-      <span className="time">{itemTime(it.ts, now)}</span>
-    </span>
+    <>
+      <span className={cls}>
+        <SourceIcon source={it.source} />
+        <span className="srcname">{showName(it.from) ?? it.fromAddress ?? 'Your helper'}</span>
+        <span className="time">{itemTime(it.ts, now)}</span>
+      </span>
+      {showAddr && <span className="addrline">{it.fromAddress}</span>}
+    </>
   );
 }
 
-export function CautionTag({ it }: { it: ImportantItem }) {
-  if (it.caution === 'phishing') return <span className="cautiontag phishing"><WarnIcon size={15} />{PHISHING_HEAD}</span>;
-  if (it.caution === 'unverified') return <span className="cautiontag unverified">unverified sender</span>;
+export type Caution = ImportantItem['caution'];
+export function CautionTag({ caution }: { caution: Caution | undefined }) {
+  if (caution === 'phishing') return <span className="cautiontag phishing"><WarnIcon size={15} />{PHISHING_HEAD}</span>;
+  if (caution === 'unverified') return <span className="cautiontag unverified">unverified sender</span>;
   return null;
 }
 
@@ -96,7 +105,7 @@ export function ItemRow({ it, now, swiped, busy, onOpen, onAction, onSwipe, onUn
       <button type="button" className="itemrow" onClick={() => { if (moved.current > 12) { moved.current = 0; return; } onOpen(); }}
         onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}>
         <SenderLine it={it} now={now} />
-        {it.caution && <CautionTag it={it} />}
+        {it.caution && <CautionTag caution={it.caution} />}
         <span className="it-t">{it.title}</span>
         {phishing && it.fromAddress && <span className="it-addr">Sent from <span className="addrmono">{it.fromAddress}</span></span>}
         {it.why && <span className="it-why">{it.why}</span>}

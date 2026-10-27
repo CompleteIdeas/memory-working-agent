@@ -1345,8 +1345,14 @@ export interface components {
             /** @description Other accounts holding a copy of the same email. */
             alsoIn: string[];
             updatedSeq: number;
+            /**
+             * @description The same caution as on its Important item, wherever the message is shown (All email, the skipped list, the reader): phishing (the header signal fired) — warn, no reply, no Ask; unverified (urgent language from a bulk or no-reply sender) — a quieter tag. Decided by triage; a message not sorted yet gets the phishing header signal now.
+             * @enum {string|null}
+             */
+            caution: "phishing" | "unverified" | null;
         };
         MailFrom: {
+            /** @description The display name for showing: never holds an address (anything with an "@" is removed), at most 60 characters. Always show addr as well. */
             name: string | null;
             addr: string | null;
         };
@@ -1367,6 +1373,11 @@ export interface components {
             hasUnsub: boolean;
             alsoIn: string[];
             updatedSeq: number;
+            /**
+             * @description The same caution as on its Important item, wherever the message is shown (All email, the skipped list, the reader): phishing (the header signal fired) — warn, no reply, no Ask; unverified (urgent language from a bulk or no-reply sender) — a quieter tag. Decided by triage; a message not sorted yet gets the phishing header signal now.
+             * @enum {string|null}
+             */
+            caution: "phishing" | "unverified" | null;
             /** @description The recipients line, cleaned; anything that is not a plain address shows as (unreadable address). */
             to: string;
             /** @description Where a reply goes: the Reply-To, else the sender. */

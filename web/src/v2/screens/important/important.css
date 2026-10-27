@@ -15,8 +15,15 @@
 /* the Undo on a toast */
 .toast .toastact { color: var(--signal); font-weight: 700; padding: 0 10px; min-height: 44px; flex: none; }
 
-/* who it is from: the address beside the name on anything from outside */
-.srcmark .srcaddr { color: var(--dim); font-weight: 400; }
+/* who it is from: the real address on its own line, never cut short (wraps anywhere) */
+.addrline { display: block; margin-top: 1px; font-size: 14px; color: var(--dim); overflow-wrap: anywhere; word-break: break-all; white-space: normal; }
+.itemrow .addrline { padding-left: 21px; }
+.mailrow .addrline { font-size: 13.5px; }
+.reader .meta.sender { display: block; }
+.reader .meta.sender .sendername { display: block; color: var(--ink); font-size: 16px; }
+.reader .meta.sender .addrline.big { font-size: 16px; font-weight: 700; color: var(--ink); margin-top: 2px; }
+.reader .meta.sender .when { display: block; margin-top: 4px; }
+.mailrow .cautiontag, .skiprow .cautiontag { margin: 4px 0 2px; }
 .it-addr { display: block; margin-top: 4px; font-size: 15px; color: var(--warn-ink); overflow-wrap: anywhere; font-weight: 600; }
 .it-addr .addrmono { font-family: var(--mono); font-size: 13.5px; font-weight: 500; }
 
@@ -71,6 +78,11 @@
 /* the item sheet */
 .itemdetail .detailwhy { margin-top: 6px; }
 .itemdetail .srcmark { display: flex; }
+.itemdetail .senderblock { margin-top: 2px; }
+/* an answer that read someone else's words */
+.qa-a.tainted { border-left: 3px solid var(--warn-edge); }
+.taintnote { display: flex; gap: 6px; align-items: center; font-size: 13.5px; font-weight: 600; color: var(--warn-ink); background: var(--warn-bg); border-radius: 6px; padding: 4px 8px; margin: 2px 0 6px; width: fit-content; max-width: 100%; }
+.taintnote svg { flex: none; }
 .qa-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .qa-pair + .qa-pair { margin-top: 6px; }
 

@@ -34,12 +34,13 @@ export function ActionPreview({ it }: { it: ImportantItem }) {
   );
 }
 
-export function CautionBox({ it }: { it: ImportantItem }) {
-  if (it.caution !== 'phishing') return null;
+/** The phishing warning, in fixed words (plus the server's own fixed "why", when it came from an item). */
+export function CautionBox({ caution, why }: { caution: ImportantItem['caution'] | undefined; why?: string | null }) {
+  if (caution !== 'phishing') return null;
   return (
     <div className="cautionbox" role="note" aria-label={PHISHING_HEAD}>
       <p className="cautionhead"><WarnIcon />{PHISHING_HEAD}</p>
-      {it.why && <p>{it.why}</p>}
+      {why && <p>{why}</p>}
       <p>{PHISHING_TEXT}</p>
     </div>
   );
@@ -63,9 +64,9 @@ export function ItemDetailSheet({ item, askWith, onClose, controls }: {
       <Sheet id="item-dlg" titleId="item-title" title={item?.title ?? ''} open={!!item} onClose={onClose}>
         {item && (
           <div className="sheet-body itemdetail">
-            <p><SenderLine it={item} now={now} /></p>
-            {item.caution === 'unverified' && <p><CautionTag it={item} /></p>}
-            {phishing ? <CautionBox it={item} /> : item.why && <p className="detailwhy">{item.why}</p>}
+            <div className="senderblock"><SenderLine it={item} now={now} /></div>
+            {item.caution === 'unverified' && <p><CautionTag caution={item.caution} /></p>}
+            {phishing ? <CautionBox caution={item.caution} why={item.why} /> : item.why && <p className="detailwhy">{item.why}</p>}
             {act && <ActionPreview it={item} />}
             <div className="acts dacts">
               {act && open && <button type="button" className={`vbtn${act.kind === 'add-to-calendar' || act.kind === 'draft-note' ? ' vbtn-primary' : ''}`} disabled={controls.busy(item)} onClick={() => controls.run(item)}>{act.label}</button>}
