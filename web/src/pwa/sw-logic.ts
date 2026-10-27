@@ -9,11 +9,15 @@
  *     build's entry script (a sign-in page, a half-copied deploy), the install fails and the old worker stays: the
  *     shell is cached all or nothing, so an index.html never points at hashed files the cache lacks.
  *   - a page (navigation): the network first (a sign-in page, a fresh deploy and v1's "reload on 401" keep working),
- *     the cached index.html when the network fails or is slow. That index.html and its assets are one build.
+ *     the cached index.html only when the device is offline or the request really fails (or the proxy says the
+ *     server is down, 5xx). A SLOW answer is waited for: serving the shell after a timeout put a signed-out v1 user
+ *     on a slow link into a reload loop (review of P1/P2). That index.html and its assets are one build.
  *   - a precached file: from the cache (hashed names never change content); the network if it is somehow missing.
  *   - everything else, and always /api/*, cross-origin, and anything but GET: not touched. Data lives in IndexedDB
  *     through the store, never in this cache.
- *   - updates: a new worker installs its own cache beside the old one and WAITS. The page asks it to take over
+ *   - updates: a new worker installs its own cache beside the old one and WAITS. The cache is named after the build AND
+ *     the worker's own code, and an install only ever deletes a cache it created itself, so a failed install of a
+ *     worker-only change can never delete the cache the active worker serves from. The page asks it to take over
  *     (SKIP_WAITING) when the person taps Reload, or quietly when the page already runs the new build. On activate
  *     it keeps its own cache and the one before it (a tab still open on the old build can load its lazy chunks), and
  *     deletes the rest, including v1's old network-first cache (`mwa-shell-*`).
@@ -22,8 +26,8 @@
 export const CACHE_PREFIX = 'mwa-precache-';
 /** The v1 worker's runtime cache names (`mwa-shell-v2`): removed on activate. */
 export const LEGACY_PREFIX = 'mwa-shell-';
-/** A navigation waits this long for the network before the cached shell answers (a phone on a weak signal). */
-export const NAV_TIMEOUT_MS = 4_000;
+/** Each precache fetch gives up after this long (a stalled download must not leave an install hanging forever). */
+export const PRECACHE_TIMEOUT_MS = 30_000;
 /** Sent with the install's fetch of index.html, so a server behind a password still hands over the public shell. */
 export const PRECACHE_HEADER = 'x-mwa-sw';
 
@@ -40,15 +44,23 @@ export interface BuildInfo {
   entry: string;
   /** the web app's version (web/package.json, or MWA_WEB_VERSION at build) */
   version: string;
+  /** a hash of the worker's own code (set by the build after bundling; part of the cache name) */
+  swHash?: string;
   files: PrecacheEntry[];
 }
 
-export const cacheName = (buildId: string): string => `${CACHE_PREFIX}${buildId}`;
+export const cacheName = (buildId: string, swHash = ''): string => `${CACHE_PREFIX}${buildId}${swHash ? `-${swHash}` : ''}`;
 
-/** What a page request gets: the network's answer, unless it failed, was too slow, or the server behind the proxy is
- *  down (a 5xx from `tailscale serve` while the computer sleeps) and a cached shell exists. */
-export function pageAnswer(network: { status: number } | 'failed' | 'timeout', haveShell: boolean): 'network' | 'shell' | 'error' {
-  if (network === 'failed' || network === 'timeout') return haveShell ? 'shell' : network === 'timeout' ? 'network' : 'error';
+/** Ask the network at all? Not when the device says it is offline and a cached shell exists. */
+export function tryNetwork(online: boolean, haveShell: boolean): boolean {
+  return online || !haveShell;
+}
+
+/** What a page request gets: the network's answer however long it takes, unless it really failed, or the server behind
+ *  the proxy is down (a 5xx from `tailscale serve` while the computer sleeps), and a cached shell exists. Never the
+ *  shell for a slow answer: the network's page (a sign-in page) must win, or v1's reload-on-401 loops. */
+export function pageAnswer(network: { status: number } | 'failed', haveShell: boolean): 'network' | 'shell' | 'error' {
+  if (network === 'failed') return haveShell ? 'shell' : 'error';
   if (network.status >= 500 && haveShell) return 'shell';
   return 'network';
 }

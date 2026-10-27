@@ -47,6 +47,8 @@ export function buildInfo(outDir: string, version: string): BuildInfo {
   return { buildId: all.digest('hex').slice(0, 12), entry: entryOf(readFileSync(join(outDir, 'index.html'), 'utf8')), version, files };
 }
 
+const SW_HASH_SLOT = '__MWA_SW_HASH_SLOT__';
+
 export function mwaPwa(opts: { version: string }): Plugin {
   let outDir = '';
   return {
@@ -59,10 +61,14 @@ export function mwaPwa(opts: { version: string }): Plugin {
       const r = await build({
         entryPoints: [fileURLToPath(new URL('./src/pwa/sw.ts', import.meta.url))],
         bundle: true, format: 'iife', target: 'es2020', minify: true, write: false, legalComments: 'none',
-        define: { __MWA_BUILD__: JSON.stringify(info) },
+        define: { __MWA_BUILD__: JSON.stringify({ ...info, swHash: SW_HASH_SLOT }) },
       });
-      writeFileSync(join(outDir, 'sw.js'), `/* MWA service worker · build ${info.buildId} · web ${info.version} */\n${r.outputFiles[0].text}`);
-      writeFileSync(join(outDir, 'pwa-build.json'), JSON.stringify({ buildId: info.buildId, entry: info.entry, version: info.version, files: info.files.length }, null, 2));
+      // the worker's own code is part of its cache's name (review of P1/P2): a worker-only change gets a new cache, so
+      // a failed install of it can never touch the cache the active worker serves from
+      const code = r.outputFiles[0].text;
+      const swHash = createHash('sha256').update(code).digest('hex').slice(0, 10);
+      writeFileSync(join(outDir, 'sw.js'), `/* MWA service worker · build ${info.buildId} · worker ${swHash} · web ${info.version} */\n${code.split(SW_HASH_SLOT).join(swHash)}`);
+      writeFileSync(join(outDir, 'pwa-build.json'), JSON.stringify({ buildId: info.buildId, swHash, entry: info.entry, version: info.version, files: info.files.length }, null, 2));
     },
   };
 }

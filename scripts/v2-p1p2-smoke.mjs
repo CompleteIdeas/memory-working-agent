@@ -164,6 +164,11 @@ try {
     const pre = await (await get('/index.html', { 'x-mwa-sw': 'precache' })).text();
     check('…and the app shell for the worker\'s precache request', pre.includes(A.entry) && !pre.includes('/api/login'));
     check('behind a password: the API is still locked', (await get('/api/v1/projects', H)).status === 401);
+    for (const p of ['/pwa/x/y/z', '/pwa/index.html', '/pwa/anything']) {
+      const open = await fetch(`${BASE}${p}`); const ot = await open.text();
+      check(`fix 3: ${p} is a 404 (never the app's page through the SPA fallback)`, open.status === 404 && !ot.includes('assets/index-'), `${open.status}`);
+      check(`fix 3: behind a password, ${p} is the sign-in page (not public, not the app)`, !(await (await get(p)).text()).includes('assets/index-'));
+    }
     stopServer(locked);
   }
 
@@ -182,6 +187,8 @@ try {
   check('the manifest parses without errors', (man.errors ?? []).length === 0, JSON.stringify(man.errors));
   const mj = JSON.parse(man.data);
   check('manifest: start_url opens v2 from the home screen; standalone; an id', mj.start_url === './?ui=v2&source=pwa' && mj.display === 'standalone' && !!mj.id && mj.scope === './');
+  const v1m = await (await fetch(`${BASE}/manifest.webmanifest`)).json();
+  check('fix 9: v1 and v2 manifests share one id (home-screen installs survive the W6 cutover)', v1m.id === mj.id && mj.id === './', `${v1m.id} / ${mj.id}`);
   check('manifest: maskable 192 + 512 and a monochrome icon', ['192x192', '512x512'].every((s) => mj.icons.some((i) => i.purpose === 'maskable' && i.sizes === s)) && mj.icons.some((i) => i.purpose === 'monochrome'));
   check('manifest: shortcuts Ask, Today, Important', JSON.stringify(mj.shortcuts.map((s) => s.name)) === JSON.stringify(['Ask', 'Today', 'Important']));
   check('manifest: theme and background from the Instrument tokens', mj.theme_color === '#e8e6e1' && mj.background_color === '#e8e6e1');
@@ -273,7 +280,15 @@ try {
   }
   // an action that cannot get through right now (the API unreachable for it): it waits in the outbox across the update
   const NAME2 = 'Waits through the update (P2)';
-  await page.route('**/api/v1/projects', (r) => (r.request().method() === 'POST' ? r.abort('internetdisconnected') : r.continue()));
+  // review fix 5: a third action is left hanging (never answered) to be IN FLIGHT when Reload is tapped
+  const NAME3 = 'In flight at Reload (P2)';
+  const heldKeys = [];
+  await page.route('**/api/v1/projects', (r) => {
+    const q = r.request();
+    if (q.method() !== 'POST') return r.continue();
+    if ((q.postData() ?? '').includes(NAME3)) { heldKeys.push(q.headers()['idempotency-key']); return undefined; } // never answered
+    return r.abort('internetdisconnected');
+  });
   await page.getByRole('button', { name: 'New project' }).click();
   await page.locator('#np-name').fill(NAME2);
   await page.getByRole('button', { name: 'Create' }).click();
@@ -289,7 +304,14 @@ try {
   await axe(page, 'update banner', '.updatebar');
   const waitingBuild = await page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => !!r?.waiting));
   check('the new worker is waiting', waitingBuild);
-  await Promise.all([page.waitForEvent('load', { timeout: 20_000 }), banner.getByRole('button', { name: 'Reload' }).click()]);
+  await page.getByRole('button', { name: 'New project' }).click();
+  await page.locator('#np-name').fill(NAME3);
+  await page.getByRole('button', { name: 'Create' }).click();
+  for (let i = 0; i < 50 && !heldKeys.length; i++) await page.waitForTimeout(100);
+  check('fix 5: an action is in flight (its request never answered) when Reload is tapped', heldKeys.length === 1);
+  const tReload = Date.now();
+  await Promise.all([page.waitForEvent('load', { timeout: 45_000 }), banner.getByRole('button', { name: 'Reload' }).click()]);
+  console.log(`  (Reload waited ${((Date.now() - tReload) / 1000).toFixed(1)} s for the action in flight, then parked it)`);
   await seen(page.locator('#main h1'), 20_000);
   check('Reload: the page runs build B', (await entryOf(page)) === B.entry, await entryOf(page));
   const swNow = await page.evaluate(() => new Promise((res) => {
@@ -300,17 +322,41 @@ try {
   check('Reload: build B\'s worker controls the page', swNow && swNow.buildId === B.buildId, JSON.stringify(swNow));
   check('Reload: no update banner any more', !(await banner.isVisible().catch(() => false)));
   const after = await idb(page);
-  check('the outbox survived the update', after.outbox.length === 1 && after.outbox[0].name === NAME2 && after.outbox[0].key === kept.outbox[0].key, JSON.stringify(after.outbox));
+  check('the outbox survived the update', after.outbox.some((x) => x.name === NAME2 && x.key === kept.outbox[0].key), JSON.stringify(after.outbox));
+  check('fix 5: the action in flight at Reload is in the outbox after it, with its key (not lost)', after.outbox.some((x) => x.name === NAME3 && x.key === heldKeys[0]), JSON.stringify(after.outbox));
   await page.unroute('**/api/v1/projects');
   await ctx.setOffline(true); await page.waitForTimeout(300); await ctx.setOffline(false); // the network comes back
   const t1 = Date.now();
   while (Date.now() - t1 < 15_000 && (await idb(page)).outbox.length) await page.waitForTimeout(200);
   check('…and is sent once after it', (await projectsNamed(NAME2)) === 1, `${await projectsNamed(NAME2)}`);
+  check('fix 5: …and the one in flight too, once', (await projectsNamed(NAME3)) === 1, `${await projectsNamed(NAME3)}`);
   // offline again: build B from its own cache
   await dark(ctx);
   await page.reload();
   check('offline after the update: build B from the cache', await seen(page.locator('#main h1'), 15_000) && (await entryOf(page)) === B.entry);
   await light(ctx);
+
+  // ---------- fix 7: a 401 clears the phone's copy ----------
+  {
+    await page.route('**/api/v1/**', (r) => r.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { code: 'locked', message: 'Sign in to continue.' } }) }));
+    await page.reload();
+    const signin = page.getByRole('heading', { name: 'Sign in to continue' });
+    check('fix 7: a 401 shows the sign-in screen', await seen(signin, 15_000));
+    check('fix 7: and says "Signed out — this phone’s copy was cleared"', await seen(page.getByText('Signed out — this phone’s copy was cleared'), 5_000));
+    await page.waitForTimeout(500);
+    const wiped = await idb(page);
+    check('fix 7: IndexedDB is empty (Today, the outbox)', wiped.today === 0 && wiped.outbox.length === 0 && !wiped.updatedAt, JSON.stringify(wiped));
+    await shot(page, '07-signed-out-cleared');
+    await axe(page, 'signed out');
+    // offline, last known "signed out": nothing cached shows
+    await dark(ctx);
+    await page.unroute('**/api/v1/**');
+    await page.reload();
+    check('fix 7: offline after a sign-out: the sign-in screen, no cached Today', await seen(signin, 15_000) && !(await page.locator('#offlinebar').isVisible().catch(() => false)));
+    await light(ctx);
+    await page.reload();
+    check('fix 7: signed in again (a good connect): the app is back', await seen(page.locator('#main h1').filter({ hasNotText: 'Sign in to continue' }), 20_000));
+  }
 
   // ---------- 7. v1 ----------
   const v1 = await ctx.newPage();
@@ -333,6 +379,21 @@ try {
   check('v1 offline: its shell opens from the cache', await seen(v1.locator('#root *').first(), 15_000) && (await v1.locator('#root').innerText()).trim().length > 0);
   await shot(v1, '06-v1-offline');
   await light(ctx);
+  // fix 1: v1's reload-on-401 happens once; a second 401 shows a sign-in notice instead of reloading again
+  {
+    let navs = 0;
+    v1.on('framenavigated', (f) => { if (f === v1.mainFrame()) navs++; });
+    await v1.route('**/api/status', (r) => r.fulfill({ status: 401, contentType: 'application/json', body: '{"error":"locked"}' }));
+    await v1.evaluate(() => sessionStorage.removeItem('mwa-401-reloaded'));
+    navs = 0;
+    await v1.reload();
+    await v1.waitForTimeout(6_000);
+    const notice = v1.getByRole('alertdialog', { name: 'Sign in to continue' });
+    check('fix 1: v1 with a 401 that a reload cannot fix: one reload, then the sign-in notice (no loop)', navs <= 2 && await seen(notice, 5_000), `${navs} navigations`);
+    await shot(v1, '08-v1-signin-notice');
+    await axe(v1, 'v1 sign-in notice', '#mwa-signin-notice');
+    await v1.unroute('**/api/status');
+  }
   check('v1: no page errors', v1errors.length === 0, v1errors.join(' | '));
   check('v2: no page errors', errors.length === 0, errors.join(' | '));
   await ctx.close();

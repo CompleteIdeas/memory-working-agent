@@ -1,5 +1,6 @@
 // Thin client for the `mwa serve` API + translation of raw agent events into the
 // plain-language "activity spine" (no jargon — the Mom-test rule).
+import { browserLocked } from './locked';
 
 export interface StatusResp {
   anthropic: boolean;
@@ -15,9 +16,10 @@ export interface StatusResp {
 }
 
 // If the access gate is on and our session expired (e.g. the server restarted),
-// any API call returns 401 → reload, which the server answers with the lock screen.
+// any API call returns 401 → reload, which the server answers with the lock screen — at most once per browser
+// session, then a sign-in notice (locked.ts; review of P1/P2: a cached shell must never make this a reload loop).
 function bounceIfLocked(r: Response): Response {
-  if (r.status === 401) location.reload();
+  if (r.status === 401) browserLocked();
   return r;
 }
 

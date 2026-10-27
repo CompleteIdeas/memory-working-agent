@@ -10,7 +10,9 @@
  *     look for a new worker first, so the Reload does not just bring back the same cached build.
  * Reload (the person's tap): the waiting worker takes over (SKIP_WAITING), and the page reloads ONCE when the new
  * worker controls it. No worker waiting: look for one, then reload. A worker that never takes over (an old browser
- * quirk) still gets the reload after a short wait. The outbox lives in IndexedDB, so it is there after the reload.
+ * quirk) still gets the reload after a short wait. If nothing has happened after ~20 s (the new build never finished
+ * downloading), the banner says "Couldn't get the update — try again" and Reload works again (review of P1/P2).
+ * The outbox lives in IndexedDB, so it is there after the reload.
  * Another tab that took the update: this page now runs a build its worker no longer serves; it shows Reload too.
  */
 
@@ -23,6 +25,8 @@ export interface UpdateState {
   waiting: boolean;
   /** a worker was told to take over quietly (the page already runs its build): its controllerchange is not news */
   quiet: boolean;
+  /** the last Reload gave up (nothing arrived in time) */
+  failed?: boolean;
 }
 export type UpdateEvent =
   /** a worker is installed and waiting; `pageRunsIt`: its entry script is the one this page loaded */
@@ -36,10 +40,14 @@ export type UpdateEvent =
   /** navigator.serviceWorker's controllerchange; `hadController`: the page was controlled before it */
   | { type: 'controller-changed'; hadController: boolean }
   /** applying, and the worker did not take over in time */
-  | { type: 'apply-timeout' };
-export type Effect = 'skip-waiting' | 'reload' | 'check' | 'arm-timeout';
+  | { type: 'apply-timeout' }
+  /** applying for ~20 s and still no new build: give up, say so, let the person try again */
+  | { type: 'give-up' };
+export type Effect = 'skip-waiting' | 'reload' | 'check' | 'arm-timeout' | 'arm-give-up';
 
 export const initialUpdate: UpdateState = { phase: 'idle', reason: null, waiting: false, quiet: false };
+/** How long Reload may say "Updating…" before it gives up. */
+export const GIVE_UP_MS = 20_000;
 
 export function reduceUpdate(s: UpdateState, e: UpdateEvent): { state: UpdateState; effects: Effect[] } {
   const out = (state: UpdateState, ...effects: Effect[]) => ({ state, effects });
@@ -54,9 +62,9 @@ export function reduceUpdate(s: UpdateState, e: UpdateEvent): { state: UpdateSta
       return out({ ...s, phase: 'ready', reason: 'server' }, 'check');
     case 'apply':
       if (s.phase === 'applying') return out(s);
-      if (s.waiting) return out({ ...s, phase: 'applying' }, 'skip-waiting', 'arm-timeout');
+      if (s.waiting) return out({ ...s, phase: 'applying', failed: false }, 'skip-waiting', 'arm-timeout', 'arm-give-up');
       // nothing waiting (yet): look for a new build first; reload when that is answered
-      return out({ ...s, phase: 'applying' }, 'check');
+      return out({ ...s, phase: 'applying', failed: false }, 'check', 'arm-give-up');
     case 'checked':
       if (s.phase !== 'applying' || e.found) return out(s); // found: its 'waiting' follows
       return out({ ...s, phase: 'reloading' }, 'reload');
@@ -69,12 +77,15 @@ export function reduceUpdate(s: UpdateState, e: UpdateEvent): { state: UpdateSta
     case 'apply-timeout':
       if (s.phase !== 'applying') return out(s);
       return out({ ...s, phase: 'reloading' }, 'reload');
+    case 'give-up':
+      if (s.phase !== 'applying') return out(s);
+      return out({ ...s, phase: 'ready', failed: true });
   }
 }
 
 /** The banner's words. */
 export function updateWords(s: UpdateState): { text: string; button: string } | null {
   if (s.phase === 'idle') return null;
-  if (s.phase === 'ready') return { text: 'A new version is ready', button: 'Reload' };
+  if (s.phase === 'ready') return s.failed ? { text: 'Couldn’t get the update — try again', button: 'Try again' } : { text: 'A new version is ready', button: 'Reload' };
   return { text: 'Updating…', button: 'Reload' };
 }

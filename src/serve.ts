@@ -61,7 +61,7 @@ import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, ru
 import { logger, readLogs, type LogLevel } from './logger.js';
 import { createV1Handler } from './api/v1.js';
 import { makeAuthenticate } from './api/auth.js';
-import { pwaPublic, uiCacheControl } from './pwa.js';
+import { pwaFileOnly, pwaPublic, uiCacheControl } from './pwa.js';
 import { setJobRouteDeps, capFor, setCap } from './api/routes/jobs.js';
 import { setStreamDeps } from './api/routes/stream.js';
 import { startCalendarSync } from './sync/calendar.js';
@@ -681,6 +681,12 @@ function serveStatic(res: ServerResponse, dir: string, pathname: string): void {
   // SPA: unknown non-asset routes fall back to index.html (client-side routing).
   let rel = normalize(pathname).replace(/^(\.\.[/\\])+/, '').replace(/^[/\\]+/, '');
   let file = join(dir, rel);
+  // P1/P2 (review): the install icons are files or nothing — no folder stripping, no SPA fallback under /pwa/
+  if (pwaFileOnly(rel)) {
+    if (!existsSync(file) || statSync(file).isDirectory()) { res.writeHead(404, { 'cache-control': 'no-cache' }); res.end('not found'); return; }
+    res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream', 'cache-control': uiCacheControl(relative(dir, file)) });
+    res.end(readFileSync(file)); return;
+  }
   // The build's asset paths are relative (base './', for the desktop app), so a page one folder down
   // (a share link, /s/<token>) asks for s/assets/…: drop leading folders until the asset is found.
   for (let parts = rel.split(/[/\\]/); extname(rel) && parts.length > 1 && !existsSync(file);) { parts = parts.slice(1); file = join(dir, ...parts); }

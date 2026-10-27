@@ -4,7 +4,7 @@
  * wires them to the worker's events. Not part of the page bundle.
  */
 import {
-  acceptable, cacheName, cachesToDelete, NAV_TIMEOUT_MS, pageAnswer, PRECACHE_HEADER, precacheUrls, route,
+  acceptable, cacheName, cachesToDelete, pageAnswer, PRECACHE_HEADER, PRECACHE_TIMEOUT_MS, precacheUrls, route, tryNetwork,
   type BuildInfo, type BuildReply, type ToWorker,
 } from './sw-logic';
 
@@ -14,6 +14,7 @@ interface FetchEvent extends ExtendableEvent { request: Request; respondWith(r: 
 interface MessageEventW extends ExtendableEvent { data: unknown; ports: readonly MessagePort[]; source: { postMessage(m: unknown): void } | null }
 interface WorkerScope {
   registration: { scope: string };
+  navigator?: { onLine?: boolean };
   skipWaiting(): Promise<void>;
   clients: { claim(): Promise<void> };
   addEventListener(t: 'install' | 'activate', f: (e: ExtendableEvent) => void): void;
@@ -24,13 +25,13 @@ declare const __MWA_BUILD__: BuildInfo;
 const sw = self as unknown as WorkerScope;
 
 const INFO = __MWA_BUILD__;
-const CURRENT = cacheName(INFO.buildId);
+const CURRENT = cacheName(INFO.buildId, INFO.swHash);
 const scope = () => sw.registration.scope;
 let precached: Set<string> | null = null;
 const precachedSet = () => (precached ??= new Set(precacheUrls(INFO, scope())));
 const shellUrl = () => new URL('index.html', scope()).href;
 
-/** All of this build's files, or none: fetched first, then stored. */
+/** All of this build's files, or none: fetched first, then stored. Deletes only a cache this install created. */
 async function precache(): Promise<void> {
   const s = scope();
   const got = await Promise.all(INFO.files.map(async (f) => {
@@ -38,17 +39,21 @@ async function precache(): Promise<void> {
     const res = await fetch(url, {
       cache: 'reload', credentials: 'same-origin',
       headers: f.url === 'index.html' ? { [PRECACHE_HEADER]: 'precache' } : undefined,
+      signal: typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal ? AbortSignal.timeout(PRECACHE_TIMEOUT_MS) : undefined,
     });
     const body = f.url === 'index.html' ? await res.clone().text() : null;
     const bad = acceptable(f, res, body, INFO);
     if (bad) throw new Error(`MWA precache: ${bad}`);
     return [url, res] as const;
   }));
+  // the same name can already exist: this very build and worker, installed before (a re-install after a browser
+  // update check). Then it is the ACTIVE worker's cache: refreshed in place, never deleted here.
+  const existed = await caches.has(CURRENT);
   const cache = await caches.open(CURRENT);
   try {
     await Promise.all(got.map(([u, r]) => cache.put(u, r)));
   } catch (e) {
-    await caches.delete(CURRENT); // half a shell is no shell
+    if (!existed) await caches.delete(CURRENT).catch(() => false); // half a shell is no shell — but only ours
     throw e;
   }
 }
@@ -56,7 +61,7 @@ async function precache(): Promise<void> {
 sw.addEventListener('install', (e) => {
   // no skipWaiting here: a new worker waits until the page says so (the person tapped Reload, or the page already
   // runs this build)
-  e.waitUntil(precache().catch(async (err) => { await caches.delete(CURRENT).catch(() => false); throw err; }));
+  e.waitUntil(precache());
 });
 
 sw.addEventListener('activate', (e) => {
@@ -84,15 +89,11 @@ async function cachedShell(): Promise<Response | undefined> {
 
 async function page(req: Request): Promise<Response> {
   const shell = await cachedShell();
-  const net = fetch(req);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<'timeout'>((r) => { timer = setTimeout(() => r('timeout'), NAV_TIMEOUT_MS); });
-  const first = await Promise.race([net.then((r) => r, () => 'failed' as const), timeout]);
-  clearTimeout(timer);
-  const answer = pageAnswer(first, !!shell);
+  if (!tryNetwork(sw.navigator?.onLine !== false, !!shell)) return shell!;
+  const got = await fetch(req).then((r) => r, () => 'failed' as const);
+  const answer = pageAnswer(got, !!shell);
   if (answer === 'shell') return shell!;
-  if (first instanceof Response) return first;
-  if (answer === 'network') return net; // slow, and nothing cached to show instead: wait for it
+  if (got instanceof Response) return got;
   return Response.error();
 }
 

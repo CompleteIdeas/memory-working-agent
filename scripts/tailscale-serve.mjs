@@ -3,7 +3,8 @@
  *
  *   npm run tailscale:serve                 check Tailscale, then serve https://<this-computer>.<tailnet>.ts.net → MWA
  *   npm run tailscale:serve -- --check      only check and print what it would do (changes nothing)
- *   npm run tailscale:serve -- --off        stop serving MWA over Tailscale
+ *   npm run tailscale:serve -- --off        stop serving MWA over Tailscale (removes only MWA's "/" handler on 443)
+ *   npm run tailscale:serve -- --replace    replace another "/" handler already on 443 (otherwise it stops and says so)
  *   npm run tailscale:serve -- --port 7799  another port (default: MWA_SERVE_PORT, then PORT, from the environment
  *                                           or .env, then 7788 — the same order `mwa serve` uses)
  *
@@ -11,7 +12,9 @@
  *   1. finds the tailscale command (PATH, or where the Windows / macOS app installs it);
  *   2. reads `tailscale status --json`: signed in and running? MagicDNS on? HTTPS certificates on? If not, it says
  *      exactly where to switch them on (the Tailscale admin page) and stops;
- *   3. refuses if Funnel (the PUBLIC internet address) is on for this machine — MWA stays inside your tailnet;
+ *   3. reads `tailscale serve status --json` and stops if it can't (fails closed), if Funnel (the PUBLIC internet
+ *      address) is on for this machine — MWA stays inside your tailnet — or if something else already answers "/" on
+ *      443 (unless --replace);
  *   4. runs `tailscale serve --bg --https=443 http://127.0.0.1:<port>` (private to your tailnet: no funnel);
  *   5. prints the phone's address and the .env lines (W5's names): MWA_PUBLIC_URL (its own address, for pairing links
  *      and the install card), MWA_ALLOWED_HOSTS (the ts.net name; other Host headers get 421), MWA_TRUSTED_PROXY=127.0.0.1
@@ -70,6 +73,24 @@ export function funnelOn(serveStatus) {
   return !!f && Object.values(f).some(Boolean);
 }
 
+/** What already answers "/" on 443 in `tailscale serve status --json` (its proxy target, or "other"), or null. */
+export function existingHandler(serveStatus) {
+  for (const [hostPort, web] of Object.entries(serveStatus?.Web ?? {})) {
+    if (!/:443$/.test(hostPort)) continue;
+    const h = web?.Handlers?.['/'];
+    if (h) return h.Proxy ?? 'other';
+  }
+  return null;
+}
+
+/** Is `tailscale serve status --json` usable at all? (Fail closed: no answer means we can't rule Funnel out.) */
+export function statusReadable(code, parsed) {
+  return code === 0 && !!parsed && typeof parsed === 'object';
+}
+
+/** The command that removes only MWA's handler ("/" on 443), not anything else served on this machine. */
+export const OFF_CMD = ['serve', '--https=443', '--set-path=/', 'off'];
+
 /**
  * The .env lines for serving through `tailscale serve` (W5's names): MWA's own address (pairing links, the install
  * card), the name added to the Host allowlist (other Host headers get 421), the proxy whose X-Forwarded-For is believed
@@ -114,7 +135,7 @@ async function main() {
     process.exit(2);
   }
   if (flag('off')) {
-    const r = ts(bin, ['serve', '--https=443', 'off']);
+    const r = ts(bin, OFF_CMD);
     console.log(r.code === 0 ? 'MWA is no longer served over Tailscale.' : `Tailscale said: ${r.err || r.out}`);
     process.exit(r.code === 0 ? 0 : 1);
   }
@@ -127,7 +148,24 @@ async function main() {
     for (const p of a.problems) console.log(`  • ${p}`);
     process.exit(2);
   }
-  const serveStatus = json(ts(bin, ['serve', 'status', '--json']).out);
+  const ss = ts(bin, ['serve', 'status', '--json']);
+  const serveStatus = json(ss.out);
+  if (!statusReadable(ss.code, serveStatus)) {
+    console.error(`
+Could not read what Tailscale already serves on this computer (${ss.err || ss.out || `exit ${ss.code}`}), so this can't check that`);
+    console.error('nothing is public (Funnel). Stopping. Run `tailscale serve status` yourself, then try again.');
+    process.exit(2);
+  }
+  const target = `http://127.0.0.1:${port}`;
+  const existing = existingHandler(serveStatus);
+  if (existing && existing !== target && !flag('replace') && !flag('check')) {
+    console.error(`
+Something else is already served at https://${a.host}/ (${existing}). Setting MWA up would replace it.`);
+    console.error('Run again with --replace to replace it, or remove it first (tailscale serve status shows it).');
+    process.exit(2);
+  }
+  if (existing && existing !== target) console.log(`
+Note: https://${a.host}/ currently goes to ${existing}; this ${flag('check') ? 'would replace' : 'replaces'} it.`);
   if (funnelOn(serveStatus)) {
     console.error('\nFunnel is ON for this computer: something here is on the public internet. MWA stays private, so this stops.');
     console.error('Turn it off with `tailscale funnel reset` (or `tailscale funnel --https=443 off`), then run this again.');

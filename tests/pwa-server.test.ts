@@ -1,9 +1,9 @@
 // v2 build, slices P1/P2: the server's cache headers for the built UI and which of its files are public behind the
 // password (src/pwa.ts), and npm run tailscale:serve's checks (scripts/tailscale-serve.mjs). The real server's answers are checked end to end by scripts/v2-p1p2-smoke.mjs.
 import { describe, it, expect } from 'vitest';
-import { pwaPublic, uiCacheControl, PRECACHE_HEADER } from '../src/pwa';
+import { pwaPublic, pwaFileOnly, uiCacheControl, PRECACHE_HEADER } from '../src/pwa';
 import { PRECACHE_HEADER as WORKER_HEADER } from '../web/src/pwa/sw-logic';
-import { assess, funnelOn, servePort, envLines, ADMIN_DNS } from '../scripts/tailscale-serve.mjs';
+import { assess, funnelOn, servePort, envLines, ADMIN_DNS, existingHandler, statusReadable, OFF_CMD } from '../scripts/tailscale-serve.mjs';
 
 const get = (headers: Record<string, string> = {}) => ({ method: 'GET', headers });
 
@@ -32,6 +32,15 @@ describe('public behind the password', () => {
     expect(pwaPublic('/api/v1/sync', get({ [PRECACHE_HEADER]: 'precache' }))).toBe(false);
     expect(pwaPublic('/sw.js', { method: 'POST', headers: {} })).toBe(false);
   });
+  it('review fix 3: only real icon files under /pwa/ are public; anything else there is a file-or-404 path', () => {
+    for (const p of ['/pwa/index.html', '/pwa/anything', '/pwa/x/y/z', '/pwa/../api/files', '/pwa/%2e%2e/api/files', '/pwa/sw.js', '/pwa/pwa-build.json']) {
+      expect(pwaPublic(p, get())).toBe(false);
+    }
+    expect(pwaFileOnly('pwa/x/y/z')).toBe(true);
+    expect(pwaFileOnly(String.raw`pwa\index.html`)).toBe(true); // Windows path.normalize
+    expect(pwaFileOnly('assets/index-AbCd1234.js')).toBe(false);
+    expect(pwaFileOnly('')).toBe(false);
+  });
   it('the worker and the server agree on the header', () => {
     expect(WORKER_HEADER).toBe(PRECACHE_HEADER);
   });
@@ -55,6 +64,17 @@ describe('tailscale:serve checks', () => {
     expect(b.problems[0]).toContain('MagicDNS is off');
     expect(assess({ BackendState: 'NeedsLogin' }).problems[0]).toMatch(/not signed in/);
     expect(assess(null).ok).toBe(false);
+  });
+  it("review fix 8: --off removes only MWA's '/' handler on 443; another handler is found before it is replaced; an unreadable status stops (fails closed)", () => {
+    expect(OFF_CMD).toEqual(['serve', '--https=443', '--set-path=/', 'off']);
+    expect(existingHandler({})).toBeNull();
+    expect(existingHandler({ Web: { 'mwa.tail1a2b.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3000' } } } } })).toBe('http://127.0.0.1:3000');
+    expect(existingHandler({ Web: { 'mwa.tail1a2b.ts.net:443': { Handlers: { '/files': { Path: '/x' } } } } })).toBeNull();
+    expect(existingHandler({ Web: { 'mwa.tail1a2b.ts.net:8443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:1' } } } } })).toBeNull();
+    expect(existingHandler({ Web: { 'mwa.tail1a2b.ts.net:443': { Handlers: { '/': { Text: 'hi' } } } } })).toBe('other');
+    expect(statusReadable(0, {})).toBe(true); // "nothing served" is {}
+    expect(statusReadable(1, {})).toBe(false);
+    expect(statusReadable(0, null)).toBe(false);
   });
   it('Funnel (a public address) on for any port is refused', () => {
     expect(funnelOn({ AllowFunnel: { 'mwa.tail1a2b.ts.net:443': true } })).toBe(true);

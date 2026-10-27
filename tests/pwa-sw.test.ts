@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  route, cachesToDelete, acceptable, pageAnswer, precacheUrls, cacheName, CACHE_PREFIX, PRECACHE_HEADER, NAV_TIMEOUT_MS, type BuildInfo,
+  route, cachesToDelete, acceptable, pageAnswer, precacheUrls, cacheName, CACHE_PREFIX, PRECACHE_HEADER, tryNetwork, type BuildInfo,
 } from '../web/src/pwa/sw-logic';
 import { buildInfo, entryOf } from '../web/vite-pwa';
 
@@ -50,6 +50,8 @@ describe('caches, answers and acceptance', () => {
     expect(cachesToDelete(keys, `${CACHE_PREFIX}ccc`)).toEqual(['mwa-shell-v2', `${CACHE_PREFIX}aaa`]);
     expect(cachesToDelete([`${CACHE_PREFIX}ccc`], `${CACHE_PREFIX}ccc`)).toEqual([]);
     expect(cacheName('abc')).toBe(`${CACHE_PREFIX}abc`);
+    // review fix 2: the worker's own code is in the name, so a worker-only change never shares the active cache
+    expect(cacheName('abc', 'f00d')).toBe(`${CACHE_PREFIX}abc-f00d`);
   });
   it('a page: the network unless it failed, was slow, or the server behind the proxy is down (5xx)', () => {
     expect(pageAnswer({ status: 200 }, true)).toBe('network');
@@ -58,8 +60,10 @@ describe('caches, answers and acceptance', () => {
     expect(pageAnswer({ status: 502 }, false)).toBe('network');
     expect(pageAnswer('failed', true)).toBe('shell');
     expect(pageAnswer('failed', false)).toBe('error');
-    expect(pageAnswer('timeout', true)).toBe('shell');
-    expect(pageAnswer('timeout', false)).toBe('network'); // nothing to show instead: keep waiting
+    // review fix 1: no timeout — a slow answer is waited for; the device offline goes straight to the shell
+    expect(tryNetwork(true, true)).toBe(true);
+    expect(tryNetwork(false, true)).toBe(false);
+    expect(tryNetwork(false, false)).toBe(true); // nothing cached: let the browser try and fail its own way
   });
   it('index.html must be this build\'s page; every file a plain 200', () => {
     const info = { entry: 'assets/index-AbCd1234.js' };
@@ -123,6 +127,7 @@ class FakeCaches {
     return c;
   }
   async keys() { return [...this.stores.keys()]; }
+  async has(n: string) { return this.stores.has(n); }
   async delete(n: string) { return this.stores.delete(n); }
   async match(req: string | { url: string }) { for (const c of this.stores.values()) { const r = await c.match(req); if (r) return r; } return undefined; }
 }
@@ -139,6 +144,7 @@ async function loadWorker(net: (url: string, init?: RequestInit) => Promise<Resp
   const handlers: Record<string, Handler> = {};
   const self = {
     registration: { scope: SCOPE },
+    navigator: { onLine: true },
     skipWaiting: vi.fn(async () => {}),
     clients: { claim: vi.fn(async () => {}) },
     addEventListener: (t: string, f: Handler) => { handlers[t] = f; },
@@ -216,15 +222,40 @@ describe('the worker (sw.ts) against a fake browser', () => {
     mode = '502';
     expect(await (await w.fetchEv(`${SCOPE}?ui=v2`, 'navigate'))!.text()).toBe(PAGE);
   });
-  it('a slow network: the cached shell after the timeout', async () => {
+  it('review fix 1: a SLOW network is waited for — the sign-in page after 6 s wins over the cached shell (no reload loop)', async () => {
     let slow = false;
-    const w = await loadWorker(async (url, init) => (slow ? new Promise<Response>(() => {}) : server()(url, init)));
+    const w = await loadWorker(async (url, init) => (slow ? new Promise<Response>((r) => setTimeout(() => r(new Response('<form>Unlock</form>', { status: 200 })), 6_000)) : server()(url, init)));
     await w.install();
     slow = true;
     vi.useFakeTimers();
-    const p = w.fetchEv(`${SCOPE}`, 'navigate');
-    await vi.advanceTimersByTimeAsync(NAV_TIMEOUT_MS + 10);
-    expect(await (await p)!.text()).toBe(PAGE);
+    const p = w.fetchEv(`${SCOPE}?ui=v1`, 'navigate');
+    let done = false; void p.then(() => { done = true; });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(done).toBe(false); // still waiting for the network at 5 s (the old worker served the shell at 4 s)
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(await (await p)!.text()).toContain('Unlock');
+  });
+  it('the device offline: the cached shell at once, without asking the network', async () => {
+    const w = await loadWorker(server());
+    await w.install();
+    const asked = w.seen.length;
+    w.self.navigator.onLine = false;
+    expect(await (await w.fetchEv(`${SCOPE}?ui=v2`, 'navigate'))!.text()).toBe(PAGE);
+    expect(w.seen.length).toBe(asked);
+  });
+  it('review fix 2: a failed install never deletes a cache it did not create (the same build cache, in use by the active worker)', async () => {
+    let broken = false;
+    const w = await loadWorker(async (url, init) => (broken && url.endsWith('index-AbCd1234.js') ? new Response('nope', { status: 404 }) : server()(url, init)));
+    await w.install(); // the active worker's install
+    broken = true;
+    await expect(w.install()).rejects.toThrow(/404/); // a second worker, same cache name, fails
+    expect(await w.caches.keys()).toEqual([cacheName('b1')]);
+    w.caches.failPut = true; // and a storage failure while refreshing it
+    broken = false;
+    await expect(w.install()).rejects.toThrow(/Quota/);
+    expect(await w.caches.keys()).toEqual([cacheName('b1')]);
+    w.self.navigator.onLine = false;
+    expect(await (await w.fetchEv(`${SCOPE}`, 'navigate'))!.text()).toBe(PAGE);
   });
   it('offline before anything was cached: a page fails the normal way (the browser\'s own offline page)', async () => {
     const w = await loadWorker(async () => { throw new TypeError('Failed to fetch'); });

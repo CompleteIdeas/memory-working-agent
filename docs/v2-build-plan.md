@@ -43,7 +43,7 @@ from a code-grounded plan (2026-10-26); file:line references there were checked 
 | A10 | Today composite | S | A3a, A7, A9 | |
 | W1 | v2 web shell + typed client + IndexedDB store + fixture server from prototype data | L | A1 | |
 | W2–W5 | Today+Calendar · Important+mail · Projects+Ask+plan · Settings+first run+devices | M each | W1 + backend | |
-| W6 | Cutover (v2 default, v1 at ?ui=v1 for one release) | S | W2–W5 | |
+| W6 | Cutover (v2 default, v1 at ?ui=v1 for one release) | S | W2–W5 | P1: both manifests share `"id": "./"` (what v1's installs already have: its start_url "."), so a home-screen install survives the cutover; W6 changes start_url only (and v1's manifest link) |
 | P1 | Installable PWA + secure context (tailscale serve, manifest, install UX) | M | W1 | built on v2-p1 with P2 (not merged); phone test needs Robert's tailnet |
 | P2 | Offline data, outbox, update prompt, clear on revoke | L | P1, A4 | built on v2-p1 (not merged); clear on revoke is W5's sign-out (the worker caches only the public shell) |
 | P3 | Web push | M | P2, A4 | |

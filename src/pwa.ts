@@ -24,6 +24,15 @@ export const PRECACHE_HEADER = 'x-mwa-sw';
 const HASHED = /^assets\/.+-[A-Za-z0-9_-]{8,}\.[a-z0-9]+$/;
 const PUBLIC_FILES = new Set(['/sw.js', '/manifest.webmanifest', '/manifest-v2.webmanifest', '/icon-192.png', '/icon-512.png']);
 
+/** An install icon: one file name directly under /pwa/ (no folders, no "..", only images). */
+const PWA_ICON = /^\/pwa\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.(?:png|svg)$/;
+
+/** True for a path under /pwa/ that must be a real file there: a missing one is a 404, never index.html (review of
+ *  P1/P2: /pwa/x/y/z and /pwa/index.html came back as the app's page through the SPA fallback). */
+export function pwaFileOnly(rel: string): boolean {
+  return /^pwa[\\/]/.test(rel.replace(/^[\\/]+/, ''));
+}
+
 /** Cache-Control for a file of the built UI, by its path relative to dist-ui ("assets/index-AbC.js", "index.html"). */
 export function uiCacheControl(rel: string): string {
   const r = rel.replace(/\\/g, '/').replace(/^\/+/, '');
@@ -33,6 +42,6 @@ export function uiCacheControl(rel: string): string {
 /** True for a built-UI file anyone may fetch without the password session (see the header). */
 export function pwaPublic(pathname: string, req: Pick<IncomingMessage, 'headers' | 'method'>): boolean {
   if (req.method !== 'GET' && req.method !== 'HEAD') return false;
-  if (PUBLIC_FILES.has(pathname) || pathname.startsWith('/pwa/')) return true;
+  if (PUBLIC_FILES.has(pathname) || PWA_ICON.test(pathname)) return true;
   return pathname === '/index.html' && String(req.headers[PRECACHE_HEADER] ?? '') === 'precache';
 }

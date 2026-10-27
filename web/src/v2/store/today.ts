@@ -112,6 +112,9 @@ export class TodayFeed {
     this.unsubs.push((this.o.onFocus ?? browserFocus)(again), this.o.env.on('visible', () => { again(); this.armSeen(); }));
   }
 
+  /** P2 (review): signed out — forget the Today shown (the store clears the device's cache). */
+  clear(): void { this.set(initial()); }
+
   stop(): void {
     this.started = false;
     this.again = false;

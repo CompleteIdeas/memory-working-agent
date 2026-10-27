@@ -9,7 +9,7 @@
  *   - keeps the install prompt (beforeinstallprompt) for Settings › This device › Install on this phone
  *   - v2 only: points the page at the v2 manifest (start_url opens v2) and icons before the browser reads them
  */
-import { initialUpdate, reduceUpdate, type Effect, type UpdateEvent, type UpdateState } from './update';
+import { GIVE_UP_MS, initialUpdate, reduceUpdate, type Effect, type UpdateEvent, type UpdateState } from './update';
 import type { BuildReply } from './sw-logic';
 
 type Listener = () => void;
@@ -23,6 +23,7 @@ let reg: ServiceWorkerRegistration | null = null;
 let hadController = false;
 /** How long Reload waits for the new worker to take over before reloading anyway. */
 const APPLY_TIMEOUT_MS = 4_000;
+let giveUpTimer: ReturnType<typeof setTimeout> | undefined;
 
 export const getUpdate = (): UpdateState => update;
 
@@ -36,6 +37,7 @@ function run(eff: Effect) {
   if (eff === 'skip-waiting') reg?.waiting?.postMessage({ type: 'SKIP_WAITING' });
   else if (eff === 'reload') location.reload();
   else if (eff === 'arm-timeout') setTimeout(() => dispatchUpdate({ type: 'apply-timeout' }), APPLY_TIMEOUT_MS);
+  else if (eff === 'arm-give-up') { clearTimeout(giveUpTimer); giveUpTimer = setTimeout(() => dispatchUpdate({ type: 'give-up' }), GIVE_UP_MS); }
   else if (eff === 'check') void checkForUpdate();
 }
 
@@ -77,7 +79,8 @@ function watchInstalling(w: ServiceWorker | null) {
 
 async function checkForUpdate() {
   if (!reg) { dispatchUpdate({ type: 'checked', found: false }); return; }
-  try { await reg.update(); } catch { /* offline, or the server is down */ }
+  // a hung update check must not hold "Updating…" (the give-up timer covers the rest)
+  try { await Promise.race([reg.update(), new Promise((r) => setTimeout(r, 15_000))]); } catch { /* offline, or the server is down */ }
   if (reg.waiting) { dispatchUpdate({ type: 'checked', found: true }); void onWaiting(reg.waiting); return; }
   if (reg.installing) { dispatchUpdate({ type: 'checked', found: true }); watchInstalling(reg.installing); return; }
   dispatchUpdate({ type: 'checked', found: false });

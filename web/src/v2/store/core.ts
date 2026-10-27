@@ -24,7 +24,7 @@ import {
   type DraftResult, type MessageSent, type Schemas, type AskBody, type AskChoice, type AskStart, type AskChosen, type TurnMoved,
   type ImportantItem, type ImportantGroup, type ImportantList, type ItemChange, type ItemActionResult, type SkippedList, type TriageRule,
 } from '../api/client';
-import type { CacheDb, StoreName } from './cache';
+import { STORES, type CacheDb, type StoreName } from './cache';
 import { TodayFeed } from './today';
 
 export const THREAD_KEEP = 50;
@@ -212,7 +212,22 @@ export interface StoreOptions {
   fixtures?: boolean;
   /** reconnect backoff (ms) after the stream closes or the server cannot be reached */
   backoff?: number[];
+  /** P2: "this device was signed out" survives a reload (localStorage in the browser; memory in tests) */
+  signedOutFlag?: SignedOutFlag;
 }
+
+/** P2 (review): remembers that this device was signed out, so an offline start shows no cached data. */
+export interface SignedOutFlag { get(): boolean; set(on: boolean): void }
+export const SIGNED_OUT_KEY = 'mwa-v2-signed-out';
+export function browserSignedOutFlag(): SignedOutFlag {
+  let mem = false;
+  return {
+    get: () => { try { return typeof localStorage !== 'undefined' ? localStorage.getItem(SIGNED_OUT_KEY) === '1' : mem; } catch { return mem; } },
+    set: (on) => { mem = on; try { if (typeof localStorage !== 'undefined') { if (on) localStorage.setItem(SIGNED_OUT_KEY, '1'); else localStorage.removeItem(SIGNED_OUT_KEY); } } catch { /* private mode */ } },
+  };
+}
+/** What the person is told when a 401 cleared this device's copy. */
+export const SIGNED_OUT_CLEARED = 'Signed out — this phone’s copy was cleared';
 
 const initial = (fixtures: boolean): StoreState => ({
   ready: false, connection: 'starting', auth: 'ok', updateReady: false, meta: null, cursor: 0, updatedAt: null,
@@ -233,6 +248,7 @@ export class V2Store {
   private makeStream: StreamFactory;
   private env: StoreEnv;
   readonly now: () => number;
+  private signedOutFlag: SignedOutFlag;
   private backoff: number[];
   private s: StoreState;
   private listeners = new Set<() => void>();
@@ -251,6 +267,7 @@ export class V2Store {
   readonly today: TodayFeed;
 
   constructor(o: StoreOptions) {
+    this.signedOutFlag = o.signedOutFlag ?? browserSignedOutFlag();
     this.client = o.client;
     this.cache = o.cache;
     this.makeStream = o.stream;
@@ -282,7 +299,9 @@ export class V2Store {
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
-    await this.loadCache();
+    // P2 (review): this device was signed out last time: show nothing cached (and make sure nothing is left)
+    if (this.signedOutFlag.get()) await this.clearDeviceCopy();
+    else await this.loadCache();
     this.today.adoptOutbox(this.s.outbox); // W2: a check-in or wrap tap still waiting keeps its card gone after a reload
     await this.today.start();
     if (!this.started) return; // stopped while the cache was loading (React StrictMode mounts twice)
@@ -292,7 +311,45 @@ export class V2Store {
       this.env.on('visible', () => { void this.replayOutbox(); if (!this.es && this.env.online() && this.s.auth === 'ok') void this.connect('visible'); }),
     );
     if (this.env.online()) await this.connect('open');
-    else this.set({ connection: 'offline' });
+    else this.set({ connection: 'offline', ...(this.signedOutFlag.get() && !this.s.fixtures ? { auth: 'signin' as const } : {}) });
+  }
+
+  // ---------- P2 (review): a 401 clears this device's copy ----------
+  /** The server says this device is not signed in (revoked, signed out, expired): the cached data and the outbox are
+   *  removed from IndexedDB and memory, "signed out" is remembered for an offline start, and the person is told. */
+  private async lockedOut(): Promise<void> {
+    this.closeStream();
+    const had = this.s.outbox.length + Object.keys(this.s.jobs).length + Object.keys(this.s.projects).length + Object.keys(this.s.calendar).length + Object.keys(this.s.items).length > 0 || !!this.today.getState().doc;
+    this.set({ auth: 'signin', connection: 'unreachable' });
+    if (this.s.fixtures) return;
+    this.signedOutFlag.set(true);
+    await this.clearDeviceCopy();
+    if (had) this.notice(SIGNED_OUT_CLEARED, 'info');
+  }
+  private async clearDeviceCopy(): Promise<void> {
+    this.set({
+      jobs: {}, calendar: {}, conflicts: {}, projects: {}, threads: {}, threadLoaded: {}, live: {}, threadOlder: {}, threadNext: {},
+      askOutcomes: {}, askChoices: {}, asks: {}, refused: {}, items: {}, outbox: [], inflight: [], cursor: 0, updatedAt: null, ready: true,
+      important: { meta: null, loading: false, loaded: false, error: null }, skipped: {}, rules: { list: [], loading: false, loaded: false, error: null },
+      mail: { headers: [], note: '', connected: false, loaded: false, loading: false, error: null },
+    });
+    this.today.clear();
+    await this.writes;
+    const c = this.cache;
+    await Promise.all(STORES.map((n) => c.clear(n).catch(() => {}))).catch(() => {});
+  }
+
+  /** P2 (review): before the app reloads for an update, an action still on its way is put in the outbox (with its
+   *  key), so it is sent again after the reload — the server answers a repeat key with the first answer — and never
+   *  lost. Stop and "Add to it" are about now: not kept. Resolves when the outbox is saved. */
+  async parkInflight(): Promise<number> {
+    const park = this.s.inflight.filter((e) => !nowOnly(e.kind, e.args) && !this.s.outbox.some((x) => x.id === e.id));
+    if (park.length) {
+      this.set({ outbox: [...this.s.outbox, ...park] });
+      this.persist((c) => c.put('outbox', park.map((e) => ({ key: e.id, value: e }))));
+    }
+    await this.writes;
+    return park.length;
   }
 
   stop(): void {
@@ -350,13 +407,14 @@ export class V2Store {
     }
     if (!this.started) return;
     this.retryN = 0;
+    this.signedOutFlag.set(false); // signed in (again): an offline start may show the cache
     this.openStream();
     void this.replayOutbox();
     void this.today.load(); // W2: Today as it is now (on open, online, and every reconnect)
   }
 
   private handleFailure(e: unknown, _reason: string) {
-    if (e instanceof SignInRequired) { this.closeStream(); this.set({ auth: 'signin', connection: 'unreachable' }); return; }
+    if (e instanceof SignInRequired) { void this.lockedOut(); return; }
     if (e instanceof UpdateRequired) { this.closeStream(); this.set({ updateReady: true, connection: 'unreachable' }); return; }
     if (e instanceof Forbidden) { this.closeStream(); this.set({ connection: 'unreachable' }); this.notice(e.message, 'error'); return; }
     // the network or the server is down: try again with a growing pause
@@ -728,7 +786,7 @@ export class V2Store {
     const offline = () => refuse('offline', OFFLINE_WORDS[kind] ?? 'You’re offline — this needs your helper right now.');
     if (!this.env.online() || this.s.connection === 'offline') return isNowOnly ? offline() : requeue();
     if (this.s.updateReady) return isNowOnly ? refuse('client_too_old', 'Reload the app first.') : requeue('Saved. It will be sent after you reload.');
-    if (this.s.auth === 'signin') return isNowOnly ? refuse('locked', 'Sign in again first.') : requeue('Saved. It will be sent once you sign in again.');
+    if (this.s.auth === 'signin') return refuse('locked', 'Sign in again first.');
     // an earlier action on the same thing is still waiting in the outbox: this one goes behind it, in order
     if (!isNowOnly && entry.args.id && this.s.outbox.some((x) => x.args.id === entry.args.id)) {
       const r = requeue('It will be sent right after the change before it.', true);
@@ -742,7 +800,7 @@ export class V2Store {
     } catch (e) {
       if (e instanceof NetworkError) return isNowOnly ? offline() : requeue();
       if (e instanceof UpdateRequired) { this.set({ updateReady: true }); return isNowOnly ? refuse('client_too_old', 'Reload the app first.') : requeue('Saved. It will be sent after you reload.'); }
-      if (e instanceof SignInRequired) { this.set({ auth: 'signin' }); return isNowOnly ? refuse('locked', 'Sign in again first.') : requeue('Saved. It will be sent once you sign in again.'); }
+      if (e instanceof SignInRequired) { void this.lockedOut(); return refuse('locked', `${SIGNED_OUT_CLEARED}. Sign in again, then try again.`); }
       landed();
       if (e instanceof Conflict && !TRANSIENT_CONFLICTS.has(e.code)) { await this.showCurrent(entry); }
       const message = e instanceof Error ? e.message : 'That didn’t work.';
@@ -784,7 +842,7 @@ export class V2Store {
           } catch (e) {
             if (e instanceof NetworkError) { this.keep(tried, e.message); break; }
             if (e instanceof UpdateRequired) { this.keep(tried, e.message); this.set({ updateReady: true }); break; }
-            if (e instanceof SignInRequired) { this.keep(tried, e.message); this.set({ auth: 'signin' }); break; }
+            if (e instanceof SignInRequired) { void this.lockedOut(); break; }
             if (e instanceof Conflict && TRANSIENT_CONFLICTS.has(e.code)) { this.keep(tried, e.message); break; }
             // refused for good (409 changed meanwhile, 403, 404…): drop it, say so, show what is true now; the screen
             // that made it finds why in `refused` (a plan card shows it with Ask again)
@@ -907,7 +965,7 @@ export class V2Store {
   }
   dismiss(id: string) { this.set({ notices: this.s.notices.filter((n) => n.id !== id) }); }
   private noteError(e: unknown, quiet = false) {
-    if (e instanceof SignInRequired) { this.set({ auth: 'signin' }); return; }
+    if (e instanceof SignInRequired) { void this.lockedOut(); return; }
     if (e instanceof UpdateRequired) { this.set({ updateReady: true }); return; }
     if (e instanceof NetworkError) return; // offline: the cache is what there is
     if (e instanceof Forbidden || !quiet) this.notice(e instanceof Error ? e.message : 'That didn’t work.', 'error');

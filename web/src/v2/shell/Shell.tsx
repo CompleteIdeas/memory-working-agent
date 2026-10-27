@@ -95,23 +95,31 @@ function Toasts() {
 
 /**
  * P2: "A new version is ready · Reload". Two sources, one banner: a new build's service worker waiting (src/pwa/), or the
- * API's 426 (the store's updateReady), which also makes the page look for that worker first. Reload never interrupts an
- * action on its way: it waits (a few seconds at most) until nothing is in flight and the outbox is saved, then the new
- * worker takes over and the page reloads once. What waits in the outbox is in IndexedDB and is sent after the reload.
+ * API's 426 (the store's updateReady), which also makes the page look for that worker first. Reload waits up to 15 s
+ * for actions on their way to land; anything still in flight then is put in the outbox with its key (parkInflight) and
+ * the outbox is saved, so it is sent again after the reload and never lost (the server answers a repeated key with its
+ * first answer). Then the new worker takes over and the page reloads once. If no new build arrives within ~20 s the
+ * banner says "Couldn’t get the update — try again" and the button works again (src/pwa/update.ts).
  */
+export const RELOAD_WAIT_MS = 15_000;
 export function UpdateBar() {
   const store = useStore();
   const { updateReady } = useMeta();
   const update = useUpdate();
-  const [busy, setBusy] = useState(false);
+  const [preparing, setPreparing] = useState(false);
   useEffect(() => { if (updateReady) serverTooOld(); }, [updateReady]);
   const words = updateWords(update) ?? (updateReady ? { text: 'A new version is ready', button: 'Reload' } : null);
   if (!words) return null;
+  const busy = preparing || update.phase === 'applying' || update.phase === 'reloading';
   const reload = async () => {
     if (busy) return;
-    setBusy(true);
-    for (let i = 0; i < 50 && store.getState().inflight.length; i++) await new Promise((r) => setTimeout(r, 100));
-    await Promise.race([store.idle(), new Promise((r) => setTimeout(r, 2_000))]);
+    setPreparing(true);
+    try {
+      const t0 = Date.now();
+      while (store.getState().inflight.length && Date.now() - t0 < RELOAD_WAIT_MS) await new Promise((r) => setTimeout(r, 100));
+      await store.parkInflight();
+      await Promise.race([store.idle(), new Promise((r) => setTimeout(r, 2_000))]);
+    } finally { setPreparing(false); }
     applyUpdate();
   };
   return (
@@ -170,7 +178,8 @@ export function Shell() {
   useEffect(() => { if (first.current) { first.current = false; return; } main.current?.focus({ preventScroll: true }); }, [view]);
   const ask = useCallback((a?: AskAbout) => { setWorkOpen(false); setAbout(a ?? contextRef.current); setAskOpen(true); }, []);
 
-  if (auth === 'signin') return <div className="v2app"><SignIn /><UpdateBar /></div>;
+  // P2 (review): the toasts show here too ("Signed out — this phone’s copy was cleared")
+  if (auth === 'signin') return <div className="v2app"><SignIn /><Toasts /><UpdateBar /></div>;
   const Screen = SCREENS[view];
   return (
     <div className="v2app">
