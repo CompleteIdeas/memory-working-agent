@@ -172,3 +172,48 @@ export function notePairingFailure(source: string, now = Date.now()): void {
   const l = failures.get(source) ?? []; l.push(now); failures.set(source, l);
 }
 export function resetPairingThrottle(): void { failures.clear(); }
+
+/** W5: rename a device (Settings › Devices). False when there is no such active device. */
+export function renameDevice(id: string, name: string): DeviceRow | null {
+  const clean = name.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+  if (!clean) return null;
+  const d = appDb();
+  const ok = d.transaction(() => {
+    const r = d.prepare('UPDATE devices SET name = ? WHERE id = ? AND revoked_at IS NULL').run(clean, id);
+    if (!r.changes) return false;
+    const seq = recordEvent({ entity: 'device', id, payload: { name: clean } }, d);
+    d.prepare('UPDATE devices SET updated_seq = ? WHERE id = ?').run(seq, id);
+    return true;
+  })();
+  return ok ? listDevices().find((x) => x.id === id) ?? null : null;
+}
+
+/** W5: one active device's name (GET /me tells a paired phone what it is called). */
+export function deviceName(id: string): string | null {
+  const r = appDb().prepare('SELECT name FROM devices WHERE id = ? AND revoked_at IS NULL').get(id) as { name: string } | undefined;
+  return r?.name ?? null;
+}
+
+/**
+ * W5: failed password sign-ins (POST /api/v1/session), the same shape as the pairing throttle but its own count, so
+ * wrong passwords never lock out pairing (or the other way round): at most 10 per 10 minutes from one address, and a
+ * global ceiling. In memory.
+ */
+const SIGNIN_PER_SOURCE = 10, SIGNIN_GLOBAL = 200;
+const signinFailures = new Map<string, number[]>();
+export function signInThrottled(source: string, now = Date.now()): boolean {
+  if (recent(signinFailures.get(source) ?? [], now).length >= SIGNIN_PER_SOURCE) return true;
+  let all = 0; for (const [k, v] of signinFailures) { const r = recent(v, now); if (!r.length) signinFailures.delete(k); all += r.length; }
+  return all >= SIGNIN_GLOBAL;
+}
+export function noteSignInFailure(source: string, now = Date.now()): void {
+  const l = signinFailures.get(source) ?? []; l.push(now); signinFailures.set(source, l);
+}
+export function resetSignInThrottle(): void { signinFailures.clear(); }
+
+/** W5: the request carries a paired device's cookie that is still valid (the legacy page gate lets the app load). */
+export function hasValidDeviceCookie(req: IncomingMessage): boolean {
+  const c = deviceCookie(req);
+  if (!c) return false;
+  try { return !!deviceForToken(c); } catch { return false; }
+}

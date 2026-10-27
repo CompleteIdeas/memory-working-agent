@@ -31,6 +31,7 @@ import { setAskRouteDeps } from '../src/api/routes/ask.js';
 import { insertAsk, buildPlan } from '../src/v2/ask.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setSettingsRouteDeps } from '../src/api/routes/settings.js';
 
 const spec = parse(readFileSync(new URL('../api/openapi.yaml', import.meta.url), 'utf8'));
 const METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
@@ -156,12 +157,21 @@ beforeAll(async () => {
   const planned = insertAsk({ text: 'Learn everything about the rules', projectId: eventing.id, route: askRoute, kind: 'plan', mode: 'auto', plan: built.plan!, state: 'planned', createdAt: Date.UTC(2026, 10, 9, 14, 0) });
   const answered = insertAsk({ text: 'When do entries close?', projectId: eventing.id, route: askRoute, kind: 'answer', mode: 'auto', state: 'answered' });
   Object.assign(ids, { plannedAsk: planned.id, answeredAsk: answered.id });
+  // W5: settings, spending and saved logins in a scratch folder; a fake password and fake sign-in flows (no network)
+  const w5 = mkdtempSync(join(tmpdir(), 'mwa-w5-contract-'));
+  Object.assign(process.env, { MWA_CONFIG_PATH: join(w5, 'mwa.config.json'), MWA_TOKEN_LOG: join(w5, 'tokens.jsonl'), MWA_VAULT_PATH: join(w5, 'vault.json') });
+  setSettingsRouteDeps({
+    passwordSet: () => true, checkPassword: (pw) => pw === 'right-password', issueSession: () => 'session-token-for-tests',
+    connections: () => ({ googleClient: true, gmailAppPassword: false, googleConnected: false, outlookDeviceCode: true, microsoftClient: false, outlookConnected: false }),
+    startGoogle: () => 'https://accounts.google.example/consent', startOutlook: () => 'https://login.microsoft.example/consent',
+    startOutlookDeviceCode: async () => ({ user_code: 'ABCD-1234', verification_uri: 'https://microsoft.com/devicelogin', expires_in: 900 }),
+  });
   const v1 = createV1(v1Routes(), { authenticate: () => TEST_CALLER, sameOrigin: () => true });
   server = createServer(async (req, res) => { if (!(await v1(req, res))) { res.writeHead(404); res.end(); } });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
-afterAll(() => { server?.close(); setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); setTodayDeps(null); });
+afterAll(() => { server?.close(); setSettingsRouteDeps(null); for (const k of ['MWA_CONFIG_PATH', 'MWA_TOKEN_LOG', 'MWA_VAULT_PATH']) delete process.env[k]; setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); setTodayDeps(null); });
 
 /** One request per operation (and a few error cases). Slices append theirs. */
 const ids: Record<string, string> = {};
@@ -313,6 +323,31 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /today/wrap/done', path: '/today/wrap/done', init: post, status: 200 },
   { op: 'GET /sync', path: '/sync?collections=today', status: 200 },
   { op: 'GET /sync', path: '/sync?since=1&collections=today,jobs,important', status: 200 },
+  // W5 settings, sign-in, accounts, saved logins, files
+  { op: 'GET /me', path: '/me', status: 200 },
+  { op: 'POST /session', path: '/session', init: { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'right-password' }) }, status: 200 },
+  { op: 'POST /session', path: '/session', init: { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'wrong' }) }, status: 401 },
+  { op: 'DELETE /session', path: '/session', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 200 },
+  { op: 'PATCH /devices/{id}', path: '/devices/dev_nope', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ name: 'Kitchen tablet' }) }), status: 404 },
+  { op: 'PATCH /devices/{id}', path: '/devices/dev_nope', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ name: '' }) }), status: 400 },
+  { op: 'GET /settings', path: '/settings', status: 200 },
+  { op: 'PATCH /settings', path: '/settings', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ helperName: 'Juniper', ownerName: 'Robert', timeZone: 'America/New_York', firstRunDone: true, features: { sorting: false } }) }), status: 200 },
+  { op: 'PATCH /settings', path: '/settings', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ timeZone: 'Mars/Olympus' }) }), status: 400 },
+  { op: 'PATCH /settings', path: '/settings', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ color: 'red' }) }), status: 400 },
+  { op: 'GET /spending', path: '/spending', status: 200 },
+  { op: 'PATCH /spending', path: '/spending', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ monthlyUsd: 20, perFireUsd: 0.3 }) }), status: 200 },
+  { op: 'PATCH /spending', path: '/spending', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ monthlyUsd: null, perFireUsd: null }) }), status: 200 },
+  { op: 'PATCH /spending', path: '/spending', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ perFireUsd: 50 }) }), status: 400 },
+  { op: 'GET /accounts', path: '/accounts', status: 200 },
+  { op: 'POST /accounts/{provider}/connect', path: '/accounts/google/connect', init: post, status: 200 },
+  { op: 'POST /accounts/{provider}/connect', path: '/accounts/outlook/connect', init: post, status: 200 },
+  { op: 'POST /accounts/{provider}/connect', path: '/accounts/yahoo/connect', init: post, status: 404 },
+  { op: 'GET /vault', path: '/vault', status: 200 },
+  { op: 'POST /vault/forget', path: '/vault/forget', init: () => ({ ...post(), body: JSON.stringify({ name: 'nothing saved' }) }), status: 404 },
+  { op: 'POST /files', path: () => `/files?projectId=${ids.eventing}&name=notes.txt`, init: () => ({ method: 'POST', headers: { 'idempotency-key': `contract-key-${++keyN}`, 'content-type': 'text/plain' }, body: 'Entries close Friday.' }), status: 201 },
+  { op: 'POST /files', path: '/files?projectId=pr_nope&name=notes.txt', init: () => ({ method: 'POST', headers: { 'idempotency-key': `contract-key-${++keyN}`, 'content-type': 'text/plain' }, body: 'x' }), status: 404 },
+  { op: 'GET /files', path: () => `/files?projectId=${ids.eventing}`, status: 200 },
+  { op: 'GET /files', path: '/files', status: 200 },
 ];
 
 describe('responses match the contract', () => {

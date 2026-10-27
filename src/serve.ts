@@ -60,7 +60,10 @@ import { goalsMentioned, WORK_NOTE_HEAD } from './work-note.js';
 import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, runApproved, recentApprovalOutcomes, recentAutoApproved } from './tools/approval.js';
 import { logger, readLogs, type LogLevel } from './logger.js';
 import { createV1Handler } from './api/v1.js';
-import { makeAuthenticate } from './api/auth.js';
+import { makeAuthenticate, hasValidDeviceCookie } from './api/auth.js';
+import { setSettingsRouteDeps } from './api/routes/settings.js';
+import { handleLegacyFiles, signedOutPageAllowed } from './api/legacy.js';
+import { applyStoredSettings } from './v2/settings.js';
 import { setJobRouteDeps, capFor, setCap } from './api/routes/jobs.js';
 import { setStreamDeps } from './api/routes/stream.js';
 import { startCalendarSync } from './sync/calendar.js';
@@ -100,7 +103,7 @@ import { disconnectMicrosoft } from './connectors/microsoft.js';
 import { setSetupDeps, listSetupRequests, submitSetupRequest, cancelSetupRequest } from './connect/setup.js';
 import { awmCliPath, loadEmbeddings, loadPostgresStore } from './awm-api.js';
 import { MEMORY_OFF, agentMemory } from './memory-off.js';
-import { listFiles, insideRoot, fileHeaders, saveUpload, deleteFile, sessionFolder, uploadsIn, MAX_UPLOAD, readShares, createShare, revokeShare, shareFor } from './files.js';
+import { fileHeaders, sessionFolder, uploadsIn, shareFor } from './files.js';
 import { offersBackground, OFFER_TEXT, startBackgroundWork, continueGoal, resumeInstruction } from './handoff.js';
 import { scheduleRows, scheduleControl, type ScheduleAction } from './schedule-api.js';
 import { liveRuns, FINAL_EVENTS } from './live-runs.js';
@@ -718,6 +721,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   }, 15_000).unref();
 
   loadEnv();
+  // v2 (W5): what Settings saved that the server reads from the environment (time zone, mail sorting, the per-fire
+  // limit), unless the deployment set it — before the calendar, mail and triage loops start.
+  applyStoredSettings();
 
   // THE INBOX (BL-06): drop an instruction file (*.md / *.txt) into <workspace>/inbox and MWA works it
   // unattended — in Docker, /data/mwa-workspace/inbox — writes outbox/<id>.md, and posts the result to
@@ -837,7 +843,22 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
     } catch (e) { logger.error('v2', 'jobs migration failed (it is tried again at the next start)', { error: (e as Error).message.slice(0, 200) }); }
     finally { m.close(); }
   })();
-  const v1 = createV1Handler({ authenticate: makeAuthenticate({ passwordSet: !!ACCESS_PW, sessionValid: authed }), sameOrigin: sameOriginOk });
+  const authenticate = makeAuthenticate({ passwordSet: !!ACCESS_PW, sessionValid: authed });
+  const v1 = createV1Handler({ authenticate, sameOrigin: sameOriginOk });
+  // v2 (W5): sign-in, Settings and Connect for the v2 app use the server's own password, session and sign-in flows.
+  setSettingsRouteDeps({
+    passwordSet: () => !!ACCESS_PW,
+    checkPassword: (pw) => !!ACCESS_PW && safeEqual(pw, ACCESS_PW),
+    issueSession: issueToken,
+    connections: () => ({
+      googleClient: !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET, gmailAppPassword: gmailImapConfigured(),
+      googleConnected: googleConfigured() || gmailImapConfigured(),
+      outlookDeviceCode: microsoftClientReady(), microsoftClient: !!process.env.MICROSOFT_CLIENT_ID, outlookConnected: microsoftConfigured(),
+    }),
+    startGoogle: () => startGmailConnect(false),
+    startOutlookDeviceCode: () => startMicrosoftDeviceCode(false),
+    startOutlook: () => startMicrosoftConnect(false),
+  });
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');
@@ -867,7 +888,11 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         // BL-70: a share link opens one file for whoever holds it: its page, the app's built assets
         // and the share API answer without the password. The token is the whole permission.
         // v2: /api/v1 checks its own callers (a paired phone has no password session), so the gate lets it through.
-        const shared = p.startsWith('/s/') || p.startsWith('/api/share/') || p.startsWith('/assets/') || p === '/api/v1' || p.startsWith('/api/v1/');
+        // v2 (W5): /api/files checks its own callers too (handleLegacyFiles), and the app's page loads for /pair, the v2
+        // app and a paired device, so they can show their own sign-in and pairing screens (src/api/legacy.ts).
+        const shared = p.startsWith('/s/') || p.startsWith('/api/share/') || p.startsWith('/assets/') || p === '/api/v1' || p.startsWith('/api/v1/')
+          || p === '/api/files' || p.startsWith('/api/files/')
+          || signedOutPageAllowed(p, url.search, !p.startsWith('/api/') && hasValidDeviceCookie(req));
         if (!authed(req) && p !== '/api/health' && !shared) {
           if (p.startsWith('/api/')) { res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'locked', message: 'Sign in to continue.' })); return; }
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(LOGIN_HTML); return;
@@ -1223,61 +1248,11 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         res.end(JSON.stringify({ name: hit.share.path.split('/').pop(), size: statSync(hit.abs).size, expires: hit.share.expires, formats: exportFormats(hit.abs) }));
         return;
       }
-      // BL-70: the person's files — what MWA wrote under the workspace, and what they added.
-      if (p.startsWith('/api/files')) {
-        const root = resolve(loadConfig().workspace ?? './mwa-workspace');
-        const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
-        if (p === '/api/files' && req.method === 'GET') { json(200, { files: listFiles(root).map((f) => ({ ...f, formats: exportFormats(f.path) })) }); return; }
-        if (p === '/api/files/raw' && (req.method === 'GET' || req.method === 'HEAD')) {
-          const abs = insideRoot(root, url.searchParams.get('path') ?? '');
-          if (!abs || !existsSync(abs) || !statSync(abs).isFile()) { json(404, { error: 'not found' }); return; }
-          res.writeHead(200, fileHeaders(abs, statSync(abs).size, url.searchParams.get('download') === '1'));
-          if (req.method === 'HEAD') { res.end(); return; }
-          createReadStream(abs).pipe(res);
-          return;
-        }
-        if (p === '/api/files/export' && req.method === 'GET') {
-          const abs = insideRoot(root, url.searchParams.get('path') ?? '');
-          if (!abs || !existsSync(abs) || !statSync(abs).isFile()) { json(404, { error: 'not found' }); return; }
-          await sendExport(res, abs, url.searchParams.get('format') ?? '');
-          return;
-        }
-        if (p === '/api/files/shares' && req.method === 'GET') {
-          const path = url.searchParams.get('path');
-          json(200, { shares: readShares(root).filter((x) => !path || x.path === path) });
-          return;
-        }
-        if (req.method === 'POST' && !sameOriginOk(req)) { json(403, { ok: false, error: 'cross-origin request blocked' }); return; }
-        if (p === '/api/files/share' && req.method === 'POST') {
-          const b = await readBody(req);
-          const share = createShare(root, String(b.path ?? ''), Number(b.days ?? 7));
-          json(share ? 200 : 404, share ? { ok: true, share } : { ok: false, message: 'No such file.' });
-          return;
-        }
-        if (p === '/api/files/unshare' && req.method === 'POST') {
-          const b = await readBody(req);
-          json(200, { ok: revokeShare(root, String(b.token ?? '')) });
-          return;
-        }
-        if (p === '/api/files/upload' && req.method === 'POST') {
-          // The body is the file itself; name and chat come in the query. Capped while reading.
-          const folder = `${sessionFolder(url.searchParams.get('session') || 'default')}/uploads`;
-          const chunks: Buffer[] = []; let size = 0;
-          for await (const c of req) {
-            size += (c as Buffer).length;
-            if (size > MAX_UPLOAD) { json(413, { ok: false, message: `Too big: the limit is ${Math.round(MAX_UPLOAD / 1048576)} MB.` }); req.destroy(); return; }
-            chunks.push(c as Buffer);
-          }
-          try { json(200, { ok: true, path: saveUpload(root, folder, url.searchParams.get('name') ?? 'upload', Buffer.concat(chunks)) }); }
-          catch (e) { json(400, { ok: false, message: (e as Error).message }); }
-          return;
-        }
-        if (p === '/api/files/delete' && req.method === 'POST') {
-          const b = await readBody(req);
-          json(200, { ok: deleteFile(root, String(b.path ?? '')) });
-          return;
-        }
-        json(404, { error: 'not found' }); return;
+      // BL-70: the person's files — what MWA wrote under the workspace, and what they added. W5: the same callers as
+      // /api/v1 (the session, this machine, a paired device with the scope), password or not (src/api/legacy.ts).
+      if (p === '/api/files' || p.startsWith('/api/files/')) {
+        await handleLegacyFiles(req, res, url, { root: () => resolve(loadConfig().workspace ?? './mwa-workspace'), authenticate, sameOrigin: sameOriginOk, sendExport });
+        return;
       }
       // BL-71d: conversations to go back to, from any device.
       if (p === '/api/conversations' && req.method === 'GET') {
@@ -1969,6 +1944,7 @@ button{width:100%;margin-top:10px;border:0;border-radius:3px;background:var(--si
 <button type="submit">Unlock</button>
 <div class="err" id="err"></div>
 </form><script>
+try{if(localStorage.getItem('mwa-ui')==='v2'&&!/[?&]ui=/.test(location.search)){location.replace('/?ui=v2');}}catch(_){}
 async function go(e){e.preventDefault();var err=document.getElementById('err');err.textContent='';
 try{var r=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:document.getElementById('pw').value})});
 if(r.ok){location.href='/';}else{var d=await r.json().catch(function(){return{}});err.textContent=d.message||'Wrong password.';}}

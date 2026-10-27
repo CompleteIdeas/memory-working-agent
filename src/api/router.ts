@@ -27,6 +27,8 @@ export interface RouteCtx {
   caller: string;
   /** who is calling (null on a public route with nobody signed in) */
   who: Caller | null;
+  /** W5: a route with `rawBody` gets the request body as bytes here (and `body` stays undefined) */
+  raw?: Buffer;
 }
 export interface Reply {
   status?: number; body?: unknown; headers?: Record<string, string>;
@@ -38,7 +40,12 @@ export interface Reply {
   transient?: boolean;
 }
 export type Handler = (ctx: RouteCtx) => Promise<Reply> | Reply;
-export interface Route { method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'; path: string; scope: Scope; handler: Handler }
+export interface Route {
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'; path: string; scope: Scope; handler: Handler;
+  /** W5 (file upload): the body is not JSON; it is read as bytes up to `max` and handed over as ctx.raw. `tooLarge` is
+   *  the refusal's plain words. Every other check (scope, same-origin, Idempotency-Key over the bytes) still applies. */
+  rawBody?: { max: number; tooLarge: string };
+}
 
 export interface RouterDeps {
   /** who is calling, or null when nobody valid is (src/api/auth.ts makeAuthenticate) */
@@ -84,9 +91,12 @@ function compile(path: string): (p: string) => Record<string, string> | null {
   };
 }
 
-async function readRaw(req: IncomingMessage): Promise<Buffer> {
+async function readRaw(req: IncomingMessage, max = MAX_BODY, tooLarge = 'The request is too large.'): Promise<Buffer> {
+  // a declared length over the limit is refused before a byte is read
+  const declared = Number(req.headers['content-length']);
+  if (Number.isFinite(declared) && declared > max) throw new ApiError(413, 'too_large', tooLarge);
   let size = 0; const chunks: Buffer[] = [];
-  for await (const c of req) { const b = Buffer.isBuffer(c) ? c : Buffer.from(c); size += b.length; if (size > MAX_BODY) throw new ApiError(413, 'too_large', 'The request is too large.'); chunks.push(b); }
+  for await (const c of req) { const b = Buffer.isBuffer(c) ? c : Buffer.from(c); size += b.length; if (size > max) throw new ApiError(413, 'too_large', tooLarge); chunks.push(b); }
   return Buffer.concat(chunks);
 }
 function parseJson(raw: Buffer): unknown {
@@ -187,8 +197,8 @@ export function createV1(routes: Route[], deps: RouterDeps): (req: IncomingMessa
       if (write && !bearerCall && !deps.sameOrigin(req)) throw new ApiError(403, 'cross_origin', 'Cross-site requests are blocked.');
 
       const caller = who ? (who.kind === 'device' ? `device:${who.id}` : who.id) : 'anonymous'; // each device: its own key space
-      const raw = write ? await readRaw(req) : Buffer.alloc(0);
-      const body = write ? parseJson(raw) : undefined;
+      const raw = write ? await readRaw(req, r.rawBody?.max, r.rawBody?.tooLarge) : Buffer.alloc(0);
+      const body = write && !r.rawBody ? parseJson(raw) : undefined;
       if (write && r.scope !== 'public') {
         const key = String(req.headers['idempotency-key'] ?? '');
         if (!/^[A-Za-z0-9._:-]{8,128}$/.test(key)) throw new ApiError(400, 'idempotency_key_required', 'Send an Idempotency-Key header (8–128 letters, digits, . _ : -).');
@@ -203,7 +213,7 @@ export function createV1(routes: Route[], deps: RouterDeps): (req: IncomingMessa
 
       let status: number, out: Reply;
       try {
-        out = await r.handler({ req, url, params, body, caller, who });
+        out = await r.handler({ req, url, params, body, caller, who, ...(r.rawBody ? { raw } : {}) });
         status = out.status ?? 200;
       } catch (e) {
         if (!(e instanceof ApiError) || e.status >= 500) throw e;

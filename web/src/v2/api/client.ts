@@ -70,6 +70,20 @@ export type Today = Schemas['Today'];
 export type TodayAck = Schemas['TodayAck'];
 export type TodaySeen = Json<'/today/seen', 'post', 200>;
 export type SyncCollection = 'jobs' | 'calendar' | 'mail' | 'projects' | 'turns' | 'important';
+// W5: who am I, sign-in, settings, spending, accounts, saved logins, files
+export type Me = Schemas['Me'];
+export type SignedIn = Schemas['SignedIn'];
+export type HelperSettings = Schemas['HelperSettings'];
+export type Feature = Schemas['Feature'];
+export type Spending = Schemas['Spending'];
+export type Account = Schemas['Account'];
+export type ConnectStart = Schemas['ConnectStart'];
+export type VaultEntry = Schemas['VaultEntry'];
+export type UploadedFile = Schemas['UploadedFile'];
+export type FileRow = Schemas['FileRow'];
+export type FileList = Json<'/files', 'get', 200>;
+export type SettingsPatch = { helperName?: string; ownerName?: string | null; timeZone?: string; firstRunDone?: boolean; features?: { sorting?: boolean } };
+export type SpendingPatch = { monthlyUsd?: number | null; perFireUsd?: number | null };
 
 /** The version this build reports; set by vite.config.ts from web/package.json. */
 declare const __MWA_WEB_VERSION__: string | undefined;
@@ -126,6 +140,8 @@ export interface CallOpts {
   path?: Record<string, string>;
   query?: Record<string, string | number | undefined | null>;
   body?: unknown;
+  /** W5: a body sent as-is (a file), with this content type, instead of JSON */
+  raw?: { data: Blob | ArrayBuffer | Uint8Array; type: string };
   /** writes: the action's key; reuse it to retry the same action. A fresh one is made when absent. */
   key?: string;
   signal?: AbortSignal;
@@ -174,13 +190,15 @@ export class MwaClient {
     const key = write ? (o.key ?? newKey()) : undefined;
     const headers: Record<string, string> = { accept: 'application/json', 'x-mwa-client': `web/${this.version}` };
     if (key) headers['idempotency-key'] = key;
-    if (write && o.body !== undefined) headers['content-type'] = 'application/json';
+    if (write && o.raw) headers['content-type'] = o.raw.type;
+    else if (write && o.body !== undefined) headers['content-type'] = 'application/json';
     const tries = 1 + (write ? (this.opts.inProgressRetries ?? 2) : 0);
     for (let attempt = 1; ; attempt++) {
       this.opts.onRequest?.(method, url, template);
       let res: Response;
       try {
-        res = await this.f(url, { method, headers, body: write && o.body !== undefined ? JSON.stringify(o.body) : undefined, credentials: 'same-origin', signal: o.signal });
+        const body = !write ? undefined : o.raw ? (o.raw.data as BodyInit) : o.body !== undefined ? JSON.stringify(o.body) : undefined;
+        res = await this.f(url, { method, headers, body, credentials: 'same-origin', signal: o.signal });
       } catch (e) {
         if ((e as { name?: string })?.name === 'AbortError') throw e;
         throw new NetworkError(undefined, e);
@@ -289,6 +307,25 @@ export class MwaClient {
   finishCheckin(o: { key?: string } = {}) { return this.post<TodayAck>('/today/checkin/done', { key: o.key }); }
   finishWrap(o: { key?: string } = {}) { return this.post<TodayAck>('/today/wrap/done', { key: o.key }); }
   async deleteTriageRule(id: string, o: { key?: string } = {}) { return (await this.call<unknown>('DELETE', '/triage/rules/{id}', { path: { id }, key: o.key })).body; }
+
+  // ---- W5: who am I, sign-in, settings, spending, accounts, saved logins, files ----
+  getMe() { return this.get<Me>('/me'); }
+  signIn(password: string, o: { key?: string } = {}) { return this.post<SignedIn>('/session', { body: { password }, key: o.key }); }
+  async signOut(o: { key?: string } = {}) { return (await this.call<{ signedOut: true }>('DELETE', '/session', { key: o.key })).body; }
+  async renameDevice(id: string, name: string, o: { key?: string } = {}) { return (await this.call<{ device: Device }>('PATCH', '/devices/{id}', { path: { id }, body: { name }, key: o.key })).body; }
+  getSettings() { return this.get<HelperSettings>('/settings'); }
+  async updateSettings(body: SettingsPatch, o: { key?: string } = {}) { return (await this.call<HelperSettings>('PATCH', '/settings', { body, key: o.key })).body; }
+  getSpending() { return this.get<Spending>('/spending'); }
+  async updateSpending(body: SpendingPatch, o: { key?: string } = {}) { return (await this.call<Spending>('PATCH', '/spending', { body, key: o.key })).body; }
+  listAccounts() { return this.get<{ accounts: Account[] }>('/accounts'); }
+  connectAccount(provider: 'google' | 'outlook', o: { key?: string } = {}) { return this.post<ConnectStart>('/accounts/{provider}/connect', { path: { provider }, key: o.key }); }
+  listVault() { return this.get<{ entries: VaultEntry[] }>('/vault'); }
+  forgetVaultEntry(name: string, o: { key?: string } = {}) { return this.post<{ forgot: string; message: string }>('/vault/forget', { body: { name }, key: o.key }); }
+  listFiles(q: { projectId?: string } = {}) { return this.get<FileList>('/files', { query: q }); }
+  /** Add a file to a project (General when none); `path` of the answer goes into /ask `files`. */
+  async uploadFile(file: Blob, q: { name: string; projectId?: string }, o: { key?: string; signal?: AbortSignal } = {}) {
+    return (await this.call<UploadedFile>('POST', '/files', { query: q, raw: { data: file, type: 'application/octet-stream' }, key: o.key, signal: o.signal })).body;
+  }
 }
 
 function toError(status: number, body: unknown): ApiError {

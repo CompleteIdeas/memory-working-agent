@@ -4,7 +4,7 @@
  * screens come in W2 (Today, Calendar), W3 (Important, mail), W4 (Projects, Ask) and W5 (Settings, first run).
  */
 import { useMemo, useState } from 'react';
-import { useCalendar, useMeta, useNow, useProjects, useStore, useThread } from '../store/react';
+import { useCalendar, useNow, useProjects, useStore, useThread } from '../store/react';
 import { Important, ImportantBody } from '../screens/important/Important';
 import type { CalendarItem, Project } from '../api/client';
 import { Back, Chev, Person, ProjectIcon, Spark } from './icons';
@@ -172,33 +172,5 @@ function ProjectPane({ p, back, ask }: { p: Project; back?: () => void; ask: (a?
   );
 }
 
-export function Settings({ go }: ScreenProps) {
-  const { meta, updatedAt, connection } = useMeta();
-  const [theme, setTheme] = useState(() => { try { return localStorage.getItem('mwa-v2-theme') ?? 'auto'; } catch { return 'auto'; } });
-  const pick = (t: string) => {
-    setTheme(t);
-    try { localStorage.setItem('mwa-v2-theme', t); } catch { /* private mode */ }
-    if (t === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', t);
-  };
-  const classic = () => { try { localStorage.setItem('mwa-ui', 'v1'); } catch { /* */ } location.href = location.pathname; };
-  return (
-    <>
-      <button type="button" className="backbtn" onClick={() => go('today')}><Back />Today</button>
-      <header className="vh"><div className="vh-text"><p className="vh-kicker">This device</p><h1>Settings</h1></div></header>
-      <h2 className="sh" id="th-h">Look</h2>
-      <div className="seg" role="radiogroup" aria-labelledby="th-h">
-        {['light', 'dark', 'auto'].map((t) => (
-          <button key={t} type="button" role="radio" aria-checked={theme === t} onClick={() => pick(t)}>{t[0].toUpperCase() + t.slice(1)}</button>
-        ))}
-      </div>
-      <h2 className="sh">The app</h2>
-      <div className="card">
-        <div className="setrow"><span className="grow">Your helper<span className="s" style={{ display: 'block' }}>{meta ? `Version ${meta.server} · API ${meta.api}` : 'Not reached yet'}</span></span></div>
-        <div className="setrow"><span className="grow">Last updated<span className="s" style={{ display: 'block' }}>{updatedAt ? `${new Date(updatedAt).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' })}${connection === 'live' ? ' · live' : ''}` : 'Not yet'}</span></span></div>
-        <div className="setrow"><span className="grow">The new app is a preview<span className="s" style={{ display: 'block' }}>Switch back to the app you know at any time.</span></span>
-          <button type="button" className="vbtn" onClick={classic}>Use the current app</button></div>
-      </div>
-      <p className="weekly">Devices, connections and first-run setup come next.</p>
-    </>
-  );
-}
+// W5: Settings has its own screen (screens/settings)
+export { Settings } from '../screens/settings/Settings';
