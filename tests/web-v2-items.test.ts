@@ -11,7 +11,10 @@ import { MemoryCache } from '../web/src/v2/store/cache';
 import { groupItems, handledItems, ruleEffectLine, ruleLine, scopeChoice, skipLine, withPending, skippedWithPending, rulesWithPending } from '../web/src/v2/store/important';
 import { linksToHosts as clientLinksToHosts, showName } from '../web/src/v2/store/text';
 import { linksToHosts as serverLinksToHosts, displayName as serverDisplayName } from '../src/v2/mail-text';
-import { mergeAsks } from '../web/src/v2/screens/important/AskAbout';
+import { unshown } from '../web/src/v2/screens/ask/AskAbout';
+import { AnswerText } from '../web/src/v2/screens/ask/answerText';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { rowAction } from '../web/src/v2/screens/important/ItemRow';
 import type { Ask } from '../web/src/v2/api/client';
 
@@ -454,18 +457,16 @@ describe('answers about a thing (review of W3)', () => {
     id, createdAt: NOW, text, projectId: 'general', route: null, kind: 'answer', mode: null, about: { kind: 'item', id: 'it_a' }, files: [], source: 'typed', plan: null,
     state: answer ? 'answered' : 'running', choice: null, jobId: null, runId: null, turnId: null, answer, tainted: true, capUsd: null, parentId: null, focus: null, updatedSeq: 1, ...extra,
   });
-  it('asks are matched by id, not by their words: the same question asked twice keeps both answers', () => {
-    const qa = mergeAsks([ask('ask_1', 'Why does this matter?', 'First answer.')], [
-      { askId: 'ask_2', q: 'Why does this matter?', ts: NOW, a: 'Second answer.', state: 'answered', cross: ['Eventing'], tainted: true },
-      { askId: 'ask_1', q: 'Why does this matter?', ts: NOW, a: 'First answer.', state: 'answered', cross: [], tainted: true },
-    ]);
-    expect(qa.map((x) => [x.key, x.a])).toEqual([['ask_1', 'First answer.'], ['ask_2', 'Second answer.']]);
-    expect(qa[1].cross).toEqual(['Eventing']);
+  it('asks are matched by id, not by their words: the same question asked twice keeps both (W4’s AskAbout, the one used everywhere)', () => {
+    const mine = [{ q: 'Why does this matter?', askId: 'ask_1' }, { q: 'Why does this matter?', askId: 'ask_2' }, { q: 'Why does this matter?', askId: 'ask_2' }, { q: 'offline', askId: undefined }];
+    expect(unshown([ask('ask_1', 'Why does this matter?', 'First answer.')], mine, (m) => m.askId).map((m) => m.askId)).toEqual(['ask_2', undefined]);
   });
-  it('an answer still running in the list takes the answer the follow-up found; tainted carries through', () => {
-    const qa = mergeAsks([ask('ask_1', 'Q', null)], [{ askId: 'ask_1', q: 'Q', ts: NOW, a: 'A.', state: 'answered', cross: [], tainted: true }]);
-    expect(qa).toEqual([{ key: 'ask_1', q: 'Q', a: 'A.', state: 'answered', cross: [], tainted: true }]);
-    expect(mergeAsks([ask('ask_3', 'Q', 'A.', { tainted: false })], [])[0].tainted).toBe(false);
+  it('an answer that read the email says so, in the mail reader’s words, and its links show as hosts', () => {
+    const html = renderToStaticMarkup(createElement(AnswerText, { text: 'Sign up at https://oakwoodpta.example/volunteer?ref=x.', tainted: true, note: 'Based on what the email says — check before acting' }));
+    expect(html).toContain('Based on what the email says — check before acting');
+    expect(html).toContain('Sign up at oakwoodpta.example.');
+    expect(html).not.toMatch(/https?:/);
+    expect(renderToStaticMarkup(createElement(AnswerText, { text: 'Fine.', tainted: false }))).not.toContain('check before acting');
   });
   it('links in an answer show as their host, by the same rule as the server sanitiser', () => {
     const samples = [

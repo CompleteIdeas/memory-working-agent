@@ -241,6 +241,7 @@ export class ImportantFixtures {
       return { status: 200, body: msg };
     }
     if (path === '/ask/suggestions' || path === '/ask') {
+      if (!/^(item|mail|conflict):/.test(q.get('about') ?? '')) return null; // a job, an event, a draft: ./fixtures-w4.ts
       const about = this.aboutOf(q.get('about') ?? '');
       if (!about) return err(400, 'bad_about', 'about must be kind:id for something that exists.');
       if (path === '/ask/suggestions') return { status: 200, body: { about, suggestions: this.suggestions(about.kind, about.id) } };
@@ -417,7 +418,7 @@ export class ImportantFixtures {
   /** An ask about one thing (the general Ask is the Projects slice's): kept under the item, answered a moment later. */
   private ask(body: unknown, now: number): Resp | null {
     const b = (body ?? {}) as { text?: unknown; about?: { kind?: unknown; id?: unknown } };
-    if (!b.about) return null;
+    if (!b.about || !['item', 'mail', 'conflict'].includes(String(b.about.kind))) return null; // the rest: ./fixtures-w4.ts
     const text = typeof b.text === 'string' ? b.text.trim() : '';
     if (!text) return err(400, 'bad_text', 'Write something to ask.');
     const about = this.aboutOf(`${String(b.about.kind)}:${String(b.about.id)}`);

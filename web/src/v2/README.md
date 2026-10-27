@@ -1,4 +1,4 @@
-# MWA v2 web app (W1: shell, client, store, fixture mode · W3: Important and the mail reader)
+# MWA v2 web app (W1: shell, client, store, fixture mode · W3: Important and the mail reader · W4: Ask and Projects)
 
 The v2 app is opt-in until W6: open the app with `?ui=v2` (remembered on the device; `?ui=v1` goes back), or use
 Settings › "Use the current app". v1 is unchanged: v2 is a lazy chunk with its own stylesheet that v1 never loads.
@@ -16,13 +16,58 @@ web/src/v2/
   store/react.tsx     hooks: useJobs, useStatusPill, useCalendar, useProjects, useThread, useMail, useItems, useMeta…
   store/important.ts  W3: the Important list's pure parts (pending taps applied, groups, skipped line, Not important choices)
   shell/              the app frame (header + pill, Ask bar, tabs, sheets) and the W1 screen frames; v2.css
-  screens/important/  W3: "Worth a look" — rows, the item sheet, Not important, Show them, Your rules, Ask about this
+  screens/important/  W3: "Worth a look" — rows, the item sheet, Not important, Show them, Your rules
   screens/mail/       W3: the reader (sanitised text, reply-to warning, Draft a reply) and All email
+  screens/ask/        W4: the Ask sheet, what an ask became (answer followed live, plan card, job, offer),
+                      "Ask about this" (AskAbout, the one used everywhere), the words (logic.ts), answers as text
+                      (answerText.tsx) and adding files (upload.ts); ask.css
+  screens/projects/   W4: the Projects tab — the list, a project's thread, its Work and Files; projects.css
   dev/fixture-data.ts the approved prototype's example day (Monday, November 9, 2026, 9:10 AM)
   dev/fixtures.ts     FixtureServer: /api/v1 answered from that day (shapes checked against the spec)
   dev/fixtures-important.ts  W3: its Important list, skipped mail, rules, reader extras and about-asks
+  dev/fixtures-w4.ts  W4: its projects, threads and Ask (plans, choices, runs with live progress, offers, moves)
   dev/vite-plugin.ts  the same server as Vite dev/preview middleware
 ```
+
+## Ask and Projects (slice W4)
+
+- **The Ask sheet** (`screens/ask/AskSheet.tsx`, behind W1's Ask bar, Ask button and mic, same accessible names):
+  "To: Family & school · suggested" while typing (GET /projects/suggest, debounced; **Change** picks a project and the
+  person's choice wins, sent as `projectId`); Send is POST /ask through the outbox. What it became shows in place
+  (`AskOutcome.tsx`): an answer followed live (the `running` turn, the stream's `live` steps, then the answer — a new
+  turn with the same runId; GET /ask/{id} as well while it runs), the **plan card** (N04: the two choices in the
+  server's words with the ready time in this device's time, "Or narrow it…" with the server's narrower asks, Details
+  with "Stop if it costs more than $" from capDefault, at most $20; 410 "This plan is old — ask again", 409 files_gone
+  and archived in plain words), a job ("I’ll let you know · ready around …", and the way to the working sheet), or the
+  offer (Work on it in the background · Do it here now). An ask made offline waits in the outbox with its key; a plan
+  that comes back from the outbox shows when Ask is opened next.
+- **Files**: `upload.ts` posts to the legacy `/api/files/upload` (TODO: an /api/v1 upload) — it works with the
+  password sign-in, not yet on a paired phone (which is told so); fixture mode never touches the network.
+- **Voice** is P4: the mic opens the Ask sheet and says so.
+- **"Ask about this"** — ONE component everywhere: `<AskAbout kind id label … />` (`screens/ask/AskAbout.tsx`), used
+  by a project's Work tab (inline), an Important item's sheet and the mail reader (W3's copy is gone). Props:
+  - `kind` item | mail | event | draft | job | conflict; `id` that thing's id; `label` the chip's words ("About: …")
+    until the server names the thing — the server's label wins;
+  - `item?` an Important item: its answers arrive on the item's own stream (`item.qa`), which reads the asks again;
+  - `form?` `'inline'` (default) or `'sheet'` (questions in a sheet that closes once the helper is answering; the answer
+    still shows in place), `sheetId?` that sheet's id; `open?` start open; `prefill?` open with this question in the box;
+  - `noAsk?` no "Ask about this" (a phishing message) — earlier answers still show; `taintNote?` other words for the
+    tainted label (the mail reader: "Based on what the email says — check before acting"); `onAsked?(askId)`.
+  It shows the chip, the server's 2–3 questions (GET /ask/suggestions) and a box (a second tap while one is on its way
+  does nothing), and under "You asked" every ask about the thing, one per ask id (GET /ask?about=), with its answer
+  followed live (polling capped, only while visible), "using what I know from …" (earlier answers too) and the tainted
+  label. Answers everywhere are plain text with links as hosts (`answerText.tsx`, on `store/text.ts`, the server's rule).
+- **Projects** (`screens/projects/`): the list (icon, what it is doing or its last activity, Working / Waiting badges,
+  New project, archived ones under "Archived · N" with Restore); a project (Project options: Rename, Archive — not
+  General; "Ask about <name>"; tabs Conversation · Work · Files). The conversation pages back with "Earlier messages"
+  (`before`), shows the running answer with Stop and "Add to it" (steer), "using what I know from …", the About chip
+  on item-scoped questions, the offer, the divider before an imported conversation, and Move… on each message (with
+  Undo); its composer asks in the project, so a big ask gets its plan card there.
+- **Store** additions (`store/core.ts`, `store/react.tsx`): actions `ask`, `ask.choose`, `turn.move`,
+  `project.create|update|stop|steer|offer` through the outbox (`act(…, {quiet})` leaves a refusal to the screen);
+  `askOutcomes` (by outbox entry id), `askChoices`, `asks` (the stream's `ask` changes); `threadOlder`/`threadNext`
+  and `loadEarlier`; `loadProjectWork`, `loadAsk`; hooks `useAsk`, `useLive`, `useProjectActions`, `useJobMap`,
+  `useCalendarItem`, and `useThread(id).all / hasEarlier / loadEarlier`.
 
 ## Fixture mode
 
@@ -41,15 +86,21 @@ Build screens before the backend slices land. Two ways, same data:
 
 Scenarios: `N00` (default: one job working), `N06` (+ a job waiting at its 15¢ limit), `states` (one job in each of
 the eight server states), `old-client` (the server wants a newer app: 426), `sorting` (W3: sorting held back — "3
-messages are waiting to be sorted", "Older mail … wasn't sorted yet"). Every scenario's Important list has the
-prototype's items plus a phishing message and an unverified urgent one, and a rule made last week. The clock is frozen at the prototype's
+messages are waiting to be sorted", "Older mail … wasn't sorted yet"), `thread-long` (W4: Eventing has 80 older turns:
+paging). Every scenario's Important list has the prototype's items plus a phishing message and an unverified urgent one,
+and a rule made last week. Ask in fixture mode: two files or "learn everything / go through all / review all / triage /
+read all" give a plan (the prototype's PDFs are 76 and 73 pages); "[old]" in the text makes a plan that is a day old
+(410); a file whose name has "gone" in it is gone when chosen (409); "research …" gets the offer. The clock is frozen at the prototype's
 Monday 9:10 AM (`&now=<ISO>` overrides it), a dashed **simulated** tag shows in the header, and `&theme=dark|light`
-forces a theme. Writes it acts on: job stop / continue / open, calendar draft confirm / remove, project messages
-(a simulated answer follows on the stream).
+forces a theme. Writes it acts on: job stop / continue / open, calendar draft confirm / remove, project messages and
+asks (a simulated answer follows on the stream, with its progress), plan choices, projects (create, rename, archive),
+moving a turn, Stop, Steer and the offer.
 
 ## Tests
 
 - `npx vitest run tests/web-v2-client.test.ts tests/web-v2-store.test.ts tests/web-v2-fixtures.test.ts tests/web-v2-items.test.ts tests/web-v2-w3-fixtures.test.ts`
+- W4: `npx vitest run tests/web-v2-w4-store.test.ts tests/web-v2-w4-ui.test.ts tests/web-v2-w4-fixtures.test.ts tests/web-v2-w4-review.test.ts`,
+  and `node scripts/v2-w4-smoke.mjs --axe <axe.min.js> [--out <dir>]` (Ask, the plan card, Projects, at 390 and 1440)
 - `npm run build:ui && node scripts/v2-web-smoke.mjs --axe <path to axe.min.js> [--out <dir>]` — Playwright (the
   repo's playwright-core) against `vite preview` in fixture mode at 390×844 and 1440×900: pill and working sheet,
   tabs, Ask, IndexedDB, the offline outbox, the 426 path, axe and horizontal overflow; screenshots in `--out`.
@@ -61,5 +112,5 @@ forces a theme. Writes it acts on: job stop / continue / open, calendar draft co
 
 Today's composite (A10; Today shows the Important list's top 3 meanwhile), rules in Settings (W5; "Your rules" opens
 from the bottom of Important until then), the month's spending limit (the API has no spending summary yet: the sheet shows what the jobs cost),
-voice (P4: the mic opens the Ask sheet), files in Ask and Ask v1 (A6/W4: Ask posts to the project's thread), sign-in
+voice (P4: the mic opens the Ask sheet), an /api/v1 upload (W4 uses the legacy one until W5), sign-in
 and pairing screens (W5: a 401 shows "Sign in to continue"), the service worker's offline shell for v2 (P1/P2).

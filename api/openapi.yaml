@@ -1820,8 +1820,16 @@ paths:
       - { name: id, in: path, required: true, schema: { type: string } }
     post:
       operationId: stopProjectRun
-      summary: 'Stop the answer being written in this project. The step that is running finishes; nothing new starts. 409 nothing_running.'
+      summary: 'Stop the answer being written in this project. The step that is running finishes; nothing new starts. 409 nothing_running; with `runId`, 409 not_running when that run is not the one going now (it finished, or another started).'
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                runId: { type: string, description: 'The run the person meant (the running turn''s runId): a Stop never lands on a later run.' }
       responses:
         '200':
           description: Stopping.
@@ -1840,7 +1848,7 @@ paths:
       - { name: id, in: path, required: true, schema: { type: string } }
     post:
       operationId: steerProjectRun
-      summary: 'Add a note to the answer being written in this project (the "add to it" of a busy send). 409 nothing_running.'
+      summary: 'Add a note to the answer being written in this project (the "add to it" of a busy send). 409 nothing_running; with `runId`, 409 not_running when that run is not the one going now.'
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
@@ -1851,6 +1859,7 @@ paths:
               required: [text]
               properties:
                 text: { type: string, minLength: 1, maxLength: 4000 }
+                runId: { type: string, description: 'The run the person meant: the note never lands on a later run.' }
       responses:
         '200':
           description: Added.
