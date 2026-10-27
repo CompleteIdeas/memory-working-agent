@@ -218,7 +218,8 @@ try {
   if (regId && payloadText) {
     await page.close();
     page = await ctx.newPage();
-    await page.goto(`${BASE}/?ui=v1`); // the person chose the classic app (remembered as mwa-ui=v1)
+    await page.goto(`${BASE}/?ui=v1`); // the person chose the classic app (Settings remembers it as mwa-ui=v1)
+    await page.evaluate(() => localStorage.setItem('mwa-ui', 'v1'));
     for (let i = 0; i < 50 && !(await page.evaluate(() => !!navigator.serviceWorker.controller).catch(() => false)); i++) await sleep(200);
     const cdp2 = await ctx.newCDPSession(page);
     await cdp2.send('ServiceWorker.enable');

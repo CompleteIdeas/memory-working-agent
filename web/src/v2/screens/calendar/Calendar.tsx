@@ -131,7 +131,8 @@ export function Calendar({ desk, go }: ScreenProps) {
     ? <>{honest.note}</>
     : honest.state === 'partial' ? <>Nothing on the calendars I can see.</>
       : cal.loading && !shown.length ? <>Loading…</> : <><span className="big" aria-hidden="true">☀︎</span>Nothing planned. A free day!</>;
-  const offerConnect = () => { go('settings'); store.notice('Connecting a calendar from the new app comes with the next update. For now, use Settings in the current app.'); };
+  // W6: opens the classic app for this visit only (`?ui=v1` is not remembered)
+  const offerConnect = () => { store.notice('Connecting a calendar from the new app comes with the next update. Opening the classic app…'); location.assign(`${location.pathname}?ui=v1`); };
   const pickDay = (d: number) => { setSelected(d); setSay(null); };
   const onKeyStrip = (e: KeyboardEvent<HTMLDivElement>) => {
     const i = days.indexOf(selected);

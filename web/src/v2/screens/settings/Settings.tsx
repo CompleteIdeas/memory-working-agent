@@ -519,8 +519,8 @@ function About({ serverVersion, minClient, admin, restart }: { serverVersion: st
       <div className="card setcard">
         <div className="setrow"><div className="grow"><span className="rowtitle">Your helper</span><span className="s">{serverVersion ? `Version ${serverVersion}. Works with this app from version ${minClient ?? '1.0.0'}.` : 'Not reached yet.'}</span></div></div>
         <div className="setrow"><div className="grow"><span className="rowtitle">This app</span><span className="s">Version {WEB_VERSION}.</span></div></div>
-        <div className="setrow"><div className="grow"><span className="rowtitle">The new app is a preview</span><span className="s">Switch back to the app you know at any time.</span></div>
-          <button type="button" className="vbtn" onClick={classic}>Use the current app</button></div>
+        <div className="setrow"><div className="grow"><span className="rowtitle">The classic app</span><span className="s">Kept for one more release. It opens until you choose the new app again.</span></div>
+          <button type="button" className="vbtn" onClick={classic}>Use the classic app</button></div>
         {admin && <div className="setrow"><div className="grow"><span className="rowtitle">Setup</span><span className="s">Go through the welcome again: name, accounts, your phone.</span></div>
           <button type="button" className="vbtn vbtn-quiet" onClick={async () => { const o = await restart(); if (o.ok) window.dispatchEvent(new Event(START_CHECK_EVENT)); else setNote(said(o)); }}>Start the welcome again</button></div>}
       </div>

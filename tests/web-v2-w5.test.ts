@@ -156,7 +156,7 @@ describe('Settings\' data and words', () => {
   it('the pairing link opens the v2 app, even on a phone that never chose it', () => {
     expect(chooseUi('', null, '/pair')).toBe('v2');
     expect(chooseUi('', 'v1', '/pair/')).toBe('v2');
-    expect(chooseUi('', null, '/')).toBe('v1');
+    expect(chooseUi('', null, '/')).toBe('v2'); // W6: the new app is the default
     expect(isPairLocation({ pathname: '/pair', search: '' })).toBe(true);
     expect(isPairLocation({ pathname: '/', search: '?view=pair' })).toBe(true);
     expect(isPairLocation({ pathname: '/', search: '?view=settings' })).toBe(false);

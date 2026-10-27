@@ -187,8 +187,8 @@ function V1App() {
 }
 
 // v2 build, slice W1: the v2 app (web/src/v2) is chosen by `?ui=v2` (remembered in localStorage `mwa-ui`) or by
-// fixture mode (`?fixtures=1`); `?ui=v1` goes back. v1 stays the default until W6, and nothing in it changes: v2 is a
-// lazy chunk with its own styles that v1 never loads.
+// fixture mode (`?fixtures=1`). W6: v2 is the default; `?ui=v1` (or the classic choice in Settings) opens v1 for one
+// more release. v2 is a lazy chunk with its own styles that v1 never loads.
 const V2App = lazy(() => import('./v2'));
 export default function App() {
   const [ui] = useState(() => {
@@ -196,11 +196,20 @@ export default function App() {
     try { stored = localStorage.getItem('mwa-ui'); } catch { /* private mode */ }
     const pick = chooseUi(location.search, stored, location.pathname);
     // P3 review: a tapped notification opens v2 for that visit only (`from=notification`): a person who chose the
-    // classic app keeps it (until W6 makes v2 the default)
+    // classic app keeps it
     const remember = uiToRemember(location.search);
     if (remember) { try { localStorage.setItem('mwa-ui', remember); } catch { /* */ } }
     return pick;
   });
   if (ui === 'v2') return <Suspense fallback={null}><V2App /></Suspense>;
-  return <V1App />;
+  return (
+    <>
+      {/* W6: the classic app stays for one release, with a way back to the new one (the default), in every state */}
+      <div role="note" className="mono text-xs text-center py-1.5 px-4 text-dim">
+        This is the classic app, kept for one more release.{' '}
+        <a href="/?ui=v2" className="underline" onClick={() => { try { localStorage.setItem('mwa-ui', 'v2'); } catch { /* */ } }}>Back to the new app</a>
+      </div>
+      <V1App />
+    </>
+  );
 }
