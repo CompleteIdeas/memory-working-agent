@@ -112,7 +112,7 @@ export class SettingsFixtures {
 
   read(path: string, q: URLSearchParams): Resp | null {
     if (path === '/me') return { status: 200, body: this.me() };
-    const pl = this.plugins.read(path);
+    const pl = this.plugins.read(path, this.kind !== 'device');
     if (pl) return pl;
     if (path === '/devices') return { status: 200, body: { devices: this.devices } };
     if (path === '/settings') return { status: 200, body: this.settings };

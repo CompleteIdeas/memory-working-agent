@@ -10,6 +10,7 @@
  *   POST   /plugins/{id}/enable      turn a library plug-in on; refused while a required key is missing (admin)
  *   POST   /plugins/{id}/disable     turn a library plug-in off (admin)
  *   PUT    /plugins/{id}/keys        save keys, write-only: only the names that plug-in declares (admin)
+ *   DELETE /plugins/{id}/keys/{name} clear one saved key (a name that plug-in declares; not while it is on and needs it)
  *   DELETE /plugins/{id}             remove one of the owner's own (not a library one: turn that off) (admin)
  *   POST   /plugins/review           the safety review of an npm package; nothing is installed (admin)
  *   POST   /plugins/approve          install a package this server reviewed in the last 30 minutes, at the version it
@@ -28,13 +29,15 @@ import {
 import { externalInstallState } from '../../installer/policy.js';
 import { reviewConnector, type RiskReport } from '../../installer/review.js';
 import { loadConfig, type MwaConfig } from '../../config.js';
-import { upsertEnv } from '../../wizard.js';
+import { upsertEnv, removeEnv } from '../../wizard.js';
 import { installLogPath } from '../../paths.js';
 import { logger } from '../../logger.js';
 
 export interface PluginRouteDeps {
   /** write keys to .env and this process (wizard.ts upsertEnv) */
   saveEnv: (kv: Record<string, string>) => void;
+  /** remove keys from .env and this process (wizard.ts removeEnv) */
+  removeEnv: (names: string[]) => void;
   /** is this env var set (a key is "saved") */
   hasEnv: (name: string) => boolean;
   config: () => MwaConfig;
@@ -45,6 +48,7 @@ export interface PluginRouteDeps {
 }
 const realDeps: PluginRouteDeps = {
   saveEnv: (kv) => upsertEnv(kv),
+  removeEnv: (names) => removeEnv(names),
   hasEnv: (n) => !!process.env[n],
   config: () => loadConfig(),
   review: (pkg, cfg) => reviewConnector(pkg, cfg),
@@ -67,19 +71,53 @@ export function pluginView(c: ConnectorEntry, on: boolean) {
   };
 }
 
-/** A command-line argument that may carry a secret: shown as "•••". `--token abc`, `--api-key=abc`, `KEY=abc`, or a
- *  long token-looking string. The env block is never shown at all (names only). */
-const SECRET_FLAG = /(token|key|secret|password|passwd|pat|auth|credential|bearer)/i;
+/**
+ * A command-line argument that may carry a secret is masked with "•••" (the admin view; a caller without admin gets
+ * no arguments at all). Masked: the value after a secret-looking flag (`--token abc`, even `--key -abc`), after
+ * `-e`/`--env`/`-H`/`--header` (the name is kept: `DATABASE_URL=•••`, `Authorization: •••`), any `X=Y` whose name looks
+ * secret or whose value holds `:` `@` or `;` (connection strings, URLs), a URL's password (`user:•••@`), a URL whose
+ * path looks like a webhook or a token, a Bearer token, and a long token-looking string. The env block is never shown
+ * (names only).
+ */
+const MASK = '•••';
+const SECRET_FLAG = /(token|key|secret|password|passwd|pwd|pat|auth|credential|bearer|cookie|session|dsn|conn)/i;
+const VALUE_FLAG = /^(-e|--env|-H|--header|--headers)$/i;
+const IS_FLAG = /^-{1,2}[A-Za-z]/;
+function maskUrls(s: string): string {
+  return s
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/gi, `$1$2:${MASK}@`)
+    .replace(/((?:https?|wss?):\/\/[^\s/?#]+)([/?#][^\s]*)/gi, (m, host: string, rest: string) =>
+      (/hook|token|secret|key|sig=|signature|password|auth/i.test(host + rest) || /[/=][A-Za-z0-9_-]{20,}/.test(rest) ? `${host}/${MASK}` : m))
+    .replace(/\b(bearer|basic|token)\s+\S+/gi, `$1 ${MASK}`);
+}
+/** "NAME=value" → "NAME=•••"; "Header: value" → "Header: •••"; anything else → "•••" */
+function maskPair(a: string): string {
+  const eq = a.indexOf('='), col = a.indexOf(':');
+  if (eq > 0 && (col < 0 || eq < col)) return `${a.slice(0, eq)}=${MASK}`;
+  if (col > 0) return `${a.slice(0, col)}: ${MASK}`;
+  return MASK;
+}
+const TOKENISH = (a: string) => /^(sk|pk|ghp|gho|ghs|github_pat|xox[abpr]|ntn|secret|tvly|fc|glpat|AKIA)[-_]?[A-Za-z0-9_-]{8,}$/i.test(a)
+  || (/^[A-Za-z0-9_\-+/=]{32,}$/.test(a) && /\d/.test(a) && /[A-Za-z]/.test(a));
 export function redactArgs(args: string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = String(args[i]);
     const prev = i > 0 ? String(args[i - 1]) : '';
-    const eq = /^(-{0,2}[A-Za-z0-9_.-]+)=(.+)$/.exec(a);
-    if (eq && SECRET_FLAG.test(eq[1])) out.push(`${eq[1]}=•••`);
-    else if (/^-{1,2}[A-Za-z]/.test(prev) && !prev.includes('=') && SECRET_FLAG.test(prev) && !a.startsWith('-')) out.push('•••');
-    else if (/^(sk|pk|ghp|gho|github_pat|xox[abp]|ntn|secret|tvly|fc)[-_][A-Za-z0-9_-]{8,}$/i.test(a) || (/^[A-Za-z0-9_\-+/=]{32,}$/.test(a) && /\d/.test(a) && /[A-Za-z]/.test(a))) out.push('•••');
-    else out.push(a);
+    const prevTakesValue = IS_FLAG.test(prev) && !prev.includes('=');
+    if (prevTakesValue && VALUE_FLAG.test(prev)) { out.push(maskPair(a)); continue; }
+    if (prevTakesValue && SECRET_FLAG.test(prev)) { out.push(MASK); continue; }
+    const eq = /^(-{0,2}[A-Za-z0-9_.-]+)=([\s\S]*)$/.exec(a);
+    if (eq) {
+      if (VALUE_FLAG.test(eq[1])) out.push(`${eq[1]}=${maskPair(eq[2])}`);
+      else if (SECRET_FLAG.test(eq[1]) || /[:@;]/.test(eq[2])) out.push(`${eq[1]}=${MASK}`);
+      else out.push(a);
+      continue;
+    }
+    if (/^\s*(authorization|proxy-authorization|cookie|x-[a-z-]*(key|token|secret|auth)[a-z-]*)\s*:/i.test(a)) { out.push(maskPair(a)); continue; }
+    if (/(^|;)\s*(password|pwd|secret|token|key)\s*=/i.test(a)) { out.push(MASK); continue; }
+    if (TOKENISH(a)) { out.push(MASK); continue; }
+    out.push(maskUrls(a));
   }
   return out;
 }
@@ -90,14 +128,17 @@ function npmPackageOf(command: string, args: string[]): string | null {
   return pkg ?? null;
 }
 
-export function customViews() {
+/** Your own plug-ins. `full` (admin): the command with its arguments, secrets masked; otherwise the command name only
+ *  (a paired phone never gets the arguments at all — review of S1). */
+export function customViews(full: boolean) {
   const library = new Set(listConnectors().map((c) => c.id));
   return Object.entries(listMcpServers()).filter(([id]) => !library.has(id)).map(([id, spec]) => {
     const args = Array.isArray(spec.args) ? spec.args.map(String) : [];
     const shown = redactArgs(args);
+    const cmd = String(spec.command ?? '');
     return {
-      id, command: [String(spec.command ?? ''), ...shown].join(' ').trim(), package: npmPackageOf(String(spec.command ?? ''), shown),
-      envNames: Object.keys(spec.env ?? {}),
+      id, command: full ? [cmd, ...shown].join(' ').trim() : cmd, argsHidden: !full && args.length > 0,
+      package: npmPackageOf(cmd, shown), envNames: Object.keys(spec.env ?? {}),
     };
   });
 }
@@ -108,11 +149,11 @@ export function externalView() {
   return { available: st.enabled, reason: st.reason, reviewer: st.model || null };
 }
 
-export function pluginsView() {
+export function pluginsView(admin: boolean) {
   const on = new Set(enabledConnectorIds());
   return {
     plugins: listConnectors().map((c) => pluginView(c, on.has(c.id))),
-    custom: customViews(),
+    custom: customViews(admin),
     addFromNpm: externalView(),
     applies: APPLIES,
   };
@@ -132,8 +173,12 @@ function reviewView(r: RiskReport, at: number) {
     scan: d ? { ran: !!d.ran, files: d.filesScanned ?? null, checksum: d.integrityOk === undefined ? 'unknown' as const : d.integrityOk ? 'verified' as const : 'mismatch' as const, note: d.note ?? null }
       : { ran: false, files: null, checksum: 'unknown' as const, note: null },
     reviewer: r.model, expiresAt: at + REVIEW_TTL_MS,
+    // review of S1: when the reviewing model could not be reached there is no AI judgement at all, only the automated
+    // checks; approving then needs acceptRisk, as a dangerous verdict does
+    aiReviewed: r.aiReviewed !== false,
   };
 }
+const hasOwn = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);
 
 function packageOf(b: Record<string, unknown>): string {
   const p = typeof b.package === 'string' ? b.package.trim() : '';
@@ -155,7 +200,7 @@ function libraryEntry(id: string): ConnectorEntry {
 }
 
 export const pluginRoutes: Route[] = [
-  { method: 'GET', path: '/plugins', scope: 'read', handler: () => ({ body: pluginsView() }) },
+  { method: 'GET', path: '/plugins', scope: 'read', handler: ({ who }) => ({ body: pluginsView(!!who?.scopes.has('admin')) }) },
   {
     method: 'POST', path: '/plugins/{id}/enable', scope: 'admin',
     handler: ({ params }) => {
@@ -204,10 +249,25 @@ export const pluginRoutes: Route[] = [
     },
   },
   {
+    // clear one saved key (only a name this plug-in declares); refused while the plug-in is on and needs it
+    method: 'DELETE', path: '/plugins/{id}/keys/{name}', scope: 'admin',
+    handler: ({ params }) => {
+      const c = libraryEntry(params.id);
+      const s = (c.secrets ?? []).find((x) => x.env === params.name);
+      if (!s) throw new ApiError(400, 'unknown_key', `${c.name} doesn’t use a key called ${params.name.slice(0, 60)}.`);
+      const on = enabledConnectorIds().includes(c.id);
+      if (on && !s.optional) throw new ApiError(409, 'in_use', `Turn ${c.name} off first, then clear its ${s.label}.`);
+      if (!deps.hasEnv(s.env)) throw new ApiError(404, 'not_saved', `No ${s.label} is saved.`);
+      deps.removeEnv([s.env]);
+      logger.info('plugins', 'plug-in key cleared', { id: c.id, name: s.env });
+      return { body: { plugin: pluginView(c, on), message: `Cleared the ${s.label}.${on ? ` ${APPLIES}` : ''}` } };
+    },
+  },
+  {
     method: 'DELETE', path: '/plugins/{id}', scope: 'admin',
     handler: ({ params }) => {
       if (getConnector(params.id)) throw new ApiError(400, 'library_plugin', 'That one comes with your helper. Turn it off instead.');
-      if (!removeMcpServer(params.id)) throw new ApiError(404, 'not_found', 'No plug-in by that name, or it was already removed.');
+      if (!hasOwn(listMcpServers(), params.id) || !removeMcpServer(params.id)) throw new ApiError(404, 'not_found', 'No plug-in by that name, or it was already removed.');
       logger.info('plugins', 'own plug-in removed', { id: params.id });
       return { body: { removed: params.id, message: `Removed ${params.id}. ${APPLIES}` } };
     },
@@ -235,15 +295,18 @@ export const pluginRoutes: Route[] = [
       if (!got || deps.now() - got.at > REVIEW_TTL_MS) throw new ApiError(409, 'review_first', 'Run the safety review for this package first (a review lasts 30 minutes).');
       const r = got.report;
       if (!r.analysis.ok || !r.pinnedVersion) throw new ApiError(409, 'not_installable', 'That package couldn’t be checked, so it can’t be installed.');
+      if (r.aiReviewed === false && b.acceptRisk !== true) throw new ApiError(409, 'unreviewed', 'The safety check couldn’t reach the AI reviewer, so only the automated checks ran. Only install it if you trust where it came from, and say so (acceptRisk).');
       if (r.verdict === 'dangerous' && b.acceptRisk !== true) throw new ApiError(409, 'risky', 'The review found this package dangerous. Only install it if you trust where it came from, and say so (acceptRisk).');
       const library = new Set(listConnectors().map((c) => c.id));
       const id = pkg.replace(/[^a-z0-9_-]/gi, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'connector';
       if (library.has(id)) throw new ApiError(409, 'name_taken', `A plug-in in the library is already called ${id}. Use that one instead.`);
+      // review of S1: never write over a plug-in that is already there (a hand-added one with the same name included)
+      if (hasOwn(listMcpServers(), id)) throw new ApiError(409, 'name_taken', `You already have a plug-in called ${id}. Remove it first if you want to replace it.`);
       const done = enableExternalNpm(pkg, r.pinnedVersion);
       try { deps.logInstall({ ts: deps.now(), id: done.id, name: pkg, tier: 'approved-external', version: r.pinnedVersion, verdict: r.verdict, integrity: r.integrity ?? null }); } catch { /* best-effort, as the classic page */ }
       reviews.delete(pkg);
       logger.info('plugins', 'npm plug-in installed', { id: done.id, version: r.pinnedVersion, verdict: r.verdict });
-      const mine = customViews().find((x) => x.id === done.id) ?? null;
+      const mine = customViews(true).find((x) => x.id === done.id) ?? null;
       return { body: { plugin: mine, message: `Installed ${pkg}@${r.pinnedVersion}. Its tools are available on your next message.` } };
     },
   },

@@ -37,8 +37,8 @@ export class PluginFixtures {
   on = new Set(['search', 'fetch', 'thinking']);
   saved = new Set(['NOTION_TOKEN']);
   custom: CustomPlugin[] = [
-    { id: 'weather-mcp', command: 'npx -y weather-mcp@1.4.0', package: 'weather-mcp@1.4.0', envNames: [] },
-    { id: 'barn-notes', command: 'node C:\\tools\\barn-notes.mjs --token •••', package: null, envNames: ['BARN_NOTES_TOKEN'] },
+    { id: 'weather-mcp', command: 'npx -y weather-mcp@1.4.0', argsHidden: false, package: 'weather-mcp@1.4.0', envNames: [] },
+    { id: 'barn-notes', command: 'node C:\\tools\\barn-notes.mjs --token •••', argsHidden: false, package: null, envNames: ['BARN_NOTES_TOKEN'] },
   ];
   private reviews = new Map<string, { review: PluginReview; at: number }>();
   constructor(private scenario: string, private clock: () => number) {}
@@ -51,10 +51,14 @@ export class PluginFixtures {
     if (this.scenario === 'npm-off') return { available: false, reason: 'Installing connectors from outside the library is turned off (installPolicy: off).', reviewer: 'openrouter:openai/gpt-6.1-sol' };
     return { available: true, reason: 'Connectors from outside the library are reviewed by openrouter:openai/gpt-6.1-sol before you approve them.', reviewer: 'openrouter:openai/gpt-6.1-sol' };
   }
-  list() { return { plugins: FIXTURE_LIBRARY.map((e) => this.view(e)), custom: this.custom, addFromNpm: this.npm(), applies: APPLIES }; }
+  /** an admin sees each command with its arguments (masked); anyone else the command name only, as on the server */
+  list(admin = true) {
+    const custom = admin ? this.custom : this.custom.map((c) => ({ ...c, command: c.command.split(' ')[0], argsHidden: c.command.includes(' ') }));
+    return { plugins: FIXTURE_LIBRARY.map((e) => this.view(e)), custom, addFromNpm: this.npm(), applies: APPLIES };
+  }
 
-  read(path: string): Resp | null {
-    return path === '/plugins' ? { status: 200, body: this.list() } : null;
+  read(path: string, admin = true): Resp | null {
+    return path === '/plugins' ? { status: 200, body: this.list(admin) } : null;
   }
 
   write(method: string, path: string, body: unknown): Resp | null {
@@ -87,6 +91,17 @@ export class PluginFixtures {
       const v = this.view(e);
       return { status: 200, body: { plugin: v, message: v.on ? `Saved. ${APPLIES}` : 'Saved. You can turn it on now.' } };
     }
+    if (method === 'DELETE' && (m = /^\/plugins\/([^/]+)\/keys\/([^/]+)$/.exec(path))) {
+      const e = entry(decodeURIComponent(m[1]));
+      if (!e) return err(404, 'not_found', 'There is no plug-in with that name in the library.');
+      const name = decodeURIComponent(m[2]);
+      const k = e.keys.find((x) => x.name === name);
+      if (!k) return err(400, 'unknown_key', `${e.name} doesn’t use a key called ${name.slice(0, 60)}.`);
+      if (this.on.has(e.id) && !k.optional) return err(409, 'in_use', `Turn ${e.name} off first, then clear its ${k.label}.`);
+      if (!this.saved.has(name)) return err(404, 'not_saved', `No ${k.label} is saved.`);
+      this.saved.delete(name);
+      return { status: 200, body: { plugin: this.view(e), message: `Cleared the ${k.label}.${this.on.has(e.id) ? ` ${APPLIES}` : ''}` } };
+    }
     if (method === 'DELETE' && (m = /^\/plugins\/([^/]+)$/.exec(path))) {
       const id = decodeURIComponent(m[1]);
       if (entry(id)) return err(400, 'library_plugin', 'That one comes with your helper. Turn it off instead.');
@@ -103,9 +118,10 @@ export class PluginFixtures {
       if (path === '/plugins/review') {
         const at = this.clock();
         const bad = pkg === 'shady-mcp';
+        const noAi = pkg === 'offline-mcp'; // the reviewing model could not be reached
         const review: PluginReview = {
-          package: pkg, version: '1.0.0', verdict: bad ? 'dangerous' : 'safe',
-          summary: bad ? 'This package sends your saved keys to an unknown server. Don’t install it unless you wrote it yourself.' : 'A small server that looks up the weather for a place. It only talks to a public weather service.',
+          package: pkg, version: '1.0.0', verdict: bad ? 'dangerous' : noAi ? 'caution' : 'safe', aiReviewed: !noAi,
+          summary: noAi ? 'The reviewing model couldn’t be reached — treat with caution and review it yourself.' : bad ?'This package sends your saved keys to an unknown server. Don’t install it unless you wrote it yourself.' : 'A small server that looks up the weather for a place. It only talks to a public weather service.',
           capabilities: bad ? ['reads your environment', 'sends data to the internet'] : ['looks up weather forecasts'],
           redFlags: bad ? ['reads every saved key', 'hidden (obfuscated) code'] : [],
           scan: { ran: true, files: 14, checksum: 'verified', note: null }, reviewer: npm.reviewer ?? 'example', expiresAt: at + 30 * 60_000,
@@ -115,11 +131,13 @@ export class PluginFixtures {
       }
       const got = this.reviews.get(pkg);
       if (!got || this.clock() - got.at > 30 * 60_000) return err(409, 'review_first', 'Run the safety review for this package first (a review lasts 30 minutes).');
+      if (!got.review.aiReviewed && b.acceptRisk !== true) return err(409, 'unreviewed', 'The safety check couldn’t reach the AI reviewer, so only the automated checks ran. Only install it if you trust where it came from, and say so (acceptRisk).');
       if (got.review.verdict === 'dangerous' && b.acceptRisk !== true) return err(409, 'risky', 'The review found this package dangerous. Only install it if you trust where it came from, and say so (acceptRisk).');
       const id = pkg.replace(/[^a-z0-9_-]/gi, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'connector';
       if (entry(id)) return err(409, 'name_taken', `A plug-in in the library is already called ${id}. Use that one instead.`);
-      const plugin: CustomPlugin = { id, command: `npx -y ${pkg}@${got.review.version}`, package: `${pkg}@${got.review.version}`, envNames: [] };
-      this.custom = [...this.custom.filter((c) => c.id !== id), plugin];
+      if (this.custom.some((c) => c.id === id)) return err(409, 'name_taken', `You already have a plug-in called ${id}. Remove it first if you want to replace it.`);
+      const plugin: CustomPlugin = { id, command: `npx -y ${pkg}@${got.review.version}`, argsHidden: false, package: `${pkg}@${got.review.version}`, envNames: [] };
+      this.custom = [...this.custom, plugin];
       this.reviews.delete(pkg);
       return { status: 200, body: { plugin, message: `Installed ${pkg}@${got.review.version}. Its tools are available on your next message.` } };
     }

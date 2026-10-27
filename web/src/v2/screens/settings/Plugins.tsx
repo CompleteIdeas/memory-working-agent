@@ -9,7 +9,7 @@ import { Back } from '../../shell/icons';
 import type { ScreenProps } from '../../shell/screens';
 import type { CustomPlugin, Plugin, PluginReview } from '../../api/client';
 import { Note, Section, said, type Said } from './Settings';
-import { customTitle, groupPlugins, keyLine, scanLine, usePlugins, verdictWords } from './usePlugins';
+import { customTitle, groupPlugins, installable, keyLine, needsTrust, scanLine, usePlugins, verdictWords } from './usePlugins';
 import './settings.css';
 
 type Data = ReturnType<typeof usePlugins>;
@@ -132,6 +132,12 @@ function KeyForm({ p, data, turnOn, onDone, onCancel }: { p: Plugin; data: Data;
             placeholder={k.saved ? 'Saved. Type a new one to replace it' : ''} value={vals[k.name] ?? ''}
             onChange={(e) => setVals((v) => ({ ...v, [k.name]: e.target.value }))} aria-describedby={k.help ? `key-${p.id}-${k.name}-help` : undefined} />
           {k.help && <span className="s" id={`key-${p.id}-${k.name}-help`}>{k.help}</span>}
+          {k.saved && (
+            <span className="plugclear">
+              <button type="button" className="vbtn vbtn-quiet" disabled={busy} aria-label={`Clear the saved ${k.label}`}
+                onClick={async () => { setBusy(true); setNote(null); const o = await data.clearKey(p.id, k.name); setBusy(false); setNote(said(o)); }}>Clear saved key</button>
+            </span>
+          )}
         </div>
       ))}
       <span className="s">Keys are kept on the computer your helper runs on. I never show them again.</span>
@@ -161,6 +167,7 @@ function CustomRow({ c, data }: { c: CustomPlugin; data: Data }) {
         {!data.admin && <span className="onoff on">On</span>}
       </div>
       <span className="s plugcmd"><span className="sr-only">Runs: </span><code>{c.command}</code></span>
+      {c.argsHidden && <span className="s">The rest of the command is hidden on this device. See it on your computer.</span>}
       {c.envNames.length > 0 && <span className="s">Has its own settings: {c.envNames.join(', ')} (not shown).</span>}
       {data.admin && (confirm ? (
         <>
@@ -206,7 +213,7 @@ function AddFromNpm({ data }: { data: Data }) {
   const install = async () => {
     if (!review) return;
     setBusy(true); setNote(null);
-    const o = await data.approve(review.package, review.verdict === 'dangerous' && trust);
+    const o = await data.approve(review.package, needsTrust(review) && trust);
     setBusy(false);
     setNote(said(o));
     if (o.ok) { setReview(null); setPkg(''); setTrust(false); }
@@ -233,17 +240,21 @@ function AddFromNpm({ data }: { data: Data }) {
               <div className={`plugreview ${v.tone}`} role="region" aria-label={`Safety review of ${review.package}`}>
                 <p className="plugverdict"><b>{v.title}</b> · {review.package}{review.version ? ` ${review.version}` : ''}</p>
                 <p>{review.summary}</p>
-                {review.capabilities.length > 0 && <><p className="s"><b>It could:</b></p><ul className="pluglist">{review.capabilities.map((c) => <li key={c}>{c}</li>)}</ul></>}
-                {review.redFlags.length > 0 && <><p className="s"><b>Warnings:</b></p><ul className="pluglist">{review.redFlags.map((c) => <li key={c}>{c}</li>)}</ul></>}
-                <p className="s">{scanLine(review)} Reviewed by {review.reviewer}.</p>
-                {review.verdict === 'dangerous' && (
+                {!review.aiReviewed && <p className="warnline" role="note">The safety check couldn’t reach the AI reviewer. Only the automated checks ran.</p>}
+                {review.capabilities.length > 0 && <><p className="s"><b>It could:</b></p><ul className="pluglist">{review.capabilities.map((c, i) => <li key={i}>{c}</li>)}</ul></>}
+                {review.redFlags.length > 0 && <><p className="s"><b>Warnings:</b></p><ul className="pluglist">{review.redFlags.map((c, i) => <li key={i}>{c}</li>)}</ul></>}
+                <p className="s">{scanLine(review)}{review.aiReviewed ? ` Reviewed by ${review.reviewer}.` : ''}</p>
+                {!installable(review) && <p className="s warnline">This package couldn’t be checked, so it can’t be installed.</p>}
+                {installable(review) && needsTrust(review) && (
                   <label className="plugtrust"><input type="checkbox" checked={trust} onChange={(e) => setTrust(e.target.checked)} /> I trust where this came from and want it anyway.</label>
                 )}
                 <div className="acts">
-                  <button type="button" className="vbtn vbtn-primary" disabled={busy || (review.verdict === 'dangerous' && !trust)} onClick={() => void install()}>
-                    {busy ? 'Installing…' : review.verdict === 'dangerous' ? 'Install anyway' : `Install ${review.package}`}
-                  </button>
-                  <button type="button" className="vbtn vbtn-quiet" disabled={busy} onClick={() => { setReview(null); setTrust(false); }}>Don’t install</button>
+                  {installable(review) && (
+                    <button type="button" className="vbtn vbtn-primary" disabled={busy || (needsTrust(review) && !trust)} onClick={() => void install()}>
+                      {busy ? 'Installing…' : needsTrust(review) ? 'Install anyway' : `Install ${review.package}`}
+                    </button>
+                  )}
+                  <button type="button" className="vbtn vbtn-quiet" disabled={busy} onClick={() => { setReview(null); setTrust(false); }}>{installable(review) ? 'Don’t install' : 'Close'}</button>
                 </div>
               </div>
             )}

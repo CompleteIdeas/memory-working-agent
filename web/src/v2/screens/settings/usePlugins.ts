@@ -34,6 +34,11 @@ export function verdictWords(v: PluginReview['verdict']): { title: string; tone:
   return { title: 'Dangerous', tone: 'bad' };
 }
 
+/** Installing needs "I trust where this came from": a dangerous verdict, or no AI judgement at all. */
+export const needsTrust = (r: PluginReview) => r.verdict === 'dangerous' || !r.aiReviewed;
+/** Only a review that names the version it checked can be installed. */
+export const installable = (r: PluginReview) => !!r.version;
+
 export function scanLine(r: PluginReview): string {
   if (!r.scan.ran) return `Its code wasn’t checked${r.scan.note ? ` (${r.scan.note})` : ''}.`;
   const files = r.scan.files ? `${r.scan.files} files checked` : 'Its code was checked';
@@ -82,6 +87,7 @@ export function usePlugins() {
       turnOn: (id: string) => act((key) => client.enablePlugin(id, { key }), (r) => r.message, (r) => { replace(r.plugin); store.notice(r.message, 'info'); }),
       turnOff: (id: string) => act((key) => client.disablePlugin(id, { key }), (r) => r.message, (r) => { replace(r.plugin); store.notice(r.message, 'info'); }),
       saveKeys: (id: string, keys: Record<string, string>) => act((key) => client.savePluginKeys(id, keys, { key }), (r) => r.message, (r) => replace(r.plugin)),
+      clearKey: (id: string, name: string) => act((key) => client.clearPluginKey(id, name, { key }), (r) => r.message, (r) => replace(r.plugin)),
       remove: (id: string) => act((key) => client.removePlugin(id, { key }), (r) => r.message,
         () => setData((d) => (d.list ? { ...d, list: { ...d.list, custom: d.list.custom.filter((c) => c.id !== id) } } : d))),
       review: async (pkg: string): Promise<{ ok: true; review: PluginReview } | { ok: false; message: string }> => {

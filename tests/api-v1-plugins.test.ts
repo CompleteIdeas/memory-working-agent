@@ -29,12 +29,12 @@ const get = (path: string, headers: Record<string, string> = {}) => fetch(`${bas
 const env = new Map<string, string>();
 const installs: Record<string, unknown>[] = [];
 let now = 1_800_000_000_000;
-let policy: string | undefined, reviewer = 'anthropic:claude-sonnet-5', verdict: Verdict = 'safe', analysisOk = true;
+let policy: string | undefined, reviewer = 'anthropic:claude-sonnet-5', verdict: Verdict = 'safe', analysisOk = true, aiReached = true;
 const reviewed: string[] = [];
 const report = (pkg: string): RiskReport => ({
   source: pkg, verdict, summary: 'A small server that reads web pages.', capabilities: ['reads web pages'], redFlags: verdict === 'safe' ? [] : ['obfuscated code'],
   analysis: analysisOk ? { ok: true, findings: [] } : { ok: false, error: 'not found', findings: [] },
-  deepScan: { ran: true, integrityOk: true, filesScanned: 12, findings: [] }, integrity: 'sha512-abc', pinnedVersion: analysisOk ? '2.0.1' : undefined, model: reviewer,
+  deepScan: { ran: true, integrityOk: true, filesScanned: 12, findings: [] }, integrity: 'sha512-abc', pinnedVersion: analysisOk ? '2.0.1' : undefined, model: reviewer, aiReviewed: aiReached,
 });
 
 function device(scopes: ('read' | 'act' | 'approve' | 'admin')[]): string {
@@ -57,9 +57,10 @@ beforeEach(() => {
   process.env.MWA_CONFIG_PATH = join(cfgDir, 'mwa.config.json');
   writeFileSync(process.env.MWA_CONFIG_PATH, '{}\n');
   env.clear(); installs.length = 0; reviewed.length = 0;
-  policy = undefined; reviewer = 'anthropic:claude-sonnet-5'; verdict = 'safe'; analysisOk = true; now = 1_800_000_000_000;
+  policy = undefined; reviewer = 'anthropic:claude-sonnet-5'; verdict = 'safe'; analysisOk = true; aiReached = true; now = 1_800_000_000_000;
   setPluginRouteDeps({
     saveEnv: (kv) => { for (const [k, v] of Object.entries(kv)) env.set(k, v); },
+    removeEnv: (names) => { for (const n of names) env.delete(n); },
     hasEnv: (name) => env.has(name),
     config: () => { const c = loadConfig(); return { ...c, models: { ...c.models, installer: reviewer }, tools: { ...c.tools, installPolicy: policy as never } }; },
     review: async (pkg) => { reviewed.push(pkg); return report(pkg); },
@@ -120,7 +121,7 @@ describe('the list', () => {
     for (const secret of ['ghp_SUPERSECRETVALUE123', 'plainsecretword', 'k-123', 'sk-abcdefghijklmnop', 'env-secret-value']) expect(text).not.toContain(secret);
     const r = JSON.parse(text);
     expect(r.plugins.find((p: any) => p.id === 'github').keys[0]).toMatchObject({ name: 'GITHUB_PERSONAL_ACCESS_TOKEN', saved: true });
-    expect(r.custom).toEqual([{ id: 'my-tool', command: 'node tool.mjs --token ••• --api-key=••• •••', package: null, envNames: ['MY_TOOL_TOKEN'] }]);
+    expect(r.custom).toEqual([{ id: 'my-tool', command: 'node tool.mjs --token ••• --api-key=••• •••', argsHidden: false, package: null, envNames: ['MY_TOOL_TOKEN'] }]);
   });
   it('redacts the usual shapes of a secret in arguments, and leaves plain ones', () => {
     expect(redactArgs(['-y', '@scope/server@1.0.0', '--port', '3000'])).toEqual(['-y', '@scope/server@1.0.0', '--port', '3000']);
@@ -219,7 +220,7 @@ describe('add from npm: review, then approve', () => {
     expect(ok.body.message).toBe('Installed example-mcp@2.0.1. Its tools are available on your next message.');
     expect(listMcpServers()['example-mcp']).toEqual({ command: 'npx', args: ['-y', 'example-mcp@2.0.1'] });
     expect(installs).toEqual([expect.objectContaining({ id: 'example-mcp', name: 'example-mcp', tier: 'approved-external', version: '2.0.1', verdict: 'safe', integrity: 'sha512-abc' })]);
-    expect(JSON.parse((await get('/plugins')).text).custom).toEqual([{ id: 'example-mcp', command: 'npx -y example-mcp@2.0.1', package: 'example-mcp@2.0.1', envNames: [] }]);
+    expect(JSON.parse((await get('/plugins')).text).custom).toEqual([{ id: 'example-mcp', command: 'npx -y example-mcp@2.0.1', argsHidden: false, package: 'example-mcp@2.0.1', envNames: [] }]);
     // a review is spent by its install
     expect((await send('POST', '/plugins/approve', { package: 'example-mcp' })).body.error.code).toBe('review_first');
   });
@@ -252,5 +253,78 @@ describe('add from npm: review, then approve', () => {
     const r = await send('POST', '/plugins/approve', { package: 'github' });
     expect(r.status).toBe(409);
     expect(r.body.error.code).toBe('name_taken');
+  });
+});
+
+describe('review of S1', () => {
+  it('a paired phone gets your own plug-ins\' command name only, never their arguments', async () => {
+    addMcpServer('db-tool', { command: 'npx', args: ['-y', 'db-mcp', 'postgresql://admin:hunter2@db.example/prod'], env: { X: 'y' } });
+    const phone = device(['read', 'act', 'approve']);
+    const text = (await get('/plugins', as(phone))).text;
+    expect(text).not.toContain('hunter2');
+    expect(text).not.toContain('db.example');
+    expect(JSON.parse(text).custom).toEqual([{ id: 'db-tool', command: 'npx', argsHidden: true, package: 'db-mcp', envNames: ['X'] }]);
+    const admin = JSON.parse((await get('/plugins')).text).custom[0];
+    expect(admin).toMatchObject({ argsHidden: false, command: 'npx -y db-mcp postgresql://admin:•••@db.example/prod' });
+  });
+  it('the admin view masks connection strings, headers, env pairs, webhooks and dash-led secrets', () => {
+    expect(redactArgs(['postgresql://user:pass@host:5432/db'])).toEqual(['postgresql://user:•••@host:5432/db']);
+    expect(redactArgs(['--header', 'Authorization: Bearer abc.def'])).toEqual(['--header', 'Authorization: •••']);
+    expect(redactArgs(['-H', 'X-Api-Key: k1'])).toEqual(['-H', 'X-Api-Key: •••']);
+    expect(redactArgs(['-e', 'DATABASE_URL=postgres://u:p@h/d'])).toEqual(['-e', 'DATABASE_URL=•••']);
+    expect(redactArgs(['--env', 'PLAIN=1'])).toEqual(['--env', 'PLAIN=•••']);
+    expect(redactArgs(['--conn=Server=x;User Id=a;Password=b;'])).toEqual(['--conn=•••']);
+    expect(redactArgs(['Server=x;Password=b'])).toEqual(['Server=•••']);
+    expect(redactArgs(['Data Source=x;Password=b'])).toEqual(['•••']);
+    expect(redactArgs(['https://hooks.slack.com/services/T000/B000/XXXXXXXX'])).toEqual(['https://hooks.slack.com/•••']);
+    expect(redactArgs(['https://discord.com/api/webhooks/1/abc'])).toEqual(['https://discord.com/•••']);
+    expect(redactArgs(['--key', '-dashvalue'])).toEqual(['--key', '•••']);
+    expect(redactArgs(['Authorization: Bearer xyz'])).toEqual(['Authorization: •••']);
+    expect(redactArgs(['--url=https://api.example.com'])).toEqual(['--url=•••']);
+    expect(redactArgs(['https://api.example.com/v1/items', '--port', '3000', '-y', 'pkg@1.0.0'])).toEqual(['https://api.example.com/v1/items', '--port', '3000', '-y', 'pkg@1.0.0']);
+  });
+  it('when the AI reviewer could not be reached, the review says so and approve needs acceptRisk', async () => {
+    aiReached = false; verdict = 'caution';
+    const rv = await send('POST', '/plugins/review', { package: 'example-mcp' });
+    expect(rv.body.review).toMatchObject({ aiReviewed: false, verdict: 'caution', version: '2.0.1' });
+    const r = await send('POST', '/plugins/approve', { package: 'example-mcp' });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toMatchObject({ code: 'unreviewed', message: expect.stringContaining('couldn’t reach the AI reviewer') });
+    expect(listMcpServers()['example-mcp']).toBeUndefined();
+    expect((await send('POST', '/plugins/approve', { package: 'example-mcp', acceptRisk: true })).status).toBe(200);
+  });
+  it('approve never writes over a plug-in that is already there', async () => {
+    addMcpServer('example-mcp', { command: 'node', args: ['mine.mjs'] });
+    await send('POST', '/plugins/review', { package: 'example-mcp' });
+    const r = await send('POST', '/plugins/approve', { package: 'example-mcp' });
+    expect(r.status).toBe(409);
+    expect(r.body.error.code).toBe('name_taken');
+    expect(listMcpServers()['example-mcp']).toEqual({ command: 'node', args: ['mine.mjs'] });
+    expect(installs).toEqual([]);
+  });
+  it('DELETE of an inherited name (__proto__, constructor, toString) is 404 and changes nothing', async () => {
+    for (const id of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+      const r = await send('DELETE', `/plugins/${id}`);
+      expect(r.status, id).toBe(404);
+    }
+    expect(Object.keys(listMcpServers())).toEqual(['search']);
+  });
+  it('clears a saved key: only a declared name, not while the plug-in is on and needs it; a phone may not', async () => {
+    await send('PUT', '/plugins/github/keys', { keys: { GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_x' } });
+    expect((await send('DELETE', '/plugins/github/keys/GITHUB_PERSONAL_ACCESS_TOKEN', undefined, as(device(['read', 'act', 'approve'])))).status).toBe(403);
+    expect((await send('DELETE', '/plugins/github/keys/PATH')).body.error.code).toBe('unknown_key');
+    expect((await send('DELETE', '/plugins/github/keys/TAVILY_API_KEY')).body.error.code).toBe('unknown_key');
+    expect((await send('DELETE', '/plugins/nope/keys/X')).status).toBe(404);
+    addMcpServer('github', { command: 'npx', args: [] }); // on
+    const busy = await send('DELETE', '/plugins/github/keys/GITHUB_PERSONAL_ACCESS_TOKEN');
+    expect(busy.status).toBe(409);
+    expect(busy.body.error.code).toBe('in_use');
+    expect(env.has('GITHUB_PERSONAL_ACCESS_TOKEN')).toBe(true);
+    await send('POST', '/plugins/github/disable');
+    const ok = await send('DELETE', '/plugins/github/keys/GITHUB_PERSONAL_ACCESS_TOKEN');
+    expect(ok.status).toBe(200);
+    expect(ok.body.plugin.keys[0]).toMatchObject({ saved: false });
+    expect(env.has('GITHUB_PERSONAL_ACCESS_TOKEN')).toBe(false);
+    expect((await send('DELETE', '/plugins/github/keys/GITHUB_PERSONAL_ACCESS_TOKEN')).body.error.code).toBe('not_saved');
   });
 });

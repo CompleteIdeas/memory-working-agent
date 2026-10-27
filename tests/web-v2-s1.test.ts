@@ -10,7 +10,7 @@ import addFormats from 'ajv-formats';
 import { FixtureServer } from '../web/src/v2/dev/fixtures';
 import { FIXTURE_LIBRARY } from '../web/src/v2/dev/fixtures-plugins';
 import { CONNECTOR_LIBRARY } from '../src/connectors/registry';
-import { groupPlugins, keyLine, verdictWords, scanLine, customTitle } from '../web/src/v2/screens/settings/usePlugins';
+import { groupPlugins, keyLine, verdictWords, scanLine, customTitle, needsTrust, installable } from '../web/src/v2/screens/settings/usePlugins';
 import type { Plugin, PluginList, PluginReview } from '../web/src/v2/api/client';
 
 const spec = parse(readFileSync(new URL('../api/openapi.yaml', import.meta.url), 'utf8'));
@@ -68,6 +68,25 @@ describe('S1 fixture mode answers like the server', () => {
       expect(call(s, m, p, b).status, `${m} ${p}`).toBe(403);
     }
   });
+  it('review of S1: a phone gets command names only; keys clear; no AI review needs acceptRisk; no overwriting', () => {
+    const phone = new FixtureServer('phone');
+    const custom = (valid('/plugins', 'get', get(phone, '/plugins')).body as PluginList).custom;
+    expect(custom.find((c) => c.id === 'barn-notes')).toMatchObject({ command: 'node', argsHidden: true });
+    expect(call(phone, 'DELETE', '/plugins/notion/keys/NOTION_TOKEN').status).toBe(403);
+    const s = new FixtureServer('N00');
+    expect(valid('/plugins/{id}/keys/{name}', 'delete', call(s, 'DELETE', '/plugins/notion/keys/PATH')).body.error.code).toBe('unknown_key');
+    const cleared = valid('/plugins/{id}/keys/{name}', 'delete', call(s, 'DELETE', '/plugins/notion/keys/NOTION_TOKEN'));
+    expect(cleared.body.plugin.missing).toEqual(['NOTION_TOKEN']);
+    expect(valid('/plugins/{id}/keys/{name}', 'delete', call(s, 'DELETE', '/plugins/notion/keys/NOTION_TOKEN')).body.error.code).toBe('not_saved');
+    const rv = valid('/plugins/review', 'post', call(s, 'POST', '/plugins/review', { package: 'offline-mcp' }));
+    expect(rv.body.review).toMatchObject({ aiReviewed: false, verdict: 'caution' });
+    expect(needsTrust(rv.body.review)).toBe(true);
+    expect(valid('/plugins/approve', 'post', call(s, 'POST', '/plugins/approve', { package: 'offline-mcp' })).body.error.code).toBe('unreviewed');
+    expect(valid('/plugins/approve', 'post', call(s, 'POST', '/plugins/approve', { package: 'offline-mcp', acceptRisk: true })).status).toBe(200);
+    valid('/plugins/review', 'post', call(s, 'POST', '/plugins/review', { package: 'weather-mcp' })); // weather-mcp is already one of yours
+    expect(valid('/plugins/approve', 'post', call(s, 'POST', '/plugins/approve', { package: 'weather-mcp' })).body.error.code).toBe('name_taken');
+    expect(call(s, 'DELETE', '/plugins/__proto__').status).toBe(404);
+  });
   it('npm-off: the list says why, and a review is refused with the same reason', () => {
     const s = new FixtureServer('npm-off');
     const l = get(s, '/plugins').body as PluginList;
@@ -104,5 +123,11 @@ describe('Plug-ins\' words', () => {
     expect(scanLine(r({ ran: true, files: 14, checksum: 'verified', note: null }))).toBe('14 files checked. The download matches what npm lists.');
     expect(scanLine(r({ ran: true, files: 3, checksum: 'mismatch', note: null }))).toMatch(/don’t install it/);
     expect(scanLine(r({ ran: false, files: null, checksum: 'unknown', note: 'too big' }))).toBe('Its code wasn’t checked (too big).');
+    const base = { verdict: 'safe', aiReviewed: true, version: '1.0.0' } as PluginReview;
+    expect(needsTrust(base)).toBe(false);
+    expect(needsTrust({ ...base, verdict: 'dangerous' })).toBe(true);
+    expect(needsTrust({ ...base, aiReviewed: false })).toBe(true);
+    expect(installable(base)).toBe(true);
+    expect(installable({ ...base, version: null })).toBe(false);
   });
 });

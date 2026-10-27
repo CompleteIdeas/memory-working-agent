@@ -177,6 +177,7 @@ beforeAll(async () => {
   // S1: plug-ins in the scratch config; keys go to a map, the reviewer is a stub that passes (no network, no model)
   const savedKeys = new Set<string>();
   setPluginRouteDeps({ saveEnv: (kv) => { for (const k of Object.keys(kv)) { savedKeys.add(k); process.env[k] = kv[k]; } }, hasEnv: (n) => savedKeys.has(n), logInstall: () => {},
+    removeEnv: (names) => { for (const n of names) { savedKeys.delete(n); delete process.env[n]; } },
     config: () => { const c = loadConfig(); return { ...c, models: { ...c.models, installer: 'anthropic:claude-sonnet-5' } }; },
     review: async (pkg) => ({ source: pkg, verdict: 'safe', summary: 'A small, well-known server.', capabilities: ['reads web pages'], redFlags: [], analysis: { ok: true, findings: [] }, deepScan: { ran: true, integrityOk: true, filesScanned: 3, findings: [] }, integrity: 'sha512-x', pinnedVersion: '1.2.3', model: 'anthropic:claude-sonnet-5' }) });
   addMcpServer('my-tool', { command: 'node', args: ['tool.mjs', '--api-key', 'abc123'], env: { MY_TOOL_TOKEN: 'secret-value' } });
@@ -188,7 +189,7 @@ beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
-afterAll(() => { server?.close(); setSettingsRouteDeps(null); setPluginRouteDeps(null); delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN; configureSessions({ password: '' }); setPushDeps(null); for (const k of ['MWA_CONFIG_PATH', 'MWA_TOKEN_LOG', 'MWA_VAULT_PATH']) delete process.env[k]; setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); setTodayDeps(null); });
+afterAll(() => { server?.close(); setSettingsRouteDeps(null); setPluginRouteDeps(null); delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN; delete process.env.TAVILY_API_KEY; configureSessions({ password: '' }); setPushDeps(null); for (const k of ['MWA_CONFIG_PATH', 'MWA_TOKEN_LOG', 'MWA_VAULT_PATH']) delete process.env[k]; setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); setTodayDeps(null); });
 
 /** One request per operation (and a few error cases). Slices append theirs. */
 const ids: Record<string, string> = {};
@@ -379,6 +380,11 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /plugins/{id}/enable', path: '/plugins/github/enable', init: post, status: 200 },
   { op: 'DELETE /plugins/{id}', path: '/plugins/my-tool', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 200 },
   { op: 'DELETE /plugins/{id}', path: '/plugins/github', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 400 },
+  { op: 'DELETE /plugins/{id}', path: '/plugins/__proto__', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 404 },
+  { op: 'DELETE /plugins/{id}/keys/{name}', path: '/plugins/github/keys/GITHUB_PERSONAL_ACCESS_TOKEN', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 409 },
+  { op: 'DELETE /plugins/{id}/keys/{name}', path: '/plugins/github/keys/PATH', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 400 },
+  { op: 'PUT /plugins/{id}/keys', path: '/plugins/tavily/keys', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ keys: { TAVILY_API_KEY: 'tvly-example' } }) }), status: 200 },
+  { op: 'DELETE /plugins/{id}/keys/{name}', path: '/plugins/tavily/keys/TAVILY_API_KEY', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 200 },
   { op: 'POST /plugins/approve', path: '/plugins/approve', init: () => ({ ...post(), body: JSON.stringify({ package: 'example-mcp' }) }), status: 409 },
   { op: 'POST /plugins/review', path: '/plugins/review', init: () => ({ ...post(), body: JSON.stringify({ package: 'example-mcp' }) }), status: 200 },
   { op: 'POST /plugins/review', path: '/plugins/review', init: () => ({ ...post(), body: JSON.stringify({ package: 'not a package' }) }), status: 400 },

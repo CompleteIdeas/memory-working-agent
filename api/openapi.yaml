@@ -1286,11 +1286,12 @@ components:
     CustomPlugin:
       type: object
       description: 'S1: a plug-in the owner added (by hand, or from npm). Env values are never sent, and arguments that look like secrets are shown as •••.'
-      required: [id, command, package, envNames]
+      required: [id, command, argsHidden, package, envNames]
       additionalProperties: false
       properties:
         id: { type: string }
-        command: { type: string }
+        command: { type: string, description: 'An admin gets the command with its arguments (secrets masked); any other caller the command name only.' }
+        argsHidden: { type: boolean, description: The arguments were left out because this caller has no admin. }
         package: { type: [string, 'null'] }
         envNames: { type: array, items: { type: string } }
     AddFromNpm:
@@ -1319,7 +1320,7 @@ components:
         message: { type: string }
     PluginReview:
       type: object
-      required: [package, version, verdict, summary, capabilities, redFlags, scan, reviewer, expiresAt]
+      required: [package, version, verdict, summary, capabilities, redFlags, scan, reviewer, expiresAt, aiReviewed]
       additionalProperties: false
       properties:
         package: { type: string }
@@ -1339,6 +1340,7 @@ components:
             note: { type: [string, 'null'] }
         reviewer: { type: string }
         expiresAt: { type: integer, description: Approve before this time (ms), or review again. }
+        aiReviewed: { type: boolean, description: 'False when the reviewing model could not be reached (only the automated checks ran); approving then needs acceptRisk.' }
   responses:
     Error:
       description: An error.
@@ -3012,6 +3014,18 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PluginChange' }
         default: { $ref: '#/components/responses/Error' }
+  /plugins/{id}/keys/{name}:
+    delete:
+      operationId: clearPluginKey
+      summary: 'S1: clear one saved key of a library plug-in (admin). Only a name that plug-in declares (400 unknown_key); 409 in_use while the plug-in is on and needs it; 404 not_saved.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { name: id, in: path, required: true, schema: { type: string } }, { name: name, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200':
+          description: Cleared.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PluginChange' }
+        default: { $ref: '#/components/responses/Error' }
   /plugins/{id}:
     delete:
       operationId: removePlugin
@@ -3059,7 +3073,7 @@ paths:
   /plugins/approve:
     post:
       operationId: approvePlugin
-      summary: 'S1: install a package this server reviewed in the last 30 minutes, at the reviewed version (admin). 409 review_first without one; a dangerous verdict needs acceptRisk true (409 risky).'
+      summary: 'S1: install a package this server reviewed in the last 30 minutes, at the reviewed version (admin). 409 review_first without one; a dangerous verdict (409 risky) or a review the AI reviewer could not run (409 unreviewed) needs acceptRisk true; 409 name_taken when a plug-in of that name exists.'
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true

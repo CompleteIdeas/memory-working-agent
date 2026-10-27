@@ -138,17 +138,17 @@ try {
 
       // add from npm: the review first, then Install
       const npm = group(main, 'Add from npm');
-      await npm.getByLabel('npm package').fill('weather-mcp');
+      await npm.getByLabel('npm package').fill('forecast-mcp');
       await npm.getByRole('button', { name: 'Review' }).click();
-      const review = npm.getByRole('region', { name: 'Safety review of weather-mcp' });
+      const review = npm.getByRole('region', { name: 'Safety review of forecast-mcp' });
       check(`${L}: the safety review shows before anything is installed`, await visible(review.getByText('Looks safe')));
       check(`${L}: the review says what it could do`, await visible(review.getByText('looks up weather forecasts')));
       await shot(page, `${L}-03-review-safe`);
       await axe(page, `${L} review safe`);
       await noOverflow(page, `${L} review safe`);
-      await review.getByRole('button', { name: 'Install weather-mcp' }).click();
-      check(`${L}: installed, from the next message`, await visible(npm.getByText('Installed weather-mcp@1.0.0. Its tools are available on your next message.')));
-      check(`${L}: it is under Your own`, await visible(row(own, 'weather-mcp')));
+      await review.getByRole('button', { name: 'Install forecast-mcp' }).click();
+      check(`${L}: installed, from the next message`, await visible(npm.getByText('Installed forecast-mcp@1.0.0. Its tools are available on your next message.')));
+      check(`${L}: it is under Your own`, await visible(row(own, 'forecast-mcp')));
 
       await npm.getByLabel('npm package').fill('shady-mcp');
       await npm.getByRole('button', { name: 'Review' }).click();
@@ -163,6 +163,23 @@ try {
       await bad.getByRole('button', { name: 'Don’t install' }).click();
       check(`${L}: Don’t install closes the review`, await gone(bad));
 
+      // review of S1: the AI reviewer could not be reached → said plainly, and Install needs the trust box
+      await npm.getByLabel('npm package').fill('offline-mcp');
+      await npm.getByRole('button', { name: 'Review' }).click();
+      const noAi = npm.getByRole('region', { name: 'Safety review of offline-mcp' });
+      check(`${L}: no AI review says so`, await visible(noAi.getByText('The safety check couldn’t reach the AI reviewer.', { exact: false })));
+      check(`${L}: …and Install waits for the trust box`, await noAi.getByRole('button', { name: 'Install anyway' }).isDisabled());
+      await axe(page, `${L} review without AI`);
+      await noAi.getByRole('button', { name: 'Don’t install' }).click();
+
+      // review of S1: clear a saved key (Notion's, while Notion is off)
+      await row(avail, 'Notion').getByRole('button', { name: 'Change the key for Notion' }).click();
+      await row(avail, 'Notion').getByRole('button', { name: 'Clear the saved Notion integration token' }).click();
+      check(`${L}: a saved key can be cleared`, await visible(row(avail, 'Notion').getByText('Cleared the Notion integration token.')));
+      check(`${L}: …and Notion then needs its key`, await visible(row(avail, 'Notion').getByText('Needs your Notion integration token before it can turn on.')));
+      await axe(page, `${L} key cleared`);
+      await row(avail, 'Notion').getByRole('button', { name: 'Cancel' }).click();
+
       await main.getByRole('button', { name: 'Settings' }).first().click();
       check(`${L}: Back goes to Settings`, await visible(main.getByRole('heading', { name: 'Settings', level: 1 })));
       check(`${L}: computer: no page errors`, !errors.length, errors.join(' | '));
@@ -176,6 +193,7 @@ try {
       check(`${L}: phone: Plug-ins`, await visible(main.getByRole('heading', { name: 'Plug-ins', level: 1 })));
       check(`${L}: phone: says where to change them`, await visible(main.getByRole('note').getByText(/can see your plug-ins but not change them/)));
       check(`${L}: phone: no switches, keys or Remove`, !(await main.getByRole('switch').count()) && !(await main.getByRole('button', { name: /^(Add key|Change key|Remove)/ }).count()) && !(await main.locator('input').count()));
+      check(`${L}: phone: your own plug-ins show the command name only`, await visible(main.getByText('The rest of the command is hidden on this device.', { exact: false })) && !(await page.content()).includes('barn-notes.mjs'));
       check(`${L}: phone: what each can touch is still there`, await visible(main.getByText('Your GitHub, scoped to the personal access token you provide.')));
       await shot(page, `${L}-05-phone`, true);
       await axe(page, `${L} phone plug-ins`);

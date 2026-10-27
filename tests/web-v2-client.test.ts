@@ -120,6 +120,7 @@ const CALLS: Record<string, (c: MwaClient) => unknown> = {
   disablePlugin: (c) => c.disablePlugin('github'),
   savePluginKeys: (c) => c.savePluginKeys('github', { GITHUB_PERSONAL_ACCESS_TOKEN: 'x' }),
   removePlugin: (c) => c.removePlugin('my-tool'),
+  clearPluginKey: (c) => c.clearPluginKey('github', 'GITHUB_PERSONAL_ACCESS_TOKEN'),
   reviewPlugin: (c) => c.reviewPlugin('example-mcp'),
   approvePlugin: (c) => c.approvePlugin('example-mcp'),
 };

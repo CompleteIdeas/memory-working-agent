@@ -362,6 +362,7 @@ export class MwaClient {
   disablePlugin(id: string, o: { key?: string } = {}) { return this.post<PluginChange>('/plugins/{id}/disable', { path: { id }, key: o.key }); }
   /** Write-only: the values go to the server and never come back. */
   async savePluginKeys(id: string, keys: Record<string, string>, o: { key?: string } = {}) { return (await this.call<PluginChange>('PUT', '/plugins/{id}/keys', { path: { id }, body: { keys }, key: o.key })).body; }
+  async clearPluginKey(id: string, name: string, o: { key?: string } = {}) { return (await this.call<PluginChange>('DELETE', '/plugins/{id}/keys/{name}', { path: { id, name }, key: o.key })).body; }
   async removePlugin(id: string, o: { key?: string } = {}) { return (await this.call<PluginRemoved>('DELETE', '/plugins/{id}', { path: { id }, key: o.key })).body; }
   reviewPlugin(pkg: string, o: { key?: string } = {}) { return this.post<{ review: PluginReview }>('/plugins/review', { body: { package: pkg }, key: o.key }); }
   approvePlugin(pkg: string, acceptRisk = false, o: { key?: string } = {}) { return this.post<PluginInstalled>('/plugins/approve', { body: acceptRisk ? { package: pkg, acceptRisk: true } : { package: pkg }, key: o.key }); }

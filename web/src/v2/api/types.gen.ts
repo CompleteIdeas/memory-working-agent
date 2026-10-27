@@ -1421,6 +1421,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/plugins/{id}/keys/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** S1: clear one saved key of a library plug-in (admin). Only a name that plug-in declares (400 unknown_key); 409 in_use while the plug-in is on and needs it; 404 not_saved. */
+        delete: operations["clearPluginKey"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/plugins/{id}": {
         parameters: {
             query?: never;
@@ -1464,7 +1481,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** S1: install a package this server reviewed in the last 30 minutes, at the reviewed version (admin). 409 review_first without one; a dangerous verdict needs acceptRisk true (409 risky). */
+        /** S1: install a package this server reviewed in the last 30 minutes, at the reviewed version (admin). 409 review_first without one; a dangerous verdict (409 risky) or a review the AI reviewer could not run (409 unreviewed) needs acceptRisk true; 409 name_taken when a plug-in of that name exists. */
         post: operations["approvePlugin"];
         delete?: never;
         options?: never;
@@ -2700,7 +2717,10 @@ export interface components {
         /** @description S1: a plug-in the owner added (by hand, or from npm). Env values are never sent, and arguments that look like secrets are shown as •••. */
         CustomPlugin: {
             id: string;
+            /** @description An admin gets the command with its arguments (secrets masked); any other caller the command name only. */
             command: string;
+            /** @description The arguments were left out because this caller has no admin. */
+            argsHidden: boolean;
             package: string | null;
             envNames: string[];
         };
@@ -2739,6 +2759,8 @@ export interface components {
             reviewer: string;
             /** @description Approve before this time (ms) */
             expiresAt: number;
+            /** @description False when the reviewing model could not be reached (only the automated checks ran); approving then needs acceptRisk. */
+            aiReviewed: boolean;
         };
     };
     responses: {
@@ -5264,6 +5286,32 @@ export interface operations {
         };
         responses: {
             /** @description Saved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    clearPluginKey: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cleared. */
             200: {
                 headers: {
                     [name: string]: unknown;
