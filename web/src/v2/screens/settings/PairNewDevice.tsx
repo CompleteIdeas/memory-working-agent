@@ -24,7 +24,8 @@ export function timeLeft(expiresAt: number, now: number): string {
   return s ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : 'expired';
 }
 
-export function PairCodeCard({ code, now, onNew, onDone, busy }: { code: PairCode; now: () => number; onNew: () => void; onDone?: () => void; busy?: boolean }) {
+export function PairCodeCard({ code, now, onNew, onDone, busy, level = 3 }: { code: PairCode; now: () => number; onNew: () => void; onDone?: () => void; busy?: boolean; level?: 2 | 3 }) {
+  const H = level === 2 ? 'h2' : 'h3';
   const [t, setT] = useState(now());
   useEffect(() => { const i = setInterval(() => setT(now()), 1000); return () => clearInterval(i); }, [now]);
   const left = timeLeft(code.expiresAt, t);
@@ -32,7 +33,7 @@ export function PairCodeCard({ code, now, onNew, onDone, busy }: { code: PairCod
   const pairPage = code.pairUrl.replace(/#.*$/, '');
   return (
     <div className="card paircard" role="group" aria-labelledby="pair-h">
-      <h3 id="pair-h">Pair your phone</h3>
+      <H id="pair-h" className="pairtitle">Pair your phone</H>
       {expired ? (
         <p className="soft">This code has expired. Make a new one.</p>
       ) : (

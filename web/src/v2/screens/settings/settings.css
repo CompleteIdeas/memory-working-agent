@@ -68,3 +68,4 @@ select.setinput { appearance: auto; }
 .ob .stepcount { color: var(--dim); font-size: 15px; font-weight: 600; }
 .startpage { min-height: 100dvh; }
 @media (min-width: 900px) { .ob { padding-top: 96px; } }
+.paircard .pairtitle { font-size: 18px; font-weight: 700; line-height: 1.3; }

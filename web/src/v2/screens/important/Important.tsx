@@ -122,7 +122,8 @@ function ImportantProvider({ children, go, openMail, onGone }: {
         controls={{ handled: ui.handled, notImportant: ui.notImportant, run: ui.run, busy: ui.busy, openCalendar: go ? () => { setDetailId(null); go('calendar'); } : undefined }} />
       {ni.sheet}
       <SkippedSheet group={skipGroup} onClose={() => setSkipGroup(null)} />
-      <RulesSheet open={rulesOpen} onClose={() => setRulesOpen(false)} />
+      <RulesSheet open={rulesOpen} onClose={() => setRulesOpen(false)}
+        onOpenSettings={go ? () => { setRulesOpen(false); history.replaceState(null, '', `${location.pathname}${location.search}#rules`); go('settings'); } : undefined} />
       {!openMail && (
         <Sheet id="mail-dlg" titleId="mail-dlg-title" title={<span className="sr-only">Email</span>} open={!!sheetMail} onClose={() => setSheetMail(null)}>
           {sheetMail && (

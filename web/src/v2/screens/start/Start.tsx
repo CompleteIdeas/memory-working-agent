@@ -203,7 +203,10 @@ export function FirstRun({ onDone }: { onDone: (s: HelperSettings) => void }) {
   const [refusal, setRefusal] = useState<string | null>(null);
   const s = data.settings;
   const off = (s?.features ?? []).filter((f) => !f.on);
-  const steps: Step[] = ['welcome', 'names', 'connect', ...(off.length || step === 'switches' ? ['switches' as const] : []), 'phone'];
+  // whether "A few things are off" is a step is decided once, when the settings arrive (turning one on keeps the count)
+  const [withSwitches, setWithSwitches] = useState<boolean | null>(null);
+  useEffect(() => { if (s && withSwitches === null) setWithSwitches(off.length > 0); }, [s, withSwitches, off.length]);
+  const steps: Step[] = ['welcome', 'names', 'connect', ...(withSwitches ? ['switches' as const] : []), 'phone'];
   const at = steps.indexOf(step);
   const next = () => { setRefusal(null); setStep(steps[Math.min(steps.length - 1, at + 1)]); };
   const finish = async () => {
@@ -367,7 +370,7 @@ function PhoneStep({ createCode, now, onFinish }: { createCode: ReturnType<typeo
     <section aria-labelledby="ob-h">
       <h1 id="ob-h" tabIndex={-1}>Put MWA on your phone</h1>
       <p className="lede">Scan this with your phone’s camera, then tap Pair. The code works once, for 10 minutes.</p>
-      {code && <PairCodeCard code={code} now={now} busy={busy} onNew={() => void make()} />}
+      {code && <PairCodeCard code={code} now={now} busy={busy} level={2} onNew={() => void make()} />}
       {refusal && <p className="refusal" role="alert">{refusal}</p>}
       <div className="actions">
         <button type="button" className="vbtn vbtn-primary vbtn-wide" onClick={onFinish}>Finish</button>
