@@ -1,8 +1,9 @@
 // v2 build, slices P1/P2: the server's cache headers for the built UI and which of its files are public behind the
 // password (src/pwa.ts), and npm run tailscale:serve's checks (scripts/tailscale-serve.mjs). The real server's answers are checked end to end by scripts/v2-p1p2-smoke.mjs.
 import { describe, it, expect } from 'vitest';
-import { pwaPublic, pwaFileOnly, uiCacheControl, PRECACHE_HEADER } from '../src/pwa';
-import { PRECACHE_HEADER as WORKER_HEADER } from '../web/src/pwa/sw-logic';
+import { pwaPublic, pwaFileOnly, uiCacheControl } from '../src/pwa';
+import { signedOutPageAllowed } from '../src/api/legacy';
+import { SHELL_FETCH } from '../web/src/pwa/sw-logic';
 import { assess, funnelOn, servePort, envLines, ADMIN_DNS, existingHandler, statusReadable, OFF_CMD } from '../scripts/tailscale-serve.mjs';
 
 const get = (headers: Record<string, string> = {}) => ({ method: 'GET', headers });
@@ -25,12 +26,15 @@ describe('public behind the password', () => {
       expect(pwaPublic(p, get())).toBe(true);
     }
   });
-  it('index.html only for the worker\'s precache request; "/" and the API never', () => {
+  it('index.html is never public by itself; the worker gets the shell as a ?ui=v2 page, which W5’s gate lets in', () => {
     expect(pwaPublic('/index.html', get())).toBe(false);
-    expect(pwaPublic('/index.html', get({ [PRECACHE_HEADER]: 'precache' }))).toBe(true);
-    expect(pwaPublic('/', get({ [PRECACHE_HEADER]: 'precache' }))).toBe(false);
-    expect(pwaPublic('/api/v1/sync', get({ [PRECACHE_HEADER]: 'precache' }))).toBe(false);
-    expect(pwaPublic('/sw.js', { method: 'POST', headers: {} })).toBe(false);
+    expect(pwaPublic('/', get())).toBe(false);
+    expect(pwaPublic('/api/v1/sync', get())).toBe(false);
+    expect(pwaPublic('/sw.js', { method: 'POST' })).toBe(false);
+    expect(SHELL_FETCH).toBe('index.html?ui=v2');
+    const u = new URL(SHELL_FETCH, 'https://mwa.tail1a2b.ts.net/');
+    expect(signedOutPageAllowed(u.pathname, u.search, false)).toBe(true);
+    expect(signedOutPageAllowed('/', '', false)).toBe(false); // a person opening "/" signed out: the sign-in page
   });
   it('review fix 3: only real icon files under /pwa/ are public; anything else there is a file-or-404 path', () => {
     for (const p of ['/pwa/index.html', '/pwa/anything', '/pwa/x/y/z', '/pwa/../api/files', '/pwa/%2e%2e/api/files', '/pwa/sw.js', '/pwa/pwa-build.json']) {
@@ -40,9 +44,6 @@ describe('public behind the password', () => {
     expect(pwaFileOnly(String.raw`pwa\index.html`)).toBe(true); // Windows path.normalize
     expect(pwaFileOnly('assets/index-AbCd1234.js')).toBe(false);
     expect(pwaFileOnly('')).toBe(false);
-  });
-  it('the worker and the server agree on the header', () => {
-    expect(WORKER_HEADER).toBe(PRECACHE_HEADER);
   });
 });
 

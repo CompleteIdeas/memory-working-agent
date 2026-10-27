@@ -4,7 +4,7 @@
  * wires them to the worker's events. Not part of the page bundle.
  */
 import {
-  acceptable, cacheName, cachesToDelete, pageAnswer, PRECACHE_HEADER, PRECACHE_TIMEOUT_MS, precacheUrls, route, tryNetwork,
+  acceptable, cacheName, cachesToDelete, pageAnswer, PRECACHE_TIMEOUT_MS, SHELL_FETCH, precacheUrls, route, tryNetwork,
   type BuildInfo, type BuildReply, type ToWorker,
 } from './sw-logic';
 
@@ -35,10 +35,9 @@ const shellUrl = () => new URL('index.html', scope()).href;
 async function precache(): Promise<void> {
   const s = scope();
   const got = await Promise.all(INFO.files.map(async (f) => {
-    const url = new URL(f.url, s).href;
-    const res = await fetch(url, {
+    const url = new URL(f.url, s).href; // the key it is stored under
+    const res = await fetch(f.url === 'index.html' ? new URL(SHELL_FETCH, s).href : url, {
       cache: 'reload', credentials: 'same-origin',
-      headers: f.url === 'index.html' ? { [PRECACHE_HEADER]: 'precache' } : undefined,
       signal: typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal ? AbortSignal.timeout(PRECACHE_TIMEOUT_MS) : undefined,
     });
     const body = f.url === 'index.html' ? await res.clone().text() : null;

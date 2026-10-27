@@ -413,6 +413,17 @@ export class V2Store {
     void this.today.load(); // W2: Today as it is now (on open, online, and every reconnect)
   }
 
+  /** W5: signed in or paired just now: forget the 401 and connect again (catch up, the stream, the outbox). */
+  async resume(): Promise<void> {
+    this.set({ auth: 'ok' });
+    await this.connect('open');
+  }
+  /** W5: this device signed out (or was told it is not signed in): stop the stream and show the sign-in screens. P2
+   *  (review): and clear the device's copy — the cached data and the outbox — and remember it for an offline start. */
+  signedOut(): void {
+    void this.lockedOut();
+  }
+
   private handleFailure(e: unknown, _reason: string) {
     if (e instanceof SignInRequired) { void this.lockedOut(); return; }
     if (e instanceof UpdateRequired) { this.closeStream(); this.set({ updateReady: true, connection: 'unreachable' }); return; }

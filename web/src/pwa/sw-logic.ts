@@ -28,8 +28,10 @@ export const CACHE_PREFIX = 'mwa-precache-';
 export const LEGACY_PREFIX = 'mwa-shell-';
 /** Each precache fetch gives up after this long (a stalled download must not leave an install hanging forever). */
 export const PRECACHE_TIMEOUT_MS = 30_000;
-/** Sent with the install's fetch of index.html, so a server behind a password still hands over the public shell. */
-export const PRECACHE_HEADER = 'x-mwa-sw';
+/** The install fetches the shell as index.html?ui=v2 (stored as index.html): behind a password, W5's gate hands the app
+ *  page to a v2 request without a session (signedOutPageAllowed), so a phone's worker can always cache the shell, while
+ *  a person opening "/" still gets the sign-in page. (It replaced a spoofable x-mwa-sw header, review of P1/P2.) */
+export const SHELL_FETCH = 'index.html?ui=v2';
 
 export interface PrecacheEntry {
   /** relative to the worker's folder, e.g. "index.html", "assets/index-AbC123.js" */

@@ -161,8 +161,10 @@ try {
       check(`behind a password: ${p} is public (not the sign-in page)`, r.status === 200 && !t.includes('/api/login'));
     }
     check('behind a password: index.html is the sign-in page for a person…', (await (await get('/index.html')).text()).includes('/api/login'));
-    const pre = await (await get('/index.html', { 'x-mwa-sw': 'precache' })).text();
-    check('…and the app shell for the worker\'s precache request', pre.includes(A.entry) && !pre.includes('/api/login'));
+    const pre = await (await get('/index.html?ui=v2')).text();
+    check('…and the app shell for the worker\'s precache request (index.html?ui=v2, W5\'s v2 page)', pre.includes(A.entry) && !pre.includes('/api/login'));
+    const spoof = await (await get('/index.html', { 'x-mwa-sw': 'precache' })).text();
+    check('the old x-mwa-sw header opens nothing any more', spoof.includes('/api/login'));
     check('behind a password: the API is still locked', (await get('/api/v1/projects', H)).status === 401);
     for (const p of ['/pwa/x/y/z', '/pwa/index.html', '/pwa/anything']) {
       const open = await fetch(`${BASE}${p}`); const ot = await open.text();
@@ -213,6 +215,13 @@ try {
   // an address the phone will not install from (Chromium: http on a name that is not localhost)
   {
     const ic = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    // W5's Host allowlist answers 421 to an unknown name, so the browser's insecure origin is fed from localhost: the
+    // page's origin stays http://mwa-insecure.test (not a secure context), the server sees Host: localhost
+    await ic.route('**/*', async (r) => {
+      const u = r.request().url();
+      if (!u.startsWith(`http://mwa-insecure.test:${PORT}`)) return r.continue();
+      await r.fulfill({ response: await r.fetch({ url: u.replace('mwa-insecure.test', 'localhost') }) });
+    });
     const p2 = await ic.newPage();
     await p2.goto(`http://mwa-insecure.test:${PORT}/?fixtures=1&view=settings`);
     const t = await p2.locator('#install-card').innerText({ timeout: 15_000 }).catch(() => '');

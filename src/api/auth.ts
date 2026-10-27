@@ -14,6 +14,7 @@ import type { IncomingMessage } from 'node:http';
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { appDb, recordEvent, registerMigrations } from '../v2/db.js';
 import type { Scope } from './router.js';
+import { relayedMode, sourceOf as trustedSourceOf } from './trust.js';
 
 export type CallerKind = 'session' | 'local' | 'device';
 export interface Caller { kind: CallerKind; id: string; scopes: Set<Scope>; viaCookie: boolean }
@@ -39,23 +40,35 @@ registerMigrations([{
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 
 /**
- * True when the request was made on this machine — not relayed — and addressed to it by a local name.
+ * True when the request was made on this machine by someone sitting at it.
  *
- * Review of A2 (2026-10-26). A loopback socket is not enough: `tailscaled --tun=userspace-networking` (our Docker
- * entrypoint), `tailscale serve --tcp`, ssh/socat/portproxy forwarders and a bare nginx proxy_pass all reach the app
- * from 127.0.0.1, some with no forwarding header at all. What they do not change is the Host the client used — a
- * tailnet peer asks for box.tailnet.ts.net or 100.x, not localhost — so Host must be localhost / 127.0.0.1 / [::1].
- * The same rule stops DNS rebinding (an attacker's page on evil.example resolving to 127.0.0.1 still sends
- * Host: evil.example). Any forwarding-style header, even an empty one, also means relayed.
+ * Review of A2, corrected by the W5 security review (2026-10-26). A loopback socket is not enough: `tailscaled
+ * --tun=userspace-networking` (our Docker entrypoint), `tailscale serve --tcp`, ssh/socat/portproxy forwarders and a
+ * bare nginx proxy_pass all reach the app from 127.0.0.1, some with no forwarding header at all — and A2's idea that
+ * such a relay would never carry `Host: localhost` was wrong: the client chooses the Host, so anyone on the far side
+ * of a raw TCP relay can send `Host: localhost`. So "this machine" now also needs the server NOT to be reachable
+ * through a relay at all (trust.ts relayedMode: bound beyond 127.0.0.1, MWA_RELAYED=1, the Docker image's Tailscale, a
+ * hosted deploy, or a non-local allowed host / public URL). In those setups the owner signs in with the password or
+ * uses a paired device. The local Host and the absence of forwarding headers are still required (they stop DNS
+ * rebinding and a proxy that does add headers), and every request's Host is also checked against the allowed hosts
+ * before anything else (serve.ts, trust.ts hostAllowed).
  */
 const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?$/i;
 const RELAY_HEADERS = ['x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-forwarded-port', 'forwarded', 'x-real-ip', 'via'];
-export function fromThisMachine(req: IncomingMessage): boolean {
+export function fromThisMachine(req: IncomingMessage, env: Record<string, string | undefined> = process.env): boolean {
+  if (relayedMode(env)) return false;
   const a = String(req.socket?.remoteAddress ?? '');
   if (!(a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1')) return false;
   const h = req.headers;
   if (RELAY_HEADERS.some((k) => k in h) || Object.keys(h).some((k) => k.startsWith('tailscale-'))) return false;
   return LOCAL_HOST.test(String(h.host ?? ''));
+}
+
+/** Strip what a name must not carry: control characters and bidirectional overrides (a name that renders backwards
+ *  or hides part of itself), then trim and cap. */
+export function cleanDeviceName(name: string, max = 60): string {
+  // and no angle brackets (W5 re-review): a name never needs them; the app escapes names anyway
+  return name.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff<>]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
 function bearer(req: IncomingMessage): string | null {
@@ -128,7 +141,7 @@ export function redeemPairCode(code: string, name: string, platform?: string): {
     const deviceId = `dev_${randomBytes(8).toString('hex')}`, token = randomBytes(32).toString('base64url');
     const seq = recordEvent({ entity: 'device', id: deviceId, payload: { name } }, d);
     d.prepare('INSERT INTO devices (id, name, platform, token_hash, scopes, created_at, last_seen, updated_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(deviceId, name.slice(0, 60) || 'Phone', platform?.slice(0, 30) ?? null, sha(token), row.scopes, now, now, seq);
+      .run(deviceId, cleanDeviceName(name) || 'Phone', platform ? cleanDeviceName(platform, 30) || null : null, sha(token), row.scopes, now, now, seq);
     d.prepare('UPDATE pair_codes SET used_at = ?, device_id = ? WHERE code_hash = ?').run(now, deviceId, sha(c));
     return { deviceId, token, scopes: row.scopes.split(',') as Scope[] };
   }).immediate();
@@ -153,22 +166,33 @@ export function revokeDevice(id: string): boolean {
   })();
 }
 
-// Failed pairing attempts (review of A2): per source — at most 5 per 10 minutes from one address — so nobody can
-// lock the owner out by spraying junk codes; plus a generous global ceiling against a distributed flood. A code has
-// 32^8 ≈ 1e12 values and lives 10 minutes, so this is about noise more than guessing. In memory; a restart clears it.
-const PER_SOURCE = 5, GLOBAL = 200;
-const failures = new Map<string, number[]>();
-function recent(list: number[], now: number): number[] { while (list.length && list[0] < now - CODE_TTL_MS) list.shift(); return list; }
-export function sourceOf(req: IncomingMessage): string {
-  const xff = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
-  return xff || String(req.socket?.remoteAddress ?? 'unknown');
+/** The address a throttle counts against (trust.ts: the socket peer; X-Forwarded-For only behind MWA_TRUSTED_PROXY). */
+export const sourceOf = (req: IncomingMessage): string => trustedSourceOf(req);
+
+/** W5: rename a device (Settings › Devices). False when there is no such active device. */
+export function renameDevice(id: string, name: string): DeviceRow | null {
+  const clean = cleanDeviceName(name);
+  if (!clean) return null;
+  const d = appDb();
+  const ok = d.transaction(() => {
+    const r = d.prepare('UPDATE devices SET name = ? WHERE id = ? AND revoked_at IS NULL').run(clean, id);
+    if (!r.changes) return false;
+    const seq = recordEvent({ entity: 'device', id, payload: { name: clean } }, d);
+    d.prepare('UPDATE devices SET updated_seq = ? WHERE id = ?').run(seq, id);
+    return true;
+  })();
+  return ok ? listDevices().find((x) => x.id === id) ?? null : null;
 }
-export function pairingThrottled(source: string, now = Date.now()): boolean {
-  if (recent(failures.get(source) ?? [], now).length >= PER_SOURCE) return true;
-  let all = 0; for (const [k, v] of failures) { const r = recent(v, now); if (!r.length) failures.delete(k); all += r.length; }
-  return all >= GLOBAL;
+
+/** W5: one active device's name (GET /me tells a paired phone what it is called). */
+export function deviceName(id: string): string | null {
+  const r = appDb().prepare('SELECT name FROM devices WHERE id = ? AND revoked_at IS NULL').get(id) as { name: string } | undefined;
+  return r?.name ?? null;
 }
-export function notePairingFailure(source: string, now = Date.now()): void {
-  const l = failures.get(source) ?? []; l.push(now); failures.set(source, l);
+
+/** W5: the request carries a paired device's cookie that is still valid (the legacy page gate lets the app load). */
+export function hasValidDeviceCookie(req: IncomingMessage): boolean {
+  const c = deviceCookie(req);
+  if (!c) return false;
+  try { return !!deviceForToken(c); } catch { return false; }
 }
-export function resetPairingThrottle(): void { failures.clear(); }

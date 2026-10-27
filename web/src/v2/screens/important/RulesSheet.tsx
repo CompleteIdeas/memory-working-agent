@@ -1,7 +1,7 @@
 /**
  * "Your rules" (v2 build, slice W3): what the person taught by tapping Not important or This was important, each with
  * what it decides in the recent mail now, and Remove (DELETE /triage/rules/{id}: that mail is sorted as usual again).
- * Settings (W5) becomes its home; until then it opens from the bottom of the Important screen.
+ * Their home is Settings › Your rules (W5); this sheet stays as the quick view from the Important list, with a link there.
  */
 import { useState } from 'react';
 import { useItemActions, useRules } from '../../store/react';
@@ -9,7 +9,7 @@ import { ruleEffectLine, ruleLine } from '../../store/important';
 import { Sheet } from '../../shell/sheets';
 import { CheckIcon } from './icons';
 
-export function RulesSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function RulesSheet({ open, onClose, onOpenSettings }: { open: boolean; onClose: () => void; onOpenSettings?: () => void }) {
   const rules = useRules(open);
   const actions = useItemActions();
   const [said, setSaid] = useState<{ text: string; error: boolean } | null>(null);
@@ -41,6 +41,7 @@ export function RulesSheet({ open, onClose }: { open: boolean; onClose: () => vo
             ))}
           </ul>
         )}
+        {onOpenSettings && <p><button type="button" className="linkish quietlink" onClick={onOpenSettings}>Your rules in Settings</button></p>}
       </div>
     </Sheet>
   );

@@ -7,6 +7,7 @@
  * guarded), mirroring the worker. http_request is network egress — opt-in.
  */
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { docxText, UnsafeDocument } from './safe-zip.js';
 import { resolveVaultRefs, hasVaultRef } from '../vault/vault.js';
 import { resolve, join, dirname, basename, relative, isAbsolute, sep } from 'node:path';
 import { runCommand, runCommandAsync } from '../util.js';
@@ -534,6 +535,7 @@ async function pdfPages(buf: Buffer): Promise<string[]> {
   while (pdfPagesCache.size > 4) pdfPagesCache.delete(pdfPagesCache.keys().next().value as string);
   return pages;
 }
+export { MAX_UNZIPPED_BYTES } from './safe-zip.js';
 /** What read_document returns per call when the model does not ask for more (its `max_chars` default). */
 export const READ_DOCUMENT_CHARS = 8000;
 /**
@@ -557,10 +559,8 @@ export async function documentSize(src: string, buf: Buffer): Promise<{ pages: n
       return sized(chars, pages.length);
     }
     if (src.toLowerCase().endsWith('.docx')) {
-      const m: any = await import('mammoth');
-      const fn = m.extractRawText ?? m.default?.extractRawText;
-      const { value } = await fn({ buffer: buf });
-      return sized(String(value ?? '').length);
+      // read with a hard ceiling on what inflating produces (safe-zip.ts); one that can't be: counted by its size
+      try { return sized((await docxText(buf)).length); } catch (e) { if (e instanceof UnsafeDocument) return sized(buf.length); throw e; }
     }
     const text = buf.toString('utf8');
     return sized(/<!doctype html|<html[\s>]/i.test(text.slice(0, 1024)) ? htmlToText(text).length : text.length);
@@ -595,10 +595,9 @@ const readDocumentTool: RegisteredTool = {
         return windowOf(chosen, args.offset, max, `${name}: ${pages.length} page${pages.length === 1 ? '' : 's'}, showing ${a === b ? `page ${a}` : `pages ${a}–${b}`}${b < pages.length ? ` (pages: "${b + 1}-" reads the rest)` : ''}`, 'read_document', { source: src, ...(args.pages ? { pages: String(args.pages) } : {}) });
       }
       if (lower.endsWith('.docx')) {
-        const m: any = await import('mammoth');
-        const fn = m.extractRawText ?? m.default?.extractRawText;
-        const { value } = await fn({ buffer: buf });
-        return windowOf(String(value ?? ''), args.offset, max, name, 'read_document', { source: src });
+        let value: string;
+        try { value = await docxText(buf); } catch (e) { if (e instanceof UnsafeDocument) return `(${name}: ${e.message})`; throw e; }
+        return windowOf(value, args.offset, max, name, 'read_document', { source: src });
       }
       const text = buf.toString('utf8');
       // HTML (a web page or .html file) → strip to readable text, not raw markup.

@@ -3,17 +3,15 @@
  * one (Chrome, Edge, Samsung Internet), Share › Add to Home Screen on iPhone Safari, and — on an address the phone
  * won't install from (http://100.x…) — the secure address to open instead. The words are in src/pwa/install.ts.
  *
- * W5 builds the full Settings screen (screens/settings/Settings.tsx on v2-w5); it should place this card in its
- * "This device" section. Until then the W1 Settings frame (shell/screens.tsx) shows it.
+ * Shown in W5's Settings (screens/settings/Settings.tsx), section "This device"; `publicUrl` is Settings › Your helper ›
+ * Address for phones (MWA_PUBLIC_URL).
  */
 import { useState } from 'react';
-import { useMeta } from '../../store/react';
 import { useInstallState } from '../../../pwa/react';
 import { promptInstall } from '../../../pwa/register';
 import { installAdvice, installWay } from '../../../pwa/install';
 
-export function InstallCard() {
-  const { meta } = useMeta();
+export function InstallCard({ publicUrl = null }: { publicUrl?: string | null } = {}) {
   const { canPrompt, standalone, justInstalled } = useInstallState();
   const [note, setNote] = useState<string | null>(null);
   const secure = typeof window !== 'undefined' && window.isSecureContext === true;
@@ -22,8 +20,6 @@ export function InstallCard() {
     userAgent: typeof navigator === 'undefined' ? '' : navigator.userAgent,
     touchPoints: typeof navigator === 'undefined' ? 0 : navigator.maxTouchPoints,
   });
-  // the helper's own https address when the server knows it (W5: MWA_PUBLIC_URL); a template otherwise
-  const publicUrl = (meta as { publicUrl?: string | null } | null)?.publicUrl ?? null;
   const a = installAdvice(way, publicUrl);
   const install = async () => {
     setNote(null);

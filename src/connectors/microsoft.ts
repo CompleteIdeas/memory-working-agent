@@ -10,8 +10,9 @@
  * Calendars.ReadWrite for proposing events and offline_access for refresh.
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { docxText } from '../tools/safe-zip.js';
 import { resolve, dirname } from 'node:path';
-import { createServer } from 'node:http';
+import { catchOAuthCode, newPkce } from '../connect/oauth-catcher.js';
 import { randomBytes, createHash } from 'node:crypto';
 import type { RegisteredTool } from '../tools/registry.js';
 import { connectorTokenPath } from '../paths.js';
@@ -126,27 +127,16 @@ export async function graph(path: string, init: RequestInit = {}): Promise<any> 
 function beginConsent(readOnly = false): { url: string; done: Promise<string> } {
   const id = clientId();
   const scope = (readOnly ? SCOPES_RO : SCOPES_RW).join(' ');
-  const verifier = randomBytes(32).toString('base64url');
-  const challenge = createHash('sha256').update(verifier).digest('base64url');
+  // W5 security review (7): PKCE as before, plus a random state the loopback listener must see back (a stray request
+  // no longer ends the sign-in, and a forged one can't swap in another account)
+  const { verifier, challenge, state } = newPkce();
   const url = `${authBase()}/authorize?` + new URLSearchParams({
     client_id: id, response_type: 'code', redirect_uri: REDIRECT_URI, response_mode: 'query',
-    scope, code_challenge: challenge, code_challenge_method: 'S256', prompt: 'consent',
+    scope, code_challenge: challenge, code_challenge_method: 'S256', prompt: 'consent', state,
   }).toString();
+  const caught = catchOAuthCode({ port: REDIRECT_PORT, state, label: 'Outlook' });
   const done = (async () => {
-    const code: string = await new Promise((res, rej) => {
-      const srv = createServer((req, rq) => {
-        try {
-          const u = new URL(req.url ?? '', REDIRECT_URI);
-          if (u.pathname !== '/oauth') { rq.statusCode = 404; rq.end(); return; }
-          const c = u.searchParams.get('code');
-          rq.end('MWA: Outlook connected. You can close this tab and return to MWA.');
-          srv.close();
-          if (c) res(c); else rej(new Error(u.searchParams.get('error_description') ?? u.searchParams.get('error') ?? 'no code'));
-        } catch (e) { rej(e as Error); }
-      });
-      srv.on('error', rej);
-      srv.listen(REDIRECT_PORT, '127.0.0.1');
-    });
+    const code = await caught.code;
     const body = new URLSearchParams({ client_id: id, grant_type: 'authorization_code', code, redirect_uri: REDIRECT_URI, code_verifier: verifier, scope });
     const res = await fetch(`${authBase()}/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body });
     if (!res.ok) throw new Error(`token exchange failed: ${res.status} ${(await res.text()).slice(0, 160)}`);
@@ -158,6 +148,9 @@ function beginConsent(readOnly = false): { url: string; done: Promise<string> } 
   })();
   return { url, done };
 }
+
+/** Tests (W5): start a consent and hand back its URL and completion. */
+export const beginMicrosoftConsentForTests = beginConsent;
 
 /** CLI: print the URL, wait for approval. */
 export async function connectMicrosoft(onLog: (m: string) => void = (m) => console.log(m), readOnly = false): Promise<void> {
@@ -256,12 +249,7 @@ async function extractDoc(filename: string, buf: Buffer): Promise<string> {
       const { text } = await extractText(pdf, { mergePages: true });
       return Array.isArray(text) ? text.join('\n') : String(text ?? '');
     }
-    if (lower.endsWith('.docx')) {
-      const m: any = await import('mammoth');
-      const fn = m.extractRawText ?? m.default?.extractRawText;
-      const { value } = await fn({ buffer: buf });
-      return String(value ?? '');
-    }
+    if (lower.endsWith('.docx')) return docxText(buf); // bounded inflate (W5 re-review): a lying zip can't blow up memory
     return buf.toString('utf8');
   } catch { return ''; }
 }

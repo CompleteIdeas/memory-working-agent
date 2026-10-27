@@ -86,7 +86,8 @@ export interface paths {
         delete: operations["revokeDevice"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** Rename a paired device (admin). */
+        patch: operations["renameDevice"];
         trace?: never;
     };
     "/devices/me/sign-out": {
@@ -1107,13 +1108,189 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Who this request is: signed in or not, as what, with which scopes; and whether a password is set (W5). */
+        get: operations["getMe"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sign in with the password; sets the mwa_session cookie. Throttled (10 wrong tries per 10 minutes). */
+        post: operations["signIn"];
+        /** Sign this browser out of the password session. */
+        delete: operations["signOut"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/session/sign-out-everywhere": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** End every password session, this one included (admin). Paired devices are removed one by one. */
+        post: operations["signOutEverywhere"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The helper's settings: its name, the greeting name, the time zone, first run, and the switches. */
+        get: operations["getSettings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Change the settings (admin). A setting the deployment fixed is refused (400 fixed). */
+        patch: operations["updateSettings"];
+        trace?: never;
+    };
+    "/spending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** This month's spending, the monthly limit, the background line, and the default limits per kind. */
+        get: operations["getSpending"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Change the monthly limit or the per-run limit for repeating jobs (admin). */
+        patch: operations["updateSpending"];
+        trace?: never;
+    };
+    "/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Google and Outlook: connected or not, whether one needs reconnecting, and how Connect works here. */
+        get: operations["listAccounts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/accounts/{provider}/connect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: "google" | "outlook";
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start connecting (or reconnecting) Google or Outlook (admin): a sign-in page to open, a code, or a setup note. */
+        post: operations["connectAccount"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/vault": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Saved logins, names and field names only (admin). */
+        get: operations["listVault"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/vault/forget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Forget one saved login (admin). Jobs that used it will ask again. */
+        post: operations["forgetVaultEntry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The files added to a project (General when no projectId), newest first. */
+        get: operations["listFiles"];
+        put?: never;
+        /** Add a file to a project (act). The body is the file (with ?name=), or multipart/form-data with one file part. Capped at 25 MB (413); at most 2 at a time per device and 4 in all (429 busy); all added files share MWA_UPLOAD_QUOTA_MB, 2 GB (507 storage_full). The name is cleaned (no folders, dot files or Windows device names); never saved over another file. */
+        post: operations["uploadFile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         Error: {
             error: {
-                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer; important: bad_group, bad_state, bad_scope, not_handled, not_open, no_action, freemail_domain, kind_not_available, unavailable. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
+                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer; important: bad_group, bad_state, bad_scope, not_handled, not_open, no_action, freemail_domain, kind_not_available, unavailable; W5 settings and files: no_password, wrong_password, not_a_session, bad_body, bad_name, bad_time_zone, bad_url, bad_limit, bad_cap, fixed, bad_config, no_file, no_name, empty_file, unsafe_document, busy, storage_full. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
                 code: string;
                 /** @description Plain words for a person. */
                 message: string;
@@ -1125,9 +1302,11 @@ export interface components {
             /** @description One-time */
             code: string;
             expiresAt: number;
-            /** @description Show as a QR code: <origin>/pair#c=CODE (the fragment never reaches a server). */
+            /** @description Show as a QR code: <origin>/pair#c=CODE (the fragment never reaches a server). Opened at localhost, it uses the helper's public address (MWA_PUBLIC_URL, Settings, or the tailnet name in MWA_ALLOWED_HOSTS). */
             pairUrl: string;
             scopes: components["schemas"]["Scope"][];
+            /** @description false: no public address is known and the link says "localhost", which a phone cannot open. Ask for the helper's address (PATCH /settings publicUrl). */
+            reachable?: boolean;
         };
         PairResult: {
             deviceId: string;
@@ -2125,6 +2304,149 @@ export interface components {
             ignored?: boolean;
             today: components["schemas"]["Today"];
         };
+        /** @description Who this request is (W5). Public: a signed-out app uses it to offer the password (passwordSet) or pairing only. Signed out it says only that and whether a password is set — which the lock page shows anyway — and nothing about devices or settings. */
+        Me: {
+            signedIn: boolean;
+            /**
+             * @description session = the password; local = this machine with no password; device = a paired device.
+             * @enum {string|null}
+             */
+            kind: "session" | "local" | "device" | null;
+            /** @description This device, when it is a paired one (mark it in the device list). */
+            deviceId: string | null;
+            deviceName: string | null;
+            scopes: components["schemas"]["Scope"][];
+            /** @description MWA_ACCESS_PASSWORD is set: the sign-in screen offers the password. */
+            passwordSet: boolean;
+        };
+        SignedIn: {
+            /** @constant */
+            signedIn: true;
+            /** @constant */
+            kind: "session";
+            scopes: components["schemas"]["Scope"][];
+        };
+        Feature: {
+            /** @enum {string} */
+            id: "sorting" | "calendar" | "mail";
+            /** @description "Sorting your mail into Important". */
+            label: string;
+            on: boolean;
+            /** @description false: fixed when the helper was installed (say so; offer no switch). */
+            canChange: boolean;
+            /** @description Plain words for what it does, or why it cannot be changed here. */
+            note: string;
+        };
+        HelperSettings: {
+            /** @description What the helper is called ("Your helper" until named). */
+            helperName: string;
+            /** @description The name in the greeting ("Good morning, Robert"). */
+            ownerName: string | null;
+            /** @description Set by the deployment (MWA_OWNER_NAME): read-only here. */
+            ownerNameFixed: boolean;
+            /** @description An IANA zone; used for the calendar, Important and reminders. */
+            timeZone: string;
+            timeZoneFixed: boolean;
+            /** @description Where phones reach the helper ("https://mwa.tail1a2b.ts.net"): MWA_PUBLIC_URL, the address saved here, or a tailnet name in MWA_ALLOWED_HOSTS. */
+            publicUrl: string | null;
+            /** @description Set by the deployment (MWA_PUBLIC_URL): read-only here. */
+            publicUrlFixed: boolean;
+            /** @description First-run setup on the computer was finished or skipped (kept in app.db, not the settings file). */
+            firstRunDone: boolean;
+            /** @description The settings file (mwa.config.json) cannot be read: what is wrong, in plain words. Show it instead of first run. */
+            configError: string | null;
+            features: components["schemas"]["Feature"][];
+        };
+        Spending: {
+            month: {
+                /** @description "November 2026". */
+                label: string;
+                usd: number;
+                calls: number;
+            };
+            limit: {
+                /** @description The monthly limit, or null for none. */
+                usd: number | null;
+                /** @description Set by the deployment (MWA_MONTHLY_BUDGET_USD): read-only here. */
+                fixed: boolean;
+                /** @enum {string} */
+                state: "none" | "ok" | "warn" | "over";
+                pct: number | null;
+            };
+            /** @description This month's work that is not a job (mail sorting, reading newsletters for dates). */
+            background: {
+                purpose: string;
+                label: string;
+                usd: number;
+                calls: number;
+            }[];
+            /** @description The default limits per kind of work. A hand-off's and a Continue's limit come from its estimate, up to these. */
+            defaults: {
+                /** @description A hand-off's default limit is at most this. */
+                handoffMaxUsd: number;
+                /** @description Any limit (Continue, Start over) is at most this. */
+                continueMaxUsd: number;
+                /** @description Each run of a repeating job, when it has no limit of its own (null: none). */
+                perFireUsd: number | null;
+                perFireFixed: boolean;
+            };
+        };
+        Account: {
+            /** @enum {string} */
+            provider: "google" | "outlook";
+            label: string;
+            /** @description One sentence of what it allows: "Calendar and Gmail. I can read them and make drafts. I never send." */
+            what: string;
+            connected: boolean;
+            /** @description The sign-in expired or was revoked: offer Reconnect. */
+            needsReconnect: boolean;
+            /** @enum {string|null} */
+            method: "sign-in" | "app-password" | null;
+            /**
+             * @description How Connect works here: a sign-in page to open, a code to type at the provider, or a one-time setup on the computer first.
+             * @enum {string}
+             */
+            connect: "browser" | "code" | "setup";
+        };
+        ConnectStart: {
+            /** @enum {string} */
+            kind: "browser" | "code" | "setup";
+            /** @enum {string} */
+            provider: "google" | "outlook";
+            /** @description browser: the sign-in page; code: where to type the code; setup: the full settings. */
+            url: string;
+            /** @description code: what to type. */
+            code?: string;
+            /** @description code: seconds it stays valid. */
+            expiresIn?: number;
+            message: string;
+        };
+        VaultEntry: {
+            name: string;
+            site?: string;
+            /** @description Field names only; never a value. */
+            fields: string[];
+            savedAt?: number;
+        };
+        UploadedFile: {
+            /** @description The same as path. */
+            id: string;
+            /** @description Workspace-relative; send it in /ask `files`. */
+            path: string;
+            /** @description The cleaned name it was saved under ("rules (2).pdf" when one existed). */
+            name: string;
+            size: number;
+            projectId: string;
+            /** @description Pages as read_document counts them; null when it could not be counted quickly. */
+            pages: number | null;
+        };
+        FileRow: {
+            id: string;
+            path: string;
+            name: string;
+            size: number;
+            mtime: number;
+        };
     };
     responses: {
         /** @description An error. */
@@ -2267,6 +2589,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Revoked"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    renameDevice: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Renamed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        device: components["schemas"]["Device"];
+                    };
                 };
             };
             default: components["responses"]["Error"];
@@ -3978,6 +4333,383 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TodayAck"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    signIn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    password: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Signed in (Set-Cookie mwa_session). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignedIn"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    signOut: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed out (the cookie is cleared). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        signedOut: true;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    signOutEverywhere: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed out everywhere (the cookie is cleared). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description How many sessions ended. */
+                        signedOut: number;
+                        message: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The settings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HelperSettings"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateSettings: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    helperName?: string;
+                    ownerName?: string | null;
+                    timeZone?: string;
+                    /** @description The helper's address for phones, or null to forget it. */
+                    publicUrl?: string | null;
+                    firstRunDone?: boolean;
+                    features?: {
+                        sorting?: boolean;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description The settings now. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HelperSettings"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getSpending: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Spending. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Spending"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateSpending: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Dollars a month (at least 1), or null for no limit. */
+                    monthlyUsd?: number | null;
+                    /** @description Dollars per run of a repeating job, rounded to the cent: $0.01 to $20. 0 or null: back to the default (25¢); never "no limit". */
+                    perFireUsd?: number | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Spending now. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Spending"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listAccounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The two accounts. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        accounts: components["schemas"]["Account"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    connectAccount: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                provider: "google" | "outlook";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What to do next. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectStart"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listVault: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The entries. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        entries: components["schemas"]["VaultEntry"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    forgetVaultEntry: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Forgotten. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        forgot: string;
+                        message: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listFiles: {
+        parameters: {
+            query?: {
+                projectId?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The files. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        projectId: string;
+                        folder: string;
+                        files: components["schemas"]["FileRow"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    uploadFile: {
+        parameters: {
+            query?: {
+                projectId?: string;
+                /** @description The file name (required for a raw body; a multipart part carries its own). */
+                name?: string;
+            };
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Saved; send `path` in /ask `files`. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadedFile"];
                 };
             };
             default: components["responses"]["Error"];

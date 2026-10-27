@@ -34,7 +34,7 @@ describe('the update machine', () => {
   it('Reload: the worker takes over (SKIP_WAITING), then the page reloads once when it controls the page', () => {
     const a = play([{ type: 'waiting', pageRunsIt: false }, { type: 'apply' }]);
     expect(a.s.phase).toBe('applying');
-    expect(a.effects).toEqual(['skip-waiting', 'arm-timeout']);
+    expect(a.effects).toEqual(['skip-waiting', 'arm-timeout', 'arm-give-up']);
     const b = play([{ type: 'controller-changed', hadController: true }], a.s);
     expect(b.s.phase).toBe('reloading');
     expect(b.effects).toEqual(['reload']);
@@ -67,7 +67,7 @@ describe('the update machine', () => {
     expect(effects).toEqual([]);
     // Reload with nothing waiting any more: look, find nothing, reload
     const r = play([{ type: 'apply' }, { type: 'checked', found: false }], s);
-    expect(r.effects).toEqual(['check', 'reload']);
+    expect(r.effects).toEqual(['check', 'arm-give-up', 'reload']);
   });
   it('426 from the API: the same banner, and it looks for the new worker first', () => {
     const a = play([{ type: 'server-too-old' }]);
@@ -76,13 +76,13 @@ describe('the update machine', () => {
     expect(updateWords(a.s)!.text).toBe('A new version is ready');
     // found: it waits like any other; Reload then takes it over
     const b = play([{ type: 'checked', found: true }, { type: 'waiting', pageRunsIt: false }, { type: 'apply' }], a.s);
-    expect(b.effects).toEqual(['skip-waiting', 'arm-timeout']);
+    expect(b.effects).toEqual(['skip-waiting', 'arm-timeout', 'arm-give-up']);
     // tapped before the worker finished installing: it takes over as soon as it is waiting
     const c = play([{ type: 'apply' }, { type: 'checked', found: true }, { type: 'waiting', pageRunsIt: false }], a.s);
-    expect(c.effects).toEqual(['check', 'skip-waiting', 'arm-timeout']);
+    expect(c.effects).toEqual(['check', 'arm-give-up', 'skip-waiting', 'arm-timeout']);
     // nothing new to fetch (the server wants a client nobody has deployed): a plain reload
     const d = play([{ type: 'apply' }, { type: 'checked', found: false }], a.s);
-    expect(d.effects).toEqual(['check', 'reload']);
+    expect(d.effects).toEqual(['check', 'arm-give-up', 'reload']);
   });
   it('a 426 while a worker is already waiting changes nothing', () => {
     const a = play([{ type: 'waiting', pageRunsIt: false }]);

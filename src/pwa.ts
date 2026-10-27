@@ -11,16 +11,13 @@
  *
  * Public without a password session (the same reasoning as /assets/, already public for share links): the service
  * worker script, the manifests and the install icons. Browsers fetch a manifest WITHOUT cookies, so behind the gate it
- * came back as the sign-in page and the app could not be installed. index.html is public only to the worker's own
- * precache request (header x-mwa-sw: precache): a person opening "/" without a session still gets the sign-in page
- * (v1's "reload on 401" depends on that), while a signed-in phone's worker can always cache the shell. Nothing here is
- * secret: it is the same code /assets/ serves.
- *
- * TODO(W5): W5 adds signedOutPageAllowed (src/api/legacy.ts) to the same gate line in serve.ts; keep both.
+ * came back as the sign-in page and the app could not be installed. W5's signedOutPageAllowed (src/api/legacy.ts)
+ * already lets in single files at the root and a ?ui=v2 page (the worker precaches the shell as index.html?ui=v2);
+ * this adds the icons under /pwa/. Nothing here is secret: it is the same code /assets/ serves. Unknown paths under
+ * /pwa/ are 404s, never the SPA fallback (pwaFileOnly).
  */
 import type { IncomingMessage } from 'node:http';
 
-export const PRECACHE_HEADER = 'x-mwa-sw';
 const HASHED = /^assets\/.+-[A-Za-z0-9_-]{8,}\.[a-z0-9]+$/;
 const PUBLIC_FILES = new Set(['/sw.js', '/manifest.webmanifest', '/manifest-v2.webmanifest', '/icon-192.png', '/icon-512.png']);
 
@@ -40,8 +37,7 @@ export function uiCacheControl(rel: string): string {
 }
 
 /** True for a built-UI file anyone may fetch without the password session (see the header). */
-export function pwaPublic(pathname: string, req: Pick<IncomingMessage, 'headers' | 'method'>): boolean {
+export function pwaPublic(pathname: string, req: Pick<IncomingMessage, 'method'>): boolean {
   if (req.method !== 'GET' && req.method !== 'HEAD') return false;
-  if (PUBLIC_FILES.has(pathname) || PWA_ICON.test(pathname)) return true;
-  return pathname === '/index.html' && String(req.headers[PRECACHE_HEADER] ?? '') === 'precache';
+  return PUBLIC_FILES.has(pathname) || PWA_ICON.test(pathname);
 }

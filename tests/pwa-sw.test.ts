@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  route, cachesToDelete, acceptable, pageAnswer, precacheUrls, cacheName, CACHE_PREFIX, PRECACHE_HEADER, tryNetwork, type BuildInfo,
+  route, cachesToDelete, acceptable, pageAnswer, precacheUrls, cacheName, CACHE_PREFIX, SHELL_FETCH, tryNetwork, type BuildInfo,
 } from '../web/src/pwa/sw-logic';
 import { buildInfo, entryOf } from '../web/vite-pwa';
 
@@ -184,12 +184,13 @@ const server = (over: Record<string, Response | 'down'> = {}) => async (url: str
 describe('the worker (sw.ts) against a fake browser', () => {
   afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
-  it('install: caches every file of the build in its own cache; index.html is asked for with the precache header; no skipWaiting', async () => {
+  it('install: caches every file of the build in its own cache; index.html is fetched as a v2 page (index.html?ui=v2) and kept as index.html; no skipWaiting', async () => {
     const w = await loadWorker(server());
     await w.install();
     const c = w.caches.stores.get(cacheName('b1'))!;
     expect([...c.m.keys()].sort()).toEqual([`${SCOPE}assets/index-AbCd1234.js`, `${SCOPE}index.html`, `${SCOPE}manifest-v2.webmanifest`]);
-    expect(w.seen.find((s) => s.url.endsWith('index.html'))!.headers[PRECACHE_HEADER]).toBe('precache');
+    expect(w.seen.map((s) => s.url)).toContain(`${SCOPE}${SHELL_FETCH}`);
+    expect(w.seen.some((s) => Object.keys(s.headers).length)).toBe(false); // no special header anyone could copy
     expect(w.self.skipWaiting).not.toHaveBeenCalled(); // a new worker waits for the page
   });
   it('install is all or nothing: one missing file, or a sign-in page for index.html, and no cache is left', async () => {
