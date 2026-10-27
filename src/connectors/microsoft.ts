@@ -12,7 +12,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { docxText } from '../tools/safe-zip.js';
 import { resolve, dirname } from 'node:path';
-import { catchOAuthCode, newPkce } from '../connect/oauth-catcher.js';
+import { catchOAuthCode, cancelOAuthCatch, newPkce } from '../connect/oauth-catcher.js';
 import { randomBytes, createHash } from 'node:crypto';
 import type { RegisteredTool } from '../tools/registry.js';
 import { connectorTokenPath } from '../paths.js';
@@ -184,8 +184,13 @@ export async function startMicrosoftDeviceCode(readOnly = false): Promise<Device
   });
   if (!res.ok) throw new Error(`device-code request failed: ${res.status} ${(await res.text()).slice(0, 160)}`);
   const dc: any = await res.json();
-  // Poll the token endpoint until the user finishes signing in (or it expires).
-  void pollDeviceToken(id, scope, String(dc.device_code), Number(dc.interval ?? 5), Number(dc.expires_in ?? 900));
+  // Poll the token endpoint until the user finishes signing in (or it expires). v2 S3 (review): one flow at a time —
+  // a new code cancels the old one's poller, and Cancel / Disconnect cancel it too, so an old code finished later
+  // can't quietly connect Outlook again.
+  if (deviceFlow) deviceFlow.cancelled = true;
+  const flow = { cancelled: false };
+  deviceFlow = flow;
+  void pollDeviceToken(id, scope, String(dc.device_code), Number(dc.interval ?? 5), Number(dc.expires_in ?? 900), flow);
   return {
     user_code: String(dc.user_code),
     verification_uri: String(dc.verification_uri ?? 'https://microsoft.com/devicelogin'),
@@ -194,11 +199,27 @@ export async function startMicrosoftDeviceCode(readOnly = false): Promise<Device
   };
 }
 
-async function pollDeviceToken(clientIdValue: string, scope: string, deviceCode: string, intervalSec: number, expiresInSec: number): Promise<void> {
+/** The device-code flow waiting for the person, if any (one at a time). */
+let deviceFlow: { cancelled: boolean } | null = null;
+/** Tests only: poll every this many ms instead of Microsoft's interval (at least 5 s). */
+const pollMs = (sec: number): number => Number(process.env.MWA_MS_DEVICE_POLL_MS) || sec * 1000;
+
+/** v2 S3 (review): stop waiting for an Outlook sign-in — the device-code poller and the browser sign-in's loopback
+ *  listener. Nothing that finishes after this is saved. True when something was waiting. */
+export function cancelMicrosoftSignIn(): boolean {
+  let any = false;
+  if (deviceFlow && !deviceFlow.cancelled) { deviceFlow.cancelled = true; any = true; }
+  deviceFlow = null;
+  if (cancelOAuthCatch(REDIRECT_PORT)) any = true;
+  return any;
+}
+
+async function pollDeviceToken(clientIdValue: string, scope: string, deviceCode: string, intervalSec: number, expiresInSec: number, flow: { cancelled: boolean } = { cancelled: false }): Promise<void> {
   const deadline = Date.now() + expiresInSec * 1000;
   let interval = Math.max(intervalSec, 5);
   while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, interval * 1000));
+    await new Promise((r) => { const t = setTimeout(r, pollMs(interval)); (t as { unref?: () => void }).unref?.(); });
+    if (flow.cancelled) return;
     let j: any;
     try {
       const res = await fetch(`${authBase()}/token`, {
@@ -206,7 +227,9 @@ async function pollDeviceToken(clientIdValue: string, scope: string, deviceCode:
         body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:device_code', client_id: clientIdValue, device_code: deviceCode }),
       });
       j = await res.json();
+      if (flow.cancelled) return; // cancelled while asking: the token is dropped
       if (res.ok && j.access_token) {
+        if (deviceFlow === flow) deviceFlow = null;
         saveToken({ access_token: j.access_token, refresh_token: j.refresh_token, expires_at: Date.now() + (Number(j.expires_in ?? 3600) * 1000), scope });
         let who: string | null = null;
         try { const me = await graph('/me'); who = me.userPrincipalName || me.mail || null; console.log(`  ✅ Outlook connected as ${who ?? 'your account'}`); } catch { /* */ }
@@ -217,6 +240,7 @@ async function pollDeviceToken(clientIdValue: string, scope: string, deviceCode:
     if (j?.error === 'authorization_pending') continue;
     if (j?.error === 'slow_down') { interval += 5; continue; }
     // expired_token / authorization_declined / bad_verification_code → stop.
+    if (deviceFlow === flow) deviceFlow = null;
     console.error('  Outlook device-code connect ended:', j?.error ?? 'unknown');
     return;
   }

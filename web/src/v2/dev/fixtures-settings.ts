@@ -34,7 +34,7 @@ const norm = (c: string) => c.toUpperCase().replace(/[^A-Z0-9]/g, '');
 /** Which requests answer with nobody signed in (the server's public routes). */
 const PUBLIC = new Set(['GET /meta', 'GET /me', 'POST /session', 'POST /pair']);
 /** Which need admin (a paired phone gets 403). */
-const ADMIN: RegExp[] = [/^POST \/session\/sign-out-everywhere$/, /^POST \/pair\/codes$/, /^GET \/devices$/, /^(DELETE|PATCH) \/devices\/[^/]+$/, /^PATCH \/(settings|spending)$/, /^POST \/accounts\/[^/]+\/connect$/, /^GET \/vault$/, /^POST \/vault\/forget$/, /^PATCH \/push\/settings$/,
+const ADMIN: RegExp[] = [/^POST \/session\/sign-out-everywhere$/, /^POST \/pair\/codes$/, /^GET \/devices$/, /^(DELETE|PATCH) \/devices\/[^/]+$/, /^PATCH \/(settings|spending)$/, /^POST \/accounts\/[^/]+\/(connect|cancel)$/, /^GET \/vault$/, /^POST \/vault\/forget$/, /^PATCH \/push\/settings$/,
   // S1: every plug-in change
   /^(POST|PUT|DELETE) \/plugins(\/|$)/,
   // S2: every change to the assistant itself (and its model list, which uses the saved key)

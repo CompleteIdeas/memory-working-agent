@@ -63,7 +63,7 @@ import { createV1Handler } from './api/v1.js';
 import { makeAuthenticate, hasValidDeviceCookie } from './api/auth.js';
 import { configureSessions, sessionValid, secretEquals, pruneSessions } from './api/sessions.js';
 import { signInWithPassword } from './api/signin.js';
-import { hostAllowed, relayedMode, detectTailscaleServe } from './api/trust.js';
+import { hostAllowed, relayedMode, detectTailscaleServe, captureTailscaleAtStart } from './api/trust.js';
 import { setSettingsRouteDeps } from './api/routes/settings.js';
 import { handleLegacyFiles, signedOutPageAllowed, legacyApiScope } from './api/legacy.js';
 import { applyStoredSettings } from './v2/settings.js';
@@ -676,6 +676,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   }, 15_000).unref();
 
   loadEnv();
+  // v2 S3 (review): the Host check allows the tailnet name Tailscale joined with at this start; a key or name saved or
+  // removed in Settings counts from the next restart.
+  captureTailscaleAtStart();
   // v2 (W5): what Settings saved that the server reads from the environment (time zone, mail sorting, the per-fire
   // limit), unless the deployment set it — before the calendar, mail and triage loops start.
   applyStoredSettings();

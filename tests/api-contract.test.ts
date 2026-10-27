@@ -193,7 +193,7 @@ beforeAll(async () => {
   setConnectionDeps({ checkGmail: async (_a, p) => (p.includes('bad') ? { ok: false, message: 'Sign-in failed' } : { ok: true, message: 'ok' }),
     checkTelegram: async (t) => (t.includes('bad') ? { ok: false, message: 'Telegram failed: Unauthorized' } : { ok: true, message: 'Bot @x_bot works ✓' }),
     saveEnv: (kv) => { for (const [k, v] of Object.entries(kv)) s3Env.set(k, v); }, removeEnv: (ns) => { for (const k of ns) s3Env.delete(k); },
-    forgetGoogle: () => {}, forgetMicrosoft: () => {}, env: (n) => s3Env.get(n), googleSignedIn: () => false, outlookSignedIn: () => false, outlookCodeReady: () => true });
+    forgetGoogle: () => {}, forgetMicrosoft: () => {}, env: (n) => s3Env.get(n), googleSignedIn: () => false, outlookSignedIn: () => false, outlookCodeReady: () => true, cancelGoogle: () => false, cancelOutlook: () => false, fromHost: () => false });
   // P3: a password (so a session cookie names its subscriptions' owner) and a push service that always accepts
   configureSessions({ password: 'contract-push-pw' });
   setPushDeps({ transport: async () => ({ status: 201 }) });
@@ -432,6 +432,8 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'PUT /connections/tailscale', path: '/connections/tailscale', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ authKey: 'tskey-auth-example', hostname: 'mwa' }) }), status: 200 },
   { op: 'PUT /connections/tailscale', path: '/connections/tailscale', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ authKey: 'tskey-api-example' }) }), status: 400 },
   { op: 'DELETE /connections/{service}', path: '/connections/telegram', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 200 },
+  { op: 'POST /accounts/{provider}/cancel', path: '/accounts/outlook/cancel', init: post, status: 200 },
+  { op: 'POST /accounts/{provider}/cancel', path: '/accounts/nope/cancel', init: post, status: 404 },
   { op: 'DELETE /connections/{service}', path: '/connections/everything', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 404 },
   { op: 'POST /files', path: () => `/files?projectId=${ids.eventing}&name=notes.txt`, init: () => ({ method: 'POST', headers: { 'idempotency-key': `contract-key-${++keyN}`, 'content-type': 'text/plain' }, body: 'Entries close Friday.' }), status: 201 },
   { op: 'POST /files', path: '/files?projectId=pr_nope&name=notes.txt', init: () => ({ method: 'POST', headers: { 'idempotency-key': `contract-key-${++keyN}`, 'content-type': 'text/plain' }, body: 'x' }), status: 404 },

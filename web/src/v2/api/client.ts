@@ -396,7 +396,10 @@ export class MwaClient {
   async saveGoogleApp(clientId: string, clientSecret: string, o: { key?: string } = {}) { return (await this.call<ConnectionChange>('PUT', '/connections/google/app', { body: { clientId, clientSecret }, key: o.key })).body; }
   async saveOutlookApp(clientId: string, tenant?: string, o: { key?: string } = {}) { return (await this.call<ConnectionChange>('PUT', '/connections/outlook/app', { body: tenant ? { clientId, tenant } : { clientId }, key: o.key })).body; }
   async saveTelegram(token: string, o: { key?: string } = {}) { return (await this.call<ConnectionChange>('PUT', '/connections/telegram', { body: { token }, key: o.key })).body; }
-  async saveTailscale(authKey: string, hostname?: string, o: { key?: string } = {}) { return (await this.call<ConnectionChange>('PUT', '/connections/tailscale', { body: hostname ? { authKey, hostname } : { authKey }, key: o.key })).body; }
+  /** An empty `authKey` keeps the saved key (only the name changes); an empty `hostname` goes back to the default. */
+  async saveTailscale(authKey: string, hostname?: string, o: { key?: string } = {}) { return (await this.call<ConnectionChange>('PUT', '/connections/tailscale', { body: { ...(authKey ? { authKey } : {}), ...(hostname !== undefined ? { hostname } : {}) }, key: o.key })).body; }
+  /** Stop waiting for a sign-in that was started (Outlook's code, a browser window). */
+  cancelConnect(provider: 'google' | 'outlook', o: { key?: string } = {}) { return this.post<{ cancelled: boolean; message: string }>('/accounts/{provider}/cancel', { path: { provider }, key: o.key }); }
   async disconnect(service: ConnectionService, o: { key?: string } = {}) { return (await this.call<ConnectionChange>('DELETE', '/connections/{service}', { path: { service }, key: o.key })).body; }
 }
 

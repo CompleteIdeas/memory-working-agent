@@ -1232,6 +1232,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/accounts/{provider}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: "google" | "outlook";
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S3: stop waiting for a sign-in that was started (admin): Outlook's code poller and the browser sign-in's listener. Nothing that finishes later is saved. */
+        post: operations["cancelConnect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/vault": {
         parameters: {
             query?: never;
@@ -1719,7 +1738,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** S3: a Tailscale auth key (tskey-auth-…) and optionally the name on your tailnet (admin). Used when the helper next starts. Write-only. */
+        /** S3: a Tailscale auth key (tskey-auth-…) and optionally the name on your tailnet (admin). With a key already saved, the key may be left out to change only the name; an empty name goes back to the default (mwa). Used when the helper next starts. Write-only. */
         put: operations["saveTailscale"];
         post?: never;
         delete?: never;
@@ -5291,6 +5310,34 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    cancelConnect: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                provider: "google" | "outlook";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stopped (or nothing was waiting). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        cancelled: boolean;
+                        message: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     listVault: {
         parameters: {
             query?: never;
@@ -6204,7 +6251,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    authKey: string;
+                    authKey?: string;
+                    /** @description Empty: back to the default name (mwa). */
                     hostname?: string;
                 };
             };

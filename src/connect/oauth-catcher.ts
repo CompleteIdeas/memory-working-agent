@@ -83,3 +83,12 @@ export function catchOAuthCode(o: { port: number; state: string; label: string; 
   active.set(o.port, { server, fail: (e) => done(e) });
   return { ready, code };
 }
+
+/** v2 S3 (review): stop the sign-in waiting on this port (Cancel, or the account was disconnected): its listener
+ *  closes and its attempt fails, so nothing is saved. True when one was waiting. */
+export function cancelOAuthCatch(port: number): boolean {
+  const a = active.get(port);
+  if (!a) return false;
+  a.fail(new Error('The sign-in was cancelled.'));
+  return true;
+}

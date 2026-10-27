@@ -19,8 +19,9 @@
  * Google, Telegram or IMAP and never touch the real .env.
  */
 import { verifyGmailImap } from './connectors/gmail-imap.js';
-import { googleConfigured, disconnectGoogle } from './connectors/google.js';
-import { microsoftConfigured, microsoftClientReady, disconnectMicrosoft } from './connectors/microsoft.js';
+import { googleConfigured, disconnectGoogle, cancelGoogleSignIn } from './connectors/google.js';
+import { microsoftConfigured, microsoftClientReady, disconnectMicrosoft, cancelMicrosoftSignIn } from './connectors/microsoft.js';
+import { fromHostEnvironment } from './env.js';
 import { testTelegram, upsertEnv, removeEnv } from './wizard.js';
 import { scrub, type Outcome } from './assistant-settings.js';
 
@@ -39,6 +40,11 @@ export interface ConnectionDeps {
   outlookSignedIn: () => boolean;
   /** Microsoft's quick sign-in (a code) works: an app ID of your own, or the one this build ships with */
   outlookCodeReady: () => boolean;
+  /** stop a sign-in still waiting (the browser listener; Outlook's code poller too). True when one was. */
+  cancelGoogle: () => boolean;
+  cancelOutlook: () => boolean;
+  /** the host itself set this (a Railway variable, docker -e): removing it from .env doesn't stick past a restart */
+  fromHost: (name: string) => boolean;
 }
 const realDeps: ConnectionDeps = {
   checkGmail: (a, p) => verifyGmailImap(a, p),
@@ -51,6 +57,9 @@ const realDeps: ConnectionDeps = {
   googleSignedIn: () => googleConfigured(),
   outlookSignedIn: () => microsoftConfigured(),
   outlookCodeReady: () => microsoftClientReady(),
+  cancelGoogle: () => cancelGoogleSignIn(),
+  cancelOutlook: () => cancelMicrosoftSignIn(),
+  fromHost: (n) => fromHostEnvironment(n),
 };
 let deps: ConnectionDeps = realDeps;
 export function setConnectionDeps(d: Partial<ConnectionDeps> | null): void { deps = d ? { ...realDeps, ...d } : realDeps; }
@@ -119,15 +128,35 @@ export async function saveTelegram(b: { token?: unknown }): Promise<Outcome> {
 // ── Tailscale ───────────────────────────────────────────────────────────────────────────────────────────────────
 
 export function saveTailscale(b: { authKey?: unknown; hostname?: unknown }): Outcome {
-  const key = str(b.authKey) ?? '';
-  if (!key.startsWith('tskey-') || key.length > 300 || /\s/.test(key)) {
+  const typed = b.authKey === undefined || b.authKey === null ? '' : str(b.authKey) ?? '\0';
+  // a key already saved may be kept: only the name changes then
+  const keep = !typed && !!deps.env('TAILSCALE_AUTHKEY');
+  const key = typed;
+  if (!keep && (!key.startsWith('tskey-') || key.length > 300 || /\s/.test(key))) {
     return fail('bad_auth_key', 'That doesn’t look like a Tailscale auth key. It starts with tskey-auth-. Make one under Settings › Keys › Generate auth key in Tailscale (not an API access token).');
   }
-  if (key.startsWith('tskey-api-')) return fail('bad_auth_key', 'That’s a Tailscale API access token. Your helper needs an auth key: Settings › Keys › Generate auth key.');
-  const host = b.hostname === undefined || b.hostname === null ? '' : str(b.hostname);
+  if (!keep && key.startsWith('tskey-api-')) return fail('bad_auth_key', 'That’s a Tailscale API access token. Your helper needs an auth key: Settings › Keys › Generate auth key.');
+  // undefined: leave the name as it is; empty: back to the default (mwa)
+  const host = b.hostname === undefined ? undefined : b.hostname === null ? '' : str(b.hostname);
   if (host === null || (host && !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$/.test(host))) return fail('bad_hostname', 'The name may use letters, numbers and dashes (up to 40), like mwa or barn-helper.');
-  deps.saveEnv({ TAILSCALE_AUTHKEY: key, ...(host ? { TAILSCALE_HOSTNAME: host.toLowerCase() } : {}) });
-  return { ok: true, message: 'Tailscale key saved. When your helper next restarts, it joins your tailnet and is reachable at its tailnet name. No public port needed.' };
+  if (keep && host === undefined) return fail('bad_auth_key', 'Paste a Tailscale auth key, or change the name.');
+  if (!keep) deps.saveEnv({ TAILSCALE_AUTHKEY: key });
+  if (host) deps.saveEnv({ TAILSCALE_HOSTNAME: host.toLowerCase() });
+  else if (host === '') deps.removeEnv(['TAILSCALE_HOSTNAME']);
+  const back = host === '' && deps.fromHost('TAILSCALE_HOSTNAME') ? ` ${hostNote(['TAILSCALE_HOSTNAME'])}` : '';
+  return {
+    ok: true,
+    message: (keep
+      ? `Saved. The name ${host ? host.toLowerCase() : 'mwa (the default)'} takes effect after your helper restarts.`
+      : 'Tailscale key saved. It takes effect after your helper restarts: then it joins your tailnet and is reachable at its tailnet name, with no public port.') + back,
+  };
+}
+
+/** A disconnected value the host also sets comes back at the next start: say so, and where to remove it. */
+function hostNote(names: string[]): string {
+  const set = names.filter((n) => deps.fromHost(n));
+  if (!set.length) return '';
+  return `${set.join(' and ')} ${set.length === 1 ? 'is' : 'are'} also set in your server’s own settings (for example a Railway variable), so ${set.length === 1 ? 'it comes' : 'they come'} back when your helper restarts. Remove ${set.length === 1 ? 'it' : 'them'} there too.`;
 }
 
 // ── disconnecting ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -135,11 +164,22 @@ export function saveTailscale(b: { authKey?: unknown; hostname?: unknown }): Out
 export type Service = 'google' | 'outlook' | 'telegram' | 'tailscale';
 export const SERVICES: readonly Service[] = ['google', 'outlook', 'telegram', 'tailscale'];
 export function disconnect(service: Service): Outcome {
-  if (service === 'google') { deps.forgetGoogle(); deps.removeEnv(GOOGLE_ENV); return { ok: true, message: 'Google disconnected. Its sign-in was removed from your helper.' }; }
-  if (service === 'outlook') { deps.forgetMicrosoft(); deps.removeEnv(OUTLOOK_ENV); return { ok: true, message: 'Outlook disconnected. Its sign-in was removed from your helper.' }; }
-  if (service === 'telegram') { deps.removeEnv(TELEGRAM_ENV); return { ok: true, message: 'Telegram disconnected.' }; }
-  if (service === 'tailscale') { deps.removeEnv(TAILSCALE_ENV); return { ok: true, message: 'Tailscale key removed. Your helper leaves your tailnet when it next restarts.' }; }
+  const done = (names: string[], message: string): Outcome => {
+    const note = hostNote(names);
+    deps.removeEnv(names);
+    return { ok: true, message: note ? `${message} ${note}` : message };
+  };
+  // a sign-in still waiting (Outlook's code, a browser window) is stopped first, so it can't connect again afterwards
+  if (service === 'google') { deps.cancelGoogle(); deps.forgetGoogle(); return done(GOOGLE_ENV, 'Google disconnected. Its sign-in was removed from your helper.'); }
+  if (service === 'outlook') { deps.cancelOutlook(); deps.forgetMicrosoft(); return done(OUTLOOK_ENV, 'Outlook disconnected. Its sign-in was removed from your helper.'); }
+  if (service === 'telegram') return done(TELEGRAM_ENV, 'Telegram disconnected.');
+  if (service === 'tailscale') return done(TAILSCALE_ENV, 'Tailscale key removed. It takes effect after a restart: until then your helper stays on your tailnet.');
   return fail('not_found', 'Disconnect Google, Outlook, Telegram or Tailscale.');
+}
+
+/** Cancel: stop waiting for a sign-in that was started (the code, or the browser window). */
+export function cancelSignIn(provider: 'google' | 'outlook'): boolean {
+  return provider === 'google' ? deps.cancelGoogle() : deps.cancelOutlook();
 }
 
 // ── the classic page (POST /api/connections and POST /api/save) ─────────────────────────────────────────────────
@@ -162,7 +202,7 @@ export async function legacyConnectionSave(b: Record<string, any>): Promise<{ ok
   if (b.which === 'telegram') r = await saveTelegram({ token: b.TELEGRAM_BOT_TOKEN });
   else if (b.which === 'google') r = saveGoogleApp({ clientId: b.GOOGLE_CLIENT_ID, clientSecret: b.GOOGLE_CLIENT_SECRET });
   else if (b.which === 'microsoft') r = saveMicrosoftApp({ clientId: b.MICROSOFT_CLIENT_ID, tenant: b.MICROSOFT_TENANT || undefined });
-  else if (b.which === 'tailscale') r = saveTailscale({ authKey: b.TAILSCALE_AUTHKEY ?? b.key, hostname: b.hostname || undefined });
+  else if (b.which === 'tailscale') r = saveTailscale({ authKey: b.TAILSCALE_AUTHKEY ?? b.key, hostname: b.hostname });
   else return { ok: false, message: 'unknown field' };
   return { ok: r.ok, message: r.message };
 }

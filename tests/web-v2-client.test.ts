@@ -141,6 +141,7 @@ const CALLS: Record<string, (c: MwaClient) => unknown> = {
   saveTelegram: (c) => c.saveTelegram('123456789:ABCdefGHIjklMNOpqrSTUvwxYZ0123456789'),
   saveTailscale: (c) => c.saveTailscale('tskey-auth-example', 'mwa'),
   disconnect: (c) => c.disconnect('telegram'),
+  cancelConnect: (c) => c.cancelConnect('outlook'),
 };
 const URL_ONLY = new Set(['streamUrl', 'calendarDraftIcsUrl', 'projectLiveUrl']); // GET links opened by EventSource or a download
 

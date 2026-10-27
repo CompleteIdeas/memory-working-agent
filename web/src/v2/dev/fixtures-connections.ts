@@ -74,9 +74,14 @@ export class ConnectionFixtures {
     if (b.method !== undefined && b.method !== 'browser' && b.method !== 'code') return err(400, 'bad_method', 'Pick browser or code.');
     if (b.method === 'code' && p === 'google') return err(400, 'bad_method', 'Google connects with a sign-in window or an app password, not a code.');
     const v = this.view();
-    const how = p === 'google' ? (v.google.signIn === 'ready' ? 'browser' : 'setup')
-      : b.method === 'browser' ? (v.outlook.browser === 'ready' ? 'browser' : 'setup')
+    const how = p === 'google' ? (v.google.signIn === 'setup' ? 'setup' : 'browser')
+      : b.method === 'browser' ? (v.outlook.browser === 'setup' ? 'setup' : 'browser')
         : v.outlook.code ? 'code' : v.outlook.browser === 'ready' ? 'browser' : 'setup';
+    if (how === 'browser' && this.hosted) {
+      return err(400, 'browser_not_here', p === 'google'
+        ? 'Google sign-in can’t finish on a server: it comes back to the computer your helper runs on. Connect Gmail with an app password instead.'
+        : 'Signing in to Outlook in a browser window can’t finish on a server. Connect with a code instead.');
+    }
     if (how === 'setup') {
       return { status: 200, body: { kind: 'setup', provider: p, url: `/?view=connections&at=${p}`,
         message: p === 'google' ? 'Google needs a one-time setup first: a Gmail app password, or your own Google sign-in app. Both are in Settings › Connections.'
@@ -92,6 +97,11 @@ export class ConnectionFixtures {
   write(method: string, path: string, body: unknown): Resp | null {
     const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
     let m: RegExpExecArray | null;
+    if (method === 'POST' && (m = /^\/accounts\/([^/]+)\/cancel$/.exec(path))) {
+      const p = decodeURIComponent(m[1]);
+      if (p !== 'google' && p !== 'outlook') return err(404, 'not_found', 'Cancel a Google or Outlook sign-in.');
+      return { status: 200, body: { cancelled: false, message: 'No sign-in was waiting.' } }; // the example world finishes at once
+    }
     if (method === 'POST' && (m = /^\/accounts\/([^/]+)\/connect$/.exec(path))) {
       const p = decodeURIComponent(m[1]);
       if (p !== 'google' && p !== 'outlook') return err(404, 'not_found', 'Connect Google or Outlook.');
@@ -132,20 +142,24 @@ export class ConnectionFixtures {
       return this.change('Your bot @juniper_helper_bot works. Message it on Telegram to talk to your helper.');
     }
     if (method === 'PUT' && path === '/connections/tailscale') {
-      const key = str(b.authKey) ?? '';
-      if (!key.startsWith('tskey-') || /\s/.test(key)) return err(400, 'bad_auth_key', 'That doesn’t look like a Tailscale auth key. It starts with tskey-auth-. Make one under Settings › Keys › Generate auth key in Tailscale (not an API access token).');
-      if (key.startsWith('tskey-api-')) return err(400, 'bad_auth_key', 'That’s a Tailscale API access token. Your helper needs an auth key: Settings › Keys › Generate auth key.');
-      const host = b.hostname === undefined || b.hostname === null ? '' : str(b.hostname);
+      const typed = b.authKey === undefined || b.authKey === null ? '' : str(b.authKey) ?? '\0';
+      const keep = !typed && this.tailscale.keySaved;
+      if (!keep && (!typed.startsWith('tskey-') || /\s/.test(typed))) return err(400, 'bad_auth_key', 'That doesn’t look like a Tailscale auth key. It starts with tskey-auth-. Make one under Settings › Keys › Generate auth key in Tailscale (not an API access token).');
+      if (!keep && typed.startsWith('tskey-api-')) return err(400, 'bad_auth_key', 'That’s a Tailscale API access token. Your helper needs an auth key: Settings › Keys › Generate auth key.');
+      const host = b.hostname === undefined ? undefined : b.hostname === null ? '' : str(b.hostname);
       if (host === null || (host && !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$/.test(host))) return err(400, 'bad_hostname', 'The name may use letters, numbers and dashes (up to 40), like mwa or barn-helper.');
-      this.tailscale = { keySaved: true, hostname: host ? host.toLowerCase() : this.tailscale.hostname };
-      return this.change('Tailscale key saved. When your helper next restarts, it joins your tailnet and is reachable at its tailnet name. No public port needed.');
+      if (keep && host === undefined) return err(400, 'bad_auth_key', 'Paste a Tailscale auth key, or change the name.');
+      this.tailscale = { keySaved: true, hostname: host ? host.toLowerCase() : host === '' ? null : this.tailscale.hostname };
+      return this.change(keep
+        ? `Saved. The name ${host ? host.toLowerCase() : 'mwa (the default)'} takes effect after your helper restarts.`
+        : 'Tailscale key saved. It takes effect after your helper restarts: then it joins your tailnet and is reachable at its tailnet name, with no public port.');
     }
     if (method === 'DELETE' && (m = /^\/connections\/([^/]+)$/.exec(path))) {
       const s = decodeURIComponent(m[1]);
       if (s === 'google') { this.google = { signedIn: false, imap: null, appSaved: false, needsReconnect: false }; return this.change('Google disconnected. Its sign-in was removed from your helper.'); }
       if (s === 'outlook') { this.outlook = { ...this.outlook, connected: false, appSaved: false, tenant: null, needsReconnect: false }; return this.change('Outlook disconnected. Its sign-in was removed from your helper.'); }
       if (s === 'telegram') { this.telegram = { connected: false }; return this.change('Telegram disconnected.'); }
-      if (s === 'tailscale') { this.tailscale = { keySaved: false, hostname: null }; return this.change('Tailscale key removed. Your helper leaves your tailnet when it next restarts.'); }
+      if (s === 'tailscale') { this.tailscale = { keySaved: false, hostname: null }; return this.change('Tailscale key removed. It takes effect after a restart: until then your helper stays on your tailnet.'); }
       return err(404, 'not_found', 'Disconnect Google, Outlook, Telegram or Tailscale.');
     }
     return null;

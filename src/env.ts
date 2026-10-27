@@ -5,9 +5,15 @@ import { resolve } from 'node:path';
  *  Docker/NAS image, which stores secrets on the /data volume, reads the SAME file the
  *  setup screen writes); falls back to repo-root .env in dev. Idempotent. */
 let loaded = false;
+/** v2 S3 (review): the names the host itself set (a Railway variable, docker -e), before .env was read. A setting
+ *  removed from .env but set there comes back at the next start. Null until loadEnv has run. */
+let hostNames: Set<string> | null = null;
+export function fromHostEnvironment(name: string): boolean { return !!hostNames?.has(name); }
+
 export function loadEnv(): void {
   if (loaded) return;
   loaded = true;
+  hostNames = new Set(Object.keys(process.env).filter((k) => process.env[k] !== undefined && process.env[k] !== ''));
   try {
     const text = readFileSync(process.env.MWA_ENV_PATH ?? resolve(process.cwd(), '.env'), 'utf8');
     for (const line of text.split('\n')) {

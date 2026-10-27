@@ -126,6 +126,8 @@ export function useConnections() {
         try { return { ok: true, start: await client.connectAccount(provider, { key: newKey(), ...o }) }; }
         catch (e) { if (e instanceof SignInRequired) store.signedOut(); return { ok: false, message: messageOf(e) }; }
       },
+      /** Cancel: the server stops waiting too, so a code finished later connects nothing */
+      cancel: async (provider: 'google' | 'outlook'): Promise<void> => { try { await client.cancelConnect(provider, { key: newKey() }); } catch (e) { if (e instanceof SignInRequired) store.signedOut(); } },
       appPassword: (address: string, password: string) => act((k) => client.connectGmailAppPassword(address, password, { key: k })),
       saveGoogleApp: (id: string, secret: string) => act((k) => client.saveGoogleApp(id, secret, { key: k })),
       saveOutlookApp: (id: string, tenant?: string) => act((k) => client.saveOutlookApp(id, tenant, { key: k })),

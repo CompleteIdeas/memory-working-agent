@@ -128,7 +128,7 @@ function useSignIn(provider: 'google' | 'outlook', data: Data) {
       else if (store.now() > until) { stop(); setStarted(null); setNote({ text: r.start.kind === 'code' ? 'The code ran out before the sign-in finished. Get a new one.' : 'The sign-in didn’t finish. Try again.', error: true }); }
     }, 3000);
   };
-  const cancel = () => { stop(); setStarted(null); };
+  const cancel = () => { stop(); setStarted(null); void data.cancel(provider); };
   return { started, note, busy, begin, cancel, setNote };
 }
 
@@ -431,9 +431,9 @@ function Tailscale({ c, data, toHelper }: { c: Conn; data: Data; toHelper: () =>
   const [fnote, setFnote] = useState<Said>(null);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!key.trim()) { setFnote({ text: 'Paste a Tailscale auth key. It starts with tskey-auth-.', error: true }); return; }
+    if (!key.trim() && !ts.keySaved) { setFnote({ text: 'Paste a Tailscale auth key. It starts with tskey-auth-.', error: true }); return; }
     setBusy(true); setFnote(null);
-    const o = await data.saveTailscale(key.trim(), name.trim() || undefined);
+    const o = await data.saveTailscale(key.trim(), name.trim());
     setKey('');
     setBusy(false);
     if (o.ok) { setOpen(false); setNote(said(o)); } else setFnote(said(o));
@@ -452,7 +452,7 @@ function Tailscale({ c, data, toHelper }: { c: Conn; data: Data; toHelper: () =>
         </div>
         {data.admin && (
           <div className="acts">
-            {!open && <button type="button" className="vbtn" onClick={() => { setOpen(true); setNote(null); }}>{ts.keySaved ? 'Replace the key' : 'Set up Tailscale'}</button>}
+            {!open && <button type="button" className="vbtn" onClick={() => { setOpen(true); setNote(null); setName(ts.hostname ?? ''); }}>{ts.keySaved ? 'Change the key or name' : 'Set up Tailscale'}</button>}
             {ts.keySaved && !open && <Disconnect service="tailscale" c={c} data={data} onDone={setNote} />}
           </div>
         )}
@@ -462,12 +462,12 @@ function Tailscale({ c, data, toHelper }: { c: Conn; data: Data; toHelper: () =>
               <li>In the {ext('https://login.tailscale.com/admin/settings/keys', 'Tailscale admin, Settings › Keys')}, pick Generate auth key (not an API access token).</li>
               <li>Paste the tskey-auth-… key here. Your helper joins your tailnet when it next restarts.</li>
             </ol>
-            <label htmlFor="tailscale-key">Auth key</label>
+            <label htmlFor="tailscale-key">Auth key{ts.keySaved && <span className="okmark"> · saved</span>}</label>
             <input id="tailscale-key" className="setinput" type="password" autoComplete="off" spellCheck={false} value={key} placeholder="tskey-auth-…" onChange={(e) => setKey(e.target.value)} aria-describedby="tailscale-key-help" />
-            <span className="s" id="tailscale-key-help">Kept on your helper and never shown again.</span>
+            <span className="s" id="tailscale-key-help">{ts.keySaved ? 'Leave it empty to keep the saved key and change only the name.' : 'Kept on your helper and never shown again.'}</span>
             <label htmlFor="tailscale-name">Name on your tailnet (optional)</label>
             <input id="tailscale-name" className="setinput" autoCapitalize="off" autoCorrect="off" spellCheck={false} value={name} placeholder="mwa" onChange={(e) => setName(e.target.value)} aria-describedby="tailscale-name-help" />
-            <span className="s" id="tailscale-name-help">Letters, numbers and dashes. It becomes the first part of the address.</span>
+            <span className="s" id="tailscale-name-help">Letters, numbers and dashes. It becomes the first part of the address. Empty: mwa. Changes take effect after a restart.</span>
             <div className="acts">
               <button type="submit" className="vbtn vbtn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
               <button type="button" className="vbtn vbtn-quiet" disabled={busy} onClick={() => { setOpen(false); setKey(''); setFnote(null); }}>Cancel</button>

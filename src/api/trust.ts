@@ -42,6 +42,21 @@ function publicUrlHost(env: Env): string | null {
   try { return env.MWA_PUBLIC_URL ? new URL(env.MWA_PUBLIC_URL).hostname.toLowerCase().replace(/^\[|\]$/g, '') : null; } catch { return null; }
 }
 
+/** The name Tailscale uses on the tailnet, as docker-entrypoint.sh makes it: lower case, letters, digits and dashes,
+ *  at most 40, "mwa" when none is left. */
+export const tailscaleName = (v: unknown): string => String(v ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 40) || 'mwa';
+/** v2 S3 (review): Tailscale as it was when this server started, which is what the entrypoint joined with. Saving or
+ *  removing the key (or the name) in Settings takes effect at the next restart, so the Host check follows the start,
+ *  not the live settings. Captured by serve.ts after the .env is read; until then, and for an explicit env (tests),
+ *  the env given. */
+let tsAtStart: { key: boolean; name: string } | null = null;
+export function captureTailscaleAtStart(env: Env = process.env): void { tsAtStart = { key: !!env.TAILSCALE_AUTHKEY, name: tailscaleName(env.TAILSCALE_HOSTNAME) }; }
+export function resetTailscaleAtStart(): void { tsAtStart = null; }
+function tailscaleOf(env: Env): { key: boolean; name: string } {
+  if (env === process.env && tsAtStart) return tsAtStart;
+  return { key: !!env.TAILSCALE_AUTHKEY, name: tailscaleName(env.TAILSCALE_HOSTNAME) };
+}
+
 /** The host names this server answers to besides loopback and IP literals. */
 export function allowedHostNames(env: Env = process.env): string[] {
   const out = new Set<string>(list(env.MWA_ALLOWED_HOSTS));
@@ -58,9 +73,9 @@ export function hostAllowed(req: IncomingMessage, env: Env = process.env): boole
   if (!raw) return false;
   const h = hostOnly(raw);
   if (LOOPBACK_NAMES.has(h) || isIP(h)) return true;
-  if (env.TAILSCALE_AUTHKEY) {
-    const ts = String(env.TAILSCALE_HOSTNAME || 'mwa').toLowerCase();
-    if (h === ts || new RegExp(`^${ts.replace(/[^a-z0-9-]/g, '')}\\.[a-z0-9-]+\\.ts\\.net$`).test(h)) return true;
+  const ts = tailscaleOf(env);
+  if (ts.key) {
+    if (h === ts.name || new RegExp(`^${ts.name}\\.[a-z0-9-]+\\.ts\\.net$`).test(h)) return true;
   }
   for (const a of allowedHostNames(env)) {
     if (a.startsWith('*.') ? h.endsWith(a.slice(1)) && h.length > a.length - 1 : h === a) return true;
@@ -74,7 +89,7 @@ export function relayedMode(env: Env = process.env, hosted: () => boolean = () =
   if (/^(0|false|no|off)$/i.test(String(env.MWA_RELAYED ?? '').trim())) return false; // the owner says it is not (tests, odd setups)
   const bind = String(env.MWA_SERVE_HOST ?? '127.0.0.1').trim().toLowerCase();
   if (!LOOPBACK_NAMES.has(bind) && bind !== '127.0.0.1') return true;
-  if (env.TAILSCALE_AUTHKEY) return true;
+  if (env.TAILSCALE_AUTHKEY || (env === process.env && tsAtStart?.key)) return true; // still on the tailnet until a restart
   if (list(env.MWA_ALLOWED_HOSTS).some((h) => h === '*' || (!LOOPBACK_NAMES.has(h) && !isIP(h)))) return true;
   const pub = publicUrlHost(env); if (pub && !LOOPBACK_NAMES.has(pub)) return true;
   return hosted();

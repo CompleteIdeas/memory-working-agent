@@ -31,6 +31,8 @@ const view = async () => JSON.parse((await get('/connections')).text);
 const env = new Map<string, string>();
 let signedIn = { google: false, outlook: false };
 const forgot: string[] = [];
+const cancelled: string[] = [];
+const hostSet = new Set<string>();
 const started: { flow: string; readOnly?: boolean }[] = [];
 const APP_PASSWORD = 'abcdefghijklmnop'; // 16 letters
 const BAD_APP_PASSWORD = 'badbadbadbadbadx';
@@ -59,6 +61,9 @@ function stubs() {
     googleSignedIn: () => signedIn.google,
     outlookSignedIn: () => signedIn.outlook,
     outlookCodeReady: () => env.has('MICROSOFT_CLIENT_ID') || env.has('MWA_DEFAULT_MS_CLIENT_ID'),
+    cancelGoogle: () => { cancelled.push('google'); return true; },
+    cancelOutlook: () => { cancelled.push('outlook'); return true; },
+    fromHost: (n) => hostSet.has(n),
   });
   setSettingsRouteDeps({
     passwordSet: () => false, checkPassword: () => false,
@@ -90,7 +95,7 @@ beforeAll(async () => {
 });
 beforeEach(() => {
   resetAppDb(':memory:');
-  env.clear(); forgot.length = 0; started.length = 0;
+  env.clear(); forgot.length = 0; started.length = 0; cancelled.length = 0; hostSet.clear();
   signedIn = { google: false, outlook: false };
   stubs();
 });
@@ -111,7 +116,7 @@ describe('who may see and change connections', () => {
       ['PUT', '/connections/outlook/app', { clientId: '11111111-2222-3333-4444-555555555555' }],
       ['PUT', '/connections/telegram', { token: BOT }], ['PUT', '/connections/tailscale', { authKey: TS_KEY }],
       ['DELETE', '/connections/google'], ['DELETE', '/connections/outlook'], ['DELETE', '/connections/telegram'], ['DELETE', '/connections/tailscale'],
-      ['POST', '/accounts/outlook/connect', { method: 'code' }],
+      ['POST', '/accounts/outlook/connect', { method: 'code' }], ['POST', '/accounts/outlook/cancel'],
     ];
     for (const [m, p, b] of changes) {
       const x = await send(m, p, b, as(phone));
@@ -121,6 +126,7 @@ describe('who may see and change connections', () => {
     expect(env.size).toBe(0);
     expect(forgot).toEqual([]);
     expect(started).toEqual([]);
+    expect(cancelled).toEqual([]);
     expect((await send('PUT', '/connections/telegram', { token: BOT }, as(device(['read', 'act', 'approve', 'admin'])))).status).toBe(200);
   });
   it('a stranger from the network gets 401 even for reading', async () => {
@@ -234,6 +240,20 @@ describe('Connect (POST /accounts/{provider}/connect)', () => {
       // (on a server, nobody counts as "this machine": a paired device reads it)
       const r = await get('/connections', as(device(['read'])));
       expect(JSON.parse(r.text)).toMatchObject({ hosted: true, google: { signIn: 'server' }, outlook: { browser: 'server' } });
+      // review: the server refuses the browser window there too, and the Settings list offers the setup instead
+      const admin = as(device(['read', 'act', 'approve', 'admin']));
+      env.set('MICROSOFT_CLIENT_ID', '11111111-2222-3333-4444-555555555555');
+      for (const [p, b] of [['google', { method: 'browser' }], ['outlook', { method: 'browser' }]] as const) {
+        const x = await send('POST', `/accounts/${p}/connect`, b, admin);
+        expect(x.status, p).toBe(400);
+        expect(x.body.error.code).toBe('browser_not_here');
+      }
+      expect(started).toEqual([]);
+      expect((await send('POST', '/accounts/outlook/connect', { method: 'code' }, admin)).body.kind).toBe('code');
+      const acc = JSON.parse((await get('/accounts', admin)).text).accounts;
+      expect(acc.map((a: { connect: string }) => a.connect)).toEqual(['setup', 'code']);
+      env.delete('MICROSOFT_CLIENT_ID');
+      expect(JSON.parse((await get('/accounts', admin)).text).accounts[1].connect).toBe('setup');
     } finally { process.env.MWA_HOSTED = '0'; }
   });
 });
@@ -263,7 +283,7 @@ describe('Telegram and Tailscale', () => {
   it('Tailscale: an auth key and a name; an API token, a bad name and a key with spaces are refused', async () => {
     const r = await send('PUT', '/connections/tailscale', { authKey: TS_KEY, hostname: 'Barn-Helper' });
     expect(r.status).toBe(200);
-    expect(r.body.message).toMatch(/next restarts/);
+    expect(r.body.message).toMatch(/takes effect after your helper restarts/);
     expect(env.get('TAILSCALE_AUTHKEY')).toBe(TS_KEY);
     expect(env.get('TAILSCALE_HOSTNAME')).toBe('barn-helper');
     expect(r.body.connections.tailscale).toEqual({ keySaved: true, hostname: 'barn-helper' });
@@ -295,7 +315,7 @@ describe('disconnecting', () => {
     expect((await send('DELETE', '/connections/telegram')).body.connections.telegram.connected).toBe(false);
     expect(env.has('TELEGRAM_BOT_TOKEN')).toBe(false);
     const ts = await send('DELETE', '/connections/tailscale');
-    expect(ts.body.message).toMatch(/leaves your tailnet/);
+    expect(ts.body.message).toMatch(/takes effect after a restart/);
     expect([...env.keys()]).toEqual(['GOOGLE_CLIENT_ID']);
     expect((await send('DELETE', '/connections/everything')).status).toBe(404);
   });
@@ -349,5 +369,55 @@ describe('no secret anywhere it could leak', () => {
     for (const s of SECRETS) expect(all, s).not.toContain(s); // …without their values
     const v = (await get('/connections')).text;
     for (const s of SECRETS) expect(v).not.toContain(s);
+  });
+});
+
+describe('review fixes', () => {
+  it('Cancel stops a waiting sign-in (admin); disconnecting stops one too', async () => {
+    const c = await send('POST', '/accounts/outlook/cancel');
+    expect(c.status).toBe(200);
+    expect(c.body).toMatchObject({ cancelled: true });
+    expect((await send('POST', '/accounts/nope/cancel')).status).toBe(404);
+    cancelled.length = 0;
+    await send('DELETE', '/connections/outlook');
+    await send('DELETE', '/connections/google');
+    expect(cancelled).toEqual(['outlook', 'google']);
+    // the classic page's disconnect too
+    cancelled.length = 0;
+    await legacyConnectionAction({ action: 'disconnect-outlook' });
+    expect(cancelled).toEqual(['outlook']);
+  });
+  it('Tailscale: the name alone can change (the key kept), and an empty name goes back to the default, on both paths', async () => {
+    expect((await send('PUT', '/connections/tailscale', { hostname: 'barn' })).body.error.code).toBe('bad_auth_key'); // no key saved yet
+    await send('PUT', '/connections/tailscale', { authKey: TS_KEY, hostname: 'barn' });
+    const r = await send('PUT', '/connections/tailscale', { hostname: 'stable' });
+    expect(r.status).toBe(200);
+    expect(r.body.message).toBe('Saved. The name stable takes effect after your helper restarts.');
+    expect(env.get('TAILSCALE_AUTHKEY')).toBe(TS_KEY);
+    const c = await send('PUT', '/connections/tailscale', { hostname: '' });
+    expect(c.body.message).toMatch(/The name mwa \(the default\) takes effect after your helper restarts/);
+    expect(env.has('TAILSCALE_HOSTNAME')).toBe(false);
+    expect(c.body.connections.tailscale).toEqual({ keySaved: true, hostname: null });
+    expect((await send('PUT', '/connections/tailscale', {})).body.error.code).toBe('bad_auth_key'); // nothing to change
+    env.set('TAILSCALE_HOSTNAME', 'barn');
+    const l = await legacyConnectionSave({ which: 'tailscale', key: TS_KEY, hostname: '' });
+    expect(l.ok).toBe(true);
+    expect(env.has('TAILSCALE_HOSTNAME')).toBe(false);
+    env.set('TAILSCALE_HOSTNAME', 'barn');
+    await legacyConnectionSave({ which: 'tailscale', key: TS_KEY }); // no name given: kept
+    expect(env.get('TAILSCALE_HOSTNAME')).toBe('barn');
+  });
+  it('saving or removing the Tailscale key says it takes effect after a restart', async () => {
+    expect((await send('PUT', '/connections/tailscale', { authKey: TS_KEY })).body.message).toMatch(/takes effect after your helper restarts/);
+    expect((await send('DELETE', '/connections/tailscale')).body.message).toBe('Tailscale key removed. It takes effect after a restart: until then your helper stays on your tailnet.');
+  });
+  it('a disconnected value the host also sets says it comes back after a restart unless removed there', async () => {
+    env.set('TELEGRAM_BOT_TOKEN', BOT); hostSet.add('TELEGRAM_BOT_TOKEN');
+    const r = await send('DELETE', '/connections/telegram');
+    expect(r.body.message).toBe('Telegram disconnected. TELEGRAM_BOT_TOKEN is also set in your server’s own settings (for example a Railway variable), so it comes back when your helper restarts. Remove it there too.');
+    expect(r.text).not.toContain(BOT);
+    hostSet.add('TAILSCALE_AUTHKEY'); hostSet.add('TAILSCALE_HOSTNAME');
+    expect((await send('DELETE', '/connections/tailscale')).body.message).toMatch(/TAILSCALE_AUTHKEY and TAILSCALE_HOSTNAME are also set .* they come back/);
+    expect((await send('DELETE', '/connections/outlook')).body.message).toBe('Outlook disconnected. Its sign-in was removed from your helper.'); // nothing from the host
   });
 });

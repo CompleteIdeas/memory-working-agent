@@ -211,7 +211,7 @@ try {
       // Tailscale
       const ts = section(main, 'Reach it from anywhere');
       check(`${L}: Tailscale says what it is and how it relates to the address for phones`, await visible(ts.getByText(/lets your phone reach a helper running in Docker or the cloud privately/)) && await visible(ts.locator('#tailscale-address').getByText(/Address for phones now:/)) && await visible(ts.getByText('https://mwa.tail1a2b.ts.net')));
-      await ts.getByRole('button', { name: 'Replace the key' }).click();
+      await ts.getByRole('button', { name: 'Change the key or name' }).click();
       const tsf = ts.getByRole('form', { name: 'Set up Tailscale' });
       check(`${L}: the auth key is a password field`, (await tsf.getByLabel('Auth key').getAttribute('type')) === 'password');
       await tsf.getByLabel('Auth key').fill('tskey-api-smoke');
@@ -220,7 +220,13 @@ try {
       await tsf.getByLabel('Auth key').fill(TS_KEY);
       await tsf.getByLabel(/^Name on your tailnet/).fill('barn');
       await tsf.getByRole('button', { name: 'Save', exact: true }).click();
-      check(`${L}: Tailscale key saved`, await visible(ts.getByText(/^Tailscale key saved\./)) && await visible(ts.getByText(/Name on your tailnet: barn/)));
+      check(`${L}: Tailscale key saved, after a restart`, await visible(ts.getByText(/^Tailscale key saved\. It takes effect after your helper restarts/)) && await visible(ts.getByText(/Name on your tailnet: barn/)));
+      // only the name, back to the default: the key may be left empty
+      await ts.getByRole('button', { name: 'Change the key or name' }).click();
+      check(`${L}: the name field shows the saved name`, (await tsf.getByLabel(/^Name on your tailnet/).inputValue()) === 'barn');
+      await tsf.getByLabel(/^Name on your tailnet/).fill('');
+      await tsf.getByRole('button', { name: 'Save', exact: true }).click();
+      check(`${L}: the name cleared, key kept`, await visible(ts.getByText(/^Saved\. The name mwa \(the default\) takes effect after your helper restarts/)) && await visible(ts.getByText(/Name on your tailnet: mwa/)));
       check(`${L}: …the key is nowhere on the page`, !(await page.content()).includes(TS_KEY));
       await shot(page, `${L}-04-tailscale`);
       await axe(page, `${L} tailscale`);
@@ -229,7 +235,7 @@ try {
       const tsask = ts.getByRole('region', { name: 'Remove the Tailscale key?' });
       check(`${L}: removing the key says what happens`, await visible(tsask.getByText(/leaves your tailnet/)));
       await tsask.getByRole('button', { name: 'Remove the Tailscale key' }).click();
-      check(`${L}: key removed`, await visible(ts.getByText(/^Tailscale key removed\./)));
+      check(`${L}: key removed, after a restart`, await visible(ts.getByText(/^Tailscale key removed\. It takes effect after a restart/)));
       await ts.getByRole('button', { name: /^Address for phones/ }).click();
       check(`${L}: Address for phones goes to Settings › Your helper`, await visible(main.getByRole('heading', { name: 'Settings', level: 1 })) && await visible(main.getByRole('heading', { name: 'Your helper', level: 2 })));
       await page.waitForTimeout(300);

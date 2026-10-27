@@ -2896,6 +2896,26 @@ paths:
           description: What to do next.
           content: { application/json: { schema: { $ref: '#/components/schemas/ConnectStart' } } }
         default: { $ref: '#/components/responses/Error' }
+  /accounts/{provider}/cancel:
+    parameters:
+      - { name: provider, in: path, required: true, schema: { type: string, enum: [google, outlook] } }
+    post:
+      operationId: cancelConnect
+      summary: 'S3: stop waiting for a sign-in that was started (admin): Outlook''s code poller and the browser sign-in''s listener. Nothing that finishes later is saved.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Stopped (or nothing was waiting).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cancelled, message]
+                additionalProperties: false
+                properties:
+                  cancelled: { type: boolean }
+                  message: { type: string }
+        default: { $ref: '#/components/responses/Error' }
   /vault:
     get:
       operationId: listVault
@@ -3518,7 +3538,7 @@ paths:
   /connections/tailscale:
     put:
       operationId: saveTailscale
-      summary: 'S3: a Tailscale auth key (tskey-auth-…) and optionally the name on your tailnet (admin). Used when the helper next starts. Write-only.'
+      summary: 'S3: a Tailscale auth key (tskey-auth-…) and optionally the name on your tailnet (admin). With a key already saved, the key may be left out to change only the name; an empty name goes back to the default (mwa). Used when the helper next starts. Write-only.'
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
@@ -3526,10 +3546,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [authKey]
               properties:
                 authKey: { type: string }
-                hostname: { type: string }
+                hostname: { type: string, description: 'Empty: back to the default name (mwa).' }
       responses:
         '200':
           description: Done.

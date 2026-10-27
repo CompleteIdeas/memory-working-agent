@@ -10,6 +10,7 @@
  *   GET    /spending  · PATCH /spending this month, the limit, the background line, the default limits per kind
  *   GET    /accounts                    Google / Outlook: connected, needs reconnecting, how Connect works here
  *   POST   /accounts/{provider}/connect start the existing sign-in flow (admin): a page to open, a code, or a setup note
+ *   POST   /accounts/{provider}/cancel  stop waiting for a sign-in that was started (S3 review) (admin)
  *                                        (S3: the setup is Settings › Connections in this app; body { method, readOnly }
  *                                        picks Outlook's code or browser sign-in, and read-only access)
  *   GET    /vault  · POST /vault/forget saved logins, names only, and Forget (admin)
@@ -28,6 +29,8 @@ import { fireCapUsd, HANDOFF_CAP_MAX_USD, CAP_MAX_USD } from '../../v2/estimate.
 import { calendarAccounts } from '../../sync/calendar.js';
 import { mailAccounts } from '../../sync/mail.js';
 import { vaultRows, forgetVaultEntry } from '../../settings-api.js';
+import { isHosted } from '../../hosting.js';
+import { cancelSignIn } from '../../connection-settings.js';
 
 export interface ConnectStart { url?: string; user_code?: string; verification_uri?: string; expires_in?: number }
 export interface SettingsRouteDeps {
@@ -89,13 +92,14 @@ export function accountsView() {
     provider: 'google' as const, label: 'Google', what: 'Calendar and Gmail. I can read them and make drafts. I never send.',
     connected: c.googleConnected, needsReconnect: c.googleConnected && reconnect('google'),
     method: c.googleConnected ? (c.googleClient ? 'sign-in' : c.gmailAppPassword ? 'app-password' : 'sign-in') : null,
-    connect: c.googleClient ? 'browser' : 'setup',
+    // S3 (review): a sign-in in a browser window comes back to localhost where the helper runs: never on a server
+    connect: c.googleClient && !isHosted() ? 'browser' : 'setup',
   };
   const outlook = {
     provider: 'outlook' as const, label: 'Outlook', what: 'Calendar and mail. I can read them and make drafts. I never send.',
     connected: c.outlookConnected, needsReconnect: c.outlookConnected && reconnect('outlook'),
     method: c.outlookConnected ? 'sign-in' : null,
-    connect: c.outlookDeviceCode ? 'code' : c.microsoftClient ? 'browser' : 'setup',
+    connect: c.outlookDeviceCode ? 'code' : c.microsoftClient && !isHosted() ? 'browser' : 'setup',
   };
   return { accounts: [google, outlook] };
 }
@@ -108,10 +112,17 @@ export async function startConnect(p: Provider, choice: ConnectChoice = {}) {
   const c = deps?.connections?.();
   // Outlook: the code works whenever this build or your own app allows it; the browser sign-in needs your own app
   const outlookBrowser = !!c?.microsoftClient;
-  const how = p === 'outlook' && choice.method === 'browser' ? (outlookBrowser ? 'browser' : 'setup')
+  const how = p === 'google' && choice.method === 'browser' ? (c?.googleClient ? 'browser' : 'setup')
+    : p === 'outlook' && choice.method === 'browser' ? (outlookBrowser ? 'browser' : 'setup')
     : p === 'outlook' && choice.method === 'code' ? (c?.outlookDeviceCode ? 'code' : 'setup')
       : a.connect;
   const readOnly = choice.readOnly === true;
+  // S3 (review): the browser sign-in finishes on localhost where the helper runs, so it can't work on a server
+  if (how === 'browser' && isHosted()) {
+    throw new ApiError(400, 'browser_not_here', p === 'google'
+      ? 'Google sign-in can’t finish on a server: it comes back to the computer your helper runs on. Connect Gmail with an app password instead.'
+      : 'Signing in to Outlook in a browser window can’t finish on a server. Connect with a code instead.');
+  }
   if (how === 'setup') {
     return {
       kind: 'setup' as const, provider: p, url: setupUrl(p),
@@ -238,6 +249,14 @@ export const settingsRoutes: Route[] = [
       if (b.method === 'code' && params.provider === 'google') throw new ApiError(400, 'bad_method', 'Google connects with a sign-in window or an app password, not a code.');
       if (b.readOnly !== undefined && typeof b.readOnly !== 'boolean') throw new ApiError(400, 'bad_body', '`readOnly` is true or false.');
       return { body: await startConnect(params.provider, { method: b.method as ConnectChoice['method'], readOnly: b.readOnly as boolean | undefined }) };
+    },
+  },
+  {
+    method: 'POST', path: '/accounts/{provider}/cancel', scope: 'admin',
+    handler: ({ params }) => {
+      if (params.provider !== 'google' && params.provider !== 'outlook') throw new ApiError(404, 'not_found', 'Cancel a Google or Outlook sign-in.');
+      const cancelled = cancelSignIn(params.provider);
+      return { body: { cancelled, message: cancelled ? 'Stopped. That sign-in won’t connect anything now.' : 'No sign-in was waiting.' } };
     },
   },
   {

@@ -12,7 +12,7 @@ import { google } from 'googleapis';
 import { docxText } from '../tools/safe-zip.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
-import { catchOAuthCode, newPkce } from '../connect/oauth-catcher.js';
+import { catchOAuthCode, cancelOAuthCatch, newPkce } from '../connect/oauth-catcher.js';
 import type { RegisteredTool } from '../tools/registry.js';
 import { connectorTokenPath } from '../paths.js';
 import { proposeDraft } from '../sync/drafts.js';
@@ -142,6 +142,10 @@ export async function connectGmail(onLog: (m: string) => void = (m) => console.l
   const email = await done;
   onLog(`✅ Connected as ${email} — token saved locally (${tokenPath()}). ${readOnly ? 'Read only.' : 'Read + draft only; never sends.'}`);
 }
+
+/** v2 S3 (review): stop waiting for a Google sign-in (Cancel, or Google was disconnected): the loopback listener
+ *  closes and nothing that comes back later is saved. True when one was waiting. */
+export function cancelGoogleSignIn(): boolean { return cancelOAuthCatch(REDIRECT_PORT); }
 
 /** Web flow: returns the consent URL for the browser to open; finishes in the background
  *  (the UI polls /api/status to see Gmail flip to connected). */
