@@ -4,11 +4,11 @@
  * Calendar for a calendar item, Ask about this (the answer appears here, under "You asked"), and Mark handled /
  * Not important. An email opens in the reader instead (../mail/Reader.tsx).
  */
-import { useEffect, useState } from 'react';
 import type { ImportantItem } from '../../api/client';
 import { useNow } from '../../store/react';
+import { shortLabel } from '../../store/important';
 import { Sheet } from '../../shell/sheets';
-import { AskAboutButton, AskAboutSheet, QaBlock, useAskAbout } from './AskAbout';
+import { AskAbout } from '../ask/AskAbout';
 import { CautionTag, PHISHING_HEAD, PHISHING_TEXT, SenderLine } from './ItemRow';
 import { CheckIcon, WarnIcon } from './icons';
 
@@ -53,9 +53,6 @@ export function ItemDetailSheet({ item, askWith, onClose, controls }: {
   onClose: () => void; controls: ItemControls;
 }) {
   const now = useNow();
-  const [askOpen, setAskOpen] = useState(false);
-  useEffect(() => { if (item && askWith) setAskOpen(true); }, [item?.id, askWith]); // eslint-disable-line react-hooks/exhaustive-deps
-  const ask = useAskAbout(item ? { kind: 'item', id: item.id } : null, item);
   const phishing = item?.caution === 'phishing';
   const open = item?.state === 'open';
   const act = item?.action && !phishing && item.action.kind !== 'review-reply' ? item.action : null;
@@ -71,9 +68,10 @@ export function ItemDetailSheet({ item, askWith, onClose, controls }: {
             <div className="acts dacts">
               {act && open && <button type="button" className={`vbtn${act.kind === 'add-to-calendar' || act.kind === 'draft-note' ? ' vbtn-primary' : ''}`} disabled={controls.busy(item)} onClick={() => controls.run(item)}>{act.label}</button>}
               {isCalendar(item) && controls.openCalendar && <button type="button" className="vbtn" onClick={controls.openCalendar}>Open in Calendar</button>}
-              {!phishing && <AskAboutButton onClick={() => setAskOpen(true)} />}
             </div>
-            <QaBlock qa={ask.qa} idp={`item-${item.id}`} />
+            {/* Ask about this (the one shared component): the questions open in a sheet; the answers show here */}
+            <AskAbout key={item.id} kind="item" id={item.id} label={shortLabel(item.title)} item={item} form="sheet" sheetId="about-item-dlg"
+              noAsk={phishing} prefill={askWith ?? null} taintNote={'Based on what the email says — check before acting'} />
             {open && (
               <div className="itemfoot">
                 {!phishing && <button type="button" className="vbtn vbtn-quiet" onClick={() => controls.handled(item)}><CheckIcon />Mark handled</button>}
@@ -84,7 +82,6 @@ export function ItemDetailSheet({ item, askWith, onClose, controls }: {
           </div>
         )}
       </Sheet>
-      <AskAboutSheet id="about-item-dlg" open={askOpen && !!item} onClose={() => setAskOpen(false)} ask={ask} prefill={askWith ?? undefined} />
     </>
   );
 }

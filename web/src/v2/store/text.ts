@@ -58,3 +58,26 @@ export function showName(s: string | null | undefined): string | null {
   if (t.length > 60) t = `${t.slice(0, 59).trimEnd()}…`;
   return t;
 }
+
+// ---------- invisible characters (W4: answers; the same set as src/v2/mail-text.ts cleanText) ----------
+const cp = (n: number) => String.fromCodePoint(n);
+const uEsc = (n: number) => '\\' + 'u{' + n.toString(16) + '}';
+const INVISIBLE_RANGES: [number, number][] = [
+  [0x00, 0x08], [0x0b, 0x0c], [0x0e, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x34f, 0x34f], [0x61c, 0x61c],
+  [0x115f, 0x1160], [0x17b4, 0x17b5], [0x180b, 0x180f], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f],
+  [0x3164, 0x3164], [0xfe00, 0xfe0e], [0xfeff, 0xfeff], [0xffa0, 0xffa0], [0xfff9, 0xfffb],
+  [0x1d173, 0x1d17a], [0xe0000, 0xe007f], [0xe0100, 0xe01ef],
+];
+const INVISIBLE = new RegExp('[' + INVISIBLE_RANGES.map(([a, b]) => (a === b ? uEsc(a) : `${uEsc(a)}-${uEsc(b)}`)).join('') + ']', 'gu');
+const STRAY_VS16 = new RegExp(`(?<![\\p{Extended_Pictographic}0-9#*])${uEsc(0xfe0f)}`, 'gu');
+const FULLWIDTH = new RegExp(`[${uEsc(0xff01)}-${uEsc(0xff5e)}]`, 'gu');
+const LINE_SEPARATORS = new RegExp(`[${uEsc(0x85)}${uEsc(0x2028)}${uEsc(0x2029)}]`, 'gu');
+const IDEOGRAPHIC_SPACE = new RegExp(uEsc(0x3000), 'gu');
+
+/** Invisible and direction-changing characters gone; full-width ASCII to ASCII (so "ｈｔｔｐｓ" is seen as a link).
+ *  Kept identical to the server's cleanText (tests/web-v2-w4-review.test.ts checks them against each other). */
+export function cleanText(s: string): string {
+  return s.replace(FULLWIDTH, (c) => cp(c.codePointAt(0)! - 0xfee0)).replace(IDEOGRAPHIC_SPACE, ' ')
+    .replace(LINE_SEPARATORS, '\n').replace(INVISIBLE, '').replace(STRAY_VS16, '');
+}
+

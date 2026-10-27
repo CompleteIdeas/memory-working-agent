@@ -135,6 +135,7 @@ beforeAll(async () => {
   setProjectRouteDeps({
     workspace: () => mkdtempSync(join(tmpdir(), 'mwa-a5-ws-')), startChat: async () => ({ state: 'started', runId: 'live_contract' }),
     stop: (id) => id === ids.eventing, steer: (id) => id === ids.eventing, attach: () => null,
+    live: (id) => (id === ids.eventing ? { session: `p-${id}`, run: { runId: 'live_contract' } } : null),
     acceptOffer: async (id) => (id === ids.eventing ? { goal: 'abcd1234', message: 'On it.' } : null),
   });
   const eventing = createProject({ name: 'Eventing', icon: 'horse' });
@@ -287,8 +288,11 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /turns/{id}/move', path: '/turns/tu_000000000000/move', init: () => ({ ...post(), body: JSON.stringify({ projectId: 'general' }) }), status: 404 },
   { op: 'POST /projects/{id}/stop', path: () => `/projects/${ids.eventing}/stop`, init: post, status: 200 },
   { op: 'POST /projects/{id}/stop', path: () => `/projects/${ids.family}/stop`, init: post, status: 409 },
+  { op: 'POST /projects/{id}/stop', path: () => `/projects/${ids.eventing}/stop`, init: () => ({ ...post(), body: JSON.stringify({ runId: 'live_contract' }) }), status: 200 },
+  { op: 'POST /projects/{id}/stop', path: () => `/projects/${ids.eventing}/stop`, init: () => ({ ...post(), body: JSON.stringify({ runId: 'an_earlier_run' }) }), status: 409 },
   { op: 'POST /projects/{id}/steer', path: () => `/projects/${ids.eventing}/steer`, init: () => ({ ...post(), body: JSON.stringify({ text: 'Also the ride times' }) }), status: 200 },
   { op: 'POST /projects/{id}/steer', path: () => `/projects/${ids.family}/steer`, init: () => ({ ...post(), body: JSON.stringify({ text: 'x' }) }), status: 409 },
+  { op: 'POST /projects/{id}/steer', path: () => `/projects/${ids.eventing}/steer`, init: () => ({ ...post(), body: JSON.stringify({ text: 'and the ride times', runId: 'an_earlier_run' }) }), status: 409 },
   { op: 'GET /projects/{id}/live', path: () => `/projects/${ids.eventing}/live`, status: 200 },
   { op: 'POST /projects/{id}/offer/accept', path: () => `/projects/${ids.eventing}/offer/accept`, init: post, status: 202 },
   { op: 'POST /projects/{id}/offer/accept', path: () => `/projects/${ids.family}/offer/accept`, init: post, status: 409 },

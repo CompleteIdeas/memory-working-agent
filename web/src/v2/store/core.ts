@@ -21,12 +21,17 @@
 import {
   MwaClient, ApiError, Conflict, Forbidden, NetworkError, SignInRequired, UpdateRequired, TRANSIENT_CONFLICTS, newKey,
   type CalendarItem, type Job, type JobDetail, type MailHeader, type Meta, type Project, type SyncCollection, type SyncResult, type Turn,
-  type DraftResult, type MessageSent, type Schemas,
+  type DraftResult, type MessageSent, type Schemas, type AskBody, type AskChoice, type AskStart, type AskChosen, type TurnMoved,
   type ImportantItem, type ImportantGroup, type ImportantList, type ItemChange, type ItemActionResult, type SkippedList, type TriageRule,
 } from '../api/client';
 import type { CacheDb, StoreName } from './cache';
 
 export const THREAD_KEEP = 50;
+/** W4: the most turns kept on a thread's earlier pages in memory; past it the oldest go, and "Earlier messages" loads
+ *  the thread again from its latest page (the server's cursors are opaque, so a trimmed page cannot be resumed). */
+export const OLDER_KEEP = 300;
+/** The cursor that says "load the thread again, then page back" after earlier pages were trimmed. */
+export const RELOAD_THREAD = '__reload__';
 export const COLLECTIONS: SyncCollection[] = ['jobs', 'calendar', 'projects', 'turns'];
 /** W3: the Important list's collection, asked for only when the server has it (an older one answers 400 to it). */
 export const IMPORTANT_FEATURE = 'important';
@@ -83,7 +88,9 @@ export type ActionKind =
   | 'job.stop' | 'job.continue' | 'job.startOver' | 'job.open' | 'job.pause' | 'job.resume' | 'job.cancel'
   | 'draft.confirm' | 'draft.remove' | 'message.send'
   // W3: the Important list and the mail reader
-  | 'item.handled' | 'item.unhandle' | 'item.notImportant' | 'item.action' | 'mail.important' | 'mail.draft' | 'rule.delete';
+  | 'item.handled' | 'item.unhandle' | 'item.notImportant' | 'item.action' | 'mail.important' | 'mail.draft' | 'rule.delete'
+  // W4: Ask, a plan's choice, projects and their threads
+  | 'ask' | 'ask.choose' | 'turn.move' | 'project.create' | 'project.update' | 'project.stop' | 'project.steer' | 'project.offer';
 export type NotImportantScope = 'sender' | 'domain' | 'kind';
 export interface ActionArgs {
   id?: string; capUsd?: number; text?: string; provider?: 'google' | 'outlook';
@@ -93,11 +100,16 @@ export interface ActionArgs {
   body?: string;
   /** mail.important: the skipped list it was picked from (its row leaves that list) */
   group?: ImportantGroup;
+  /** W4: the request body of an ask (`ask`), a plan's choice (`ask.choose`), a move ({projectId}), a project's fields,
+   *  the run a Stop or a note is meant for ({runId}) */
+  payload?: Record<string, unknown>;
 }
 export interface ActOptions {
-  /** the screen shows a refusal itself (the Not important sheet): no error notice as well */
+  /** the screen shows a refusal itself (the Not important sheet, a plan card): no error notice as well */
   quiet?: boolean;
 }
+/** W4: actions about a run happening NOW: never kept for later (a Stop sent an hour late could land on another run). */
+const NOW_ONLY: ReadonlySet<ActionKind> = new Set(['project.stop', 'project.steer']);
 
 // ---------- the Important list (W3) ----------
 export interface ImportantMeta { handledCount: number; skipped: ImportantList['skipped']; sorting: ImportantList['sorting'] }
@@ -118,9 +130,16 @@ export interface OutboxEntry {
   lastError?: string;
 }
 export type ActResult =
-  | { ok: true; queued: false; message?: string; data?: unknown }
-  | { ok: false; queued: true; message: string }
-  | { ok: false; queued: false; message: string; code?: string };
+  | { ok: true; queued: false; message?: string; data?: unknown; entryId?: string }
+  | { ok: false; queued: true; message: string; code?: string; entryId?: string }
+  | { ok: false; queued: false; message: string; code?: string; entryId?: string };
+export interface ActOptions {
+  /** no notice for a refusal: the screen says it in place (a plan's "This plan is old — ask again") */
+  quiet?: boolean;
+}
+/** W4: what an ask (sent now, or replayed from the outbox) became, by its outbox entry id. */
+export interface AskOutcome { entryId: string; start: AskStart; text: string; at: number; replayed: boolean }
+export type AskRecord = Schemas['Ask'];
 
 export interface StoreState {
   ready: boolean;
@@ -137,6 +156,17 @@ export interface StoreState {
   threads: Record<string, Turn[]>;
   threadLoaded: Record<string, boolean>;
   live: Record<string, LiveInfo>;
+  /** W4: a thread's pages before its latest 50 (loaded on "Earlier messages"), and the cursor for the next one */
+  threadOlder: Record<string, Turn[]>;
+  threadNext: Record<string, string | null>;
+  /** W4: asks this device made, by outbox entry id; plan choices by ask id; asks as the server last said (stream) */
+  askOutcomes: Record<string, AskOutcome>;
+  /** W4: actions refused when the outbox sent them (by outbox entry id): the screen that made them says so in place */
+  refused: Record<string, { kind: ActionKind; code?: string; message: string; askId?: string }>;
+  /** W4: plans the person put aside ("Not now") — no longer offered when the Ask sheet opens */
+  dismissedPlans: Record<string, true>;
+  askChoices: Record<string, AskChosen>;
+  asks: Record<string, AskRecord>;
   mail: MailState;
   outbox: OutboxEntry[];
   /** actions being sent right now (not queued): with the outbox, what the screens show optimistically */
@@ -167,6 +197,7 @@ export interface StoreOptions {
 const initial = (fixtures: boolean): StoreState => ({
   ready: false, connection: 'starting', auth: 'ok', updateReady: false, meta: null, cursor: 0, updatedAt: null,
   jobs: {}, calendar: {}, conflicts: {}, projects: {}, threads: {}, threadLoaded: {}, live: {},
+  threadOlder: {}, threadNext: {}, askOutcomes: {}, askChoices: {}, asks: {}, refused: {}, dismissedPlans: {},
   mail: { headers: [], note: '', connected: false, loaded: false, loading: false, error: null },
   outbox: [], inflight: [], notices: [], fixtures,
   items: {}, important: { meta: null, loading: false, loaded: false, error: null }, skipped: {},
@@ -340,7 +371,7 @@ export class V2Store {
     if (r.reset) {
       const jobs = (up.jobs ?? []) as Job[], calendar = (up.calendar ?? []) as CalendarItem[], projects = (up.projects ?? []) as Project[];
       const threads = groupTurns((up.turns ?? []) as Turn[]);
-      this.set({ jobs: byId(jobs), calendar: byId(calendar), projects: byId(projects), threads, threadLoaded: {}, conflicts: {} });
+      this.set({ jobs: byId(jobs), calendar: byId(calendar), projects: byId(projects), threads, threadLoaded: {}, conflicts: {}, threadOlder: {}, threadNext: {} });
       this.persist(async (c) => {
         await c.replace('jobs', entries(jobs));
         await c.replace('calendar', entries(calendar));
@@ -393,12 +424,28 @@ export class V2Store {
       threads[pid] = turns.filter((t) => !gone.has(t.id));
       touched.add(pid);
     }
+    // W4: an earlier page loses a turn that moved away or was removed (it is shown where it is now)
+    let older = this.s.threadOlder;
+    for (const [pid, turns] of Object.entries(older)) {
+      if (!turns.some((t) => gone.has(t.id))) continue;
+      for (const t of turns) if (gone.has(t.id) && !held.has(t.id)) held.set(t.id, t);
+      older = { ...older, [pid]: turns.filter((t) => !gone.has(t.id)) };
+    }
     for (const t of ups) {
       const old = held.get(t.id);
       const keep = old && t.truncated && !old.truncated && old.updatedSeq >= t.updatedSeq && old.projectId === t.projectId ? old : t;
-      threads[t.projectId] = [...(threads[t.projectId] ?? []), keep].sort((a, b) => a.ts - b.ts || (a.id < b.id ? -1 : 1)).slice(-THREAD_KEEP);
+      const sorted = [...(threads[t.projectId] ?? []), keep].sort(byTs);
+      threads[t.projectId] = sorted.slice(-THREAD_KEEP);
+      // W4: a turn pushed out of the latest 50 (or moved back in older than them) stays on the thread's earlier
+      // pages once the thread is open, so neither the page the person is reading nor "Earlier messages" skips it
+      const spill = sorted.slice(0, Math.max(0, sorted.length - THREAD_KEEP));
+      if (spill.length && this.s.threadLoaded[t.projectId]) {
+        const ids = new Set(spill.map((x) => x.id));
+        older = { ...older, [t.projectId]: [...(older[t.projectId] ?? []).filter((x) => !ids.has(x.id)), ...spill].sort(byTs) };
+      }
       touched.add(t.projectId);
     }
+    if (older !== this.s.threadOlder) this.setOlder(older);
     this.set({ threads });
     this.persist((c) => c.put('threads', [...touched].map((pid) => ({ key: pid, value: { projectId: pid, turns: threads[pid] ?? [] } }))));
   }
@@ -453,6 +500,7 @@ export class V2Store {
       case 'project': this.upsert('projects', del ? [] : [m.data as Project], del ? [m.id] : []); break;
       case 'turn': this.applyTurns(del ? [] : [m.data as Turn], del ? [m.id] : []); break;
       case 'mail': this.mailChanged(); break;
+      case 'ask': if (!del && m.data) this.set({ asks: { ...this.s.asks, [m.id]: m.data as AskRecord } }); break;
       case 'item': this.upsert('items', del ? [] : [m.data as ImportantItem], del ? [m.id] : []); this.importantChanged(); break;
       default: break; // devices and anything newer: nothing on these screens
     }
@@ -465,10 +513,59 @@ export class V2Store {
     try {
       const r = await this.client.getProjectThread(projectId, { limit: THREAD_KEEP });
       const turns = r.turns.slice(-THREAD_KEEP);
-      this.set({ threads: { ...this.s.threads, [projectId]: turns }, threadLoaded: { ...this.s.threadLoaded, [projectId]: true } });
+      // W4: the cursor for the page before this one ("Earlier messages"); earlier pages start empty again
+      this.set({ threads: { ...this.s.threads, [projectId]: turns }, threadLoaded: { ...this.s.threadLoaded, [projectId]: true },
+        threadNext: { ...this.s.threadNext, [projectId]: r.next }, threadOlder: { ...this.s.threadOlder, [projectId]: [] } });
       this.upsert('projects', [r.project], []);
       this.persist((c) => c.put('threads', [{ key: projectId, value: { projectId, turns } }]));
     } catch (e) { this.noteError(e); }
+  }
+
+  /** W4: earlier pages, at most OLDER_KEEP turns a thread: past it the oldest go and the thread's cursor says
+   *  "load again" (RELOAD_THREAD). */
+  private setOlder(older: Record<string, Turn[]>) {
+    let next = this.s.threadNext;
+    for (const [pid, turns] of Object.entries(older)) {
+      if (turns.length <= OLDER_KEEP) continue;
+      older = { ...older, [pid]: turns.slice(-OLDER_KEEP) };
+      next = { ...next, [pid]: RELOAD_THREAD };
+    }
+    this.set({ threadOlder: older, ...(next !== this.s.threadNext ? { threadNext: next } : {}) });
+  }
+
+  /** W4: the page of a thread before what is shown ("Earlier messages"). Kept apart from the latest 50 (which the
+   *  stream keeps current) and not cached on the device. Resolves false when there is nothing earlier. */
+  async loadEarlier(projectId: string, limit = 30): Promise<boolean> {
+    const before = this.s.threadNext[projectId];
+    if (!before) return false;
+    if (before === RELOAD_THREAD) { await this.loadThread(projectId); return true; }
+    try {
+      const r = await this.client.getProjectThread(projectId, { before, limit });
+      const have = new Set([...(this.s.threadOlder[projectId] ?? []), ...(this.s.threads[projectId] ?? [])].map((t) => t.id));
+      const fresh = r.turns.filter((t) => !have.has(t.id) && t.projectId === projectId);
+      this.set({ threadNext: { ...this.s.threadNext, [projectId]: r.next } });
+      this.setOlder({ ...this.s.threadOlder, [projectId]: [...fresh, ...(this.s.threadOlder[projectId] ?? [])].sort(byTs) });
+      return true;
+    } catch (e) { this.noteError(e); return false; }
+  }
+
+  /** W4: a project's jobs (its Work tab); they join the store's jobs so the stream keeps them current. */
+  async loadProjectWork(projectId: string): Promise<string[] | null> {
+    try {
+      const r = await this.client.getProjectWork(projectId);
+      this.upsert('jobs', r.jobs, []);
+      return r.jobs.map((j) => j.id);
+    } catch (e) { this.noteError(e, true); return null; }
+  }
+
+  /** W4: an ask as it stands, and its turn (the answer whole, not the stream's 500-character summary). */
+  async loadAsk(askId: string): Promise<AskRecord | null> {
+    try {
+      const r = await this.client.getAsk(askId);
+      this.set({ asks: { ...this.s.asks, [askId]: r.ask } });
+      if (r.turn) this.applyTurns([r.turn], []);
+      return r.ask;
+    } catch (e) { this.noteError(e, true); return null; }
   }
 
   /** The calendar for a window, with its double-bookings (the server works those out). */
@@ -558,13 +655,27 @@ export class V2Store {
 
   // ---------- actions and the outbox ----------
   /** Do something now, or — when the network is down — keep it with its key and send it when back online. */
+  async act(kind: ActionKind, args: ActionArgs, label: string, opts: ActOptions = {}): Promise<ActResult> {
+    // W4: a plan's choice is made once: a second tap (or a second card) while one is on its way gets that one's answer
+    if (kind === 'ask.choose' && args.id) {
+      const going = this.choosing.get(args.id);
+      if (going) return going;
+      if (this.s.outbox.some((x) => x.kind === 'ask.choose' && x.args.id === args.id)) return { ok: false, queued: true, message: 'Your choice is waiting to be sent.' };
+      const p = this.actInOrder(kind, args, label, opts);
+      this.choosing.set(args.id, p);
+      try { return await p; } finally { this.choosing.delete(args.id); }
+    }
+    return this.actInOrder(kind, args, label, opts);
+  }
+  private choosing = new Map<string, Promise<ActResult>>();
+
   /**
    * Actions on the same thing (the same id) are serialised (review of W3: an Undo tapped while Handled was still on
    * its way reached the server first): a new one waits until the one before it has landed, and while one waits in
    * the outbox, the next waits behind it there — so the server sees them in the order the person tapped them, online
    * or offline. Meanwhile both show at once, in that order.
    */
-  async act(kind: ActionKind, args: ActionArgs, label: string, opts: ActOptions = {}): Promise<ActResult> {
+  private async actInOrder(kind: ActionKind, args: ActionArgs, label: string, opts: ActOptions): Promise<ActResult> {
     const entry: OutboxEntry = { id: newKey(this.now()), key: newKey(this.now()), kind, args, label, createdAt: this.now(), attempts: 0 };
     // while it is on its way the screens show it done (an item leaves the list at once); if it fails, it is dropped
     // from here and what they show goes back to what the server holds
@@ -586,14 +697,19 @@ export class V2Store {
   private chains = new Map<string, Promise<void>>();
 
   private async actNow(entry: OutboxEntry, opts: ActOptions): Promise<ActResult> {
-    // queued: it moves from in flight to the outbox in one step, so the screen does not flicker back
-    const requeue = (m?: string, quietly = false) => { this.set({ inflight: this.s.inflight.filter((x) => x.id !== entry.id) }); return this.enqueue(entry, m, quietly); };
+    const entryId = entry.id, kind = entry.kind;
     const landed = () => this.set({ inflight: this.s.inflight.filter((x) => x.id !== entry.id) });
-    if (!this.env.online() || this.s.connection === 'offline') return requeue();
-    if (this.s.updateReady) return requeue('Saved. It will be sent after you reload.');
-    if (this.s.auth === 'signin') return requeue('Saved. It will be sent once you sign in again.');
+    // queued: it moves from in flight to the outbox in one step, so the screen does not flicker back
+    const requeue = (m?: string, quietly = false) => { landed(); return this.enqueue(entry, m, quietly); };
+    // W4: Stop and "Add to it" are about the run going now: refused in place, never kept for later
+    const nowOnly = NOW_ONLY.has(kind);
+    const refuse = (code: string, message: string): ActResult => { landed(); return { ok: false, queued: false, code, message, entryId }; };
+    const offline = () => refuse('offline', kind === 'project.stop' ? 'You’re offline — I can’t stop it from here right now.' : 'You’re offline — I can’t add to it from here right now.');
+    if (!this.env.online() || this.s.connection === 'offline') return nowOnly ? offline() : requeue();
+    if (this.s.updateReady) return nowOnly ? refuse('client_too_old', 'Reload the app first.') : requeue('Saved. It will be sent after you reload.');
+    if (this.s.auth === 'signin') return nowOnly ? refuse('locked', 'Sign in again first.') : requeue('Saved. It will be sent once you sign in again.');
     // an earlier action on the same thing is still waiting in the outbox: this one goes behind it, in order
-    if (entry.args.id && this.s.outbox.some((x) => x.args.id === entry.args.id)) {
+    if (!nowOnly && entry.args.id && this.s.outbox.some((x) => x.args.id === entry.args.id)) {
       const r = requeue('It will be sent right after the change before it.', true);
       void this.replayOutbox();
       return r;
@@ -601,16 +717,16 @@ export class V2Store {
     try {
       const data = await this.send(entry);
       landed();
-      return { ok: true, queued: false, data, message: messageOf(data) };
+      return { ok: true, queued: false, data, message: messageOf(data), entryId };
     } catch (e) {
-      if (e instanceof NetworkError) return requeue();
-      if (e instanceof UpdateRequired) { this.set({ updateReady: true }); return requeue('Saved. It will be sent after you reload.'); }
-      if (e instanceof SignInRequired) { this.set({ auth: 'signin' }); return requeue('Saved. It will be sent once you sign in again.'); }
+      if (e instanceof NetworkError) return nowOnly ? offline() : requeue();
+      if (e instanceof UpdateRequired) { this.set({ updateReady: true }); return nowOnly ? refuse('client_too_old', 'Reload the app first.') : requeue('Saved. It will be sent after you reload.'); }
+      if (e instanceof SignInRequired) { this.set({ auth: 'signin' }); return nowOnly ? refuse('locked', 'Sign in again first.') : requeue('Saved. It will be sent once you sign in again.'); }
       landed();
       if (e instanceof Conflict && !TRANSIENT_CONFLICTS.has(e.code)) { await this.showCurrent(entry); }
       const message = e instanceof Error ? e.message : 'That didn’t work.';
       if (!opts.quiet) this.notice(message, 'error');
-      return { ok: false, queued: false, message, code: e instanceof ApiError ? e.code : undefined };
+      return { ok: false, queued: false, message, code: e instanceof ApiError ? e.code : undefined, entryId };
     }
   }
 
@@ -618,7 +734,7 @@ export class V2Store {
     this.set({ outbox: [...this.s.outbox, entry] });
     this.persist((c) => c.put('outbox', [{ key: entry.id, value: entry }]));
     if (!quietly) this.notice(message, 'info');
-    return { ok: false, queued: true, message };
+    return { ok: false, queued: true, message, entryId: entry.id };
   }
   private dropFromOutbox(id: string) {
     this.set({ outbox: this.s.outbox.filter((x) => x.id !== id) });
@@ -640,15 +756,18 @@ export class V2Store {
           done.add(entry.id);
           const tried = { ...entry, attempts: entry.attempts + 1 };
           try {
-            await this.send(tried);
+            await this.send(tried, true);
             this.dropFromOutbox(entry.id);
           } catch (e) {
             if (e instanceof NetworkError) { this.keep(tried, e.message); break; }
             if (e instanceof UpdateRequired) { this.keep(tried, e.message); this.set({ updateReady: true }); break; }
             if (e instanceof SignInRequired) { this.keep(tried, e.message); this.set({ auth: 'signin' }); break; }
             if (e instanceof Conflict && TRANSIENT_CONFLICTS.has(e.code)) { this.keep(tried, e.message); break; }
-            // refused for good (409 changed meanwhile, 403, 404…): drop it, say so, show what is true now
+            // refused for good (409 changed meanwhile, 403, 404…): drop it, say so, show what is true now; the screen
+            // that made it finds why in `refused` (a plan card shows it with Ask again)
             this.dropFromOutbox(entry.id);
+            this.set({ refused: { ...this.s.refused, [entry.id]: { kind: entry.kind, code: e instanceof ApiError ? e.code : undefined,
+              message: e instanceof Error ? e.message : 'It didn’t go through.', ...(entry.kind === 'ask.choose' && entry.args.id ? { askId: entry.args.id } : {}) } } });
             if (e instanceof Conflict) await this.showCurrent(entry);
             this.notice(`${entry.label}: ${e instanceof Error ? e.message : 'it didn’t go through.'}`, 'error');
           }
@@ -664,8 +783,8 @@ export class V2Store {
   }
 
   /** One action → one API call, with the action's key. Its answer updates the store. */
-  private async send(e: OutboxEntry): Promise<unknown> {
-    const c = this.client, key = { key: e.key }, id = e.args.id ?? '';
+  private async send(e: OutboxEntry, replayed = false): Promise<unknown> {
+    const c = this.client, key = { key: e.key }, id = e.args.id ?? '', b = e.args.payload ?? {};
     let out: unknown;
     switch (e.kind) {
       case 'job.stop': out = await c.stopJob(id, key); break;
@@ -678,6 +797,14 @@ export class V2Store {
       case 'draft.confirm': out = await c.confirmCalendarDraft(id, e.args.provider ? { provider: e.args.provider } : {}, key); break;
       case 'draft.remove': out = await c.removeCalendarDraft(id, key); break;
       case 'message.send': out = await c.sendProjectMessage(id, { text: e.args.text ?? '' }, key); break;
+      case 'ask': out = await c.ask(b as AskBody, key); break;
+      case 'ask.choose': out = await c.chooseAsk(id, b as AskChoice, key); break;
+      case 'turn.move': out = await c.moveTurn(id, { projectId: String(b.projectId ?? '') }, key); break;
+      case 'project.create': out = await c.createProject(b as { name: string; icon?: string | null }, key); break;
+      case 'project.update': out = await c.updateProject(id, b as { name?: string; icon?: string | null; archived?: boolean; sort?: number }, key); break;
+      case 'project.stop': out = await c.stopProjectRun(id, typeof b.runId === 'string' ? { runId: b.runId } : {}, key); break;
+      case 'project.steer': out = await c.steerProjectRun(id, { text: e.args.text ?? '', ...(typeof b.runId === 'string' ? { runId: b.runId } : {}) }, key); break;
+      case 'project.offer': out = await c.acceptProjectOffer(id, e.args.text ? { message: e.args.text } : {}, key); break;
       case 'item.handled': out = await c.markItemHandled(id, key); break;
       case 'item.unhandle': out = await c.unhandleItem(id, key); break;
       case 'item.notImportant': out = await c.markItemNotImportant(id, e.args.scope ? { scope: e.args.scope } : {}, key); break;
@@ -686,10 +813,26 @@ export class V2Store {
       case 'mail.draft': out = await c.saveMailDraft(id, { body: e.args.body ?? '' }, key); break;
       case 'rule.delete': out = await c.deleteTriageRule(id, key); break;
     }
-    this.applyResult(e.kind, out, e.args);
+    this.applyResult(e.kind, out, e, replayed);
     return out;
   }
-  private applyResult(kind: ActionKind, out: unknown, args: ActionArgs = {}) {
+  private applyResult(kind: ActionKind, out: unknown, e?: OutboxEntry, replayed = false) {
+    const args: ActionArgs = e?.args ?? {};
+    if (kind === 'ask' && e) {
+      const start = out as AskStart;
+      if (!start?.askId) return;
+      this.set({ askOutcomes: { ...this.s.askOutcomes, [e.id]: { entryId: e.id, start, text: String(e.args.payload?.text ?? ''), at: this.now(), replayed } } });
+      // a plan sent from the outbox waits for a choice: say so, since the screen that asked may be gone
+      if (replayed && start.kind === 'plan') this.notice('Something you asked while offline needs a choice before I start. Open Ask to choose.', 'info');
+      return;
+    }
+    if (kind === 'ask.choose' && e?.args.id) {
+      const chosen = out as AskChosen;
+      if (chosen?.askId) this.set({ askChoices: { ...this.s.askChoices, [e.args.id]: chosen } });
+      return;
+    }
+    if (kind === 'turn.move') { const m = out as TurnMoved; if (m?.turn) this.applyTurns([m.turn], []); return; }
+    if (kind === 'project.create' || kind === 'project.update') { const p = (out as { project?: Project })?.project; if (p) this.upsert('projects', [p], []); return; }
     if (kind.startsWith('job.')) { const d = out as JobDetail; if (d?.job) this.upsert('jobs', [d.job], []); return; }
     if (kind.startsWith('item.') || kind === 'mail.important') {
       const d = out as ItemChange | ItemActionResult | null;
@@ -726,6 +869,9 @@ export class V2Store {
     } catch { /* the stream will bring it */ }
   }
 
+  /** W4: a plan the person puts aside ("Not now"): the Ask sheet stops offering it. */
+  dismissPlan(askId: string) { this.set({ dismissedPlans: { ...this.s.dismissedPlans, [askId]: true } }); }
+
   // ---------- notices ----------
   notice(text: string, tone: Notice['tone'] = 'info', action?: NoticeAction): string {
     const n: Notice = { id: newKey(this.now()), text, tone, at: this.now(), ...(action ? { action } : {}) };
@@ -741,6 +887,7 @@ export class V2Store {
   }
 }
 
+const byTs = (a: Turn, b: Turn) => a.ts - b.ts || (a.id < b.id ? -1 : 1);
 function groupTurns(turns: Turn[]): Record<string, Turn[]> {
   const out: Record<string, Turn[]> = {};
   for (const t of turns) (out[t.projectId] ??= []).push(t);
