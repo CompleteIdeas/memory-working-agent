@@ -104,9 +104,8 @@ import { externalInstallState } from './installer/policy.js';
 import { reviewConnector } from './installer/review.js';
 import { accessPolicy, setAccess, grantedFolders } from './tools/access.js';
 import { legacySave, LEGACY_WHICH } from './assistant-settings.js';
+import { legacyConnectionAction, legacyConnectionSave, LEGACY_ACTIONS, LEGACY_CONNECTION_WHICH } from './connection-settings.js';
 import { status, testAnthropic, testAzure, testTelegram, upsertEnv, removeEnv } from './wizard.js';
-import { disconnectGoogle } from './connectors/google.js';
-import { disconnectMicrosoft } from './connectors/microsoft.js';
 import { setSetupDeps, listSetupRequests, submitSetupRequest, cancelSetupRequest } from './connect/setup.js';
 import { awmCliPath, loadEmbeddings, loadPostgresStore } from './awm-api.js';
 import { MEMORY_OFF, agentMemory } from './memory-off.js';
@@ -819,9 +818,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       googleConnected: googleConfigured() || gmailImapConfigured(),
       outlookDeviceCode: microsoftClientReady(), microsoftClient: !!process.env.MICROSOFT_CLIENT_ID, outlookConnected: microsoftConfigured(),
     }),
-    startGoogle: () => startGmailConnect(false),
-    startOutlookDeviceCode: () => startMicrosoftDeviceCode(false),
-    startOutlook: () => startMicrosoftConnect(false),
+    startGoogle: (readOnly = false) => startGmailConnect(readOnly),
+    startOutlookDeviceCode: (readOnly = false) => startMicrosoftDeviceCode(readOnly),
+    startOutlook: (readOnly = false) => startMicrosoftConnect(readOnly),
   });
   const server = createServer(async (req, res) => {
     try {
@@ -1585,26 +1584,11 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
               res.end(JSON.stringify({ ok: false, message: (e as Error).message.slice(0, 160) }));
             }
           }
-        } else if (b.action === 'disconnect-gmail') {
-          disconnectGoogle();
-          removeEnv(['MWA_GMAIL_USER', 'MWA_GMAIL_APP_PASSWORD', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET']);
-          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, message: 'Gmail disconnected — its sign-in was removed from this computer.' }));
-        } else if (b.action === 'disconnect-outlook') {
-          disconnectMicrosoft();
-          removeEnv(['MICROSOFT_CLIENT_ID', 'MICROSOFT_TENANT']);
-          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, message: 'Outlook disconnected — its sign-in was removed from this computer.' }));
-        } else if (b.action === 'disconnect-telegram') {
-          removeEnv(['TELEGRAM_BOT_TOKEN']);
-          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, message: 'Telegram disconnected.' }));
-        } else if (b.action === 'connect-gmail-imap') {
-          // EASY Gmail path: validate the address + app password by opening a real IMAP
-          // session, then save the creds locally (no OAuth, no Cloud Console).
-          const user = String(b.user ?? '').trim();
-          const pass = String(b.appPassword ?? '').replace(/\s+/g, '');
-          const v = await verifyGmailImap(user, pass);
-          if (v.ok) upsertEnv({ MWA_GMAIL_USER: user, MWA_GMAIL_APP_PASSWORD: pass });
-          res.writeHead(200, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: v.ok, message: v.message }));
+        } else if (LEGACY_ACTIONS.has(b.action)) {
+          // v2 slice S3: Gmail with an app password and the three disconnects are src/connection-settings.ts, the same
+          // functions the v1 routes (/api/v1/connections/*) call, so the classic page and the new app can't drift apart.
+          const r = await legacyConnectionAction(b);
+          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(r));
         } else if (b.action === 'connect-outlook-device') {
           // EASY Outlook path: device-code — show a short code + URL; we poll in the background.
           if (!microsoftClientReady()) {
@@ -1648,37 +1632,11 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         let result: { ok: boolean; message: string };
         if (b.which === 'anthropic') { result = await testAnthropic(b.ANTHROPIC_API_KEY); if (result.ok) upsertEnv({ ANTHROPIC_API_KEY: b.ANTHROPIC_API_KEY }); }
         else if (b.which === 'azure') { result = await testAzure(b.AZURE_GPT_BASE_URL, b.AZURE_GPT_API_KEY, b.AZURE_GPT_DEPLOYMENT); if (result.ok) upsertEnv({ AZURE_GPT_BASE_URL: b.AZURE_GPT_BASE_URL, AZURE_GPT_API_KEY: b.AZURE_GPT_API_KEY, AZURE_GPT_DEPLOYMENT: b.AZURE_GPT_DEPLOYMENT }); }
-        else if (b.which === 'telegram') { result = await testTelegram(b.TELEGRAM_BOT_TOKEN); if (result.ok) upsertEnv({ TELEGRAM_BOT_TOKEN: b.TELEGRAM_BOT_TOKEN }); }
         // v2 slice S2: the brain, the image model, access and style are saved by src/assistant-settings.ts, the same
         // functions the v1 routes (/api/v1/assistant/*) call, so the classic page and the new app can't drift apart.
         else if (LEGACY_WHICH.has(b.which)) result = await legacySave(b);
-        else if (b.which === 'google') {
-          const id = String(b.GOOGLE_CLIENT_ID ?? '').trim(), secret = String(b.GOOGLE_CLIENT_SECRET ?? '').trim();
-          if (!id || !secret) result = { ok: false, message: 'Paste both the Client ID and the Client secret.' };
-          else if (!/\.apps\.googleusercontent\.com$/.test(id)) result = { ok: false, message: "That doesn't look like a Client ID — it should end in .apps.googleusercontent.com" };
-          else { upsertEnv({ GOOGLE_CLIENT_ID: id, GOOGLE_CLIENT_SECRET: secret }); result = { ok: true, message: 'Saved. Now connect your account.' }; }
-        }
-        else if (b.which === 'microsoft') {
-          const id = String(b.MICROSOFT_CLIENT_ID ?? '').trim();
-          if (!id) result = { ok: false, message: 'Paste the Application (client) ID from your Azure app.' };
-          else if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) result = { ok: false, message: "That doesn't look like a client ID — it should be a GUID like 11111111-2222-3333-4444-555555555555." };
-          else {
-            const kv: Record<string, string> = { MICROSOFT_CLIENT_ID: id };
-            if (b.MICROSOFT_TENANT) kv.MICROSOFT_TENANT = String(b.MICROSOFT_TENANT).trim();
-            upsertEnv(kv); result = { ok: true, message: 'Saved. Now connect your account.' };
-          }
-        }
-        else if (b.which === 'tailscale') {
-          // Store a Tailscale AUTH key (tskey-auth-…), used by the container entrypoint to join the
-          // tailnet so the admin UI is reachable privately with no public port. (Not the mgmt API key.)
-          const key = String(b.TAILSCALE_AUTHKEY ?? b.key ?? '').trim();
-          if (!key.startsWith('tskey-')) {
-            result = { ok: false, message: 'That doesn\'t look like a Tailscale auth key — it should start with "tskey-auth-". Use an auth key (Settings → Keys → Generate auth key), not the management API key.' };
-          } else {
-            upsertEnv({ TAILSCALE_AUTHKEY: key, ...(b.hostname ? { TAILSCALE_HOSTNAME: String(b.hostname).replace(/[^a-z0-9-]/gi, '').slice(0, 40) } : {}) });
-            result = { ok: true, message: 'Tailscale auth key saved. On the next restart the app joins your tailnet and is reachable at its tailnet name — no public port needed.' };
-          }
-        }
+        // v2 slice S3: Telegram, the Google and Microsoft sign-in apps and Tailscale: src/connection-settings.ts (as above).
+        else if (LEGACY_CONNECTION_WHICH.has(b.which)) result = await legacyConnectionSave(b);
         else if (b.which === 'backend') {
           // Choose where memory lives: "this computer" (SQLite, the default) or a Postgres
           // server (cloud / multi-instance / always-on). Postgres is validated by actually

@@ -18,6 +18,7 @@ import { START_CHECK_EVENT } from '../start/events';
 import { accountLine, activeDevices, backgroundLine, lastUsed, money, spendLine, useSettingsData, type ActOutcome } from './useSettings';
 import { VoiceSettings } from '../ask/voice/VoiceSettings';
 import { NotificationsCard } from './Notifications';
+import { openConnectionsAt } from './useConnections';
 import './settings.css';
 
 export type Said = { text: string; error: boolean } | null;
@@ -38,13 +39,11 @@ export function Settings({ go }: ScreenProps) {
   const top = useRef<HTMLDivElement>(null);
   // "Your rules" from the Important list lands here (#rules)
   useEffect(() => {
-    // P3: "Send a test" lands here (#/settings/notifications)
-    if (location.hash === '#notifications' && !data.loading) {
-      document.getElementById('sec-notify')?.scrollIntoView({ block: 'start' });
-      history.replaceState(null, '', location.pathname + location.search);
-    }
-    if (location.hash === '#rules' && !data.loading) {
-      document.getElementById('sec-rules')?.scrollIntoView({ block: 'start' });
+    // P3: "Send a test" lands here (#/settings/notifications); S3: back from Connections (#accounts), and its
+    // "Address for phones" (#helper)
+    const to = ({ '#notifications': 'sec-notify', '#rules': 'sec-rules', '#accounts': 'sec-accounts', '#helper': 'sec-helper' } as Record<string, string>)[location.hash];
+    if (to && !data.loading) {
+      document.getElementById(to)?.scrollIntoView({ block: 'start' });
       history.replaceState(null, '', location.pathname + location.search);
     }
   }, [data.loading]);
@@ -66,7 +65,7 @@ export function Settings({ go }: ScreenProps) {
               managing devices happen on your computer, or after signing in with your password.
             </p>
           )}
-          <Accounts data={data} admin={admin} />
+          <Accounts data={data} admin={admin} go={go} />
           {/* S2: the assistant itself (brain, pictures, what it can touch, style) has its own screen */}
           <Section id="assistant" title="Your assistant">
             <div className="card setcard">
@@ -114,32 +113,34 @@ export function Settings({ go }: ScreenProps) {
 
 // ---------- Accounts ----------
 
-function Accounts({ data, admin }: { data: ReturnType<typeof useSettingsData>; admin: boolean }) {
+function Accounts({ data, admin, go }: { data: ReturnType<typeof useSettingsData>; admin: boolean; go: ScreenProps['go'] }) {
   const [started, setStarted] = useState<ConnectStart | null>(null);
   const [note, setNote] = useState<Said>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const poll = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => () => { if (poll.current) clearInterval(poll.current); }, []);
+  // S3: a one-time setup (and every other way to connect) is on Settings › Connections
+  const toConnections = (at: 'google' | 'outlook' | null) => { openConnectionsAt(at); go('connections'); };
   const connect = async (a: Account) => {
+    if (a.connect === 'setup') { toConnections(a.provider); return; }
     setBusy(a.provider); setNote(null); setStarted(null);
     const o = await data.connect(a.provider);
     setBusy(null);
     if (!o.ok || !o.start) { setNote({ text: o.ok ? 'That didn’t start. Try again.' : o.message, error: true }); return; }
+    if (o.start.kind === 'setup') { toConnections(a.provider); return; }
     setStarted(o.start);
     if (o.start.kind === 'browser') window.open(o.start.url, '_blank', 'noopener');
-    if (o.start.kind !== 'setup') {
-      // the sign-in finishes on the provider's page: look again every few seconds for a while
-      let n = 0;
-      if (poll.current) clearInterval(poll.current);
-      poll.current = setInterval(async () => {
-        const list = await data.refreshAccounts();
-        const now = list?.find((x) => x.provider === a.provider);
-        if ((now?.connected && !now.needsReconnect) || ++n > 60) {
-          if (poll.current) clearInterval(poll.current);
-          if (now?.connected) { setStarted(null); setNote({ text: `${a.label} is connected.`, error: false }); }
-        }
-      }, 3000);
-    }
+    // the sign-in finishes on the provider's page: look again every few seconds for a while
+    let n = 0;
+    if (poll.current) clearInterval(poll.current);
+    poll.current = setInterval(async () => {
+      const list = await data.refreshAccounts();
+      const now = list?.find((x) => x.provider === a.provider);
+      if ((now?.connected && !now.needsReconnect) || ++n > 60) {
+        if (poll.current) clearInterval(poll.current);
+        if (now?.connected) { setStarted(null); setNote({ text: `${a.label} is connected.`, error: false }); }
+      }
+    }, 3000);
   };
   const accounts = data.accounts ?? [];
   return (
@@ -156,20 +157,29 @@ function Accounts({ data, admin }: { data: ReturnType<typeof useSettingsData>; a
             {admin && (a.needsReconnect || !a.connected) && (
               <button type="button" className={a.needsReconnect ? 'vbtn vbtn-primary' : 'vbtn'} disabled={busy === a.provider}
                 aria-describedby={`acct-${a.provider}`} onClick={() => void connect(a)}>
-                {busy === a.provider ? 'Starting…' : a.needsReconnect ? 'Reconnect' : `Connect ${a.label}`}
+                {busy === a.provider ? 'Starting…' : a.needsReconnect ? 'Reconnect' : a.connect === 'setup' ? `Set up ${a.label}` : `Connect ${a.label}`}
               </button>
             )}
           </div>
         ))}
         {!admin && accounts.some((a) => !a.connected || a.needsReconnect) && <p className="soft">Connect them from your computer.</p>}
+        <button type="button" className="plugentry" id="open-connections" onClick={() => toConnections(null)}>
+          <span className="grow">
+            <span className="rowtitle">All connections</span>
+            <span className="s">{admin ? 'Other ways to connect Gmail and Outlook, Telegram, reaching your helper from anywhere, and disconnecting.' : 'See what’s connected: email, calendar, Telegram and Tailscale.'}</span>
+          </span>
+          <Chev />
+        </button>
       </div>
-      {started && <ConnectSteps s={started} onClose={() => setStarted(null)} />}
+      {started && <ConnectSteps s={started} onClose={() => setStarted(null)} onSetup={() => toConnections(started.provider)} />}
       <Note said={note} />
     </Section>
   );
 }
 
-export function ConnectSteps({ s, onClose }: { s: ConnectStart; onClose: () => void }) {
+/** What to do after Connect. A setup note goes to Settings › Connections when `onSetup` is given (in Settings), and
+ *  says where it is otherwise (first run, where Settings comes after). */
+export function ConnectSteps({ s, onClose, onSetup }: { s: ConnectStart; onClose: () => void; onSetup?: () => void }) {
   const name = s.provider === 'google' ? 'Google' : 'Outlook';
   return (
     <div className="card connectsteps" role="status">
@@ -189,7 +199,8 @@ export function ConnectSteps({ s, onClose }: { s: ConnectStart; onClose: () => v
       {s.kind === 'setup' && (
         <>
           <p>{s.message}</p>
-          <p><a className="linkish" href={s.url}>Open the full settings</a></p>
+          {onSetup ? <div className="acts"><button type="button" className="vbtn vbtn-primary" onClick={onSetup}>Set up {name}</button></div>
+            : <p className="soft">You can do it any time after this, in Settings › Connections.</p>}
         </>
       )}
       <div className="acts"><button type="button" className="vbtn vbtn-quiet" onClick={onClose}>Close</button></div>

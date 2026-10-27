@@ -102,6 +102,9 @@ export type AssistantChange = Schemas['AssistantChange'];
 export type ModelChoices = Schemas['ModelChoices'];
 export type AccessPreset = AssistantSettings['access']['preset'];
 export type InteractionStyle = AssistantSettings['style'];
+export type Connections = Schemas['Connections'];
+export type ConnectionChange = Schemas['ConnectionChange'];
+export type ConnectionService = 'google' | 'outlook' | 'telegram' | 'tailscale';
 export type PushList = Json<'/push/subscriptions', 'get', 200>;
 export type PushTestResult = Json<'/push/test', 'post', 200>;
 export type PushKindName = 'approval' | 'waiting' | 'result' | 'morning';
@@ -345,7 +348,11 @@ export class MwaClient {
   getSpending() { return this.get<Spending>('/spending'); }
   async updateSpending(body: SpendingPatch, o: { key?: string } = {}) { return (await this.call<Spending>('PATCH', '/spending', { body, key: o.key })).body; }
   listAccounts() { return this.get<{ accounts: Account[] }>('/accounts'); }
-  connectAccount(provider: 'google' | 'outlook', o: { key?: string } = {}) { return this.post<ConnectStart>('/accounts/{provider}/connect', { path: { provider }, key: o.key }); }
+  /** S3: `how` picks Outlook's code or browser sign-in and read-only access; nothing sent keeps the server's choice. */
+  connectAccount(provider: 'google' | 'outlook', o: { key?: string; method?: 'browser' | 'code'; readOnly?: boolean } = {}) {
+    const body = { ...(o.method ? { method: o.method } : {}), ...(o.readOnly ? { readOnly: true } : {}) };
+    return this.post<ConnectStart>('/accounts/{provider}/connect', { path: { provider }, key: o.key, ...(Object.keys(body).length ? { body } : {}) });
+  }
   listVault() { return this.get<{ entries: VaultEntry[] }>('/vault'); }
   forgetVaultEntry(name: string, o: { key?: string } = {}) { return this.post<{ forgot: string; message: string }>('/vault/forget', { body: { name }, key: o.key }); }
   listFiles(q: { projectId?: string } = {}) { return this.get<FileList>('/files', { query: q }); }
@@ -383,6 +390,14 @@ export class MwaClient {
   grantFolder(path: string, o: { key?: string } = {}) { return this.post<AssistantChange>('/assistant/folders', { body: { path }, key: o.key }); }
   removeFolder(path: string, o: { key?: string } = {}) { return this.post<AssistantChange>('/assistant/folders/remove', { body: { path }, key: o.key }); }
   async setStyle(style: InteractionStyle, o: { key?: string } = {}) { return (await this.call<AssistantChange>('PUT', '/assistant/style', { body: { style }, key: o.key })).body; }
+  // ---- S3: connections (Gmail app password, the sign-in apps, Telegram, Tailscale, disconnecting). Values are write-only. ----
+  getConnections() { return this.get<Connections>('/connections'); }
+  connectGmailAppPassword(address: string, appPassword: string, o: { key?: string } = {}) { return this.post<ConnectionChange>('/connections/gmail/app-password', { body: { address, appPassword }, key: o.key }); }
+  async saveGoogleApp(clientId: string, clientSecret: string, o: { key?: string } = {}) { return (await this.call<ConnectionChange>('PUT', '/connections/google/app', { body: { clientId, clientSecret }, key: o.key })).body; }
+  async saveOutlookApp(clientId: string, tenant?: string, o: { key?: string } = {}) { return (await this.call<ConnectionChange>('PUT', '/connections/outlook/app', { body: tenant ? { clientId, tenant } : { clientId }, key: o.key })).body; }
+  async saveTelegram(token: string, o: { key?: string } = {}) { return (await this.call<ConnectionChange>('PUT', '/connections/telegram', { body: { token }, key: o.key })).body; }
+  async saveTailscale(authKey: string, hostname?: string, o: { key?: string } = {}) { return (await this.call<ConnectionChange>('PUT', '/connections/tailscale', { body: hostname ? { authKey, hostname } : { authKey }, key: o.key })).body; }
+  async disconnect(service: ConnectionService, o: { key?: string } = {}) { return (await this.call<ConnectionChange>('DELETE', '/connections/{service}', { path: { service }, key: o.key })).body; }
 }
 
 function toError(status: number, body: unknown): ApiError {

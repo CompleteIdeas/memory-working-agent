@@ -10,6 +10,8 @@
  *   GET    /spending  · PATCH /spending this month, the limit, the background line, the default limits per kind
  *   GET    /accounts                    Google / Outlook: connected, needs reconnecting, how Connect works here
  *   POST   /accounts/{provider}/connect start the existing sign-in flow (admin): a page to open, a code, or a setup note
+ *                                        (S3: the setup is Settings › Connections in this app; body { method, readOnly }
+ *                                        picks Outlook's code or browser sign-in, and read-only access)
  *   GET    /vault  · POST /vault/forget saved logins, names only, and Forget (admin)
  *
  * The server's own parts (the password, the session token, the Google/Microsoft flows) come from serve.ts through
@@ -35,9 +37,9 @@ export interface SettingsRouteDeps {
   /** what is set up for Google and Outlook on this server */
   connections?: () => { googleClient: boolean; gmailAppPassword: boolean; googleConnected: boolean; outlookDeviceCode: boolean; microsoftClient: boolean; outlookConnected: boolean };
   /** the existing flows (src/connect): a consent page for this computer, or Microsoft's device code */
-  startGoogle?: () => string;
-  startOutlookDeviceCode?: () => Promise<ConnectStart>;
-  startOutlook?: () => string;
+  startGoogle?: (readOnly?: boolean) => string;
+  startOutlookDeviceCode?: (readOnly?: boolean) => Promise<ConnectStart>;
+  startOutlook?: (readOnly?: boolean) => string;
 }
 let deps: SettingsRouteDeps | null = null;
 export function setSettingsRouteDeps(d: SettingsRouteDeps | null): void { deps = d; }
@@ -98,27 +100,38 @@ export function accountsView() {
   return { accounts: [google, outlook] };
 }
 
-const SETUP_URL = '/?ui=v1';
-async function startConnect(p: Provider) {
+/** S3: a one-time setup happens in this app, on Settings › Connections, at that provider. */
+export const setupUrl = (p: Provider) => `/?view=connections&at=${p}`;
+export interface ConnectChoice { method?: 'browser' | 'code'; readOnly?: boolean }
+export async function startConnect(p: Provider, choice: ConnectChoice = {}) {
   const a = accountsView().accounts.find((x) => x.provider === p)!;
-  if (a.connect === 'setup') {
+  const c = deps?.connections?.();
+  // Outlook: the code works whenever this build or your own app allows it; the browser sign-in needs your own app
+  const outlookBrowser = !!c?.microsoftClient;
+  const how = p === 'outlook' && choice.method === 'browser' ? (outlookBrowser ? 'browser' : 'setup')
+    : p === 'outlook' && choice.method === 'code' ? (c?.outlookDeviceCode ? 'code' : 'setup')
+      : a.connect;
+  const readOnly = choice.readOnly === true;
+  if (how === 'setup') {
     return {
-      kind: 'setup' as const, provider: p, url: SETUP_URL,
+      kind: 'setup' as const, provider: p, url: setupUrl(p),
       message: p === 'google'
-        ? 'Google needs a one-time setup on the computer your helper runs on: open Connections in the full settings there.'
-        : 'Outlook needs a one-time setup on the computer your helper runs on: open Connections in the full settings there.',
+        ? 'Google needs a one-time setup first: a Gmail app password, or your own Google sign-in app. Both are in Settings › Connections.'
+        : choice.method === 'browser'
+          ? 'Signing in to Outlook in a browser window needs your own Microsoft app first. It’s in Settings › Connections.'
+          : 'Outlook needs a one-time setup first: your own Microsoft app. It’s in Settings › Connections.',
     };
   }
   try {
-    if (p === 'outlook' && a.connect === 'code' && deps?.startOutlookDeviceCode) {
-      const dc = await deps.startOutlookDeviceCode();
+    if (p === 'outlook' && how === 'code' && deps?.startOutlookDeviceCode) {
+      const dc = await deps.startOutlookDeviceCode(readOnly);
       if (!dc.user_code || !dc.verification_uri) throw new Error('no code');
       return {
         kind: 'code' as const, provider: p, code: dc.user_code, url: dc.verification_uri, expiresIn: dc.expires_in ?? 900,
         message: `Go to ${dc.verification_uri.replace(/^https?:\/\//, '')} and enter the code ${dc.user_code}. I’ll show Outlook as connected once you finish.`,
       };
     }
-    const url = p === 'google' ? deps?.startGoogle?.() : deps?.startOutlook?.();
+    const url = p === 'google' ? deps?.startGoogle?.(readOnly) : deps?.startOutlook?.(readOnly);
     if (!url) throw new Error('no flow');
     return {
       kind: 'browser' as const, provider: p, url,
@@ -218,9 +231,13 @@ export const settingsRoutes: Route[] = [
   { method: 'GET', path: '/accounts', scope: 'read', handler: () => ({ body: accountsView() }) },
   {
     method: 'POST', path: '/accounts/{provider}/connect', scope: 'admin',
-    handler: async ({ params }) => {
+    handler: async ({ params, body }) => {
       if (params.provider !== 'google' && params.provider !== 'outlook') throw new ApiError(404, 'not_found', 'Connect Google or Outlook.');
-      return { body: await startConnect(params.provider) };
+      const b = bodyOf(body);
+      if (b.method !== undefined && b.method !== 'browser' && b.method !== 'code') throw new ApiError(400, 'bad_method', 'Pick browser or code.');
+      if (b.method === 'code' && params.provider === 'google') throw new ApiError(400, 'bad_method', 'Google connects with a sign-in window or an app password, not a code.');
+      if (b.readOnly !== undefined && typeof b.readOnly !== 'boolean') throw new ApiError(400, 'bad_body', '`readOnly` is true or false.');
+      return { body: await startConnect(params.provider, { method: b.method as ConnectChoice['method'], readOnly: b.readOnly as boolean | undefined }) };
     },
   },
   {

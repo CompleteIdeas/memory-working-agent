@@ -1223,7 +1223,7 @@ components:
       properties:
         kind: { type: string, enum: [browser, code, setup] }
         provider: { type: string, enum: [google, outlook] }
-        url: { type: string, description: 'browser: the sign-in page; code: where to type the code; setup: the full settings.' }
+        url: { type: string, description: 'browser: the sign-in page; code: where to type the code; setup: Settings › Connections in this app (/?view=connections&at=<provider>).' }
         code: { type: string, description: 'code: what to type.' }
         expiresIn: { type: integer, description: 'code: seconds it stays valid.' }
         message: { type: string }
@@ -1430,6 +1430,57 @@ components:
               id: { type: string }
               name: { type: ['string', 'null'] }
               npmAfter: { type: ['boolean', 'null'], description: 'Chat models: whether adding plug-ins from npm would be available with this one as the brain (null for image models).' }
+    Connections:
+      type: object
+      description: 'S3: Google, Outlook, Telegram and Tailscale: what is connected, how, and which sign-ins work here. Never a key, client secret, app password or token: only whether one is saved.'
+      required: [google, outlook, telegram, tailscale, hosted, host]
+      additionalProperties: false
+      properties:
+        google:
+          type: object
+          required: [connected, method, address, appSaved, needsReconnect, signIn]
+          additionalProperties: false
+          properties:
+            connected: { type: boolean }
+            method: { type: ['string', 'null'], enum: [sign-in, app-password, null] }
+            address: { type: ['string', 'null'], description: 'The Gmail address connected with an app password (null otherwise).' }
+            appSaved: { type: boolean, description: 'Your own Google sign-in app (client ID and secret) is saved. The values are never sent.' }
+            needsReconnect: { type: boolean }
+            signIn: { type: string, enum: [ready, setup, server], description: 'Google sign-in in a browser window: ready; needs your own sign-in app first (setup); or cannot finish because the helper runs on a server (server).' }
+        outlook:
+          type: object
+          required: [connected, code, appSaved, tenant, redirectUri, needsReconnect, browser]
+          additionalProperties: false
+          properties:
+            connected: { type: boolean }
+            code: { type: boolean, description: 'Signing in with a code at microsoft.com/devicelogin works here.' }
+            appSaved: { type: boolean, description: 'Your own Microsoft app (client ID) is saved.' }
+            tenant: { type: ['string', 'null'] }
+            redirectUri: { type: string, description: 'The redirect address your own Microsoft app must list.' }
+            needsReconnect: { type: boolean }
+            browser: { type: string, enum: [ready, setup, server], description: 'Signing in in a browser window, as for Google.' }
+        telegram:
+          type: object
+          required: [connected]
+          additionalProperties: false
+          properties:
+            connected: { type: boolean, description: 'A bot token is saved. The token is never sent.' }
+        tailscale:
+          type: object
+          required: [keySaved, hostname]
+          additionalProperties: false
+          properties:
+            keySaved: { type: boolean, description: 'An auth key is saved (used when the helper starts). The key is never sent.' }
+            hostname: { type: ['string', 'null'], description: 'The name on your tailnet (null: the default, mwa).' }
+        hosted: { type: boolean }
+        host: { type: string }
+    ConnectionChange:
+      type: object
+      required: [connections, message]
+      additionalProperties: false
+      properties:
+        connections: { $ref: '#/components/schemas/Connections' }
+        message: { type: string }
   responses:
     Error:
       description: An error.
@@ -2828,8 +2879,18 @@ paths:
       - { name: provider, in: path, required: true, schema: { type: string, enum: [google, outlook] } }
     post:
       operationId: connectAccount
-      summary: 'Start connecting (or reconnecting) Google or Outlook (admin): a sign-in page to open, a code, or a setup note.'
+      summary: 'Start connecting (or reconnecting) Google or Outlook (admin): a sign-in page to open, a code, or a setup note. S3: method picks Outlook''s code or browser sign-in (Google has browser only); readOnly asks for read access only (no drafts).'
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                method: { type: string, enum: [browser, code] }
+                readOnly: { type: boolean }
       responses:
         '200':
           description: What to do next.
@@ -3365,4 +3426,124 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AssistantChange' }
+        default: { $ref: '#/components/responses/Error' }
+  /connections:
+    get:
+      operationId: getConnections
+      summary: 'S3: Google, Outlook, Telegram and Tailscale: connected or not, how, and which sign-ins work here (read). Never a secret.'
+      responses:
+        '200':
+          description: The connections.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Connections' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /connections/gmail/app-password:
+    post:
+      operationId: connectGmailAppPassword
+      summary: 'S3: check a Gmail address and app password by signing in over IMAP, then save them (admin). 400 check_failed with Gmail''s words (the password taken out). The password is write-only.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address, appPassword]
+              properties:
+                address: { type: string }
+                appPassword: { type: string, description: '16 letters; spaces are ignored.' }
+      responses:
+        '200':
+          description: Done.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ConnectionChange' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /connections/google/app:
+    put:
+      operationId: saveGoogleApp
+      summary: 'S3: your own Google sign-in app (admin): the client ID (…apps.googleusercontent.com) and secret. Write-only.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [clientId, clientSecret]
+              properties:
+                clientId: { type: string }
+                clientSecret: { type: string }
+      responses:
+        '200':
+          description: Done.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ConnectionChange' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /connections/outlook/app:
+    put:
+      operationId: saveOutlookApp
+      summary: 'S3: your own Microsoft app (admin): the Application (client) ID, a GUID, and optionally a tenant.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [clientId]
+              properties:
+                clientId: { type: string }
+                tenant: { type: string }
+      responses:
+        '200':
+          description: Done.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ConnectionChange' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /connections/telegram:
+    put:
+      operationId: saveTelegram
+      summary: 'S3: check a Telegram bot token with Telegram, then save it (admin). 400 check_failed with Telegram''s words (the token taken out). Write-only.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        '200':
+          description: Done.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ConnectionChange' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /connections/tailscale:
+    put:
+      operationId: saveTailscale
+      summary: 'S3: a Tailscale auth key (tskey-auth-…) and optionally the name on your tailnet (admin). Used when the helper next starts. Write-only.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [authKey]
+              properties:
+                authKey: { type: string }
+                hostname: { type: string }
+      responses:
+        '200':
+          description: Done.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ConnectionChange' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /connections/{service}:
+    parameters:
+      - { name: service, in: path, required: true, schema: { type: string, enum: [google, outlook, telegram, tailscale] } }
+    delete:
+      operationId: disconnectService
+      summary: 'S3: disconnect (admin). google: the sign-in, the app password and your Google sign-in app are removed, and what was cached from Google Calendar; outlook: the sign-in and your Microsoft app; telegram: the bot token; tailscale: the auth key and name (it leaves the tailnet at the next restart).'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Disconnected.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ConnectionChange' } } }
         default: { $ref: '#/components/responses/Error' }

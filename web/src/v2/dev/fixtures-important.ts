@@ -412,7 +412,7 @@ export class ImportantFixtures {
     if (kind === 'draft-note') {
       return { status: 200, body: { kind, done: false, route: { view: 'ask', item: it.id, about: { kind: 'conflict', id: it.sourceRef ?? '' }, date: localDay(now) }, message: 'Ask your helper to draft the note.', item: this.out(it) } };
     }
-    return { status: 200, body: { kind, done: false, route: { view: kind === 'open-job' ? 'job' : kind === 'reconnect' ? 'settings' : 'approval' }, message: 'Open it.', item: this.out(it) } };
+    return { status: 200, body: { kind, done: false, route: kind === 'reconnect' ? { view: 'settings', section: 'connections', account: it.sourceRef ?? '' } : { view: kind === 'open-job' ? 'job' : 'approval' }, message: 'Open it.', item: this.out(it) } };
   }
 
   /** An ask about one thing (the general Ask is the Projects slice's): kept under the item, answered a moment later. */
