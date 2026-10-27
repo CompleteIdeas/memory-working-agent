@@ -256,35 +256,6 @@ export function jobStatus(job: StatusJob, input: StatusTry[], ctx: StatusCtx): J
   return { state: 'done', label: resultReady ? 'Result ready' : 'Done', detail: what || 'Finished.', resultReady, primaryAction: { action: 'open', label: 'Open' } };
 }
 
-// ── The status pill (v2 slice A10) ──────────────────────────────────────────────────────────────────────────────
-// One status line for every screen, computed from the jobs' own statuses: what is working, what is waiting for the
-// person, and what results are ready. The prototype's renderPill (B1/F4) is the reference; the server computes it so
-// the pill, the working sheet's heading and Today's count can never disagree. Pure, with no imports: the web app
-// imports this same function for its offline store.
 
-export interface StatusPill {
-  /** "Working on 2 things", "Working on 1 · 1 waiting for you · 2 results ready", "Helper is resting" */
-  text: string;
-  /** needs: something waits for the person or a result is ready; working: only work in progress; resting: nothing */
-  tone: 'needs' | 'working' | 'resting';
-  working: number;
-  waiting: number;
-  ready: number;
-}
-
-const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
-
-/** The pill from job statuses. Working = working or continuing; waiting = waiting for you; ready = a result not yet opened. */
-export function statusPill(statuses: Pick<JobStatus, 'state' | 'resultReady'>[]): StatusPill {
-  let working = 0, waiting = 0, ready = 0;
-  for (const s of statuses) {
-    if (s.state === 'working' || s.state === 'continuing') working++;
-    else if (s.state === 'waiting') waiting++;
-    if (s.resultReady === true && s.state !== 'working' && s.state !== 'continuing') ready++;
-  }
-  const parts: string[] = [];
-  if (working) parts.push(waiting || ready ? `Working on ${working}` : `Working on ${plural(working, 'thing', 'things')}`);
-  if (waiting) parts.push(`${waiting} waiting for you`);
-  if (ready) parts.push(`${plural(ready, 'result', 'results')} ready`);
-  return { text: parts.length ? parts.join(' · ') : 'Helper is resting', tone: waiting || ready ? 'needs' : working ? 'working' : 'resting', working, waiting, ready };
-}
+// The status pill lives in ./pill.ts (no imports), which the web app imports too: one computation everywhere.
+export { statusPill, type StatusPill, type PillTone } from './pill.js';

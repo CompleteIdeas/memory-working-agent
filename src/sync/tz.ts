@@ -8,8 +8,13 @@
 export function localTz(env: Record<string, string | undefined> = process.env): string {
   const z = env.MWA_TZ?.trim();
   if (z && validTz(z)) return z;
+  if (z && !warnedTz.has(z)) {
+    warnedTz.add(z);
+    console.warn(`[mwa] MWA_TZ="${z.slice(0, 60)}" is not a time zone I know (use an IANA name such as America/New_York); using this machine's zone instead.`);
+  }
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 }
+const warnedTz = new Set<string>();
 
 export function validTz(tz: string): boolean {
   try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch { return false; }

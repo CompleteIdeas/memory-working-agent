@@ -19,7 +19,8 @@ import '../src/v2/mail.js'; // its tables
 import { createJob, claimTry, endTry } from '../src/v2/jobs.js';
 import { upsertItem } from '../src/v2/important.js';
 import { setTriageDeps } from '../src/v2/triage.js';
-import { setTodayDeps, buildToday, type ActionLite } from '../src/v2/today.js';
+import { setTodayDeps, buildToday } from '../src/v2/today.js';
+import { recordAction } from '../src/v2/actions.js';
 import { zonedToUtc, iso } from '../src/sync/tz.js';
 
 const TZ = 'America/New_York';
@@ -94,9 +95,10 @@ beforeAll(async () => {
   setSyncState(ACCT, 'calendar', { last_ok: NOW - 5 * MIN });
   setMailProviders(() => []);
   setTriageDeps({ now: () => NOW, tz: () => TZ, pendingApprovals: () => [] });
-  const actions: ActionLite[] = Array.from({ length: 300 }, (_, i) => ({ id: `a${i}`, verb: 'drafted an email', tool: i % 2 ? 'draft_email' : 'write_file', at: NOW - i * 40 * MIN }));
+  // 300 logged actions (one app.db row each), across the last week
+  d.transaction(() => { for (let i = 0; i < 300; i++) recordAction({ tool: i % 2 ? 'draft_email' : 'write_file', ts: NOW - i * 40 * MIN, person: i % 7 ? null : 'tg-1' }); })();
   setTodayDeps({
-    now: () => NOW, tz: () => TZ, running: () => new Set(), recentActions: () => actions, greetingName: () => 'Robert', month: () => ({ usedUsd: 4.2, limitUsd: 20, state: 'ok' }),
+    now: () => NOW, tz: () => TZ, running: () => new Set(), greetingName: () => 'Robert', month: () => ({ usedUsd: 4.2, limitUsd: 20, state: 'ok' }),
     pendingApprovals: () => Array.from({ length: 5 }, (_, i) => ({ id: `ap${i}`, tool: 'write_file', summary: `Save file ${i}`, expiresInSec: 600, expiresAt: NOW + 600_000, tainted: false, readLocal: false, kind: 'tool' as const, createdAt: NOW - i * HOUR })),
   });
   const v1 = createV1(v1Routes(), { authenticate: () => OWNER, sameOrigin: () => true });

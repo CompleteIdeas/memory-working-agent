@@ -44,6 +44,7 @@ import Database from 'better-sqlite3';
 import { ToolRefusal, toolText, type RegisteredTool, type ToolContext } from './registry.js';
 import { isStepUpSatisfied } from '../step-up.js';
 import { dbFile } from '../paths.js';
+import { recordAction } from '../v2/actions.js';
 
 export type ApprovalKind = 'tool' | 'captured-policy';
 export type ApprovalStatus = 'pending' | 'executing' | 'done' | 'failed' | 'cancelled' | 'expired';
@@ -465,6 +466,8 @@ async function runClaimed(row: Row): Promise<{ ok: boolean; result: string }> {
     if (!closure && !exec) throw new Error(`this app has no way to run "${row.tool}"`);
     const result = String(closure ? await closure(stagedCtx) : await exec!(parse<Record<string, unknown>>(row.args, {}), stagedCtx));
     s.prepare(`UPDATE approvals SET status = 'done', result = ?, args = '{}', updated_at = ? WHERE id = ?`).run(tail(result), Date.now(), row.id);
+    // it happened now, approved by the person: it counts as done (v2 A10 review H1; staging it was not logged)
+    if (!/^\s*\((refused|blocked)/.test(result)) recordAction({ tool: row.tool, person: stagedCtx.personId, session: stagedCtx.session, runId: stagedCtx.runId, via: 'approval' });
     return { ok: true, result };
   } catch (e) {
     const msg = (e as Error).message ?? String(e);

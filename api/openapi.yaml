@@ -896,7 +896,7 @@ components:
           required: [kind, label]
           additionalProperties: false
           properties:
-            kind: { type: string, description: 'review-approval, a job action (continue, review…), draft-note, reconnect.' }
+            kind: { type: string, description: 'review-approval, a job action (continue, review…), draft-note (only when the double-booking has its Important item; otherwise the card has no action and only opens the day), reconnect.' }
             label: { type: string, description: '"Review", "Finish the last 10 pages · about 3¢", "Draft the note", "Reconnect".' }
         open: { $ref: '#/components/schemas/TodayOpen' }
         itemId: { type: ['string', 'null'], description: 'The Important item this card stands for, when there is one (its action runs through POST /items/{id}/action).' }
@@ -950,12 +950,13 @@ components:
         checkin:
           type: ['object', 'null']
           description: 'The morning check-in, 5:00 until noon local, until the person taps "Done — show my day" (POST /today/checkin/done). Counts only: each thing appears once, in its own card below.'
-          required: [title, text, spoken, counts]
+          required: [title, text, spoken, trust, counts]
           additionalProperties: false
           properties:
             title: { type: string }
-            text: { type: string, description: '"Here’s your Monday: 5 things on your calendar, 1 thing needs you, and I did 3 things overnight. It’s all below."' }
-            spoken: { type: string, description: 'For "Read it to me": the counts, then what is next.' }
+            text: { type: string, description: '"Here’s your Monday: 5 things on your calendar, 1 thing needs you, and I did 3 things overnight. It’s all below." Events still ahead (or all day) count.' }
+            spoken: { type: string, description: 'For "Read it to me": the counts, the first thing''s time, and the first card in the helper''s own words ("Something needs your OK.") — never an event title or a staged action''s summary.' }
+            trust: { type: string, enum: [trusted, untrusted], description: 'Whether text holds anything that came from outside (it does not: counts only).' }
             counts:
               type: object
               required: [events, needsYou, overnight]
@@ -967,12 +968,13 @@ components:
         wrap:
           type: ['object', 'null']
           description: 'The evening wrap, from 17:00 local when the day had activity, until "Good night" (POST /today/wrap/done).'
-          required: [title, lines, spoken, counts]
+          required: [title, lines, spoken, trust, counts]
           additionalProperties: false
           properties:
             title: { type: string, description: '"That’s Monday".' }
-            lines: { type: array, items: { type: string }, description: 'What got done today; how tomorrow starts.' }
-            spoken: { type: string }
+            lines: { type: array, items: { type: string }, description: 'What got done today; how tomorrow starts ("Tomorrow starts at 8:15 AM with an event called “School drop-off”" — a title is quoted, filtered and at most 60 characters).' }
+            spoken: { type: string, description: 'For "Read it to me": the same, with times only — no titles.' }
+            trust: { type: string, enum: [trusted, untrusted], description: 'untrusted when `lines` quote an event title (it came from the calendar, perhaps from an invitation): plain text, auto-linking off.' }
             counts:
               type: object
               required: [eventsConfirmed, repliesDrafted, jobsFinished, doneToday]
@@ -996,7 +998,7 @@ components:
           required: [text, counts]
           additionalProperties: false
           properties:
-            text: { type: string, description: '"This week: 6 replies drafted, 4 events added, 2 documents learned." Counts only.' }
+            text: { type: string, description: '"In the last 7 days: 6 replies drafted, 4 events added, 2 documents learned." Counts only.' }
             counts:
               type: object
               required: [repliesDrafted, eventsAdded, documentsLearned, jobsFinished]
@@ -1032,8 +1034,8 @@ components:
           properties:
             calendarAsOf: { type: ['integer', 'null'], description: 'The oldest last successful calendar sync among connected calendars (ms).' }
             mailAsOf: { type: ['integer', 'null'] }
-            calendar: { type: string, enum: [ok, stale, not_synced, reconnect, not_connected] }
-            mail: { type: string, enum: [ok, stale, not_synced, reconnect, not_connected] }
+            calendar: { type: string, enum: [ok, stale, partial, not_synced, reconnect, not_connected], description: 'partial: one calendar synced and another never has (named in calendarNote); the day shown is incomplete.' }
+            mail: { type: string, enum: [ok, stale, partial, not_synced, reconnect, not_connected] }
             calendarNote: { type: ['string', 'null'], description: 'Say this when the calendar is not ok: "Your calendar hasn''t synced yet, so I can''t tell what''s next."' }
             mailNote: { type: ['string', 'null'] }
             needsReconnect:
@@ -1324,7 +1326,9 @@ paths:
         Events: `hello` {cursor, head}; `change` {seq, entity, id, op, data?} with `id: <seq>` (a job's change carries
         its current view in `data`); `live` {session, type, stage, at} — a running try's progress, at most once a
         second per run; `reset` {cursor, reason} — the cursor was older than what is kept: call /sync without
-        `since`. A `change` with entity `today` and no data (at most every 5 s) means Today changed:
+        `since`. A `change` with entity `today` and no data (at most every 5 s) means Today changed (a job,
+        calendar, item or action changed, an approval or a sync's state moved, or the day passed midnight, 05:00, noon
+        or 17:00):
         GET /today again. A comment every 15 s keeps the connection open. Reconnect with Last-Event-ID (EventSource does it).
       parameters:
         - { name: cursor, in: query, required: false, schema: { type: string, pattern: '^[0-9]{1,15}$' } }

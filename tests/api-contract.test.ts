@@ -138,8 +138,8 @@ beforeAll(async () => {
   const family = createProject({ name: 'Family & school' });
   const turn = appendTurn({ ts: Date.now(), session: `p-${eventing.id}`, message: 'When do entries close?', reply: 'Friday at 5pm.', kind: 'chat' })!;
   Object.assign(ids, { eventing: eventing.id, family: family.id, turn });
-  // A10: Today reads everything above; no approvals store, no action log and no token log here
-  setTodayDeps({ pendingApprovals: () => [], recentActions: () => [], month: () => ({ usedUsd: 1.29, limitUsd: 20, state: 'ok' }), greetingName: () => 'Robert' });
+  // A10: Today reads everything above; no approvals store and no token log here
+  setTodayDeps({ pendingApprovals: () => [], month: () => ({ usedUsd: 1.29, limitUsd: 20, state: 'ok' }), greetingName: () => 'Robert' });
   // A6: asks — a workspace with one long uploaded file, a fake background hand-off, no history (the default rate)
   const askWs = mkdtempSync(join(tmpdir(), 'mwa-a6-ws-'));
   mkdirSync(join(askWs, 'serve', 'p-general', 'uploads'), { recursive: true });

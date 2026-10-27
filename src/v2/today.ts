@@ -7,37 +7,45 @@
  *                never be one; a card whose Important item carries the phishing caution is dropped as well.
  *   - nextUp     today's remaining events (timed, from the calendar cache, in the person's zone), at most three; the
  *                whole local day is in `agenda` for the desktop's right-hand column. A calendar that is not connected,
- *                never synced or needs reconnecting is SAID (freshness), never shown as a free day.
+ *                never synced (each calendar by name) or needs reconnecting is SAID (freshness), never shown as a free
+ *                or complete day.
  *   - doneForYou what the helper did since this caller last looked (POST /today/seen): drafts it made, events added,
- *                jobs finished, reminders set, replies drafted (the action log), as plain sentences that open the
- *                thing in place.
+ *                jobs finished, reminders set, and the actions it took (app.db `actions`, src/v2/actions.ts — one row
+ *                per action; the AWM action log merges similar entries and cannot be counted), as plain sentences
+ *                that open the thing in place. Each draft is said once, as it stands now.
  *   - worthALook the top three open Important items, minus what a Needs-you card already shows.
  *   - checkin    05:00–12:00 local, until the person taps "Done — show my day" (POST /today/checkin/done): counts only.
  *   - wrap       from 17:00 local when the day had activity, until "Good night" (POST /today/wrap/done).
  *   - weekLine   counts over the last seven days (replies drafted, events added, documents learned, jobs finished).
  *   - month      spend so far against the monthly budget (billing.ts), memoised for a minute.
- *   - status     the pill (status.ts statusPill), from the same job statuses /jobs reports.
+ *   - status     the pill (src/v2/pill.ts statusPill — the one the web app uses too).
  *
- * Ownership: every v1 caller acts for the owner (jobs.ts ownerOwns), so another person's jobs, items and approvals are
- * never counted or shown. "Last looked" is per caller (the password session, this machine, each paired device); the
- * check-in and the wrap are the person's, so dismissing one on the phone dismisses it everywhere.
+ * Words the helper SAYS (the check-in, the wrap, "Read it to me") never carry text that came from outside — an
+ * invitation's title, a staged action's summary — as the helper's own: spoken text is counts and times only, and a
+ * title shown in the wrap is quoted as "an event called “…”" (60 characters, filtered) with `trust: untrusted`.
+ *
+ * Ownership: every v1 caller acts for the owner (jobs.ts ownerOwns), so another person's jobs, items, approvals and
+ * actions are never counted or shown. "Last looked" is per caller (the password session, this machine, each paired
+ * device); the check-in and the wrap are the person's, so dismissing one on the phone dismisses it everywhere.
  *
  * Time: the person's zone is the calendar's (MWA_TZ, else the machine's); day boundaries are real local midnights, so
- * a day across a clock change is 23 or 25 hours. MWA_FAKE_NOW (ISO or ms) freezes the clock for replays and tests.
+ * a day across a clock change is 23 or 25 hours. MWA_FAKE_NOW (ISO or ms) freezes the clock ONLY under a test run
+ * (NODE_ENV=test or VITEST); a stored "last looked" is never later than the real clock.
  */
+import { createHash } from 'node:crypto';
 import { appDb, recordEvent, registerMigrations } from './db.js';
 import { calendarItems, type CalDraftRow, type CalendarItem } from './calendar.js';
 import { findConflicts } from '../sync/conflicts.js';
 import { calendarAccounts, calendarNow, calendarTz } from '../sync/calendar.js';
 import { mailAccounts } from '../sync/mail.js';
-import { listJobs, viewJobs, ownerOwns, type JobRow, type JobView } from './jobs.js';
-import { statusPill, type StatusPill } from './status.js';
+import { listJobs, viewJobs, ownerOwns, type JobView } from './jobs.js';
+import { statusPill, type StatusPill } from './pill.js';
 import { itemId, apiItem, visibleItem, type ApiItem, type ItemRow } from './important.js';
 import { atLabel, plainWhy } from './triage.js';
+import { actionsBetween, type ActionRow } from './actions.js';
 import { billingSummary, readCalls, monthStart, monthlyBudget, tokenLogPath } from '../billing.js';
 import { localDate, localMidnight, addDays, zonedToUtc, iso } from '../sync/tz.js';
 import { listPendingActions, type PendingView } from '../tools/approval.js';
-import type { ActionRecord } from '../awm.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { configPath } from '../config.js';
 
@@ -56,12 +64,13 @@ export const NEXT_UP_MAX = 3, DONE_MAX = 3, WORTH_MAX = 3;
 export const DONE_LOOKBACK_MS = 7 * 86_400_000;
 export const FIRST_LOOK_MS = 24 * 3_600_000;
 export const CALENDAR_STALE_MS = 2 * 3_600_000, MAIL_STALE_MS = 3_600_000;
-const MONTH_TTL_MS = 60_000, ACTIONS_TTL_MS = 60_000, ACTIONS_FIRST_WAIT_MS = 1_500;
+/** A title quoted in the wrap: at most this long. */
+export const QUOTE_MAX = 60;
+const MONTH_TTL_MS = 60_000;
 const CONFLICT_AHEAD_MS = 14 * 86_400_000;
 
 // ── dependencies ────────────────────────────────────────────────────────────────────────────────────────────────
 
-export type ActionLite = Pick<ActionRecord, 'id' | 'verb' | 'tool' | 'at'>;
 export interface MonthLine { usedUsd: number; limitUsd: number | null; state: 'none' | 'ok' | 'warn' | 'over' }
 export interface TodayDeps {
   now: () => number;
@@ -70,16 +79,19 @@ export interface TodayDeps {
   running: () => Set<string>;
   /** approvals waiting for the person */
   pendingApprovals: () => PendingView[];
-  /** the action log, newest first (AWM recentActions); read at most once a minute, never awaited twice */
-  recentActions: () => Promise<ActionLite[]> | ActionLite[];
   /** the name in the greeting ("Good morning, Robert"), or null */
   greetingName: () => string | null;
   /** this month's spend and budget */
   month: (now: number) => MonthLine;
 }
 
-/** MWA_FAKE_NOW: an ISO time or epoch ms, for replays with a frozen clock. Anything else is ignored. */
+/**
+ * MWA_FAKE_NOW: an ISO time or epoch ms, for replays with a frozen clock — honoured ONLY under a test run (VITEST or
+ * NODE_ENV=test). A running server ignores it: a fake clock there would stamp "last looked" in the future and hide
+ * real work (A10 review M2). Anything that is not a time is ignored.
+ */
 export function fakeNow(env: NodeJS.ProcessEnv = process.env): number | null {
+  if (!env.VITEST && env.NODE_ENV !== 'test') return null;
   const v = String(env.MWA_FAKE_NOW ?? '').trim();
   if (!v) return null;
   const n = /^\d{10,15}$/.test(v) ? Number(v) : Date.parse(v);
@@ -101,13 +113,13 @@ function defaultMonth(now: number): MonthLine {
 const DEFAULT_DEPS: TodayDeps = {
   now: () => fakeNow() ?? calendarNow(), tz: () => calendarTz(), running: () => new Set(),
   pendingApprovals: () => { try { return listPendingActions(); } catch { return []; } },
-  recentActions: () => [], greetingName: defaultGreetingName, month: defaultMonth,
+  greetingName: defaultGreetingName, month: defaultMonth,
 };
 let deps: TodayDeps = DEFAULT_DEPS;
-/** serve and tests: replace parts (null restores the defaults). Forgets the memoised month and action log. */
+/** serve and tests: replace parts (null restores the defaults). Forgets the memoised month and conflicts. */
 export function setTodayDeps(d: Partial<TodayDeps> | null): void {
   deps = d ? { ...DEFAULT_DEPS, ...d } : DEFAULT_DEPS;
-  monthMemo = null; actionsMemo = null; actionsLoading = null; actionsGen++; conflictMemo = null;
+  monthMemo = null; conflictMemo = null;
 }
 export const todayNow = (): number => deps.now();
 export const todayTz = (): string => deps.tz();
@@ -121,33 +133,6 @@ function monthLine(now: number): MonthLine {
   monthMemo = { at: now, key, value };
   return value;
 }
-
-/**
- * The action log, read at most once a minute and never twice at once: a stale copy answers while a fresh one is read
- * in the background. The very first read is waited for at most 1.5 s (serve warms it at start, warmToday).
- */
-let actionsMemo: { at: number; value: ActionLite[] } | null = null;
-let actionsLoading: Promise<ActionLite[]> | null = null;
-let actionsGen = 0;
-function loadActions(): Promise<ActionLite[]> {
-  if (actionsLoading) return actionsLoading;
-  const gen = actionsGen;
-  const p = Promise.resolve().then(() => deps.recentActions()).then((v) => (Array.isArray(v) ? v : []), () => [] as ActionLite[])
-    .then((v) => { if (gen === actionsGen) actionsMemo = { at: Date.now(), value: v }; return v; })
-    .finally(() => { if (actionsLoading === p) actionsLoading = null; });
-  actionsLoading = p;
-  return p;
-}
-async function actionLog(): Promise<ActionLite[]> {
-  if (actionsMemo) {
-    if (Date.now() - actionsMemo.at >= ACTIONS_TTL_MS) void loadActions();
-    return actionsMemo.value;
-  }
-  const timeout = new Promise<ActionLite[]>((r) => { const t = setTimeout(() => r([]), ACTIONS_FIRST_WAIT_MS); t.unref?.(); });
-  return Promise.race([loadActions(), timeout]);
-}
-/** serve: read the action log once now, off any request. */
-export function warmToday(): void { void loadActions(); }
 
 // ── time in the person's zone ───────────────────────────────────────────────────────────────────────────────────
 
@@ -172,6 +157,8 @@ export function clockLabel(ms: number, tz: string): string {
 }
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 const quote = (s: string, max = 80) => `“${plainWhy(s, max) || 'untitled'}”`;
+/** The part of the day: night (before 5), morning (to noon), afternoon (to 17:00), evening. */
+const partOf = (mins: number): 'night' | 'morning' | 'afternoon' | 'evening' => (mins < CHECKIN_FROM_MIN ? 'night' : mins < CHECKIN_UNTIL_MIN ? 'morning' : mins < WRAP_FROM_MIN ? 'afternoon' : 'evening');
 
 // ── shapes (api/openapi.yaml Today) ─────────────────────────────────────────────────────────────────────────────
 
@@ -184,12 +171,12 @@ export interface NeedCard {
 export interface NextUp { id: string; kind: 'event' | 'draft'; title: string; start: string; end: string; location: string | null; startLabel: string; soon: string | null }
 export interface DoneLine { id: string; kind: 'draft-event' | 'event-added' | 'job-finished' | 'reminder' | 'reply-drafted' | 'email-sent' | 'file-saved' | 'preference'; text: string; at: number; open: OpenRef; trust: 'trusted' | 'untrusted' }
 export interface WeekCounts { repliesDrafted: number; eventsAdded: number; documentsLearned: number; jobsFinished: number }
-export type Freshness = 'ok' | 'stale' | 'not_synced' | 'reconnect' | 'not_connected';
+export type Freshness = 'ok' | 'stale' | 'partial' | 'not_synced' | 'reconnect' | 'not_connected';
 export interface Today {
   id: 'today'; date: string; weekday: string; dateLabel: string; tz: string; now: number;
   greetingName: string | null; greeting: string; part: 'morning' | 'afternoon' | 'evening' | 'night';
-  checkin: { title: string; text: string; spoken: string; counts: { events: number; needsYou: number; overnight: number } } | null;
-  wrap: { title: string; lines: string[]; spoken: string; counts: { eventsConfirmed: number; repliesDrafted: number; jobsFinished: number; doneToday: number } } | null;
+  checkin: { title: string; text: string; spoken: string; trust: 'trusted' | 'untrusted'; counts: { events: number; needsYou: number; overnight: number } } | null;
+  wrap: { title: string; lines: string[]; spoken: string; trust: 'trusted' | 'untrusted'; counts: { eventsConfirmed: number; repliesDrafted: number; jobsFinished: number; doneToday: number } } | null;
   needsYou: NeedCard[];
   nextUp: NextUp[]; nextUpMore: number; agenda: CalendarItem[];
   doneForYou: DoneLine[]; doneMore: number; doneSince: number;
@@ -206,12 +193,20 @@ export interface Today {
 
 // ── "last looked", the check-in and the wrap ────────────────────────────────────────────────────────────────────
 
+/**
+ * When this caller last looked. A mark later than the real clock was stamped by a wrong clock (an old fake clock):
+ * it is not believed — read as "never looked", so it cannot hide work — and the next look replaces it.
+ */
 export function lastSeen(caller: string): number | null {
-  return (appDb().prepare('SELECT seen_at FROM today_seen WHERE caller = ?').get(caller) as { seen_at: number } | undefined)?.seen_at ?? null;
+  const v = (appDb().prepare('SELECT seen_at FROM today_seen WHERE caller = ?').get(caller) as { seen_at: number } | undefined)?.seen_at;
+  return v == null || v > Date.now() ? null : v;
 }
 /** The caller looked at Today now. Per caller: the phone looking does not empty the desktop's "Done for you". */
 export function markSeen(caller: string, now = deps.now()): number {
-  appDb().prepare('INSERT INTO today_seen (caller, seen_at) VALUES (?, ?) ON CONFLICT (caller) DO UPDATE SET seen_at = MAX(today_seen.seen_at, excluded.seen_at)').run(caller, Math.round(now));
+  const at = Math.round(Math.min(now, Date.now()));
+  // a later look moves the mark forward; one stored ahead of the real clock (an old fake clock) is pulled back
+  appDb().prepare(`INSERT INTO today_seen (caller, seen_at) VALUES (@c, @at) ON CONFLICT (caller) DO UPDATE SET
+    seen_at = CASE WHEN today_seen.seen_at > @real THEN @at ELSE MAX(today_seen.seen_at, @at) END`).run({ c: caller, at, real: Date.now() });
   return lastSeen(caller)!;
 }
 function markDay(what: 'checkin' | 'wrap'): string | null {
@@ -235,18 +230,22 @@ const ACCOUNT_LABEL = (account: string, resource: string): string => {
   if (resource === 'calendar') return p === 'outlook' ? 'Outlook Calendar' : 'Google Calendar';
   return p === 'outlook' ? 'Outlook mail' : p === 'imap' ? 'Gmail (app password)' : 'Gmail';
 };
+const CAL_NAME = (account: string) => (account.split(':')[0] === 'outlook' ? 'Outlook calendar' : 'Google calendar');
 const whenSaid = (ms: number, now: number, tz: string) => (localDate(ms, tz) === localDate(now, tz) ? clockLabel(ms, tz) : atLabel(ms, tz));
 
 function calendarFreshness(now: number, tz: string) {
   const accounts = calendarAccounts().filter((a) => a.connected);
   const reconnect = accounts.filter((a) => a.needsReconnect);
+  const never = accounts.filter((a) => a.lastOk == null && !a.needsReconnect);
   const oks = accounts.map((a) => a.lastOk).filter((x): x is number => x != null);
   const asOf = oks.length ? Math.min(...oks) : null;
   let state: Freshness, note: string | null = null;
   if (!accounts.length) { state = 'not_connected'; note = "Your calendar isn't connected, so I can't show what's next."; }
   else if (reconnect.length) { state = 'reconnect'; note = `${ACCOUNT_LABEL(reconnect[0].account, 'calendar')} needs to be reconnected, so your day may be out of date${asOf ? ` (last updated ${whenSaid(asOf, now, tz)})` : ''}.`; }
   else if (asOf === null) { state = 'not_synced'; note = "Your calendar hasn't synced yet, so I can't tell what's next. That doesn't mean your day is free."; }
-  else if (oks.length < accounts.length || now - asOf > CALENDAR_STALE_MS) { state = 'stale'; note = `Your calendar was last updated ${whenSaid(asOf, now, tz)}.`; }
+  // one calendar synced, another never: what is shown is only part of the day, and the missing one is named
+  else if (never.length) { state = 'partial'; note = `Your ${never.map((a) => CAL_NAME(a.account)).join(' and ')} hasn't synced yet, so your day may be missing things.`; }
+  else if (now - asOf > CALENDAR_STALE_MS) { state = 'stale'; note = `Your calendar was last updated ${whenSaid(asOf, now, tz)}.`; }
   else state = 'ok';
   return { state, asOf, note, reconnect: reconnect.map((a) => a.account) };
 }
@@ -261,7 +260,8 @@ function mailFreshness(now: number, tz: string) {
   if (!accounts.length) { state = 'not_connected'; note = "Your email isn't connected, so I can't sort it."; }
   else if (reconnect.length) { state = 'reconnect'; note = `${ACCOUNT_LABEL(reconnect[0].account, 'mail')} needs to be reconnected.`; }
   else if (asOf === null) { state = 'not_synced'; note = "Your email hasn't synced yet."; }
-  else if (oks.length < accounts.length || now - asOf > MAIL_STALE_MS) { state = 'stale'; note = `Your email was last checked ${whenSaid(asOf, now, tz)}.`; }
+  else if (oks.length < accounts.length) { state = 'partial'; note = "One of your mail accounts hasn't synced yet."; }
+  else if (now - asOf > MAIL_STALE_MS) { state = 'stale'; note = `Your email was last checked ${whenSaid(asOf, now, tz)}.`; }
   else state = 'ok';
   return { state, asOf, note, reconnect: reconnect.map((a) => a.account) };
 }
@@ -297,12 +297,15 @@ function upcomingConflicts(now: number): ReturnType<typeof findConflicts> {
   return value;
 }
 
-function needsYou(views: JobView[], approvals: PendingView[], cal: ReturnType<typeof calendarFreshness>, mail: ReturnType<typeof mailFreshness>, now: number, tz: string): NeedCard[] {
-  const cards: NeedCard[] = [];
+/** A card and the words the helper may SAY for it (counts, times and our own labels — never outside text). */
+type Card = NeedCard & { spoken: string };
+
+function needsYou(views: JobView[], approvals: PendingView[], cal: ReturnType<typeof calendarFreshness>, mail: ReturnType<typeof mailFreshness>, now: number, tz: string): Card[] {
+  const cards: Card[] = [];
   // the Important items standing for each candidate: a phishing caution drops it; the person's own dismissal of a
-  // double-booking (handled, not important, snoozed) is respected
+  // double-booking (handled, not important, snoozed) is respected. By dedupe key: a busy calendar can have thousands
+  // of overlapping pairs, so no per-pair hashing or lookups.
   const conflicts = upcomingConflicts(now);
-  // (by dedupe key: a busy calendar can have thousands of overlapping pairs, so no per-pair hashing or lookups)
   const items = new Map<string, ItemRow>();
   for (const r of itemsByIds(approvals.map((a) => itemId(`approval:${a.id}`))).values()) items.set(r.dedupe_key, r);
   for (const r of appDb().prepare(`SELECT * FROM items WHERE source = 'calendar-conflict'`).all() as ItemRow[]) items.set(r.dedupe_key, r);
@@ -319,6 +322,7 @@ function needsYou(views: JobView[], approvals: PendingView[], cal: ReturnType<ty
       text: mine.length === 1 ? 'Your helper needs your OK before it goes on.' : `The first: ${what}`,
       action: { kind: 'review-approval', label: 'Review' }, open: mine.length === 1 ? { kind: 'approval', id: a.id } : { kind: 'approvals', id: null },
       itemId: items.get(`approval:${a.id}`)?.id ?? null, trust: mine.some((x) => x.tainted) ? 'untrusted' : 'trusted',
+      spoken: mine.length === 1 ? 'Something needs your OK.' : `${mine.length} things need your OK.`,
     });
   }
   // jobs waiting for the person (an approval it staged, or the dollar limit it reached)
@@ -330,7 +334,8 @@ function needsYou(views: JobView[], approvals: PendingView[], cal: ReturnType<ty
       title: waiting.length === 1 ? plainWhy(v.job.title, 120) || 'A job' : `${waiting.length} jobs are waiting for you`,
       text: waiting.length === 1 ? v.status.detail : `The first: ${plainWhy(v.job.title, 100)} — ${v.status.detail}`,
       action: v.status.primaryAction ? { kind: v.status.primaryAction.action, label: v.status.primaryAction.label } : null,
-      open: waiting.length === 1 ? { kind: 'job', id: v.job.id } : { kind: 'jobs', id: 'waiting' }, itemId: null, trust: 'trusted',
+      open: waiting.length === 1 ? { kind: 'job', id: v.job.id } : { kind: 'jobs', id: 'waiting' }, itemId: null, trust: jobTrust(v),
+      spoken: waiting.length === 1 ? 'A job is waiting for you.' : `${waiting.length} jobs are waiting for you.`,
     });
   }
   // the next double-booking the person has not dismissed
@@ -341,23 +346,26 @@ function needsYou(views: JobView[], approvals: PendingView[], cal: ReturnType<ty
     const it = items.get(key);
     const a = plainWhy(c.a.title, 60) || 'An event', b = plainWhy(c.b.title, 60) || 'another event';
     const more = open.length > 1 ? ` ${plural(open.length - 1, 'more double-booking', 'more double-bookings')} in the next two weeks.` : '';
+    const when = `${atLabel(Date.parse(c.start), tz)} is double-booked`;
     cards.push({
       id: `need:${key}`, kind: 'conflict', count: open.length,
-      title: it?.title ?? `${atLabel(Date.parse(c.start), tz)} is double-booked`,
+      title: it?.title ?? when,
       text: `${it?.why ?? `${a} and ${b} overlap.`}${more}`,
-      action: { kind: 'draft-note', label: 'Draft the note' }, open: it ? { kind: 'item', id: it.id, date: localDate(Date.parse(c.start), tz) } : { kind: 'calendar', id: c.a.id, date: localDate(Date.parse(c.start), tz) },
-      itemId: it?.id ?? null, trust: 'untrusted',
+      // the action runs through its Important item; with none yet, the card only opens the day
+      action: it ? { kind: 'draft-note', label: 'Draft the note' } : null,
+      open: it ? { kind: 'item', id: it.id, date: localDate(Date.parse(c.start), tz) } : { kind: 'calendar', id: c.a.id, date: localDate(Date.parse(c.start), tz) },
+      itemId: it?.id ?? null, trust: 'untrusted', spoken: `${when}.`,
     });
   }
   // an account to sign in to again
   const re = [...cal.reconnect.map((account) => ({ account, resource: 'calendar' as const })), ...mail.reconnect.map((account) => ({ account, resource: 'mail' as const }))];
   if (re.length) {
     const r = re[0];
+    const title = re.length === 1 ? `${ACCOUNT_LABEL(r.account, r.resource)} needs to be reconnected` : `${re.length} accounts need to be reconnected`;
     cards.push({
-      id: 'need:reconnect', kind: 'reconnect', count: re.length,
-      title: re.length === 1 ? `${ACCOUNT_LABEL(r.account, r.resource)} needs to be reconnected` : `${re.length} accounts need to be reconnected`,
+      id: 'need:reconnect', kind: 'reconnect', count: re.length, title,
       text: "I can't check it until you sign in again.", action: { kind: 'reconnect', label: 'Reconnect' },
-      open: { kind: 'reconnect', id: r.account, resource: r.resource }, itemId: null, trust: 'trusted',
+      open: { kind: 'reconnect', id: r.account, resource: r.resource }, itemId: null, trust: 'trusted', spoken: `${title}.`,
     });
   }
   return cards;
@@ -370,32 +378,39 @@ function dayAgenda(now: number, tz: string) {
   // on the calendar: events, and a confirmed draft not yet in the cache (calendarItems shows it once); open drafts are
   // proposals, not plans
   const onCal = agenda.filter((x) => x.kind === 'event' || x.state === 'confirmed');
-  const upcoming = onCal.filter((x) => !x.allDay && Date.parse(x.end) > now).sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+  // still ahead: an event that has ended is no longer one of "the things on your calendar" (all-day ones last the day)
+  const remaining = onCal.filter((x) => x.allDay || Date.parse(x.end) > now);
+  const upcoming = remaining.filter((x) => !x.allDay).sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
   const nextUp: NextUp[] = upcoming.slice(0, NEXT_UP_MAX).map((x) => {
     const s = Date.parse(x.start);
     const gap = Math.round((s - now) / 60_000);
     return { id: x.id, kind: x.kind, title: x.title, start: x.start, end: x.end, location: x.location, startLabel: clockLabel(s, tz), soon: gap <= 0 ? 'Now' : gap <= 60 ? `in ${gap} min` : null };
   });
-  return { agenda, onCal, nextUp, more: Math.max(0, upcoming.length - nextUp.length) };
+  return { agenda, onCal, remaining, nextUp, more: Math.max(0, upcoming.length - nextUp.length) };
 }
 
 interface Activity {
-  drafts: CalDraftRow[]; confirmed: CalDraftRow[]; finished: JobView[]; reminders: JobRow[]; actions: ActionLite[];
+  drafts: CalDraftRow[]; confirmed: CalDraftRow[]; finished: JobView[]; reminders: JobView[]; actions: ActionRow[];
 }
 const REPLY_TOOLS = new Set(['draft_email', 'draft_outlook']);
-const ACTION_LINE: Record<string, { kind: DoneLine['kind']; text: string }> = {
+const ACTION_LINE: Record<string, { kind: DoneLine['kind']; text: string; approved?: string }> = {
   draft_email: { kind: 'reply-drafted', text: 'I drafted an email for you to check. Nothing was sent.' },
   draft_outlook: { kind: 'reply-drafted', text: 'I drafted an email for you to check. Nothing was sent.' },
-  send_email: { kind: 'email-sent', text: 'I sent an email you approved.' },
-  write_file: { kind: 'file-saved', text: 'I saved a file.' },
+  send_email: { kind: 'email-sent', text: 'I sent an email.', approved: 'I sent the email you approved.' },
+  write_file: { kind: 'file-saved', text: 'I saved a file.', approved: 'I saved the file you approved.' },
   policy_save: { kind: 'preference', text: 'I saved a preference you gave me.' },
 };
+/** A job's words came from outside when any run of it read outside content, or it was set up from outside content. */
+const jobTrust = (v: JobView): 'trusted' | 'untrusted' => (v.job.stands_trust === 'untrusted' || v.tries.some((t) => t.tainted === 1) ? 'untrusted' : 'trusted');
 
 /** What happened in [from, now]: drafts the helper made, drafts confirmed, jobs finished, reminders set, actions. */
-function activitySince(from: number, now: number, views: Map<string, JobView>, actions: ActionLite[]): Activity {
+function activitySince(from: number, now: number, views: Map<string, JobView>): Activity {
   const d = appDb();
-  const drafts = d.prepare(`SELECT * FROM cal_drafts WHERE origin = 'helper' AND state != 'removed' AND created_at >= ? AND created_at <= ? ORDER BY created_at DESC`).all(from, now) as CalDraftRow[];
   const confirmed = d.prepare(`SELECT * FROM cal_drafts WHERE state = 'confirmed' AND confirmed_at >= ? AND confirmed_at <= ? ORDER BY confirmed_at DESC`).all(from, now) as CalDraftRow[];
+  // a draft is said once, as it stands now: one confirmed meanwhile is "on your calendar", not also "confirm it"
+  const added = new Set(confirmed.map((x) => x.id));
+  const drafts = (d.prepare(`SELECT * FROM cal_drafts WHERE origin = 'helper' AND state != 'removed' AND created_at >= ? AND created_at <= ? ORDER BY created_at DESC`).all(from, now) as CalDraftRow[])
+    .filter((x) => !added.has(x.id));
   const finished: JobView[] = [];
   for (const r of d.prepare(`SELECT job_id, MAX(ended_at) at FROM tries WHERE state = 'ended' AND ended_at >= ? AND ended_at <= ? GROUP BY job_id`).all(from, now) as { job_id: string; at: number }[]) {
     const v = views.get(r.job_id);
@@ -403,8 +418,9 @@ function activitySince(from: number, now: number, views: Map<string, JobView>, a
     const recurring = v.job.kind === 'recurring' || v.job.kind === 'reminder';
     if (recurring ? v.status.resultReady === true : v.status.state === 'done') finished.push(v);
   }
-  const reminders = (d.prepare(`SELECT * FROM jobs WHERE kind = 'reminder' AND archived = 0 AND created_at >= ? AND created_at <= ? ORDER BY created_at DESC`).all(from, now) as JobRow[]).filter((j) => ownerOwns(j.person));
-  return { drafts, confirmed, finished, reminders, actions: actions.filter((a) => a.at != null && a.at >= from && a.at <= now && a.tool && ACTION_LINE[a.tool]) };
+  const reminders = [...views.values()].filter((v) => v.job.kind === 'reminder' && v.job.created_at >= from && v.job.created_at <= now);
+  const actions = actionsBetween(from, now).filter((a) => ownerOwns(a.person) && ACTION_LINE[a.tool]);
+  return { drafts, confirmed, finished, reminders, actions };
 }
 const lastEnded = (v: JobView) => Math.max(0, ...v.tries.filter((t) => t.state === 'ended').map((t) => t.ended_at ?? 0));
 
@@ -423,24 +439,25 @@ function doneLines(a: Activity, now: number, tz: string): DoneLine[] {
   }
   for (const v of a.finished) {
     const recurring = v.job.kind === 'recurring' || v.job.kind === 'reminder';
-    lines.push({ id: `job:${v.job.id}`, kind: 'job-finished', at: lastEnded(v), trust: 'trusted',
+    lines.push({ id: `job:${v.job.id}`, kind: 'job-finished', at: lastEnded(v), trust: jobTrust(v),
       text: recurring ? `${quote(v.job.title)} has a new result.` : `I finished ${quote(v.job.title)}.`, open: { kind: 'job', id: v.job.id } });
   }
-  for (const j of a.reminders) {
-    lines.push({ id: `reminder:${j.id}`, kind: 'reminder', at: j.created_at, trust: 'trusted',
+  for (const v of a.reminders) {
+    const j = v.job;
+    lines.push({ id: `reminder:${j.id}`, kind: 'reminder', at: j.created_at, trust: jobTrust(v),
       text: `I set a reminder: ${quote(j.title)}${j.next_due_at ? `, ${whenSaid(j.next_due_at, now, tz)}` : ''}.`, open: { kind: 'job', id: j.id } });
   }
   for (const x of a.actions) {
-    const l = ACTION_LINE[x.tool!];
-    lines.push({ id: `action:${x.id}`, kind: l.kind, at: x.at!, trust: 'trusted', text: l.text, open: { kind: 'activity', id: x.id } });
+    const l = ACTION_LINE[x.tool];
+    lines.push({ id: `action:${x.id}`, kind: l.kind, at: x.ts, trust: 'trusted', text: x.via === 'approval' && l.approved ? l.approved : l.text, open: { kind: 'activity', id: String(x.id) } });
   }
   return lines.sort((p, q) => q.at - p.at || (p.id < q.id ? -1 : 1));
 }
 
-function weekCounts(from: number, now: number, views: JobView[], actions: ActionLite[]): WeekCounts {
+function weekCounts(from: number, now: number, views: JobView[]): WeekCounts {
   const d = appDb();
   const eventsAdded = (d.prepare(`SELECT COUNT(*) n FROM cal_drafts WHERE state = 'confirmed' AND confirmed_at >= ? AND confirmed_at <= ?`).get(from, now) as { n: number }).n;
-  const repliesDrafted = actions.filter((a) => a.at != null && a.at >= from && a.at <= now && a.tool && REPLY_TOOLS.has(a.tool)).length;
+  const repliesDrafted = actionsBetween(from, now).filter((a) => ownerOwns(a.person) && REPLY_TOOLS.has(a.tool)).length;
   let jobsFinished = 0, documentsLearned = 0;
   for (const v of views) {
     if (v.status.state !== 'done' || v.job.kind === 'recurring' || v.job.kind === 'reminder') continue;
@@ -460,8 +477,9 @@ export function weekText(c: WeekCounts): string {
     c.documentsLearned ? `${plural(c.documentsLearned, 'document', 'documents')} learned` : '',
     c.jobsFinished ? `${plural(c.jobsFinished, 'job', 'jobs')} finished` : '',
   ].filter(Boolean);
-  return parts.length ? `This week: ${parts.join(', ')}.` : 'This week: nothing yet — I’ll keep count here.';
+  return parts.length ? `In the last 7 days: ${parts.join(', ')}.` : 'In the last 7 days: nothing yet — I’ll keep count here.';
 }
+const joinAnd = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}` : xs[0] ?? '');
 
 // ── the composite ───────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -471,10 +489,9 @@ export function weekText(c: WeekCounts): string {
  */
 export async function buildToday(caller: string, o: { now?: number; tz?: string } = {}): Promise<Today> {
   const now = o.now ?? deps.now(), tz = o.tz ?? deps.tz();
-  const actions = await actionLog();
   const { day, start: dayStart } = dayBounds(now, tz);
   const mins = localMinutes(now, tz);
-  const part = mins < 5 * 60 ? 'night' : mins < 12 * 60 ? 'morning' : mins < 17 * 60 ? 'afternoon' : 'evening';
+  const part = partOf(mins);
   const name = (() => { try { return deps.greetingName(); } catch { return null; } })();
   const greeting = `${part === 'morning' ? 'Good morning' : part === 'afternoon' ? 'Good afternoon' : 'Good evening'}${name ? `, ${name}` : ''}`;
 
@@ -486,14 +503,15 @@ export async function buildToday(caller: string, o: { now?: number; tz?: string 
 
   const cal = calendarFreshness(now, tz);
   const mail = mailFreshness(now, tz);
-  const needs = needsYou(views, approvals, cal, mail, now, tz);
+  const cards = needsYou(views, approvals, cal, mail, now, tz);
+  const needs: NeedCard[] = cards.map(({ spoken: _s, ...c }) => c);
   const calKnown = cal.state !== 'not_connected' && cal.state !== 'not_synced';
   const agenda = dayAgenda(now, tz);
 
   // done for you: since this caller last looked (at most a week back; a day back for a first look)
   const seen = lastSeen(caller);
   const since = Math.max(now - DONE_LOOKBACK_MS, seen ?? now - FIRST_LOOK_MS);
-  const done = doneLines(activitySince(since, now, byId, actions), now, tz);
+  const done = doneLines(activitySince(since, now, byId), now, tz);
 
   // worth a look: the top open items, minus what a Needs-you card stands for
   const shown = new Set<string>();
@@ -501,29 +519,32 @@ export async function buildToday(caller: string, o: { now?: number; tz?: string 
   const items = openItems();
   const top = items.filter((r) => !shown.has(r.id) && r.source !== 'approval' && r.source !== 'connection').slice(0, WORTH_MAX).map((r) => apiItem(r, now, tz));
 
-  const counts = weekCounts(now - 7 * 86_400_000, now, views, actions);
+  const counts = weekCounts(now - 7 * 86_400_000, now, views);
   const needCount = needs.reduce((s, c) => s + c.count, 0);
 
-  // the morning check-in: counts only, each thing appears once, in its own card below
+  // the morning check-in: counts only, each thing appears once, in its own card below. Its spoken form adds times and
+  // the helper's own card labels — never an event's title or a staged action's summary.
   let checkin: Today['checkin'] = null;
   if (mins >= CHECKIN_FROM_MIN && mins < CHECKIN_UNTIL_MIN && markDay('checkin') !== day) {
     const overnightFrom = Math.max(seen ?? 0, zonedToUtc(`${addDays(day, -1)}T17:00:00`, tz));
-    const overnight = doneLines(activitySince(overnightFrom, now, byId, actions), now, tz).length;
-    const events = agenda.onCal.length;
-    const cal1 = calKnown ? `${plural(events, 'thing', 'things')} on your calendar` : "I can't see your calendar yet";
+    const overnight = doneLines(activitySince(overnightFrom, now, byId), now, tz).length;
+    const events = agenda.remaining.length;
+    const cal1 = !calKnown ? "I can't see your calendar yet"
+      : cal.state === 'partial' ? `${plural(events, 'thing', 'things')} on the calendars I can see`
+      : `${plural(events, 'thing', 'things')} on your calendar`;
     const need1 = needCount ? `${plural(needCount, 'thing needs', 'things need')} you` : 'nothing needs you';
     const text = `Here’s your ${weekdayOf(day)}: ${cal1}, ${need1}, and I did ${plural(overnight, 'thing', 'things')} overnight. It’s all below.`;
-    const next = agenda.nextUp.map((e) => `${e.title} at ${e.startLabel}`).join(', then ');
-    const spoken = `${text.replace(' It’s all below.', '')}${next ? ` ${next}.` : ''}${needs[0] ? ` ${needs[0].title}.` : ''}`;
-    checkin = { title: 'Your morning check-in', text, spoken, counts: { events, needsYou: needCount, overnight } };
+    const first = calKnown && agenda.nextUp[0] ? ` Your first thing is at ${agenda.nextUp[0].startLabel}.` : '';
+    const spoken = `${text.replace(' It’s all below.', '')}${first}${cards[0] ? ` ${cards[0].spoken}` : ''}`;
+    checkin = { title: 'Your morning check-in', text, spoken, trust: 'trusted', counts: { events, needsYou: needCount, overnight } };
   }
 
-  // the evening wrap: what got done today, and how tomorrow starts
+  // the evening wrap: what got done today (each thing once), and how tomorrow starts
   let wrap: Today['wrap'] = null;
   if (mins >= WRAP_FROM_MIN && markDay('wrap') !== day) {
-    const today = activitySince(dayStart, now, byId, actions);
+    const today = activitySince(dayStart, now, byId);
     const doneToday = doneLines(today, now, tz).length;
-    const replies = today.actions.filter((x) => x.tool && REPLY_TOOLS.has(x.tool)).length;
+    const replies = today.actions.filter((x) => REPLY_TOOLS.has(x.tool)).length;
     if (doneToday > 0) {
       const said: string[] = [];
       if (today.confirmed.length) said.push(`you confirmed ${plural(today.confirmed.length, 'event', 'events')}`);
@@ -531,15 +552,20 @@ export async function buildToday(caller: string, o: { now?: number; tz?: string 
       if (today.finished.length) said.push(`I finished ${plural(today.finished.length, 'job', 'jobs')}`);
       const other = doneToday - today.confirmed.length - replies - today.finished.length;
       if (other > 0) said.push(`I did ${plural(other, 'other thing', 'other things')}`);
-      const joined = said.length > 1 ? `${said.slice(0, -1).join(', ')} and ${said[said.length - 1]}` : said[0] ?? '';
+      const joined = joinAnd(said);
       const line1 = joined ? `${joined.charAt(0).toUpperCase()}${joined.slice(1)} today.` : '';
       const t0 = localMidnight(addDays(day, 1), tz), t1 = localMidnight(addDays(day, 2), tz);
       const tomorrow = calendarItems(iso(t0), iso(t1)).filter((x) => (x.kind === 'event' || x.state === 'confirmed') && !x.allDay && Date.parse(x.start) >= t0).slice(0, 2);
-      const line2 = !calKnown ? "I can't see tomorrow's calendar yet."
-        : !tomorrow.length ? 'Nothing is on your calendar tomorrow yet.'
-        : `Tomorrow starts with ${tomorrow[0].title} at ${clockLabel(Date.parse(tomorrow[0].start), tz)}${tomorrow[1] ? `, then ${tomorrow[1].title} at ${clockLabel(Date.parse(tomorrow[1].start), tz)}` : ''}.`;
+      const at = (x: CalendarItem) => clockLabel(Date.parse(x.start), tz);
+      const unknown = !calKnown ? "I can't see tomorrow's calendar yet." : !tomorrow.length ? 'Nothing is on your calendar tomorrow yet.' : null;
+      // shown: the first event quoted as one ("an event called “…”"), filtered and short; said: times only
+      const line2 = unknown ?? `Tomorrow starts at ${at(tomorrow[0])} with an event called ${quote(tomorrow[0].title, QUOTE_MAX)}${tomorrow[1] ? `, then something at ${at(tomorrow[1])}` : ''}.`;
+      const said2 = unknown ?? `Tomorrow starts at ${at(tomorrow[0])}${tomorrow[1] ? `, then ${at(tomorrow[1])}` : ''}.`;
       const lines = [line1, line2].filter(Boolean);
-      wrap = { title: `That’s ${weekdayOf(day)}`, lines, spoken: lines.join(' '), counts: { eventsConfirmed: today.confirmed.length, repliesDrafted: replies, jobsFinished: today.finished.length, doneToday } };
+      wrap = {
+        title: `That’s ${weekdayOf(day)}`, lines, spoken: [line1, said2].filter(Boolean).join(' '), trust: unknown ? 'trusted' : 'untrusted',
+        counts: { eventsConfirmed: today.confirmed.length, repliesDrafted: replies, jobsFinished: today.finished.length, doneToday },
+      };
     }
   }
 
@@ -564,5 +590,19 @@ export async function buildToday(caller: string, o: { now?: number; tz?: string 
   };
 }
 
-/** Entities whose change can change Today (the stream's coarse "today changed" notice). */
-export const TODAY_SOURCES = new Set(['job', 'try', 'cal_event', 'cal_draft', 'item', 'mail']);
+/** Entities whose change can change Today (the stream's coarse "today changed" notice). Mail is not one: a message
+ *  reaches Today only as an Important item, which records its own change. */
+export const TODAY_SOURCES = new Set(['job', 'try', 'cal_event', 'cal_draft', 'item', 'action']);
+
+/**
+ * What else changes Today without an app.db event: an approval staged or answered (approvals.db), a sync succeeding
+ * or needing a reconnect (sync_state has no events), and the clock crossing midnight, 05:00, noon or 17:00. The
+ * stream compares this signature on a timer and sends the "today changed" notice when it moves.
+ */
+export function todaySignature(now = deps.now(), tz = deps.tz()): string {
+  let approvals = '';
+  try { approvals = deps.pendingApprovals().map((a) => a.id).sort().join(','); } catch { /* unreadable: no change */ }
+  const sync = (appDb().prepare(`SELECT account, resource, last_ok, needs_reconnect FROM sync_state ORDER BY account, resource`).all() as Record<string, unknown>[])
+    .map((r) => `${r.account}|${r.resource}|${r.last_ok ?? ''}|${r.needs_reconnect}`).join(';');
+  return createHash('sha256').update(`${approvals}\n${sync}\n${localDate(now, tz)}|${partOf(localMinutes(now, tz))}`).digest('base64url').slice(0, 22);
+}

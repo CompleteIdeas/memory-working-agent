@@ -29,7 +29,8 @@
  * 50; a delta holds every turn changed since the cursor, a moved one included with its new project).
  * Today (A10): /sync has a 'today' collection — one document, the Today composite for this caller (a snapshot always
  * holds it; a delta holds it when anything Today is made of changed). On the stream, a coarse notice without data
- * (entity 'today') when a job, try, calendar event or draft, item or mail changed, at most once every 5 s; the
+ * (entity 'today') when a job, try, calendar event or draft, item or action changed — or, checked every 5 s, an
+ * approval, a sync's state or the part of the day (midnight, 05:00, noon, 17:00) — at most once every 5 s; the
  * person's own check-in and wrap marks are sent as they happen.
  *
  * Asks (A6): an ask changing (planned, chosen, answered) is sent as entity 'ask' with its current shape; its run's
@@ -47,7 +48,7 @@ import { mailSnapshot, mailDelta } from '../../v2/mail.js';
 import { importantSnapshot, itemForStream } from '../../v2/important.js';
 import { triageNow, triageTz } from '../../v2/triage.js';
 import { apiProject, apiTurn, getProject, getTurn, listProjects, recentTurns } from '../../v2/projects.js';
-import { buildToday, TODAY_SOURCES } from '../../v2/today.js';
+import { buildToday, todaySignature, TODAY_SOURCES } from '../../v2/today.js';
 import { apiAsk, getAsk } from '../../v2/ask.js';
 
 export const EVENT_RETENTION_MS = 7 * 24 * 3_600_000;
@@ -171,7 +172,8 @@ function parseCursor(v: string | null | undefined): number {
 function openStream(res: ServerResponse, req: IncomingMessage, start: number, who: Caller | null): void {
   let cursor = start, closed = false, lastSent = Date.now();
   // Today (A10): a change to what Today is made of marks it dirty; the notice goes out at most every 5 s
-  let todayDirty = 0, todaySentAt = 0;
+  let todayDirty = 0, todaySentAt = 0, todaySig = '', todaySigAt = 0;
+  try { todaySig = todaySignature(); } catch { /* checked again on the timer */ }
   const write = (chunk: string) => { if (closed) return; try { res.write(chunk); lastSent = Date.now(); } catch { close(); } };
   const send = (event: string, data: unknown, id?: number) => write(`${id !== undefined ? `id: ${id}\n` : ''}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   const lastStep = new Map<string, number>();
@@ -194,6 +196,10 @@ function openStream(res: ServerResponse, req: IncomingMessage, start: number, wh
         if (rows.some((e) => TODAY_SOURCES.has(e.entity))) todayDirty = cursor;
         write(`id: ${cursor}\n\n`); // an id with no data: the client's Last-Event-ID advances past events it may not see
         if (rows.length < BATCH) break;
+      }
+      if (Date.now() - todaySigAt >= TODAY_NOTICE_EVERY_MS) {
+        todaySigAt = Date.now();
+        try { const sig = todaySignature(); if (sig !== todaySig) { todaySig = sig; todayDirty = todayDirty || Math.max(cursor, 1); } } catch { /* next tick */ }
       }
       if (todayDirty && Date.now() - todaySentAt >= TODAY_NOTICE_EVERY_MS) {
         send('change', { seq: todayDirty, entity: 'today', id: 'today', op: 'upsert' });

@@ -306,7 +306,9 @@ export interface paths {
          * @description Events: `hello` {cursor, head}; `change` {seq, entity, id, op, data?} with `id: <seq>` (a job's change carries
          *     its current view in `data`); `live` {session, type, stage, at} — a running try's progress, at most once a
          *     second per run; `reset` {cursor, reason} — the cursor was older than what is kept: call /sync without
-         *     `since`. A `change` with entity `today` and no data (at most every 5 s) means Today changed:
+         *     `since`. A `change` with entity `today` and no data (at most every 5 s) means Today changed (a job,
+         *     calendar, item or action changed, an approval or a sync's state moved, or the day passed midnight, 05:00, noon
+         *     or 17:00):
          *     GET /today again. A comment every 15 s keeps the connection open. Reconnect with Last-Event-ID (EventSource does it).
          *
          */
@@ -1918,7 +1920,7 @@ export interface components {
             title: string;
             text: string;
             action: {
-                /** @description review-approval, a job action (continue, review…), draft-note, reconnect. */
+                /** @description review-approval, a job action (continue, review…), draft-note (only when the double-booking has its Important item; otherwise the card has no action and only opens the day), reconnect. */
                 kind: string;
                 /** @description "Review", "Finish the last 10 pages · about 3¢", "Draft the note", "Reconnect". */
                 label: string;
@@ -1988,10 +1990,15 @@ export interface components {
             /** @description The morning check-in, 5:00 until noon local, until the person taps "Done — show my day" (POST /today/checkin/done). Counts only: each thing appears once, in its own card below. */
             checkin: {
                 title: string;
-                /** @description "Here’s your Monday: 5 things on your calendar, 1 thing needs you, and I did 3 things overnight. It’s all below." */
+                /** @description "Here’s your Monday: 5 things on your calendar, 1 thing needs you, and I did 3 things overnight. It’s all below." Events still ahead (or all day) count. */
                 text: string;
-                /** @description For "Read it to me": the counts, then what is next. */
+                /** @description For "Read it to me": the counts, the first thing's time, and the first card in the helper's own words ("Something needs your OK.") — never an event title or a staged action's summary. */
                 spoken: string;
+                /**
+                 * @description Whether text holds anything that came from outside (it does not: counts only).
+                 * @enum {string}
+                 */
+                trust: "trusted" | "untrusted";
                 counts: {
                     events: number;
                     needsYou: number;
@@ -2002,9 +2009,15 @@ export interface components {
             wrap: {
                 /** @description "That’s Monday". */
                 title: string;
-                /** @description What got done today; how tomorrow starts. */
+                /** @description What got done today; how tomorrow starts ("Tomorrow starts at 8:15 AM with an event called “School drop-off”" — a title is quoted, filtered and at most 60 characters). */
                 lines: string[];
+                /** @description For "Read it to me": the same, with times only — no titles. */
                 spoken: string;
+                /**
+                 * @description untrusted when `lines` quote an event title (it came from the calendar, perhaps from an invitation): plain text, auto-linking off.
+                 * @enum {string}
+                 */
+                trust: "trusted" | "untrusted";
                 counts: {
                     eventsConfirmed: number;
                     repliesDrafted: number;
@@ -2028,7 +2041,7 @@ export interface components {
             /** @description "See all (N)": every open item on the Important list. */
             worthALookTotal: number;
             weekLine: {
-                /** @description "This week: 6 replies drafted, 4 events added, 2 documents learned." Counts only. */
+                /** @description "In the last 7 days: 6 replies drafted, 4 events added, 2 documents learned." Counts only. */
                 text: string;
                 counts: {
                     repliesDrafted: number;
@@ -2059,10 +2072,13 @@ export interface components {
                 /** @description The oldest last successful calendar sync among connected calendars (ms). */
                 calendarAsOf: number | null;
                 mailAsOf: number | null;
+                /**
+                 * @description partial: one calendar synced and another never has (named in calendarNote); the day shown is incomplete.
+                 * @enum {string}
+                 */
+                calendar: "ok" | "stale" | "partial" | "not_synced" | "reconnect" | "not_connected";
                 /** @enum {string} */
-                calendar: "ok" | "stale" | "not_synced" | "reconnect" | "not_connected";
-                /** @enum {string} */
-                mail: "ok" | "stale" | "not_synced" | "reconnect" | "not_connected";
+                mail: "ok" | "stale" | "partial" | "not_synced" | "reconnect" | "not_connected";
                 /** @description Say this when the calendar is not ok: "Your calendar hasn't synced yet, so I can't tell what's next." */
                 calendarNote: string | null;
                 mailNote: string | null;
