@@ -130,7 +130,7 @@ export function AskAbout({ kind, id, label, item, form = 'inline', sheetId, open
 
   const box = (
     <div className="askabout-box">
-      <span className="aboutchip"><Spark size={14} />About: {chip}</span>
+      <span className="aboutchip"><Spark size={14} />About: <bdi>{chip}</bdi></span>
       {questions.length > 0 && (
         <div className="ask-sugg" role="group" aria-label="Suggested questions">
           {questions.map((q) => <button key={q} type="button" className="sugg" disabled={sending} onClick={async () => { const ok = await send(q); if (ok && form === 'sheet') setOpen(false); }}>{q}</button>)}

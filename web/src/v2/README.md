@@ -14,8 +14,9 @@ web/src/v2/
   store/idb.ts        the IndexedDB cache (the `idb` package)
   store/status.ts     the pill, the working sheet's groups and the month line, from the server's job states
   store/react.tsx     hooks: useJobs, useStatusPill, useCalendar, useProjects, useThread, useMail, useItems, useMeta…
-  store/today.ts      W2: the Today composite (cached, refetched on the stream's notice, focus and online; seen after 2 s;
-                      check-in and wrap through the outbox), freshness and trust helpers
+  store/today.ts      W2: the Today composite (cached, refetched on the stream's notice, focus and online; seen after 2 s
+                      on a server Today for the person's day, with its `now`; check-in and wrap through the outbox with
+                      the day they dismiss), freshness helpers; outside words come from the server as parts (never parsed)
   store/calendar-ops.ts  W2: optimistic Confirm / Remove, double-booking words, honest states, New event, the .ics file
   store/today-react.ts   W2: useToday, useDraftActions, useCalendarAccounts, useSpeech
   store/important.ts  W3: the Important list's pure parts (pending taps applied, groups, skipped line, Not important choices)
@@ -115,7 +116,7 @@ moving a turn, Stop, Steer and the offer.
 - `npm run build:ui && node scripts/v2-web-smoke.mjs --axe <path to axe.min.js> [--out <dir>]` — Playwright (the
   repo's playwright-core) against `vite preview` in fixture mode at 390×844 and 1440×900: pill and working sheet,
   tabs, Ask, IndexedDB, the offline outbox, the 426 path, axe and horizontal overflow; screenshots in `--out`.
-- `npx vitest run tests/web-v2-today.test.ts tests/web-v2-calendar.test.ts tests/web-v2-w2-fixtures.test.ts` (W2)
+- `npx vitest run tests/web-v2-today.test.ts tests/web-v2-calendar.test.ts tests/web-v2-w2-fixtures.test.ts tests/web-v2-w2-review.test.tsx tests/web-v2-w2-zone.test.ts` (W2)
 - `node scripts/v2-w2-smoke.mjs --axe <axe.min.js> [--out <dir>]` — W2: Today (N01, the N05 check-in, the N09 wrap,
   the desktop's three columns), the Calendar (the double-booking, a draft's origin and Confirm, New event, the week,
   the .ics link), the partial and not-connected notes, the check-in done offline through the middleware, dark.

@@ -5,6 +5,18 @@
  */
 export const SCENARIO_TIME: Record<string, [number, number]> = { N05: [7, 30], midday: [12, 30], N09: [18, 30] };
 
+/**
+ * `?now=<ISO>` freezes the clock — in fixture mode only (W2 review): against a real helper the clock is the real one,
+ * whatever the address says. Null: not fixture mode, or no (readable) `now`.
+ */
+export function fixtureNow(search: string, fixtureMode: boolean): number | null {
+  if (!fixtureMode) return null;
+  const v = new URLSearchParams(search).get('now');
+  if (!v) return null;
+  const ms = Date.parse(v);
+  return Number.isNaN(ms) ? null : ms;
+}
+
 /** The frozen clock of a fixture scenario (local time). */
 export function scenarioClock(scenario: string | null | undefined): number {
   const [h, m] = SCENARIO_TIME[String(scenario)] ?? [9, 10];

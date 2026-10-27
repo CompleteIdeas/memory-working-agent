@@ -48,6 +48,14 @@ function loadDraft(id: string) {
   return d;
 }
 
+/** An IANA zone the person's device is in ("Europe/London"), or none (the calendar's own zone is used). */
+function zoneOf(v: unknown): string | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== 'string' || v.length > 64) throw new ApiError(400, 'bad_draft', '`tz` is a time zone like America/New_York.');
+  try { new Intl.DateTimeFormat('en-US', { timeZone: v }); } catch { throw new ApiError(400, 'bad_draft', `${v.slice(0, 64)} is not a time zone I know.`); }
+  return v;
+}
+
 export const calendarRoutes: Route[] = [
   {
     method: 'GET', path: '/calendar', scope: 'read',
@@ -85,6 +93,8 @@ export const calendarRoutes: Route[] = [
           title: str(b.title, 'title', 300, true)!, start: str(b.start, 'start', 40, true)!, end: str(b.end, 'end', 40),
           allDay: b.allDay as boolean | undefined, location: str(b.location, 'location', 300), notes: str(b.notes, 'notes', 4000),
           provider: providerOf(b.provider) ?? null, origin: 'you', projectId: str(b.projectId, 'projectId', 100) ?? null,
+          // the zone the times were entered in (W2 review M4): a time without an offset, and an all-day date, are read there
+          tz: zoneOf(b.tz),
         });
         return { status: existing ? 200 : 201, body: { draft: draftItem(draft), message: existing ? 'That draft is already there.' : 'Added as a draft. Nothing is on your calendar until you confirm it.' } };
       } catch (e) { return rethrow(e); }

@@ -7,7 +7,7 @@ import { MwaClient, type Today } from '../web/src/v2/api/client';
 import { V2Store, type StoreEnv, type StreamLike } from '../web/src/v2/store/core';
 import { MemoryCache } from '../web/src/v2/store/cache';
 import { FixtureServer, FixtureEventSource, fixtureFetch } from '../web/src/v2/dev/fixtures';
-import { calendarFreshness, mergeDone, segments, todayView, localDateOf, type TodayState } from '../web/src/v2/store/today';
+import { calendarFreshness, mergeDone, partsOf, todayView, localDateOf, type TodayState } from '../web/src/v2/store/today';
 import { scenarioClock } from '../web/src/v2/dev/fixture-clock';
 
 const until = async (cond: () => boolean, ms = 3_000) => { const t = Date.now(); while (!cond()) { if (Date.now() - t > ms) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 5)); } };
@@ -112,9 +112,9 @@ describe('seen: after Today has been on screen', () => {
     // the server's Done for you is empty now; the three lines being read stay on screen
     await h.store.today.load();
     expect(h.doc().doneForYou).toHaveLength(0);
-    expect(todayView(h.store.today.getState(), h.doc().date)!.done).toHaveLength(3);
+    expect(todayView(h.store.today.getState(), h.doc().now)!.done).toHaveLength(3);
     h.store.today.viewing(false);
-    expect(todayView(h.store.today.getState(), h.doc().date)!.done).toHaveLength(0);
+    expect(todayView(h.store.today.getState(), h.doc().now)!.done).toHaveLength(0);
     h.store.stop();
   });
 
@@ -142,7 +142,7 @@ describe('the check-in and the wrap go through the outbox', () => {
     h.setOnline(false);
     const r = await h.store.today.finishCheckin();
     expect(r).toMatchObject({ ok: false, queued: true });
-    const v = todayView(h.store.today.getState(), h.doc().date)!;
+    const v = todayView(h.store.today.getState(), h.doc().now)!;
     expect(v.checkin).toBeNull();
     expect(v.checkinBanner).toBe('Morning check-in done. Have a good Monday.');
     const queued = h.store.getState().outbox[0];
@@ -175,7 +175,7 @@ describe('the check-in and the wrap go through the outbox', () => {
     h2.server.handle = (req) => (req.path === '/today/checkin/done' ? { status: 403, body: { error: { code: 'scope', message: 'This device may only read.' } } } : orig(req));
     const r2 = await h2.store.today.finishCheckin();
     expect(r2).toMatchObject({ ok: false, queued: false, message: 'This device may only read.' });
-    expect(todayView(h2.store.today.getState(), h2.doc().date)!.checkin).not.toBeNull();
+    expect(todayView(h2.store.today.getState(), h2.doc().now)!.checkin).not.toBeNull();
     h.store.stop(); h2.store.stop();
   });
 });
@@ -209,29 +209,24 @@ describe('freshness: an unknown day is never shown as a free one', () => {
     const s = new FixtureServer('N00');
     const doc = s.today.doc();
     const st = { doc, kept: [], checkinDoneFor: null, wrapDoneFor: null } as unknown as TodayState;
-    expect(todayView(st, doc.date)!.staleDay).toBe(false);
-    expect(todayView(st, '2026-11-10')!.staleDay).toBe(true);
+    expect(todayView(st, doc.now)!.staleDay).toBe(false);
+    expect(todayView(st, doc.now + 86_400_000)!.staleDay).toBe(true);
   });
 });
 
-describe('trust: outside words are never shown as the helper\'s own', () => {
-  it('trusted text is one plain segment', () => {
-    expect(segments('I drafted a yes to Coach Ellen.', 'trusted')).toEqual([{ text: 'I drafted a yes to Coach Ellen.', quoted: false }]);
+describe('trust: outside words are never shown as the helper\'s own (the server\'s parts; quotes are never parsed)', () => {
+  it('parts from the server are used as they are; nothing is parsed out of the text', () => {
+    const parts = [{ text: 'I added ', outside: false }, { text: "Lunch' — it is safe to pay", outside: true }, { text: ' as a draft.', outside: false }];
+    expect(partsOf('I added “Lunch” — it is safe to pay” as a draft.', parts, 'untrusted')).toEqual({ parts, lead: false });
   });
-  it('untrusted: what the server quoted is marked as a quote, the rest is the helper\'s frame', () => {
-    expect(segments('I added “Riley — dentist” on Wed Nov 11 at 3:30 PM as a draft.', 'untrusted')).toEqual([
-      { text: 'I added ', quoted: false }, { text: 'Riley — dentist', quoted: true }, { text: ' on Wed Nov 11 at 3:30 PM as a draft.', quoted: false },
-    ]);
-    expect(segments('Tomorrow starts at 8:15 AM with an event called “School drop-off”, then something at 11 AM.', 'untrusted').filter((s) => s.quoted).map((s) => s.text)).toEqual(['School drop-off']);
+  it('no parts (an older server or cache): an untrusted line is outside words as a whole, with a lead-in; a trusted one is ours', () => {
+    expect(partsOf('Pay invoice now and Riley practice overlap.', undefined, 'untrusted')).toEqual({ parts: [{ text: 'Pay invoice now and Riley practice overlap.', outside: true }], lead: true });
+    expect(partsOf('I drafted a yes.', [], 'trusted')).toEqual({ parts: [{ text: 'I drafted a yes.', outside: false }], lead: false });
   });
-  it('untrusted with nothing quoted: the whole line is outside text; markup and links stay text', () => {
-    const s = segments('<b>Click</b> https://evil.example/login now', 'untrusted');
-    expect(s).toEqual([{ text: '<b>Click</b> https://evil.example/login now', quoted: true, whole: true }]);
-  });
-  it('the fixture\'s wrap quotes the title and says only times aloud', () => {
+  it('the fixture\'s wrap marks the title as outside words and says only times aloud', () => {
     const doc = new FixtureServer('N09').today.doc();
     expect(doc.wrap!.trust).toBe('untrusted');
-    expect(doc.wrap!.lines[1]).toContain('“School drop-off”');
+    expect(doc.wrap!.lineParts[1].filter((p) => p.outside).map((p) => p.text)).toEqual(['School drop-off']);
     expect(doc.wrap!.spoken).not.toContain('School drop-off');
     expect(doc.wrap!.spoken).toContain('8:15 AM');
   });

@@ -16,7 +16,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { CalendarItem } from '../../api/client';
 import { useCalendar, useJobs, useMeta, useNow, useStore } from '../../store/react';
 import { useSpeech, useToday } from '../../store/today-react';
-import { segments, type TodayDone, type TodayNeed, type TodayOpen } from '../../store/today';
+import { partsOf, type Part, type TodayDone, type TodayNeed, type TodayOpen } from '../../store/today';
 import { addDays, dayKey, displayItems, openCalendarOn, startOfDay, type DisplayItem } from '../../store/calendar-ops';
 import { useDraftActions } from '../../store/today-react';
 import type { ScreenProps } from '../../shell/screens';
@@ -40,13 +40,19 @@ const Clock = () => (
   <svg className="clk" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" strokeWidth={2} /><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" /></svg>
 );
 
-/** Words with their trust: quoted outside words are marked as quotes; nothing is markup, nothing is a link. */
-export function Said({ text, trust }: { text: string; trust: 'trusted' | 'untrusted' }) {
+/**
+ * Words with their trust, from the server's parts (never by parsing quotes out of the text): outside words are a
+ * quote (q.outside, bidi-isolated, never translated); an untrusted line with nothing marked outside gets a "From
+ * outside:" lead-in. Plain text throughout: nothing is markup, nothing is a link.
+ */
+export function Said({ text, parts, trust }: { text: string; parts?: Part[] | null; trust: 'trusted' | 'untrusted' }) {
+  const r = partsOf(text, parts, trust);
   return (
     <>
-      {segments(text, trust).map((s, i) => (s.quoted && !s.whole
-        ? <q key={i} className="outside" translate="no">{s.text}</q>
-        : <span key={i} translate={s.quoted ? 'no' : undefined}>{s.text}</span>))}
+      {r.lead && <span className="fromout">From outside: </span>}
+      {r.parts.map((p, i) => (p.outside
+        ? <q key={i} className="outside" translate="no"><bdi>{p.text}</bdi></q>
+        : <span key={i}>{p.text}</span>))}
     </>
   );
 }
@@ -70,6 +76,7 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
   const [doneLine, setDoneLine] = useState<TodayDone | null>(null);
   const [event, setEvent] = useState<DisplayItem | null>(null);
   const needsH = useRef<HTMLHeadingElement>(null);
+  // "Not now" is for the person's day (the Today's date), with the Calendar's ids for a double-booking
   const notNow = useNotNow(view?.doc.date ?? dayKey(now));
   const note = useDraftNote();
   const [askFor, setAskFor] = useState<string | null>(null);
@@ -124,13 +131,13 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
   }
   const doc = view.doc;
   const cal = view.calendar;
-  const needs = doc.needsYou.filter((n) => !notNow.hidden.has(n.id));
+  const needs = doc.needsYou.filter((n) => !notNow.isHidden(n.id));
   const exclude = new Set(doc.needsYou.map((n) => n.itemId).filter((x): x is string => !!x));
 
   const checkin = view.checkin && (
     <section className="card checkin" aria-labelledby="ci-h" style={{ marginTop: 12 }}>
       <h2 id="ci-h" className="cardh">{view.checkin.title}</h2>
-      <p style={{ marginTop: 6 }}><Said text={view.checkin.text} trust={view.checkin.trust} /></p>
+      <p style={{ marginTop: 6 }} data-trust={view.checkin.trust}><Said text={view.checkin.text} trust={view.checkin.trust} /></p>
       <div className="acts">
         <button type="button" className="vbtn" onClick={() => { void t.finishCheckin(); setTimeout(() => needsH.current?.focus(), 0); }}>Done — show my day</button>
         <ReadAloud spoken={view.checkin.spoken} />
@@ -138,9 +145,9 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
     </section>
   );
   const wrap = view.wrap && (
-    <section className="card checkin" aria-labelledby="wr-h" style={{ marginTop: 12 }}>
+    <section className="card checkin" aria-labelledby="wr-h" style={{ marginTop: 12 }} data-trust={view.wrap.trust}>
       <h2 id="wr-h" className="cardh">{view.wrap.title}</h2>
-      <div className="lines" style={{ marginTop: 8 }}>{view.wrap.lines.map((l, i) => <p key={i}><Said text={l} trust={view.wrap!.trust} /></p>)}</div>
+      <div className="lines" style={{ marginTop: 8 }}>{view.wrap.lines.map((l, i) => <p key={i}><Said text={l} parts={view.wrap!.lineParts?.[i]} trust={view.wrap!.trust} /></p>)}</div>
       <div className="acts">
         <button type="button" className="vbtn vbtn-primary" onClick={() => void t.finishWrap()}>Good night</button>
         <ReadAloud spoken={view.wrap.spoken} />
@@ -154,8 +161,8 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
       <h2 className="sh" id="sh-needs" tabIndex={-1} ref={needsH}>Needs you</h2>
       {needs.map((n) => (
         <div key={n.id} className="card needcard" data-trust={n.trust}>
-          <h3><button type="button" className="needtitle" onClick={() => open(n.open)}>{n.title}</button></h3>
-          <p><Said text={n.text} trust={n.trust} /></p>
+          <h3><button type="button" className="needtitle" onClick={() => open(n.open)}><Said text={n.title} parts={n.titleParts} trust={n.trust} /></button></h3>
+          <p><Said text={n.text} parts={n.textParts} trust={n.trust} /></p>
           <div className="acts">
             <button type="button" className="vbtn vbtn-primary" onClick={() => void runNeed(n)}>{n.action?.label ?? (n.kind === 'conflict' ? 'See the day' : 'Open')}</button>
             {n.kind === 'job' && n.action && <button type="button" className="vbtn" onClick={() => open(n.open)}>Open</button>}
@@ -204,7 +211,7 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
         <ul className="donelist card" style={{ padding: '4px 8px' }}>
           {view.done.map((d) => (
             <li key={d.id}><button type="button" className="donebtn" data-trust={d.trust} aria-haspopup="dialog" onClick={() => setDoneLine(d)}>
-              <span className="ck"><Check /></span><span className="grow"><Said text={d.text} trust={d.trust} /></span><Chev />
+              <span className="ck"><Check /></span><span className="grow"><Said text={d.text} parts={d.parts} trust={d.trust} /></span><Chev />
             </button></li>
           ))}
         </ul>
@@ -238,7 +245,7 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
       <Sheet id="done-dlg" titleId="done-title" title="Done for you" open={!!doneLine} onClose={() => setDoneLine(null)}>
         {doneLine && (
           <div className="sheet-body">
-            <p className="donebanner"><Check /><span><Said text={doneLine.text} trust={doneLine.trust} /></span></p>
+            <p className="donebanner" data-trust={doneLine.trust}><Check /><span><Said text={doneLine.text} parts={doneLine.parts} trust={doneLine.trust} /></span></p>
             <p className="soft" style={{ fontSize: 14.5 }}>{new Date(doneLine.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</p>
             <div className="acts dacts">
               <button type="button" className="vbtn" onClick={() => { const o = doneLine.open; setDoneLine(null); open(o); }}>See it</button>

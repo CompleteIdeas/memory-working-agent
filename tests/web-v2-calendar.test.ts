@@ -179,16 +179,28 @@ describe('honest states from the accounts', () => {
 
 describe('the New event form', () => {
   const f = { title: 'Book fair', date: '2026-11-14', allDay: false, start: '15:00', end: '18:00', location: ' Oakwood Elementary ' };
-  it('timed: local times without an offset; all day: a bare date', () => {
-    expect(draftInput(f)).toEqual({ ok: true, body: { title: 'Book fair', start: '2026-11-14T15:00', end: '2026-11-14T18:00', location: 'Oakwood Elementary' } });
-    expect(draftInput({ ...f, allDay: true, location: '' })).toEqual({ ok: true, body: { title: 'Book fair', start: '2026-11-14', allDay: true } });
-    expect(draftInput({ ...f, end: '' })).toEqual({ ok: true, body: { title: 'Book fair', start: '2026-11-14T15:00', location: 'Oakwood Elementary' } });
+  it('timed: the device wall time with its offset, and its zone; all day: a bare date (with the zone)', () => {
+    const r = draftInput(f, 'Europe/Somewhere');
+    if (!r.ok) throw new Error(r.error);
+    expect(r.body).toMatchObject({ title: 'Book fair', location: 'Oakwood Elementary', tz: 'Europe/Somewhere' });
+    expect(r.body.start).toMatch(/^2026-11-14T15:00:00[+-]\d{2}:\d{2}$/);
+    expect(Date.parse(r.body.start)).toBe(new Date(2026, 10, 14, 15).getTime());
+    expect(Date.parse(r.body.end!)).toBe(new Date(2026, 10, 14, 18).getTime());
+    expect(draftInput({ ...f, allDay: true, location: '' }, 'Europe/Somewhere')).toEqual({ ok: true, body: { title: 'Book fair', start: '2026-11-14', allDay: true, tz: 'Europe/Somewhere' } });
+    const noEnd = draftInput({ ...f, end: '' });
+    expect(noEnd.ok && noEnd.body.end).toBeUndefined();
+  });
+  it('an end before the start is the next morning (overnight); the same time is refused', () => {
+    const r = draftInput({ ...f, start: '22:00', end: '01:00' });
+    if (!r.ok) throw new Error(r.error);
+    expect(Date.parse(r.body.end!)).toBe(new Date(2026, 10, 15, 1).getTime());
+    expect(draftInput({ ...f, end: '15:00' })).toMatchObject({ ok: false, field: 'end', error: 'The end is the same as the start.' });
   });
   it('says what is wrong, in plain words', () => {
     expect(draftInput({ ...f, title: '  ' })).toMatchObject({ ok: false, field: 'title', error: 'Give it a name.' });
     expect(draftInput({ ...f, date: '' })).toMatchObject({ ok: false, field: 'date' });
-    expect(draftInput({ ...f, end: '14:00' })).toMatchObject({ ok: false, field: 'end', error: 'The end is before the start.' });
     expect(draftInput({ ...f, start: '' })).toMatchObject({ ok: false, field: 'start' });
+    expect(draftInput({ ...f, end: '9' })).toMatchObject({ ok: false, field: 'end' });
   });
 });
 

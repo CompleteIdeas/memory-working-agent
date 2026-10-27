@@ -95,7 +95,7 @@ export type ActionKind =
   // W2: Today's check-in and wrap, and a calendar draft from the person's own input
   | 'today.checkin' | 'today.wrap' | 'draft.create';
 /** W2: a draft from the person's own input (POST /calendar/drafts). */
-export interface DraftInput { title: string; start: string; end?: string; allDay?: boolean; location?: string; provider?: 'google' | 'outlook' }
+export interface DraftInput { title: string; start: string; end?: string; allDay?: boolean; location?: string; provider?: 'google' | 'outlook'; /** the zone the times were entered in (the device's) */ tz?: string }
 export type NotImportantScope = 'sender' | 'domain' | 'kind';
 export interface ActionArgs {
   id?: string; capUsd?: number; text?: string; provider?: 'google' | 'outlook';
@@ -107,6 +107,8 @@ export interface ActionArgs {
   group?: ImportantGroup;
   /** draft.create (W2): the new draft */
   draft?: DraftInput;
+  /** today.checkin / today.wrap (W2): the person's day the tap dismisses (a tap queued yesterday is dropped) */
+  day?: string;
   /** W4: the request body of an ask (`ask`), a plan's choice (`ask.choose`), a move ({projectId}), a project's fields,
    *  the run a Stop or a note is meant for ({runId}) */
   payload?: Record<string, unknown>;
@@ -247,7 +249,7 @@ export class V2Store {
     this.s = initial(!!o.fixtures);
     this.today = new TodayFeed({
       client: this.client, cache: this.cache, env: this.env, now: this.now,
-      act: (kind, label) => this.act(kind, {}, label),
+      act: (kind, label, args) => this.act(kind, args, label),
       supported: () => (this.s.meta ? this.s.meta.features.includes('today') : null),
     });
   }
@@ -270,6 +272,7 @@ export class V2Store {
     if (this.started) return;
     this.started = true;
     await this.loadCache();
+    this.today.adoptOutbox(this.s.outbox); // W2: a check-in or wrap tap still waiting keeps its card gone after a reload
     await this.today.start();
     if (!this.started) return; // stopped while the cache was loading (React StrictMode mounts twice)
     this.unsubs.push(
@@ -761,6 +764,8 @@ export class V2Store {
           const entry = this.s.outbox.find((x) => !done.has(x.id));
           if (!entry) break;
           done.add(entry.id);
+          // W2: a check-in or wrap tap for a day that has passed dismisses nothing now: dropped, quietly
+          if (entry.kind.startsWith('today.') && entry.args.day && entry.args.day !== this.today.currentDay()) { this.dropFromOutbox(entry.id); continue; }
           const tried = { ...entry, attempts: entry.attempts + 1 };
           try {
             await this.send(tried, true);
@@ -819,8 +824,8 @@ export class V2Store {
       case 'mail.important': out = await c.markMailImportant(id, key); break;
       case 'mail.draft': out = await c.saveMailDraft(id, { body: e.args.body ?? '' }, key); break;
       case 'rule.delete': out = await c.deleteTriageRule(id, key); break;
-      case 'today.checkin': out = await c.finishCheckin(key); break;
-      case 'today.wrap': out = await c.finishWrap(key); break;
+      case 'today.checkin': out = await c.finishCheckin(e.args.day ? { day: e.args.day } : {}, key); break;
+      case 'today.wrap': out = await c.finishWrap(e.args.day ? { day: e.args.day } : {}, key); break;
       case 'draft.create': out = await c.createCalendarDraft(e.args.draft ?? { title: '', start: '' }, key); break;
     }
     this.applyResult(e.kind, out, e, replayed);

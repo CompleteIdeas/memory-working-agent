@@ -15,7 +15,7 @@ import { MemoryCache, type CacheDb } from './store/cache';
 import { openIdbCache } from './store/idb';
 import { StoreProvider } from './store/react';
 import { Shell } from './shell/Shell';
-import { scenarioClock } from './dev/fixture-clock';
+import { fixtureNow, scenarioClock } from './dev/fixture-clock';
 
 /** The prototype's clock (fixture-data.ts FIXTURE_NOW), kept here so the main chunk does not pull the example data. */
 const FIXTURE_NOW = new Date(2026, 10, 9, 9, 10).getTime();
@@ -25,8 +25,8 @@ async function makeStore(): Promise<V2Store> {
   const inBrowser = q.get('fixtures') === '1';
   // W2: a Today scenario has its own time of day (N05 7:30 AM, midday 12:30 PM, N09 6:30 PM)
   let frozen: number | null = inBrowser ? scenarioClock(q.get('scenario')) : null;
-  const nowParam = q.get('now');
-  if (nowParam && !Number.isNaN(Date.parse(nowParam))) frozen = Date.parse(nowParam);
+  // ?now= only in fixture mode (here, or once the server turns out to be the fixture world, below)
+  frozen = fixtureNow(location.search, inBrowser) ?? frozen;
   const now = () => frozen ?? Date.now();
 
   let client: MwaClient, stream: StreamFactory;
@@ -45,7 +45,7 @@ async function makeStore(): Promise<V2Store> {
   // a server that is itself the fixture world (the Vite middleware) freezes the clock the same way
   const off = store.subscribe(() => {
     const m = store.getState().meta;
-    if (m && m.server === 'fixtures' && frozen === null) { frozen = FIXTURE_NOW; off(); }
+    if (m && m.server === 'fixtures' && frozen === null) { frozen = fixtureNow(location.search, true) ?? FIXTURE_NOW; off(); }
   });
   return store;
 }

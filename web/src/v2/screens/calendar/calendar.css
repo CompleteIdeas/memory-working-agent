@@ -73,3 +73,8 @@ button.evcard { width: 100%; text-align: left; border: 0; color: var(--ink); fon
 .chk input { width: 22px; height: 22px; accent-color: var(--ink); }
 .draftform .errline { font-weight: 600; }
 .draftform .acts { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* titles and places came from outside: isolated (a right-to-left title cannot reorder what is around it) and
+   wrapped anywhere (a long one cannot push the page sideways) — W2 review */
+.evcard .t, .evcard .s, .wkitem .wn, .conflictcard p, .clashline span, #event-dlg .sheet-title, .evsheet p, .aboutchip bdi { unicode-bidi: isolate; overflow-wrap: anywhere; }
+.aboutchip { unicode-bidi: isolate; }

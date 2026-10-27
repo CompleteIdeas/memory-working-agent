@@ -49,6 +49,11 @@ const minutesOf = (ms: number) => { const d = new Date(ms); return d.getHours() 
 const clockLabel = (ms: number) => new Date(ms).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).replace(/ /g, ' ').replace(/:00(?=\s)/, '');
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 const weekdayOf = (ms: number) => new Date(ms).toLocaleDateString('en-US', { weekday: 'long' });
+type Part = Schemas['TodayPart'];
+/** As the server (src/v2/today.ts): outside words carry no quote marks; the flat text quotes them (or not, `bare`). */
+const outside = (t: string): Part => ({ text: t.replace(/[“”„‟"«»]/g, "'"), outside: true });
+const ours = (t: string): Part => ({ text: t, outside: false });
+const flat = (ps: Part[], bare = false) => ps.map((x) => (x.outside && !bare ? `“${x.text}”` : x.text)).join('');
 
 export function conflictId(a: string, b: string): string { return `c_${a}_${b}`; }
 
@@ -85,7 +90,18 @@ export class TodayFixtures {
   write(method: string, path: string, body: unknown): Resp | null {
     if (method !== 'POST') return null;
     const now = this.h.clock();
-    if (path === '/today/seen') { this.seenAt = Math.max(this.seenAt ?? 0, now); return { status: 200, body: { seenAt: this.seenAt } }; }
+    const b = (body ?? {}) as { seenAt?: unknown; day?: unknown };
+    if (path === '/today/seen') {
+      // the Today that was looked at, clamped to [the last look, now] (as the server)
+      if (b.seenAt !== undefined && (typeof b.seenAt !== 'number' || b.seenAt < 0)) return err(400, 'bad_seen', '`seenAt` is a time in milliseconds.');
+      const at = typeof b.seenAt === 'number' ? Math.min(b.seenAt, now) : now;
+      this.seenAt = Math.max(this.seenAt ?? 0, at);
+      return { status: 200, body: { seenAt: this.seenAt } };
+    }
+    // a check-in or wrap for another day (a tap queued yesterday): nothing changes
+    if ((path === '/today/checkin/done' || path === '/today/wrap/done') && b.day !== undefined && b.day !== localDay(now)) {
+      return { status: 200, body: { message: 'That was for another day, so nothing changed.', ignored: true, today: this.doc() } };
+    }
     if (path === '/today/checkin/done') { this.checkinDone = true; this.changed(); return { status: 200, body: { message: `Morning check-in done. Have a good ${weekdayOf(now)}.`, today: this.doc() } }; }
     if (path === '/today/wrap/done') { this.wrapDone = true; this.changed(); return { status: 200, body: { message: 'See you in the morning.', today: this.doc() } }; }
     if (path === '/calendar/refresh') return { status: 200, body: this.accounts(true) };
@@ -99,8 +115,12 @@ export class TodayFixtures {
     if (!title) return err(400, 'bad_title', 'Give the event a name.');
     const start = String(b.start ?? '');
     const allDay = b.allDay === true || /^\d{4}-\d{2}-\d{2}$/.test(start);
-    const local = (s: string) => { const [d, t = '00:00'] = s.split('T'); const [y, m, dd] = d.split('-').map(Number); const [hh, mm] = t.split(':').map(Number); return new Date(y, m - 1, dd, hh, mm).getTime(); };
-    if (!/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$/.test(start)) return err(400, 'bad_start', 'That start isn’t a date or a time.');
+    // an offset is honoured as given; without one, the time is this machine's local time (the fixture's zone)
+    const local = (s: string) => {
+      if (/(Z|[+-]\d{2}:?\d{2})$/i.test(s)) return Date.parse(s);
+      const [d, t = '00:00'] = s.split('T'); const [y, m, dd] = d.split('-').map(Number); const [hh, mm] = t.split(':').map(Number); return new Date(y, m - 1, dd, hh, mm).getTime();
+    };
+    if (!/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:?\d{2})?)?$/i.test(start)) return err(400, 'bad_start', 'That start isn’t a date or a time.');
     let s: string, e: string;
     if (allDay) {
       s = start.slice(0, 10);
@@ -176,11 +196,12 @@ export class TodayFixtures {
   }
 
   private doneLines(): Done[] {
+    const said = (...parts: Part[]) => ({ text: flat(parts), parts });
     const all: Done[] = [
       { id: 'draft:cd_e9', kind: 'draft-event', at: at(0, '05:30'), trust: 'untrusted', open: { kind: 'calendar', id: 'cd_e9', date: localDay(dayStart(2)) },
-        text: 'I added “Riley — dentist” on Wed Nov 11 at 3:30 PM as a draft. Confirm it when you see it.' },
-      { id: 'action:41', kind: 'reply-drafted', at: at(0, '06:45'), trust: 'trusted', open: { kind: 'mail', id: 'm_m1' }, text: 'I drafted a yes to Coach Ellen about Saturday. Nothing was sent.' },
-      { id: 'job:j_news', kind: 'job-finished', at: at(0, '07:05'), trust: 'trusted', open: { kind: 'job', id: 'j_news' }, text: 'I found 3 AI stories for Thursday’s newsletter.' },
+        ...said(ours('I added '), outside('Riley — dentist'), ours(' on Wed Nov 11 at 3:30 PM as a draft. Confirm it when you see it.')) },
+      { id: 'action:41', kind: 'reply-drafted', at: at(0, '06:45'), trust: 'trusted', open: { kind: 'mail', id: 'm_m1' }, ...said(ours('I drafted a yes to Coach Ellen about Saturday. Nothing was sent.')) },
+      { id: 'job:j_news', kind: 'job-finished', at: at(0, '07:05'), trust: 'trusted', open: { kind: 'job', id: 'j_news' }, ...said(ours('I found 3 AI stories for Thursday’s newsletter.')) },
     ];
     const since = this.since();
     return all.filter((d) => d.at > since && d.at <= this.h.clock()).sort((a, b) => b.at - a.at);
@@ -209,7 +230,7 @@ export class TodayFixtures {
     const waiting = [...this.h.jobs.values()].filter((j) => !j.archived && j.status.state === 'waiting');
     if (waiting.length) {
       const j = waiting[0];
-      needs.push({ id: 'need:jobs', kind: 'job', count: waiting.length, title: j.title, text: j.status.detail, trust: 'trusted', itemId: null,
+      needs.push({ id: 'need:jobs', kind: 'job', count: waiting.length, title: j.title, text: j.status.detail, titleParts: [ours(j.title)], textParts: [ours(j.status.detail)], trust: 'trusted', itemId: null,
         action: j.status.primaryAction ? { kind: j.status.primaryAction.action, label: j.status.primaryAction.label } : null, open: { kind: 'job', id: j.id }, spoken: 'A job is waiting for you.' });
     }
     const conflicts = known ? this.conflicts() : [];
@@ -217,10 +238,13 @@ export class TodayFixtures {
       const c = conflicts[0];
       needs.push({ id: `need:conflict:${c.id}`, kind: 'conflict', count: conflicts.length, title: 'Thursday at 4 is double-booked',
         text: 'Riley’s practice and the farrier overlap. Want me to draft a note asking the farrier for 5:30?', trust: 'untrusted', itemId: 'it_clash',
+        // the clash's Important item is the helper's own (trusted) in the example world: its words are ours
+        titleParts: [ours('Thursday at 4 is double-booked')], textParts: [ours('Riley’s practice and the farrier overlap. Want me to draft a note asking the farrier for 5:30?')],
         action: { kind: 'draft-note', label: 'Draft the note' }, open: { kind: 'item', id: 'it_clash', date: localDay(Date.parse(c.start)) }, spoken: `${weekdayOf(Date.parse(c.start))} at ${clockLabel(Date.parse(c.start))} is double-booked.` });
     }
     if (this.scenario === 'reconnect') {
       needs.push({ id: 'need:reconnect', kind: 'reconnect', count: 1, title: 'Google Calendar needs to be reconnected', text: 'I can\'t check it until you sign in again.', trust: 'trusted', itemId: null,
+        titleParts: [ours('Google Calendar needs to be reconnected')], textParts: [ours('I can\'t check it until you sign in again.')],
         action: { kind: 'reconnect', label: 'Reconnect' }, open: { kind: 'reconnect', id: GOOGLE, resource: 'calendar' }, spoken: 'Google Calendar needs to be reconnected.' });
     }
     const needCount = needs.reduce((s, c) => s + c.count, 0);
@@ -244,9 +268,9 @@ export class TodayFixtures {
       const line1 = 'You confirmed 1 event and I drafted 2 replies today.';
       const unknown = !known ? 'I can’t see tomorrow’s calendar yet.' : !tomorrow.length ? 'Nothing is on your calendar tomorrow yet.' : null;
       const t = (i: CalendarItem) => clockLabel(Date.parse(i.start));
-      const line2 = unknown ?? `Tomorrow starts at ${t(tomorrow[0])} with an event called “${tomorrow[0].title.slice(0, 60)}”${tomorrow[1] ? `, then something at ${t(tomorrow[1])}` : ''}.`;
+      const line2Parts: Part[] = unknown ? [ours(unknown)] : [ours(`Tomorrow starts at ${t(tomorrow[0])} with an event called `), outside(tomorrow[0].title.slice(0, 60)), ours(`${tomorrow[1] ? `, then something at ${t(tomorrow[1])}` : ''}.`)];
       const said2 = unknown ?? `Tomorrow starts at ${t(tomorrow[0])}${tomorrow[1] ? `, then ${t(tomorrow[1])}` : ''}.`;
-      wrap = { title: `That’s ${weekday}`, lines: [line1, line2], spoken: `${line1} ${said2}`, trust: unknown ? 'trusted' : 'untrusted', counts: { eventsConfirmed: 1, repliesDrafted: 2, jobsFinished: 0, doneToday: 3 } };
+      wrap = { title: `That’s ${weekday}`, lines: [line1, flat(line2Parts)], lineParts: [[ours(line1)], line2Parts], spoken: `${line1} ${said2}`, trust: unknown ? 'trusted' : 'untrusted', counts: { eventsConfirmed: 1, repliesDrafted: 2, jobsFinished: 0, doneToday: 3 } };
     }
 
     return {

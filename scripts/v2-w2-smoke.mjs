@@ -177,6 +177,12 @@ try {
       check(`${L} N02: Calendar — "November 9–15"`, await seen(page.getByRole('heading', { level: 1, name: 'Calendar' })) && await main(page).getByText('November 9–15').isVisible());
       check(`${L} N02: the account line with Refresh`, await seen(main(page).getByText('Google Calendar')) && await main(page).getByRole('button', { name: 'Refresh' }).isVisible());
       const strip = page.getByRole('tablist', { name: 'Days this week' });
+      // the day strip's arrow keys: the next day is chosen and focused
+      await strip.getByRole('tab', { name: /^Monday, November 9/ }).focus();
+      await page.keyboard.press('ArrowRight');
+      check(`${L} N02: arrow keys move along the day strip (and the focus)`, await seen(strip.getByRole('tab', { name: /^Tuesday, November 10/, selected: true }))
+        && await page.evaluate(() => (document.activeElement?.getAttribute('aria-label') ?? '').startsWith('Tuesday, November 10')));
+      await page.keyboard.press('ArrowLeft');
       check(`${L} N02: the day strip`, await strip.isVisible() && await strip.getByRole('tab', { name: /^Monday, November 9, today, \d+ items$/ }).isVisible());
       await strip.getByRole('tab', { name: /^Thursday, November 12, .*double-booked$/ }).click();
       check(`${L} N02: Thursday's double-booking card with its options`, await seen(main(page).getByRole('group', { name: /Thursday at 4.*is double-booked/ }))
@@ -228,6 +234,12 @@ try {
       await shot(page, `N02-${L}-05-book-fair-draft`);
       await main(page).getByRole('group', { name: 'Draft: Book fair' }).getByRole('button', { name: 'Confirm' }).click();
       check(`${L} N02: the book fair confirmed`, await seen(main(page).getByText('Added by your helper just now. No invites were sent.')));
+      // the Day/Week radio group: one tab stop, arrow keys move the choice
+      await main(page).getByRole('radio', { name: 'Day' }).focus();
+      await page.keyboard.press('ArrowRight');
+      check(`${L} N02: arrow keys move the Day/Week choice (and the focus)`, await seen(main(page).getByRole('radio', { name: 'Week', checked: true })) && await page.evaluate(() => document.activeElement?.getAttribute('data-v') === 'week')
+        && (await main(page).getByRole('radio', { name: 'Day' }).getAttribute('tabindex')) === '-1');
+      await page.keyboard.press('ArrowLeft');
       // the week view
       await main(page).getByRole('radio', { name: 'Week' }).click();
       check(`${L} N02: the week view lists every day`, (await main(page).locator('.wkday').count()) === 7);

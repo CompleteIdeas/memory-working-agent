@@ -6,23 +6,27 @@
  *              known Today ("updated 9:10") even offline.
  *   refetch    on the stream's data-less "today changed" notice (coalesced), when the store (re)connects (which also
  *              covers `online`), and when the window gets the focus or becomes visible again.
- *   seen       once Today has been on screen (and the page visible) for 2 s: POST /today/seen. "Done for you" then
- *              lists only what comes after — but the lines the person was just reading stay on screen until they
- *              leave Today, so a refetch never pulls them away mid-read.
- *   check-in / wrap  "Done — show my day" and "Good night" go through the store's outbox (offline they wait, with
- *              their Idempotency-Key). The card goes at once; if the server refuses, it comes back.
+ *   seen       once a Today the SERVER sent this session, for the person's current day, has been on screen (and the
+ *              page visible) for 2 s — never while loading, after an error, or on a cached or yesterday's Today:
+ *              POST /today/seen with `seenAt` = that Today's `now`. "Done for you" then lists only what comes after —
+ *              but the lines the person was just reading stay on screen until they leave Today.
+ *   check-in / wrap  "Done — show my day" and "Good night" go through the store's outbox with the `day` they dismiss
+ *              (a tap queued yesterday is dropped here and ignored by the server). The card goes at once; if the
+ *              server refuses, it comes back; after a reload, a tap still waiting in the outbox keeps it gone.
  *
- * Plus the pure helpers the screen renders with (unit-tested): freshness notes, trust segments.
+ * Plus the pure helpers the screen renders with (unit-tested): freshness notes, the person's date, trust parts. The
+ * screen never parses quotes out of a string: the server sends each line as parts (`{text, outside}`).
  */
 import { NetworkError, newKey, type MwaClient, type Schemas, type Today, type TodayAck } from '../api/client';
 import type { CacheDb } from './cache';
-import type { ActResult, StoreEnv } from './core';
+import type { ActResult, ActionArgs, OutboxEntry, StoreEnv } from './core';
 
 export type TodayNeed = Schemas['TodayNeed'];
 export type TodayDone = Schemas['TodayDone'];
 export type TodayEvent = Schemas['TodayEvent'];
 export type TodayOpen = Schemas['TodayOpen'];
 export type Freshness = Today['freshness']['calendar'];
+export type Part = Schemas['TodayPart'];
 
 export interface TodayState {
   doc: Today | null;
@@ -34,6 +38,8 @@ export interface TodayState {
   error: string | null;
   /** when this device last got Today from the server (ms) */
   fetchedAt: number | null;
+  /** `doc` came from the server in this session (not the device's cache): only such a Today can be marked seen */
+  fresh: boolean;
   /** "Done — show my day" tapped for this local date (the card goes at once) */
   checkinDoneFor: string | null;
   /** the line shown in its place: the server's receipt, or ours while it waits to be sent */
@@ -50,7 +56,7 @@ export interface TodayFeedOptions {
   env: StoreEnv;
   now: () => number;
   /** the store's act(): writes go through its outbox */
-  act: (kind: 'today.checkin' | 'today.wrap', label: string) => Promise<ActResult>;
+  act: (kind: 'today.checkin' | 'today.wrap', label: string, args: ActionArgs) => Promise<ActResult>;
   /** whether the server says it has /today (null: not known yet) */
   supported: () => boolean | null;
   /** window focus (the browser's by default) */
@@ -63,7 +69,7 @@ export interface TodayFeedOptions {
 
 export const SEEN_AFTER_MS = 2_000;
 const initial = (): TodayState => ({
-  doc: null, loaded: false, loading: false, unsupported: false, error: null, fetchedAt: null,
+  doc: null, loaded: false, loading: false, unsupported: false, error: null, fetchedAt: null, fresh: false,
   checkinDoneFor: null, checkinMessage: null, wrapDoneFor: null, wrapMessage: null, kept: [],
 });
 
@@ -108,6 +114,7 @@ export class TodayFeed {
 
   stop(): void {
     this.started = false;
+    this.again = false;
     for (const u of this.unsubs.splice(0)) u();
     if (this.noticeTimer) { this.o.env.clearTimeout(this.noticeTimer); this.noticeTimer = null; }
     this.disarmSeen();
@@ -115,12 +122,13 @@ export class TodayFeed {
 
   /** The stream said Today changed: GET it again (a burst of notices is one GET). */
   changed(): void {
-    if (this.noticeTimer) return;
+    if (!this.started || this.noticeTimer) return;
     this.noticeTimer = this.o.env.setTimeout(() => { this.noticeTimer = null; void this.load(); }, this.o.coalesceMs ?? 300);
   }
 
   /** GET /today (one at a time; a call made meanwhile runs once more after it). Offline: the cached one stays. */
   load(): Promise<void> {
+    if (!this.started) return Promise.resolve();
     if (this.o.supported() === false) { if (!this.s.unsupported) this.set({ unsupported: true, loaded: true }); return Promise.resolve(); }
     if (this.inflight) { this.again = true; return this.inflight; }
     this.inflight = (async () => {
@@ -136,7 +144,7 @@ export class TodayFeed {
             this.set({ loading: false, loaded: true, error: e instanceof NetworkError ? null : e instanceof Error ? e.message : 'Could not load Today.' });
             break;
           }
-        } while (this.again);
+        } while (this.again && this.started);
       } finally { this.inflight = null; if (this.s.loading) this.set({ loading: false }); }
     })();
     return this.inflight;
@@ -148,10 +156,11 @@ export class TodayFeed {
     const cur = this.s.doc;
     if (cur && doc.now < cur.now) return;
     const fetchedAt = this.o.now();
-    const patch: Partial<TodayState> = { doc, loaded: true, loading: false, error: null, fetchedAt, unsupported: false };
+    const patch: Partial<TodayState> = { doc, loaded: true, loading: false, error: null, fetchedAt, unsupported: false, fresh: true };
     // a new day: yesterday's dismissals and kept lines no longer apply
     if (cur && cur.date !== doc.date) Object.assign(patch, { checkinDoneFor: null, checkinMessage: null, wrapDoneFor: null, wrapMessage: null, kept: [] });
     this.set(patch);
+    if (this.onScreen && !this.seenTimer) this.armSeen(); // a Today on screen now: it can count as seen
     void this.o.cache.replace('today', [{ key: 'today', value: doc }]).then(() => this.o.cache.setMeta({ todayAt: fetchedAt })).catch(() => {});
   }
 
@@ -162,31 +171,55 @@ export class TodayFeed {
     if (on) this.armSeen();
     else { this.disarmSeen(); if (this.s.kept.length) this.set({ kept: [] }); }
   }
+  /** What is on screen can count as seen: a Today from the server this session, for the person's current day, no
+   *  error over it, the page visible (W2 review M1: not while loading, not an error, not a stale cache). */
+  private seeable(): boolean {
+    const st = this.s, doc = st.doc;
+    return this.onScreen && this.o.env.visible() && !!doc && st.fresh && !st.error && doc.date === dateIn(this.o.now(), doc.tz);
+  }
   private armSeen() {
     this.disarmSeen();
-    if (!this.onScreen || !this.o.env.visible()) return;
+    if (!this.seeable()) return;
     this.seenTimer = this.o.env.setTimeout(() => { this.seenTimer = null; void this.markSeen(); }, this.o.seenAfterMs ?? SEEN_AFTER_MS);
   }
   private disarmSeen() { if (this.seenTimer) { this.o.env.clearTimeout(this.seenTimer); this.seenTimer = null; } }
 
   /** POST /today/seen. What was being read stays on screen; a failure (offline) is quiet: it is only a bookmark. */
   async markSeen(): Promise<void> {
-    if (!this.onScreen || !this.o.env.visible() || this.o.supported() === false) return;
-    const shown = this.s.doc?.doneForYou ?? [];
-    if (shown.length) this.set({ kept: mergeDone(this.s.kept, shown) });
-    try { await this.o.client.markTodaySeen({ key: newKey(this.o.now()) }); } catch { /* next time */ }
+    if (!this.seeable() || this.o.supported() === false) return;
+    const doc = this.s.doc!;
+    if (doc.doneForYou.length) this.set({ kept: mergeDone(this.s.kept, doc.doneForYou) });
+    // the Today that was looked at, not the clock now: what arrived since it was fetched is still "new"
+    try { await this.o.client.markTodaySeen({ seenAt: doc.now }, { key: newKey(this.o.now()) }); } catch { /* next time */ }
   }
 
   // ---------- the check-in and the wrap ----------
   finishCheckin(): Promise<ActResult> { return this.finish('checkin'); }
   finishWrap(): Promise<ActResult> { return this.finish('wrap'); }
 
+  /** The person's current day: in their zone (the Today's `tz`), else this device's. */
+  currentDay(): string {
+    const doc = this.s.doc;
+    return doc ? dateIn(this.o.now(), doc.tz) : localDateOf(this.o.now());
+  }
+
+  /** After a reload: a check-in or wrap tap still waiting in the outbox keeps its card gone (W2 review M3). */
+  adoptOutbox(outbox: OutboxEntry[]): void {
+    const patch: Partial<TodayState> = {};
+    for (const e of outbox) {
+      if (!e.args.day) continue;
+      if (e.kind === 'today.checkin') Object.assign(patch, { checkinDoneFor: e.args.day, checkinMessage: 'Morning check-in done.' });
+      if (e.kind === 'today.wrap') Object.assign(patch, { wrapDoneFor: e.args.day, wrapMessage: 'See you in the morning.' });
+    }
+    if (Object.keys(patch).length) this.set(patch);
+  }
+
   private async finish(what: 'checkin' | 'wrap'): Promise<ActResult> {
-    const date = this.s.doc?.date ?? null;
+    const date = this.s.doc ? this.currentDay() : null;
     const local = what === 'checkin' ? `Morning check-in done.${this.s.doc ? ` Have a good ${this.s.doc.weekday}.` : ''}` : 'See you in the morning.';
     const keys = what === 'checkin' ? (['checkinDoneFor', 'checkinMessage'] as const) : (['wrapDoneFor', 'wrapMessage'] as const);
     this.set({ [keys[0]]: date, [keys[1]]: local } as Partial<TodayState>);
-    const r = await this.o.act(what === 'checkin' ? 'today.checkin' : 'today.wrap', what === 'checkin' ? 'Done — show my day' : 'Good night');
+    const r = await this.o.act(what === 'checkin' ? 'today.checkin' : 'today.wrap', what === 'checkin' ? 'Done — show my day' : 'Good night', date ? { day: date } : {});
     if (r.ok) {
       const ack = r.data as TodayAck | undefined;
       if (ack?.message) this.set({ [keys[1]]: ack.message } as Partial<TodayState>);
@@ -221,10 +254,12 @@ export interface TodayView {
   mailNote: string | null;
 }
 
-/** What the screen shows: the server's Today with this device's pending taps and kept lines laid over it. */
-export function todayView(st: TodayState, localDate: string): TodayView | null {
+/** What the screen shows: the server's Today with this device's pending taps and kept lines laid over it. `now` is
+ *  read in the person's zone (the Today's `tz`): a phone abroad still knows which day the Today is for. */
+export function todayView(st: TodayState, now: number): TodayView | null {
   const doc = st.doc;
   if (!doc) return null;
+  const today = dateIn(now, doc.tz);
   const checkinDone = st.checkinDoneFor !== null && st.checkinDoneFor === doc.date;
   const wrapDone = st.wrapDoneFor !== null && st.wrapDoneFor === doc.date;
   const done = st.kept.length ? mergeDone(st.kept, doc.doneForYou) : doc.doneForYou;
@@ -236,7 +271,7 @@ export function todayView(st: TodayState, localDate: string): TodayView | null {
     wrapBanner: wrapDone ? st.wrapMessage : null,
     done: done.slice(0, 3),
     doneMore: doc.doneMore + Math.max(0, done.length - 3),
-    staleDay: doc.date !== localDate,
+    staleDay: doc.date !== today,
     calendar: calendarFreshness(doc),
     mailNote: doc.freshness.mail === 'ok' ? null : doc.freshness.mailNote,
   };
@@ -276,25 +311,26 @@ export function calendarFreshness(doc: Pick<Today, 'freshness'>): CalendarFreshn
 }
 
 /**
- * Text and its trust, for rendering. Trusted text is the helper's own words: one plain segment. Untrusted text came
- * from outside (an invitation's title, an email, a staged action): the parts the server put in quotes (“…”) are
- * marked `quoted` — shown as someone else's words, never as the helper's — and when the server quoted nothing, the
- * whole line is outside text. Everything is plain text: no markup, no links (React escapes it; nothing auto-links).
+ * A line's parts, for rendering. The server sends them (`parts`, `titleParts`, `textParts`, `lineParts`): outside words
+ * are marked there and carry no quote marks, so nothing can close a quote and speak as the helper. The screen NEVER
+ * parses quotes out of the flat text (W2 review). The server's parts are authoritative (a wrap's first line is the
+ * helper's own words though the wrap quotes a title). Without parts (an older server, an older cached Today), an
+ * untrusted line is outside words as a whole, with a "From outside:" lead-in (`lead`); a trusted one is the helper's.
  */
-export interface Segment { text: string; quoted: boolean; /** the whole line is outside text (nothing was quoted) */ whole?: boolean }
-export function segments(text: string, trust: 'trusted' | 'untrusted'): Segment[] {
-  if (trust === 'trusted') return [{ text, quoted: false }];
-  const out: Segment[] = [];
-  const re = /“([^”]*)”/g;
-  let last = 0, m: RegExpExecArray | null;
-  while ((m = re.exec(text))) {
-    if (m.index > last) out.push({ text: text.slice(last, m.index), quoted: false });
-    out.push({ text: m[1], quoted: true });
-    last = m.index + m[0].length;
+export function partsOf(text: string, parts: Part[] | undefined | null, trust: 'trusted' | 'untrusted'): { parts: Part[]; lead: boolean } {
+  if (parts && parts.length) return { parts, lead: false };
+  return { parts: [{ text, outside: trust === 'untrusted' }], lead: trust === 'untrusted' };
+}
+
+/** The date (YYYY-MM-DD) of an instant in an IANA zone (this device's when the zone is unknown). */
+export function dateIn(ms: number, tz: string | null | undefined): string {
+  if (tz) {
+    try {
+      const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(ms).map((x) => [x.type, x.value]));
+      return `${p.year}-${p.month}-${p.day}`;
+    } catch { /* an unknown zone: this device's */ }
   }
-  if (!out.length) return [{ text, quoted: true, whole: true }];
-  if (last < text.length) out.push({ text: text.slice(last), quoted: false });
-  return out;
+  return localDateOf(ms);
 }
 
 /** The local date (YYYY-MM-DD) of an instant on this device. */

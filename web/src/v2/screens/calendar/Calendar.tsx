@@ -102,10 +102,11 @@ export function Calendar({ desk, go }: ScreenProps) {
   const drafts = useDraftActions();
   const acc = useCalendarAccounts();
   const t = useToday();
+  // "Not now" is for the person's day (their zone), with the same ids as Today's cards
+  const notNow = useNotNow(t.view?.doc.date ?? dayKey(today));
   const items = useItems();
-  const notNow = useNotNow(dayKey(today));
   const shown = useMemo(() => displayItems(cal.items, drafts.ops), [cal.items, drafts.ops]);
-  const conflicts = useMemo(() => cal.conflicts.filter((c) => !notNow.hidden.has(`conflict:${c.id}`)), [cal.conflicts, notNow.hidden]);
+  const conflicts = useMemo(() => cal.conflicts.filter((c) => !notNow.isHidden(`conflict:${c.id}`)), [cal.conflicts, notNow]);
   const days = Array.from({ length: 7 }, (_, k) => addDays(week, k));
 
   // a highlight fades after a few seconds; a receipt from Confirm shows at the top
@@ -138,8 +139,9 @@ export function Calendar({ desk, go }: ScreenProps) {
     if (e.key === 'ArrowRight') n = Math.min(6, i + 1); else if (e.key === 'ArrowLeft') n = Math.max(0, i - 1); else if (e.key === 'Home') n = 0; else if (e.key === 'End') n = 6;
     if (n < 0) return;
     e.preventDefault();
+    const strip = e.currentTarget; // React clears currentTarget once the handler returns
     pickDay(days[n]);
-    setTimeout(() => (e.currentTarget.querySelector<HTMLButtonElement>('[aria-selected="true"]'))?.focus(), 0);
+    setTimeout(() => strip.querySelector<HTMLButtonElement>('[aria-selected="true"]')?.focus(), 0);
   };
   const accountsLine = acc.accounts && acc.accounts.some((a) => a.connected) ? (
     <p className="calacct">
@@ -171,9 +173,17 @@ export function Calendar({ desk, go }: ScreenProps) {
       {say && <div className="helpsay" role="status"><Spark /><p>{say}{fixtures ? <span className="simmini">simulated</span> : null}</p></div>}
       <div className="caltools">
         <button type="button" className="iconbtn" aria-label="Earlier week" onClick={() => pickDay(addDays(week, -7))}><Back /></button>
-        <div className="seg calseg" role="radiogroup" aria-label="Show">
-          <button type="button" role="radio" aria-checked={view === 'day'} onClick={() => setView('day')}>Day</button>
-          <button type="button" role="radio" aria-checked={view === 'week'} onClick={() => setView('week')}>Week</button>
+        {/* a radio group: one tab stop (the chosen one); arrow keys move the choice (W2 review) */}
+        <div className="seg calseg" role="radiogroup" aria-label="Show" onKeyDown={(e) => {
+          if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+          e.preventDefault();
+          const group = e.currentTarget; // React clears currentTarget once the handler returns
+          const next = view === 'day' ? 'week' : 'day';
+          setView(next);
+          setTimeout(() => group.querySelector<HTMLButtonElement>(`[data-v="${next}"]`)?.focus(), 0);
+        }}>
+          <button type="button" role="radio" data-v="day" aria-checked={view === 'day'} tabIndex={view === 'day' ? 0 : -1} onClick={() => setView('day')}>Day</button>
+          <button type="button" role="radio" data-v="week" aria-checked={view === 'week'} tabIndex={view === 'week' ? 0 : -1} onClick={() => setView('week')}>Week</button>
         </div>
         <button type="button" className="iconbtn" aria-label="Later week" onClick={() => pickDay(addDays(week, 7))}><Chev /></button>
         <span className="grow" />

@@ -8,8 +8,11 @@
  *   conflict helpers  which double-bookings touch a day, an item's "overlaps with …", the card's words.
  *   calendarHonesty   from the accounts: not connected / needs reconnecting / never synced / one calendar missing
  *                     (named) / stale — an unknown day is never called free.
- *   draftInput        the "New event" form → POST /calendar/drafts (local time, no offset; a bare date = all day).
- *   draftIcs          the draft as an iCalendar file, made on the device (fixture mode has no file server).
+ *   draftInput        the "New event" form → POST /calendar/drafts: times with this device's offset AND its zone
+ *                     (`tz`), so the server reads them as entered wherever the person's own zone is; an end before
+ *                     the start is the next day (overnight); a bare date = all day.
+ *   draftIcs          the draft as an iCalendar file, made on the device (fixture mode has no file server) by the
+ *                     server's own rules (src/sync/ics.ts, ported: escaping, folding, the all-day end).
  *   week math         Monday-first weeks, day keys, labels.
  */
 import type { CalendarAccounts, CalendarItem, Schemas } from '../api/client';
@@ -56,14 +59,19 @@ export class PendingDrafts {
     return r;
   }
 
-  /** A queued tap leaves when its action has left the outbox (sent, or dropped with a notice): the store holds the truth. */
+  /**
+   * The taps waiting in the outbox ARE the queued ones: one there without a tap shown (after a reload) is shown as
+   * waiting (W2 review M3); a queued tap whose action has left the outbox (sent, or dropped with a notice) goes — the
+   * store holds the truth. A tap on its way (not queued) is left alone.
+   */
   reconcile(outbox: OutboxEntry[]): void {
-    const waiting = new Set(outbox.filter((e) => e.kind === 'draft.confirm' || e.kind === 'draft.remove').map((e) => e.args.id));
-    const stale = Object.entries(this.s.ops).filter(([id, op]) => op.queued && !waiting.has(id));
-    if (!stale.length) return;
+    const waiting = new Map<string, PendingOp['kind']>();
+    for (const e of outbox) if ((e.kind === 'draft.confirm' || e.kind === 'draft.remove') && e.args.id) waiting.set(e.args.id, e.kind === 'draft.confirm' ? 'confirm' : 'remove');
     const ops = { ...this.s.ops };
-    for (const [id] of stale) delete ops[id];
-    this.set({ ops });
+    let changed = false;
+    for (const [id, op] of Object.entries(ops)) if (op.queued && !waiting.has(id)) { delete ops[id]; changed = true; }
+    for (const [id, kind] of waiting) if (!ops[id]) { ops[id] = { kind, queued: true }; changed = true; }
+    if (changed) this.set({ ops });
   }
 
   clearReceipt(): void { if (this.s.receipt) this.set({ receipt: null }); }
@@ -179,53 +187,83 @@ export function calendarHonesty(accounts: CalendarAccount[] | null, now: number)
 // ---------- a new draft from the person's input ----------
 
 export interface DraftForm { title: string; date: string; allDay: boolean; start: string; end: string; location: string }
-/** The form → the request body, or what is wrong in plain words. Times are local (no offset), as the spec allows. */
-export function draftInput(f: DraftForm): { ok: true; body: DraftInput } | { ok: false; error: string; field: keyof DraftForm } {
+/** This device's zone ("Europe/London"), or none. */
+export const deviceTz = (): string | undefined => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; } catch { return undefined; } };
+/** A wall time on this device as ISO 8601 with its offset: "2026-11-14T15:00:00-05:00". */
+export function withOffset(date: string, hhmm: string, plusDays = 0): string {
+  const [y, m, d] = date.split('-').map(Number), [hh, mm] = hhmm.split(':').map(Number);
+  const t = new Date(y, m - 1, d + plusDays, hh, mm);
+  const off = -t.getTimezoneOffset(), sign = off >= 0 ? '+' : '-', a = Math.abs(off);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}T${p(t.getHours())}:${p(t.getMinutes())}:00${sign}${p(Math.floor(a / 60))}:${p(a % 60)}`;
+}
+/**
+ * The form → the request body, or what is wrong in plain words. Times go with this device's offset and its zone, as
+ * shown on this device (W2 review M4: a phone abroad means the time it shows). An end at or before the start is the
+ * next morning (an overnight event); an end equal to the start is refused.
+ */
+export function draftInput(f: DraftForm, tz: string | undefined = deviceTz()): { ok: true; body: DraftInput } | { ok: false; error: string; field: keyof DraftForm } {
   const title = f.title.trim();
   if (!title) return { ok: false, error: 'Give it a name.', field: 'title' };
   if (title.length > 300) return { ok: false, error: 'That name is too long (300 characters at most).', field: 'title' };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date)) return { ok: false, error: 'Pick a day.', field: 'date' };
   const location = f.location.trim().slice(0, 300);
-  if (f.allDay) return { ok: true, body: { title, start: f.date, allDay: true, ...(location ? { location } : {}) } };
+  const zone = tz ? { tz } : {};
+  if (f.allDay) return { ok: true, body: { title, start: f.date, allDay: true, ...(location ? { location } : {}), ...zone } };
   if (!/^\d{2}:\d{2}$/.test(f.start)) return { ok: false, error: 'Pick a start time.', field: 'start' };
-  const body: DraftInput = { title, start: `${f.date}T${f.start}`, ...(location ? { location } : {}) };
+  const body: DraftInput = { title, start: withOffset(f.date, f.start), ...(location ? { location } : {}), ...zone };
   if (f.end) {
     if (!/^\d{2}:\d{2}$/.test(f.end)) return { ok: false, error: 'That end time isn’t a time.', field: 'end' };
-    if (f.end <= f.start) return { ok: false, error: 'The end is before the start.', field: 'end' };
-    body.end = `${f.date}T${f.end}`;
+    if (f.end === f.start) return { ok: false, error: 'The end is the same as the start.', field: 'end' };
+    body.end = withOffset(f.date, f.end, f.end < f.start ? 1 : 0); // before the start: the next day
   }
   return { ok: true, body };
 }
 
 // ---------- a calendar file made on the device ----------
 
-const icsTime = (ms: number) => new Date(ms).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-const icsText = (s: string) => s.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
-/** Fold at 75 octets (RFC 5545 §3.1), CRLF line ends. */
-function fold(line: string): string {
+const utcStamp = (ms: number) => new Date(ms).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+/** TEXT escaping, as the server's icsEscape (src/sync/ics.ts, RFC 5545 3.3.11): backslash, semicolon, comma, newlines
+ *  (CRLF, CR or LF) as \n; other control characters dropped (a lone CR can never start a new property). */
+export function icsEscape(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r\n|\r|\n/g, '\\n')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000A-\u001F\u007F]/g, '');
+}
+/** Fold one content line at 75 octets (UTF-8, never inside a character); continuation lines start with a space. */
+export function icsFold(line: string): string {
   const enc = new TextEncoder();
-  if (enc.encode(line).length <= 75) return line;
   const out: string[] = [];
-  let cur = '';
+  let cur = '', bytes = 0;
   for (const ch of line) {
-    if (enc.encode(cur + ch).length > (out.length ? 74 : 75)) { out.push(cur); cur = ''; }
-    cur += ch;
+    const b = enc.encode(ch).length;
+    if (bytes + b > 75) { out.push(cur); cur = ' '; bytes = 1; }
+    cur += ch; bytes += b;
   }
   out.push(cur);
-  return out.join('\r\n ');
+  return out.join('\r\n');
 }
-/** A VCALENDAR with one VEVENT, as the server makes it (UTC times, CRLF, folded). */
+const nextDate = (d: string) => dayKey(addDays(fromDayKey(d), 1));
+/** The draft as the server's buildIcs makes it (same lines, same order), with UID `<id>@mwa`. */
 export function draftIcs(i: Pick<CalendarItem, 'id' | 'title' | 'start' | 'end' | 'allDay' | 'location'>, now = Date.now()): string {
-  const [s, e] = itemSpan(i);
-  const when = i.allDay
-    ? [`DTSTART;VALUE=DATE:${i.start.slice(0, 10).replace(/-/g, '')}`, `DTEND;VALUE=DATE:${i.end.slice(0, 10).replace(/-/g, '')}`]
-    : [`DTSTART:${icsTime(s)}`, `DTEND:${icsTime(e)}`];
-  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//MWA//Calendar draft//EN', 'BEGIN:VEVENT', `UID:${i.id}@mwa`, `DTSTAMP:${icsTime(now)}`, ...when,
-    `SUMMARY:${icsText(i.title)}`, ...(i.location ? [`LOCATION:${icsText(i.location)}`] : []), 'END:VEVENT', 'END:VCALENDAR'];
-  return lines.map(fold).join('\r\n') + '\r\n';
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//MWA//Calendar draft//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'BEGIN:VEVENT', `UID:${i.id}@mwa`, `DTSTAMP:${utcStamp(now)}`];
+  if (i.allDay) {
+    const s = i.start.slice(0, 10), e = i.end && i.end.slice(0, 10) > s ? i.end.slice(0, 10) : nextDate(s);
+    lines.push(`DTSTART;VALUE=DATE:${s.replace(/-/g, '')}`, `DTEND;VALUE=DATE:${e.replace(/-/g, '')}`);
+  } else {
+    lines.push(`DTSTART:${utcStamp(Date.parse(i.start))}`, `DTEND:${utcStamp(Date.parse(i.end))}`);
+  }
+  lines.push(`SUMMARY:${icsEscape(i.title)}`);
+  if (i.location) lines.push(`LOCATION:${icsEscape(i.location)}`);
+  lines.push('END:VEVENT', 'END:VCALENDAR');
+  return lines.map(icsFold).join('\r\n') + '\r\n';
 }
 /** "book-fair.ics" */
-export const icsName = (title: string) => `${title.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'event'}.ics`;
+export function icsName(title: string): string {
+  // as the server's icsFileName (src/sync/ics.ts)
+  const base = title.toLowerCase().normalize('NFKD').replace(/[^\w\s-]/g, '').trim().replace(/[\s_]+/g, '-').replace(/-+/g, '-').slice(0, 60);
+  return `${base || 'event'}.ics`;
+}
 
 // ---------- going to a day from elsewhere (Today's cards and lines) ----------
 

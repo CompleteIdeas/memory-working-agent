@@ -1917,6 +1917,15 @@ export interface components {
              */
             resource?: "calendar" | "mail";
         };
+        /** @description One piece of a line (W2 review): the helper's own words (`outside: false`), or words that came from outside — an
+         *     event's title, a staged action's summary, an item's why (`outside: true`, filtered, any quote mark inside made
+         *     plain). A screen renders outside parts as someone else's words (quoted, isolated) and never parses quotes out of
+         *     the flat `text`, which stays for older clients.
+         *      */
+        TodayPart: {
+            text: string;
+            outside: boolean;
+        };
         /** @description One "Needs you" card. At most one per kind — approvals, jobs waiting for you, the next double-booking, an
          *     account to reconnect — with `count` when there are more. Never made from mail, so a phishing-flagged message is
          *     never one. A card shown here is not repeated in `worthALook`. Titles that came from outside (an invite, a staged
@@ -1930,6 +1939,10 @@ export interface components {
             /** @description "Thursday at 4 is double-booked", "Google Calendar needs to be reconnected". */
             title: string;
             text: string;
+            /** @description The title as parts (an approval's summary, a tainted job's title, an untrusted item's words are outside). */
+            titleParts: components["schemas"]["TodayPart"][];
+            /** @description The text as parts (event titles are outside). */
+            textParts: components["schemas"]["TodayPart"][];
             action: {
                 /** @description review-approval, a job action (continue, review…), draft-note (only when the double-booking has its Important item; otherwise the card has no action and only opens the day), reconnect. */
                 kind: string;
@@ -1966,6 +1979,8 @@ export interface components {
             kind: "draft-event" | "event-added" | "job-finished" | "reminder" | "reply-drafted" | "email-sent" | "file-saved" | "preference";
             /** @description "I added “Riley’s dentist” on Wed Nov 11 at 3:30pm as a draft. Confirm it when you see it." */
             text: string;
+            /** @description The line as parts: a title is outside. */
+            parts: components["schemas"]["TodayPart"][];
             at: number;
             open: components["schemas"]["TodayOpen"];
             /** @enum {string} */
@@ -2022,6 +2037,8 @@ export interface components {
                 title: string;
                 /** @description What got done today; how tomorrow starts ("Tomorrow starts at 8:15 AM with an event called “School drop-off”" — a title is quoted, filtered and at most 60 characters). */
                 lines: string[];
+                /** @description Each line as parts (a quoted title is outside). */
+                lineParts: components["schemas"]["TodayPart"][][];
                 /** @description For "Read it to me": the same, with times only — no titles. */
                 spoken: string;
                 /**
@@ -2104,6 +2121,8 @@ export interface components {
         TodayAck: {
             /** @description "Morning check-in done. Have a good Monday.", "See you in the morning." */
             message: string;
+            /** @description The `day` sent is not today (a tap queued yesterday): nothing was changed. */
+            ignored?: boolean;
             today: components["schemas"]["Today"];
         };
     };
@@ -2700,6 +2719,8 @@ export interface operations {
                      * @enum {string}
                      */
                     provider?: "google" | "outlook";
+                    /** @description The IANA zone the times were entered in (the device's). A time without an offset and an all-day date are read there; default: the calendar's zone. */
+                    tz?: string;
                     projectId?: string;
                 };
             };
@@ -3879,7 +3900,14 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description The `now` of the Today that was on screen. Clamped to [the last look, the real now]. Default: now. */
+                    seenAt?: number;
+                };
+            };
+        };
         responses: {
             /** @description Recorded. */
             200: {
@@ -3904,7 +3932,14 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description The local day the tap dismissed. Not today (a tap queued yesterday): ignored, `ignored: true`. */
+                    day?: string;
+                };
+            };
+        };
         responses: {
             /** @description Done, with Today as it is now. */
             200: {
@@ -3927,7 +3962,14 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description The local day the tap dismissed. Not today (a tap queued yesterday): ignored, `ignored: true`. */
+                    day?: string;
+                };
+            };
+        };
         responses: {
             /** @description Done, with Today as it is now. */
             200: {

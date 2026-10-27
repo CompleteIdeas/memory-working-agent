@@ -5,8 +5,14 @@
 .needtitle { background: none; border: 0; padding: 0; color: var(--ink); font: inherit; font-weight: 700; text-align: left; min-height: 32px; cursor: pointer; }
 .needtitle:hover { text-decoration: underline; text-underline-offset: 3px; }
 .needcard + .needcard { margin-top: 12px; }
-/* words that came from outside, quoted by the server: shown as a quote, never as the helper's own */
-q.outside { quotes: "“" "”"; background: var(--card-2); border-radius: 4px; padding: 0 3px; }
+/* words that came from outside (the server's parts): a quote, never the helper's own words. Isolated, so a
+   right-to-left title cannot reorder the helper's sentence around it (W2 review). */
+q.outside { quotes: "“" "”"; background: var(--card-2); border-radius: 4px; padding: 0 3px; unicode-bidi: isolate; overflow-wrap: anywhere; }
+.fromout { font-weight: 600; color: var(--dim); }
+/* a line or card with trust 'untrusted': marked as holding outside words, visibly */
+[data-trust="untrusted"] q.outside { border-bottom: 1.5px dotted var(--warn-edge, #8c6d00); }
+.donebtn[data-trust="untrusted"], .checkin[data-trust="untrusted"] .lines, .needcard[data-trust="untrusted"] > p { box-shadow: inset 2px 0 0 var(--warn-edge, #8c6d00); padding-left: 8px; }
+.needtitle, .nurow .t, .nurow .s { unicode-bidi: isolate; overflow-wrap: anywhere; }
 .freshnote { margin: 0 0 10px; padding: 10px 12px; border-radius: 8px; background: var(--card); border-left: 4px solid var(--edge); font-size: 15px; }
 .freshnote p { margin: 0; }
 .freshnote .vbtn { margin-top: 8px; }

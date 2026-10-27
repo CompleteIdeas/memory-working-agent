@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useStore, useNow } from './react';
-import { todayView, localDateOf } from './today';
+import { todayView } from './today';
 import { PendingDrafts, calendarHonesty, type CalendarAccount } from './calendar-ops';
 import type { V2Store } from './core';
 import type { CalendarItem } from '../api/client';
@@ -19,7 +19,7 @@ export function useToday() {
   const store = useStore();
   const st = useSyncExternalStore(store.today.subscribe, store.today.getState);
   const now = useNow();
-  const view = useMemo(() => todayView(st, localDateOf(now)), [st, now]);
+  const view = useMemo(() => todayView(st, now), [st, now]);
   return {
     state: st,
     view,
