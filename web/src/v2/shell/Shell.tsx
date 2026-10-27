@@ -22,6 +22,8 @@ import { Arrow, Person, Spark, TabCalendar, TabImportant, TabProjects, TabToday,
 import { useStartGate } from '../screens/start/Start';
 import { MicButton } from '../screens/ask/voice/Mic';
 import { useDictation } from '../screens/ask/voice/useDictation';
+import { ApprovalSheet } from '../screens/approvals/ApprovalSheet';
+import { useApprovalOpener } from '../screens/approvals/open';
 
 const TABS: { view: View; label: string; icon: ReactNode }[] = [
   { view: 'today', label: 'Today', icon: <TabToday /> },
@@ -174,6 +176,9 @@ export function Shell() {
   const ask = useCallback((a?: AskAbout) => { setWorkOpen(false); setAbout(a ?? contextRef.current); setAskOpen(true); }, []);
   // P3: a tapped notification opens its place (#/today, #/approval/<id>, #/job/<id>, #/settings/notifications)
   const openWork = useCallback(() => { setAskOpen(false); setWorkOpen(true); }, []);
+  // S4: the approval sheet, opened from Today, the working sheet, Important or a notification (screens/approvals/open.ts)
+  const [approval, setApproval] = useState<{ id: string | null; at: number } | null>(null);
+  useApprovalOpener(useCallback((id: string | null) => { setAskOpen(false); setWorkOpen(false); setApproval({ id, at: Date.now() }); }, []));
   useNotificationRoutes({ go, openWork, ready: !start });
 
   // W5: sign in, pair this phone, or first run on the computer, before the app itself (screens/start)
@@ -221,6 +226,7 @@ export function Shell() {
       <Toasts />
       <UpdateBar />
       <WorkingSheet open={workOpen} onClose={() => setWorkOpen(false)} onAskAbout={ask} />
+      <ApprovalSheet request={approval} onClose={() => setApproval(null)} />
       <AskSheet open={askOpen} about={about} dictation={voice} onClose={() => setAskOpen(false)} onShowWork={() => { setAskOpen(false); setWorkOpen(true); }} />
     </div>
   );

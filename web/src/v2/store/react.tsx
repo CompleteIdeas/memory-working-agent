@@ -53,6 +53,20 @@ export function useNow(tickMs = 30_000): number {
   return now;
 }
 
+/** S4: the approvals the store holds (waiting, and decided in the last day). */
+export function useApprovals() {
+  const all = useSlice((s) => s.approvals);
+  const loaded = useSlice((s) => s.approvalsLoaded);
+  return useMemo(() => {
+    const list = Object.values(all);
+    return {
+      all, loaded,
+      pending: list.filter((a) => a.state === 'pending').sort((a, b) => a.createdAt - b.createdAt),
+      recent: list.filter((a) => a.state !== 'pending').sort((a, b) => (b.decidedAt ?? 0) - (a.decidedAt ?? 0)),
+    };
+  }, [all, loaded]);
+}
+
 export function useMeta() {
   const meta = useSlice((s) => s.meta);
   const connection = useSlice((s) => s.connection);

@@ -31,6 +31,7 @@ import { RulesSheet } from './RulesSheet';
 import { SkippedSheet } from './SkippedSheet';
 import { CheckIcon } from './icons';
 import { openConnectionsAt, providerOfAccount } from '../settings/useConnections';
+import { openApproval } from '../approvals/open';
 import './important.css';
 
 interface ImportantUi {
@@ -88,12 +89,14 @@ function ImportantProvider({ children, go, openMail, onGone }: {
     if (!r.ok) return; // refused: the store said so; offline: it waits in the outbox
     const d = r.data as ItemActionResult;
     if (d.done) { actions.notice(d.message); return; }
-    const route = (d.route ?? { view: 'mail' }) as { view: string; mailId?: string; item?: string; section?: string; account?: string };
+    const route = (d.route ?? { view: 'mail' }) as { view: string; mailId?: string; item?: string; section?: string; account?: string; approvalId?: string };
     if (route.view === 'mail') { const id = route.mailId || it.mailId; if (id) openMailHere(id, it); return; }
     if (route.view === 'ask') { setDetailId(it.id); setAskWith('Draft a note asking to move one of them'); return; }
     // S3: reconnecting an account is Settings › Connections, at that account
     if (route.view === 'settings' && route.section === 'connections' && go) { openConnectionsAt(providerOfAccount(route.account)); go('connections'); return; }
     if (route.view === 'settings' && go) { go('settings'); return; }
+    // S4: an approval's Review opens it in the approval sheet
+    if (route.view === 'approval') { openApproval(route.approvalId || it.sourceRef || null); return; }
     actions.notice(d.message);
   }, [actions, go, openMailHere]);
 

@@ -1481,6 +1481,80 @@ components:
       properties:
         connections: { $ref: '#/components/schemas/Connections' }
         message: { type: string }
+    ApprovalView:
+      type: object
+      description: 'S4: an action your helper staged for your OK, said plainly (src/v2/approvals.ts).'
+      required: [id, tool, kind, state, title, rows, ifApprove, ifDecline, exact, content, why, job, createdAt, expiresAt, expiresInSec, decidedAt, risks, confirm, caution, trust, reviewer, forOwner, ranIn, result]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        tool: { type: string, description: 'The tool that would run (run_command, write_file, policy_save, add_mcp_server, and so on).' }
+        kind: { type: string, enum: [tool, captured-policy] }
+        state: { type: string, enum: [pending, approved, executing, done, failed, declined, expired], description: 'approved: approved here, it runs in the app that asked for it (Telegram or the mailbox).' }
+        title: { type: string, description: 'What will happen, in a few words ("Delete report.pdf", "Save a standing preference").' }
+        rows:
+          type: array
+          items:
+            type: object
+            required: [label, value]
+            additionalProperties: false
+            properties: { label: { type: string }, value: { type: string } }
+        ifApprove: { type: string }
+        ifDecline: { type: string }
+        exact: { type: ['string', 'null'], description: 'The action exactly as it will run (the command, the server line), when the title says less.' }
+        content: { type: ['string', 'null'], description: 'For a file or note it will write: the text (first 4,000 characters).' }
+        why: { type: ['string', 'null'], description: 'Why it asks (the gate''s reason).' }
+        job:
+          type: ['object', 'null']
+          description: 'The job whose run asked for it.'
+          required: [id, title]
+          additionalProperties: false
+          properties: { id: { type: string }, title: { type: string } }
+        createdAt: { type: integer }
+        expiresAt: { type: integer }
+        expiresInSec: { type: integer }
+        decidedAt: { type: ['integer', 'null'] }
+        risks:
+          type: array
+          description: 'Strongest first. high: money, sending as you, deleting, the network, this computer''s controls, a path outside the folders you granted, a new server, outside content, a phishing source.'
+          items:
+            type: object
+            required: [kind, level, text]
+            additionalProperties: false
+            properties:
+              kind: { type: string, enum: [phishing, outside, money, send, delete, network, self, outside-folders, runs-as-you, overwrite, granted-folder, standing, new-server, skips-runs, someone-else] }
+              level: { type: string, enum: [high, warn, info] }
+              text: { type: string }
+        confirm: { type: boolean, description: 'A high risk: the app asks "Are you sure?" before approving.' }
+        caution: { type: ['string', 'null'], enum: [phishing, null], description: 'phishing: what tainted the run was flagged as phishing. Never a Needs-you card or a notification; shown with the strongest warning.' }
+        trust: { type: string, enum: [trusted, untrusted], description: 'untrusted: proposed after reading outside content.' }
+        reviewer:
+          type: ['object', 'null']
+          description: 'What MWA''s reviewer would have done (shadow) or the fixed rule that always asks.'
+          required: [decision, by, reason]
+          additionalProperties: false
+          properties:
+            decision: { type: string, enum: [auto, ask] }
+            by: { type: string }
+            reason: { type: string }
+        forOwner: { type: boolean, description: 'false: asked for in someone else''s conversation (a Telegram contact).' }
+        ranIn: { type: ['string', 'null'] }
+        result: { type: ['string', 'null'], description: 'What happened (what it printed, the error, or your note when you said no).' }
+    ApprovalList:
+      type: object
+      required: [pending, recent]
+      additionalProperties: false
+      properties:
+        pending: { type: array, items: { $ref: '#/components/schemas/ApprovalView' }, description: 'Waiting, the one waiting longest first.' }
+        recent: { type: array, items: { $ref: '#/components/schemas/ApprovalView' }, description: 'Decided in the last day, newest first (at most 20).' }
+    ApprovalDecision:
+      type: object
+      required: [outcome, message, approval]
+      additionalProperties: false
+      properties:
+        outcome: { type: string, enum: [done, failed, approved, declined] }
+        message: { type: string }
+        approval: { $ref: '#/components/schemas/ApprovalView' }
   responses:
     Error:
       description: An error.
@@ -1778,7 +1852,8 @@ paths:
       description: |
         Events: `hello` {cursor, head}; `change` {seq, entity, id, op, data?} with `id: <seq>` (a job's change carries
         its current view in `data`); `live` {session, type, stage, at} — a running try's progress, at most once a
-        second per run; `reset` {cursor, reason} — the cursor was older than what is kept: call /sync without
+        second per run; an approval's change (S4: staged, decided, run or expired, from any app or Telegram) carries
+        its current view (ApprovalView) in `data`; `reset` {cursor, reason} — the cursor was older than what is kept: call /sync without
         `since`. A `change` with entity `today` and no data (at most every 5 s) means Today changed (a job,
         calendar, item or action changed, an approval or a sync's state moved, or the day passed midnight, 05:00, noon
         or 17:00):
@@ -3565,4 +3640,63 @@ paths:
         '200':
           description: Disconnected.
           content: { application/json: { schema: { $ref: '#/components/schemas/ConnectionChange' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /approvals:
+    get:
+      operationId: listApprovals
+      summary: 'S4: what your helper asks your OK for (waiting, oldest first) and what was decided in the last day (read).'
+      responses:
+        '200':
+          description: The approvals.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApprovalList' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /approvals/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getApproval
+      summary: 'S4: one approval, whatever its state (read). 404 when there is none (cleared after a day).'
+      responses:
+        '200':
+          description: The approval.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approval]
+                additionalProperties: false
+                properties: { approval: { $ref: '#/components/schemas/ApprovalView' } }
+        default: { $ref: '#/components/responses/Error' }
+  /approvals/{id}/approve:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: approveApproval
+      summary: 'S4: approve it: it runs now, once, as the classic app''s Approve does (approve). 409 already_decided, expired, step_up_required (it stays waiting), refused or not_here; 404 when there is none.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Decided. outcome done (it ran), failed (it ran and failed) or approved (it runs in the app that asked).
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApprovalDecision' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /approvals/{id}/deny:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: denyApproval
+      summary: 'S4: not this time: it will not run (approve). An optional note tells the helper why (it reads it on its next run). 409 already_decided or expired; 404 when there is none.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                note: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Declined.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApprovalDecision' } } }
         default: { $ref: '#/components/responses/Error' }

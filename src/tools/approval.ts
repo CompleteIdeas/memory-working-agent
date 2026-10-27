@@ -45,9 +45,17 @@ import { ToolRefusal, toolText, type RegisteredTool, type ToolContext } from './
 import { isStepUpSatisfied } from '../step-up.js';
 import { dbFile } from '../paths.js';
 import { recordAction } from '../v2/actions.js';
+import { recordEvent } from '../v2/db.js';
 
 export type ApprovalKind = 'tool' | 'captured-policy';
-export type ApprovalStatus = 'pending' | 'executing' | 'done' | 'failed' | 'cancelled' | 'expired';
+export type ApprovalStatus = 'pending' | 'approved' | 'executing' | 'done' | 'failed' | 'cancelled' | 'expired';
+
+/** v2 (S4): every change of an action's state is an app.db event (entity 'approval'), so the live stream tells every
+ *  open device — whichever process or channel changed it (the web app, Telegram, a phone). Best effort: the store
+ *  never fails because the event log could not be written. */
+function changed(id: string): void {
+  try { recordEvent({ entity: 'approval', id }); } catch { /* best effort */ }
+}
 
 /** A stored action (no code — its executor is looked up by name when it runs). */
 export interface PendingAction {
@@ -186,7 +194,7 @@ function prune(): void {
   const expired = s.prepare(`SELECT id, tool, summary FROM approvals WHERE status = 'pending' AND expires_at <= ?`).all(now) as Row[];
   if (expired.length) {
     s.prepare(`UPDATE approvals SET status = 'expired', updated_at = ? WHERE status = 'pending' AND expires_at <= ?`).run(now, now);
-    for (const a of expired) { localClosures.delete(a.id); audit?.('expired', { id: a.id, tool: a.tool, summary: a.summary }); }
+    for (const a of expired) { localClosures.delete(a.id); audit?.('expired', { id: a.id, tool: a.tool, summary: a.summary }); changed(a.id); }
   }
   // A crash between the claim and the end of the run leaves `executing` behind: say so, never replay.
   s.prepare(`UPDATE approvals SET status = 'failed', result = 'interrupted: the app stopped while this was running. Check what it did before staging it again.', updated_at = ? WHERE status = 'executing' AND updated_at <= ?`)
@@ -287,6 +295,7 @@ export function stageAction(a: {
     .run(id, a.tool, a.executor ?? a.tool, JSON.stringify(a.args ?? {}), a.summary, JSON.stringify(ctx), a.kind ?? 'tool', c.tainted === true ? 1 : 0, now, now + (a.ttlMs ?? ttlMs()), now, owner);
   if (a.execute) localClosures.set(id, a.execute);
   audit?.('dryrun', { id, tool: a.tool, summary: a.summary });
+  changed(id);
   // BL-72 shadow: review it as the reviewer would, and log that beside what the person then does.
   // Changes nothing: the action waits for the person exactly as before.
   const mode = reviewMode();
@@ -319,6 +328,19 @@ export function approvalStatus(id: string): { status: ApprovalStatus; result?: s
   prune();
   const r = store().prepare(`SELECT status, result FROM approvals WHERE id = ?`).get(id) as Pick<Row, 'status' | 'result'> | undefined;
   return r ? { status: r.status as ApprovalStatus, ...(r.result ? { result: r.result } : {}) } : null;
+}
+
+/** v2 (S4): one action as it stands, whatever its state, for the app's approval screen: what pendingMeta gives plus
+ *  its state, its result, when it was decided, and its arguments while it waits (blanked once it is finished). Never
+ *  given to the model. */
+export interface ApprovalDetail extends PendingAction { args: Record<string, unknown>; result?: string; updatedAt: number; owner: string | null; ownerLabel: string; sandboxDir?: string; extraRoots?: string[] }
+export function approvalDetail(id: string): ApprovalDetail | null {
+  prune();
+  const r = store().prepare(`SELECT * FROM approvals WHERE id = ? AND auto IS NULL`).get(id) as Row | undefined;
+  if (!r) return null;
+  const ctx = parse<ToolContext>(r.ctx, { sandboxDir: '.' });
+  return { ...toAction(r), args: parse<Record<string, unknown>>(r.args, {}), ...(r.result ? { result: r.result } : {}), updatedAt: r.updated_at, owner: r.owner, ownerLabel: ownerLabel(r.owner),
+    ...(ctx.sandboxDir ? { sandboxDir: ctx.sandboxDir } : {}), ...(ctx.extraRoots?.length ? { extraRoots: ctx.extraRoots } : {}) };
 }
 
 /** Number of pending actions (test/inspection helper). */
@@ -441,10 +463,11 @@ export async function confirmPending(id: string | undefined, ctx: ToolContext): 
   const approved = s.prepare(`UPDATE approvals SET status = ?, updated_at = ? WHERE id = ? AND status = 'pending' AND expires_at > ?`).run(mine ? 'executing' : 'approved', now, key, now).changes === 1;
   if (!approved) {
     const st = (s.prepare(`SELECT status FROM approvals WHERE id = ?`).get(key) as { status: string } | undefined)?.status;
-    if (st === 'pending') { s.prepare(`UPDATE approvals SET status = 'expired', updated_at = ? WHERE id = ? AND status = 'pending'`).run(now, key); return `(confirmation "${key}" expired — re-run the action to get a fresh preview)`; }
+    if (st === 'pending') { s.prepare(`UPDATE approvals SET status = 'expired', updated_at = ? WHERE id = ? AND status = 'pending'`).run(now, key); changed(key); return `(confirmation "${key}" expired — re-run the action to get a fresh preview)`; }
     return `(no pending action with id "${key}" — it was already ${st === 'executing' ? 'started' : st ?? 'handled'})`;
   }
   audit?.('confirm', { id: action.id, tool: action.tool, summary: action.summary });
+  changed(key);
   // Another identity's action runs in ITS process, against its memory (BL-18 review).
   if (!mine) return `[APPROVED ${action.tool}] It runs in ${ownerLabel(row.owner)}, where it was asked for, within a minute or so.`;
   const r = await runClaimed(row);
@@ -472,10 +495,12 @@ async function runClaimed(row: Row): Promise<{ ok: boolean; result: string }> {
     s.prepare(`UPDATE approvals SET status = 'done', result = ?, args = '{}', updated_at = ? WHERE id = ?`).run(tail(result), Date.now(), row.id);
     // it happened now, approved by the person: it counts as done (v2 A10 review H1; staging it was not logged)
     if (!/^\s*\((refused|blocked)/.test(result)) recordAction({ tool: row.tool, person: stagedCtx.personId, session: stagedCtx.session, runId: stagedCtx.runId, via: 'approval' });
+    changed(row.id);
     return { ok: true, result };
   } catch (e) {
     const msg = (e as Error).message ?? String(e);
     s.prepare(`UPDATE approvals SET status = 'failed', result = ?, args = '{}', updated_at = ? WHERE id = ?`).run(tail(msg), Date.now(), row.id);
+    changed(row.id);
     return { ok: false, result: msg };
   }
 }
@@ -491,6 +516,7 @@ export async function runApproved(): Promise<{ id: string; tool: string; session
     // Too late: past the action's own expiry and past a short grace after the approval.
     if (Date.now() > Math.max(row.expires_at, row.updated_at + APPROVAL_GRACE_MS)) {
       s.prepare(`UPDATE approvals SET status = 'expired', result = 'approved, but the app that asked for it was not running in time — stage it again', args = '{}', updated_at = ? WHERE id = ? AND status = 'approved'`).run(Date.now(), row.id);
+      changed(row.id);
       continue;
     }
     if (s.prepare(`UPDATE approvals SET status = 'executing', updated_at = ? WHERE id = ? AND status = 'approved'`).run(Date.now(), row.id).changes !== 1) continue;
@@ -500,17 +526,20 @@ export async function runApproved(): Promise<{ id: string; tool: string; session
   return out;
 }
 
-/** Discard a pending action without running it. With `scope`, only one from that session or person. */
-export function cancelPending(id: string, scope?: { session?: string; personId?: string }): string {
+/** Discard a pending action without running it. With `scope`, only one from that session or person. `note` (v2 S4):
+ *  the person's reason, kept as the action's result so the run that asked can read it (approval_results). */
+export function cancelPending(id: string, scope?: { session?: string; personId?: string }, note?: string): string {
   prune();
   const s = store();
   const row = s.prepare(`SELECT * FROM approvals WHERE id = ? AND status = 'pending'`).get(id) as Row | undefined;
   if (!row) return `(no pending action with id "${id}")`;
   const a = toAction(row);
   if (scope && !inScope(a, scope)) return `(no pending action with id "${id}")`;
-  if (s.prepare(`UPDATE approvals SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = 'pending'`).run(Date.now(), id).changes !== 1) return `(no pending action with id "${id}")`;
+  const why = (note ?? '').replace(/\s+/g, ' ').trim().slice(0, 500);
+  if (s.prepare(`UPDATE approvals SET status = 'cancelled', result = ?, updated_at = ? WHERE id = ? AND status = 'pending'`).run(why ? `declined by the person: ${why}` : null, Date.now(), id).changes !== 1) return `(no pending action with id "${id}")`;
   localClosures.delete(id);
   audit?.('cancel', { id: a.id, tool: a.tool, summary: a.summary });
+  changed(id);
   return `cancelled "${id}" (${a.tool}) — not executed`;
 }
 

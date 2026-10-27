@@ -617,7 +617,7 @@ export async function buildToday(caller: string, o: { now?: number; tz?: string 
 
 /** Entities whose change can change Today (the stream's coarse "today changed" notice). Mail is not one: a message
  *  reaches Today only as an Important item, which records its own change. */
-export const TODAY_SOURCES = new Set(['job', 'try', 'cal_event', 'cal_draft', 'item', 'action']);
+export const TODAY_SOURCES = new Set(['job', 'try', 'cal_event', 'cal_draft', 'item', 'action', 'approval']);
 
 /**
  * What else changes Today without an app.db event: an approval staged or answered (approvals.db), a sync succeeding

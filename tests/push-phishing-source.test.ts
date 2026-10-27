@@ -14,6 +14,7 @@ import { mailId } from '../src/v2/mail.js';
 import { refreshImportant, setTriageDeps } from '../src/v2/triage.js';
 import { getVerdict, itemByKey } from '../src/v2/important.js';
 import { setApprovalStorePath, listPendingActions, requireApproval, cancelPending } from '../src/tools/approval.js';
+import { approvalView } from '../src/v2/approvals.js';
 import { runAgent } from '../src/agent.js';
 import { MwaMemory } from '../src/awm.js';
 import { ToolRegistry, type RegisteredTool } from '../src/tools/registry.js';
@@ -104,6 +105,11 @@ describe('a send staged after reading a phishing-flagged mail', () => {
     expect(pending[0]).toMatchObject({ tool: 'send_email', tainted: true, taintSources: ['gmail:ph1'] });
     await refreshImportant(); // where approvals become items
     expect(itemByKey(`approval:${pending[0].id}`)?.caution).toBe('phishing');
+    // S4: on its approval screen (GET /api/v1/approvals/{id}) the phishing warning comes first, and approving asks twice
+    const v = approvalView(pending[0].id)!;
+    expect(v).toMatchObject({ caution: 'phishing', confirm: true, trust: 'untrusted' });
+    expect(v.risks.map((x) => x.kind).slice(0, 2)).toEqual(['phishing', 'outside']);
+    expect(v.risks.map((x) => x.kind)).toContain('send');
     const today = await buildToday('test');
     expect(today.needsYou.filter((c) => c.kind === 'approval')).toHaveLength(0);
     const r = await pushTick();
@@ -119,6 +125,7 @@ describe('a send staged after reading a phishing-flagged mail', () => {
     expect(pending[0].taintSources).toEqual(['gmail:ok1']);
     await refreshImportant();
     expect(itemByKey(`approval:${pending[0].id}`)?.caution).toBeNull();
+    expect(approvalView(pending[0].id)?.caution).toBeNull();
     const today = await buildToday('test');
     expect(today.needsYou.filter((c) => c.kind === 'approval')).toHaveLength(1);
     const r = await pushTick();

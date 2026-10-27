@@ -105,6 +105,9 @@ export type InteractionStyle = AssistantSettings['style'];
 export type Connections = Schemas['Connections'];
 export type ConnectionChange = Schemas['ConnectionChange'];
 export type ConnectionService = 'google' | 'outlook' | 'telegram' | 'tailscale';
+export type ApprovalView = Schemas['ApprovalView'];
+export type ApprovalList = Schemas['ApprovalList'];
+export type ApprovalDecision = Schemas['ApprovalDecision'];
 export type PushList = Json<'/push/subscriptions', 'get', 200>;
 export type PushTestResult = Json<'/push/test', 'post', 200>;
 export type PushKindName = 'approval' | 'waiting' | 'result' | 'morning';
@@ -401,6 +404,13 @@ export class MwaClient {
   /** Stop waiting for a sign-in that was started (Outlook's code, a browser window). */
   cancelConnect(provider: 'google' | 'outlook', o: { key?: string } = {}) { return this.post<{ cancelled: boolean; message: string }>('/accounts/{provider}/cancel', { path: { provider }, key: o.key }); }
   async disconnect(service: ConnectionService, o: { key?: string } = {}) { return (await this.call<ConnectionChange>('DELETE', '/connections/{service}', { path: { service }, key: o.key })).body; }
+  // ---- S4: approvals (what your helper asks your OK for, and your decision) ----
+  listApprovals() { return this.get<ApprovalList>('/approvals'); }
+  getApproval(id: string) { return this.get<{ approval: ApprovalView }>('/approvals/{id}', { path: { id } }); }
+  /** Runs it now, once. 409 when it was already decided or expired. */
+  approve(id: string, o: { key?: string } = {}) { return this.post<ApprovalDecision>('/approvals/{id}/approve', { path: { id }, key: o.key }); }
+  /** Not this time; the note tells the helper why. */
+  deny(id: string, note?: string, o: { key?: string } = {}) { return this.post<ApprovalDecision>('/approvals/{id}/deny', { path: { id }, body: note ? { note } : {}, key: o.key }); }
 }
 
 function toError(status: number, body: unknown): ApiError {

@@ -2,13 +2,14 @@
  * Where a tapped notification opens the app (v2 build, slice P3). The service worker opens `/?ui=v2#/<place>` (a new
  * window), or tells an open v2 page `{type: 'MWA_OPEN', url}`; either way the place is the hash:
  *   #/today                    Today
- *   #/approval/<id>            Today, where the "needs your OK" card is (approvals are reviewed from there)
+ *   #/approval/<id>            Today, with that approval open in the approval sheet (S4: decided there)
  *   #/job/<id>                 the working sheet, scrolled to that job
  *   #/work                     the working sheet
  *   #/settings/notifications   Settings › Notifications (after "Send a test")
  * Pure parsing here (tests/pwa-push-client.test.ts); useNotificationRoutes wires it to the shell.
  */
 import { useEffect } from 'react';
+import { openApproval } from '../screens/approvals/open';
 
 export type NotifyRoute =
   | { to: 'today' }
@@ -34,6 +35,18 @@ export function parseNotifyHash(hash: string): NotifyRoute | null {
   }
 }
 
+/** What a route opens (pure, tested): the screen, and the sheet on top of it — S4: an approval opens the approval
+ *  sheet at that approval, decided there (it used to land on Today's card, which handed off to the classic app). */
+export function placeOf(r: NotifyRoute): { view: 'today' | 'settings'; sheet: 'approval' | 'work' | null; id: string | null } {
+  switch (r.to) {
+    case 'settings': return { view: 'settings', sheet: null, id: null };
+    case 'approval': return { view: 'today', sheet: 'approval', id: r.id };
+    case 'job': return { view: 'today', sheet: 'work', id: r.id };
+    case 'work': return { view: 'today', sheet: 'work', id: null };
+    default: return { view: 'today', sheet: null, id: null };
+  }
+}
+
 /** The hash of a URL the worker sent, if it is this app's (same origin). */
 export function hashOfOpenUrl(url: unknown, origin: string): string | null {
   try { const u = new URL(String(url)); return u.origin === origin ? u.hash : null; } catch { return null; }
@@ -48,12 +61,13 @@ export function useNotificationRoutes(o: { go: (v: 'today' | 'settings') => void
       if (!r) return;
       // the place is taken; the hash is not kept (a reload must not open the sheet again)
       history.replaceState(null, '', location.pathname + location.search + (r.to === 'settings' ? '#notifications' : ''));
-      if (r.to === 'settings') { go('settings'); return; }
-      go('today');
-      if (r.to === 'job' || r.to === 'work') {
+      const place = placeOf(r);
+      go(place.view);
+      if (place.sheet === 'approval') { openApproval(place.id); return; }
+      if (place.sheet === 'work') {
         openWork();
-        if (r.to === 'job') {
-          const id = r.id;
+        if (place.id) {
+          const id = place.id;
           let n = 0;
           const find = () => {
             const el = document.getElementById(`jt-${id}`);

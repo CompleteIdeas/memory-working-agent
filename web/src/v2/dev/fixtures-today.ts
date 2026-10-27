@@ -17,7 +17,7 @@
  * Every scenario holds W3's phishing-flagged message (./fixtures-important.ts): it is in Worth a look, never in Needs you.
  * EVERYTHING HERE IS EXAMPLE DATA.
  */
-import type { CalendarAccounts, CalendarItem, Job, Schemas, Today } from '../api/client';
+import type { ApprovalView, CalendarAccounts, CalendarItem, Job, Schemas, Today } from '../api/client';
 import { statusPill } from '../../../../src/v2/pill';
 import { at, dayStart } from './fixture-data';
 
@@ -39,6 +39,8 @@ export interface TodayHost {
   putCal(c: CalendarItem): void;
   /** W3's Important list (every item, any state) */
   important(): ImportantItem[];
+  /** S4: the approvals a Needs-you card may count (waiting, the owner's, no phishing caution), oldest first */
+  approvals?(): ApprovalView[];
   /** the stream's data-less "today changed" notice */
   notify(): void;
   later(fn: () => void, ms: number): void;
@@ -225,8 +227,19 @@ export class TodayFixtures {
       return { id: i.id, kind: i.kind, title: i.title, start: i.start, end: i.end, location: i.location, startLabel: clockLabel(Date.parse(i.start)), soon: gap <= 0 ? 'Now' : gap <= 60 ? `in ${gap} min` : null };
     });
 
-    // needs you: a job waiting, the next double-booking, an account to reconnect — never mail
+    // needs you: approvals, a job waiting, the next double-booking, an account to reconnect — never mail
     const needs: (Need & { spoken: string })[] = [];
+    const mine = this.h.approvals?.() ?? [];
+    if (mine.length) {
+      // as the server (src/v2/today.ts): one card; the staged action's words are a run's (outside) words
+      const a = mine[0];
+      const titleParts = mine.length === 1 ? [outside(a.title)] : [ours(`${mine.length} things need your OK`)];
+      const textParts = mine.length === 1 ? [ours('Your helper needs your OK before it goes on.')] : [ours('The first: '), outside(a.title)];
+      needs.push({ id: 'need:approvals', kind: 'approval', count: mine.length, title: flat(titleParts, true), text: flat(textParts, true), titleParts, textParts,
+        action: { kind: 'review-approval', label: 'Review' }, open: mine.length === 1 ? { kind: 'approval', id: a.id } : { kind: 'approvals', id: null },
+        itemId: `it_ap_${a.id}`, trust: mine.some((x) => x.trust === 'untrusted') ? 'untrusted' : 'trusted',
+        spoken: mine.length === 1 ? 'Something needs your OK.' : `${mine.length} things need your OK.` });
+    }
     const waiting = [...this.h.jobs.values()].filter((j) => !j.archived && j.status.state === 'waiting');
     if (waiting.length) {
       const j = waiting[0];

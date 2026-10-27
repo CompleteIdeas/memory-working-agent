@@ -15,7 +15,8 @@
  *     morning."); N02 the Calendar — the day strip, Thursday's double-booking with its options, a helper's draft with
  *     where it came from, Confirm → "Added by your helper just now. No invites were sent.", New event → a draft on
  *     Saturday, November 14, the week view, the calendar file; partial and not-connected notes; check-in done offline
- *     (queued, then sent); axe 0 violations, no horizontal overflow, dark mode. Screenshots in --out.
+ *     (queued, then sent); S4: a Needs-you approval's Review opens the approval sheet in this app (no classic-app
+ *     hand-off); axe 0 violations, no horizontal overflow, dark mode. Screenshots in --out.
  */
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
@@ -271,6 +272,20 @@ try {
       await shot(page, `not-connected-${L}-calendar`);
       await axe(page, `${L} not-connected calendar`);
       check(`${L} honest states: no page errors`, errors.length === 0, errors.join(' | '));
+      await ctx.close();
+    }
+
+    // ---------- S4: a Needs-you approval opens in this app (it used to hand off to the classic app) ----------
+    {
+      const { ctx, page, errors } = await newPage(vp);
+      await page.goto(`${BASE}/?fixtures=1&scenario=approvals`);
+      const card = main(page).locator('.needcard', { hasText: '2 things need your OK' });
+      check(`${L} approvals: Needs you says "2 things need your OK"`, await seen(card));
+      await card.getByRole('button', { name: 'Review' }).click();
+      check(`${L} approvals: Review opens the approval sheet here, not the classic app`, await seen(page.locator('#approval-dlg').getByRole('heading', { name: 'Waiting for your OK · 3' })) && !/ui=v1/.test(page.url()), page.url());
+      await shot(page, `approvals-${L}-sheet`);
+      await axe(page, `${L} approvals sheet`);
+      check(`${L} approvals: no page errors`, errors.length === 0, errors.join(' | '));
       await ctx.close();
     }
 

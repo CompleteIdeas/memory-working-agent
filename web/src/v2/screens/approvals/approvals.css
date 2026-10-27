@@ -1,0 +1,89 @@
+/* v2 S4: the approval sheet. Danger is red-brown (text 7:1+), caution is the ochre of Important's phishing tag. */
+:root {
+  --ap-danger-bg: #fbe5df;  --ap-danger-ink: #6e1a06;  --ap-danger-edge: #b3380b;
+  --ap-warn-bg: #f3e7b8;    --ap-warn-ink: #4d3b00;    --ap-warn-edge: #8c6d00;
+  --ap-danger-btn: #9b2c07; --ap-on-danger: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ap-danger-bg: #3d1d14; --ap-danger-ink: #ffc2ad; --ap-danger-edge: #ff8a5c;
+    --ap-warn-bg: #3a3014; --ap-warn-ink: #f2d77e; --ap-warn-edge: #c9a63a;
+    --ap-danger-btn: #ff9a73; --ap-on-danger: #16181c;
+  }
+}
+:root[data-theme="dark"] {
+  --ap-danger-bg: #3d1d14; --ap-danger-ink: #ffc2ad; --ap-danger-edge: #ff8a5c;
+  --ap-warn-bg: #3a3014; --ap-warn-ink: #f2d77e; --ap-warn-edge: #c9a63a;
+  --ap-danger-btn: #ff9a73; --ap-on-danger: #16181c;
+}
+
+.ap-body { overflow-wrap: anywhere; }
+.ap { display: block; }
+.ap-back { margin-top: 0; }
+.ap-kicker { color: var(--dim); font-size: 14.5px; margin-top: 4px; }
+.ap-title { font-size: 21px; font-weight: 700; line-height: 1.25; margin-top: 2px; }
+
+/* the strongest warning: a phishing source */
+.ap-phish { background: var(--ap-danger-bg); color: var(--ap-danger-ink); border: 2px solid var(--ap-danger-edge); border-radius: 12px; padding: 12px 14px; margin: 6px 0 12px; }
+.ap-phish p { margin: 0; }
+.ap-phish p + p { margin-top: 6px; }
+.ap-phish-h { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 17px; }
+
+.ap-risks { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
+.ap-risks li { display: flex; gap: 8px; align-items: flex-start; font-size: 15px; line-height: 1.4; }
+.ap-risks.high li { background: var(--ap-danger-bg); color: var(--ap-danger-ink); border-left: 4px solid var(--ap-danger-edge); border-radius: 6px; padding: 8px 10px; font-weight: 600; }
+.ap-risks.high svg { margin-top: 2px; }
+.ap-risks li.warn { background: var(--ap-warn-bg); color: var(--ap-warn-ink); border-left: 4px solid var(--ap-warn-edge); border-radius: 6px; padding: 6px 10px; }
+.ap-risks li.info { color: var(--dim); padding: 0 2px; }
+
+.ap-rows { margin: 12px 0 0; display: grid; gap: 8px; }
+.ap-rows > div { display: grid; grid-template-columns: minmax(96px, 30%) 1fr; gap: 10px; }
+.ap-rows dt { color: var(--dim); font-size: 14.5px; }
+.ap-rows dd { margin: 0; }
+@media (max-width: 380px) { .ap-rows > div { grid-template-columns: 1fr; gap: 0; } }
+
+.ap-why { color: var(--dim); font-size: 15px; margin-top: 10px; }
+.ap-exp { color: var(--dim); font-size: 14.5px; margin-top: 10px; }
+.ap-more { margin-top: 10px; }
+.ap-more summary, .ap-note summary { cursor: pointer; color: var(--signal); font-weight: 600; min-height: 44px; display: flex; align-items: center; }
+.ap-more pre { font-family: var(--mono); font-size: 13px; white-space: pre-wrap; word-break: break-word; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin: 4px 0 0; max-height: 40vh; overflow: auto; }
+.ap-note { margin-top: 8px; }
+.ap-note-l { display: block; font-size: 14.5px; color: var(--dim); margin: 2px 0 4px; }
+.ap-note textarea { width: 100%; min-height: 64px; border: 1.5px solid var(--edge); border-radius: 10px; background: var(--card); color: var(--ink); padding: 8px 10px; font: inherit; }
+
+.ap-acts { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.ap-big { min-height: 52px; font-size: 17px; flex: 1 1 140px; justify-content: center; }
+.ap-danger { background: var(--ap-danger-btn); border-color: var(--ap-danger-btn); color: var(--ap-on-danger); }
+.ap-danger:hover { filter: brightness(1.07); border-color: var(--ap-danger-btn); }
+.ap-confirm { margin-top: 14px; border: 2px solid var(--ap-danger-edge); border-radius: 12px; padding: 12px 14px; background: var(--card); }
+.ap-confirm h4 { font-size: 18px; font-weight: 800; }
+.ap-confirm p { margin-top: 4px; }
+.ap-cant { margin-top: 14px; padding: 10px 12px; border: 1px dashed var(--edge); border-radius: 10px; color: var(--dim); }
+
+.ap-outcome { margin-top: 14px; border-radius: 12px; padding: 12px 14px; border: 1.5px solid var(--line); background: var(--card); }
+.ap-outcome.ok { border-color: var(--ok); }
+.ap-outcome.ok .ap-out-h { color: var(--ok); }
+.ap-outcome.err { border-color: var(--ap-danger-edge); }
+.ap-out-h { font-weight: 700; font-size: 17px; outline-offset: 3px; }
+.ap-result { margin-top: 6px; color: var(--dim); font-size: 15px; white-space: pre-wrap; }
+.ap-gone { margin: 8px 0; }
+
+.ap-list, .ap-recent { list-style: none; margin: 0; padding: 0; }
+.ap-list li + li { margin-top: 8px; }
+.ap-row { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 1.5px solid var(--line); background: var(--card); color: var(--ink); border-radius: 12px; padding: 12px 14px; min-height: 56px; }
+.ap-row:hover { border-color: var(--edge); }
+.ap-row.high { border-left: 5px solid var(--ap-danger-edge); }
+.ap-row.phish { border: 2px solid var(--ap-danger-edge); background: var(--ap-danger-bg); color: var(--ap-danger-ink); }
+.ap-row .t { display: block; font-weight: 650; }
+.ap-row .s { display: block; color: var(--dim); font-size: 14.5px; margin-top: 2px; }
+.ap-row.phish .s { color: inherit; }
+.ap-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; margin-top: 4px; }
+.ap-tag.high { color: var(--ap-danger-ink); }
+.ap-tag.phish { color: var(--ap-danger-ink); font-weight: 800; }
+.ap-recent li { font-size: 15px; padding: 4px 0; }
+.ap-recent .s { color: var(--dim); }
+
+/* the working sheet's "Needs your OK" group */
+.jobgroup.approvals .jg-h { color: var(--signal); }
+.jobgroup.approvals .job { border-left: 4px solid var(--ap-danger-edge); }
+.jobgroup.approvals .job.plain { border-left-color: var(--accent); }

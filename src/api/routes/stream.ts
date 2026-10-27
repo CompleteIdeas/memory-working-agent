@@ -33,6 +33,9 @@
  * approval, a sync's state or the part of the day (midnight, 05:00, noon, 17:00) — at most once every 5 s; the
  * person's own check-in and wrap marks are sent as they happen.
  *
+ * Approvals (S4): an approval staged, decided, run or expired is sent as entity 'approval' with its current view (the
+ * same shape as GET /approvals/{id}), whichever app or channel changed it.
+ *
  * Asks (A6): an ask changing (planned, chosen, answered) is sent as entity 'ask' with its current shape; its run's
  * progress is the project's `live` events and its answer the thread's turn.
  */
@@ -50,6 +53,7 @@ import { triageNow, triageTz } from '../../v2/triage.js';
 import { apiProject, apiTurn, getProject, getTurn, listProjects, recentTurns } from '../../v2/projects.js';
 import { buildToday, todaySignature, TODAY_SOURCES } from '../../v2/today.js';
 import { apiAsk, getAsk } from '../../v2/ask.js';
+import { approvalView } from '../../v2/approvals.js';
 
 export const EVENT_RETENTION_MS = 7 * 24 * 3_600_000;
 const POLL_MS = 1_000, KEEPALIVE_MS = 15_000, BATCH = 500, STEP_EVERY_MS = 1_000;
@@ -132,6 +136,13 @@ function present(rows: EventRow[], who: Caller | null) {
       const data = e.op === 'delete' ? null : e.entity === 'project' ? (() => { const p = getProject(e.entity_id); return p ? apiProject(p) : null; })()
         : (() => { const t = getTurn(e.entity_id); return t ? apiTurn(t, undefined, { summary: true }) : null; })();
       out.push({ seq: e.seq, entity: e.entity, id: e.entity_id, op: data ? 'upsert' : 'delete', ...(data ? { data } : {}) });
+      return;
+    }
+    if (e.entity === 'approval') {
+      // S4: an approval as it is now (staged, decided, done, expired); one per approval per batch
+      if (rows.findLastIndex((x) => x.entity === 'approval' && x.entity_id === e.entity_id) !== i) return;
+      const v = approvalView(e.entity_id);
+      out.push({ seq: e.seq, entity: 'approval', id: e.entity_id, op: v ? 'upsert' : 'delete', ...(v ? { data: v } : {}) });
       return;
     }
     if (e.entity === 'ask') {

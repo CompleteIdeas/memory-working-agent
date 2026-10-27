@@ -24,14 +24,15 @@ import { ImportantFixtures } from './fixtures-important';
 import { SettingsFixtures } from './fixtures-settings';
 import { TodayFixtures, TODAY_SCENARIOS } from './fixtures-today';
 import { scenarioClock } from './fixture-clock';
+import { ApprovalFixtures } from './fixtures-approvals';
 
 export interface FixtureRequest { method: string; path: string; query: URLSearchParams; headers: Record<string, string | undefined>; body: unknown }
 export interface FixtureResponse { status: number; body: unknown; headers?: Record<string, string> }
 export interface StreamMessage { event: string; data: unknown; id?: number }
-type Entity = 'job' | 'calendar' | 'project' | 'turn' | 'mail' | 'item' | 'ask';
+type Entity = 'job' | 'calendar' | 'project' | 'turn' | 'mail' | 'item' | 'ask' | 'approval';
 interface Ev { seq: number; entity: Entity; id: string; op: 'upsert' | 'delete' }
 
-export const FIXTURE_SCENARIOS = ['N00', 'N06', 'states', 'old-client', 'sorting', 'thread-long', ...TODAY_SCENARIOS, 'signed-out', 'unpaired', 'phone', 'first-run', 'npm-off', 'model-fixed', 'hosted', 'conn-setup'] as const;
+export const FIXTURE_SCENARIOS = ['N00', 'N06', 'states', 'old-client', 'sorting', 'thread-long', ...TODAY_SCENARIOS, 'signed-out', 'unpaired', 'phone', 'first-run', 'npm-off', 'model-fixed', 'hosted', 'conn-setup', 'approvals'] as const;
 export type FixtureScenario = (typeof FIXTURE_SCENARIOS)[number];
 export const FIXTURE_SERVER_VERSION = 'fixtures';
 
@@ -62,6 +63,8 @@ export class FixtureServer {
   readonly settings: SettingsFixtures;
   /** W2: Today, the calendar's accounts and new drafts (./fixtures-today.ts) */
   readonly today: TodayFixtures;
+  /** S4: approvals (./fixtures-approvals.ts) */
+  readonly approvals: ApprovalFixtures;
 
   /** The clock defaults to the scenario's (./fixture-clock.ts): 9:10 AM, or 7:30 AM / 12:30 PM / 6:30 PM for Today's. */
   constructor(scenario: string | null = 'N00', clock?: () => number) {
@@ -78,7 +81,13 @@ export class FixtureServer {
     this.today = new TodayFixtures({
       clock: () => this.clock(), jobs: this.jobs, calendar: this.calendar, putCal: (c) => this.putCal(c), later: (fn, ms) => this.later(fn, ms),
       important: () => this.important.snapshot(),
+      approvals: () => this.approvals.needsYou(),
       notify: () => { for (const s of this.subs) s({ event: 'change', data: { seq: this.seq, entity: 'today', id: 'today', op: 'upsert' } }); },
+    }, this.scenario);
+    this.approvals = new ApprovalFixtures({
+      clock: () => this.clock(), emitApproval: (id) => this.emit('approval', id), putJob: (j) => this.putJob(j), jobs: this.jobs,
+      putApprovalItem: (id, title, phishing) => this.important.putApprovalItem(id, title, phishing),
+      dropApprovalItem: (id) => this.important.dropApprovalItem(id),
     }, this.scenario);
     this.seed();
     this.today.seed();
@@ -96,7 +105,8 @@ export class FixtureServer {
   }
   private current(entity: Entity, id: string): unknown {
     return entity === 'job' ? this.jobs.get(id) : entity === 'calendar' ? this.calendar.get(id) : entity === 'project' ? this.projects.get(id)
-      : entity === 'turn' ? summary(this.turns.get(id)) : entity === 'item' ? this.important.current(id) : entity === 'ask' ? this.asks.get(id) : this.mail.get(id);
+      : entity === 'turn' ? summary(this.turns.get(id)) : entity === 'item' ? this.important.current(id) : entity === 'ask' ? this.asks.get(id)
+        : entity === 'approval' ? this.approvals.current(id) : this.mail.get(id);
   }
   // @internal: putJob, putProject, putTurn, putAsk, live and now are also used by ./fixtures-w4.ts
   putJob(j: Job) { j.updatedSeq = this.seq + 1; this.jobs.set(j.id, j); this.emit('job', j.id); }
@@ -146,6 +156,7 @@ export class FixtureServer {
     if (this.scenario === 'states') for (const j of allStates(now)) this.putJob(j);
     this.important.seed();
     w4Seed(this, now);
+    this.approvals.seed();
   }
 
   // ---------- requests ----------
@@ -163,11 +174,11 @@ export class FixtureServer {
       const fp = `${method} ${req.path}\n${JSON.stringify(req.body ?? null)}`;
       const seen = this.idem.get(key);
       if (seen) return seen.fp === fp ? { ...seen.res, headers: { ...(seen.res.headers ?? {}), 'idempotent-replay': 'true' } } : err(409, 'idempotency_key_reused', 'That Idempotency-Key was already used for a different request.');
-      const res = this.settings.write(method, req.path, req.body, req.query) ?? this.today.write(method, req.path, req.body) ?? this.write(method, req.path, req.body);
+      const res = this.settings.write(method, req.path, req.body, req.query) ?? this.today.write(method, req.path, req.body) ?? this.approvals.write(method, req.path, req.body) ?? this.write(method, req.path, req.body);
       if (res.status < 500) this.idem.set(key, { fp, res });
       return res;
     }
-    return this.today.read(req.path) ?? this.read(req.path, req.query);
+    return this.today.read(req.path) ?? this.approvals.read(req.path) ?? this.read(req.path, req.query);
   }
 
   private read(path: string, q: URLSearchParams): FixtureResponse {
@@ -177,7 +188,7 @@ export class FixtureServer {
     const w5 = this.settings.read(path, q);
     if (w5) return w5;
     if (path === '/meta') {
-      const meta: Meta = { api: 'v1', server: FIXTURE_SERVER_VERSION, minClient: this.minClient, secure: true, features: ['jobs', 'calendar', 'mail', 'projects', 'important', 'ask', 'today', 'settings', 'files'], importing: null };
+      const meta: Meta = { api: 'v1', server: FIXTURE_SERVER_VERSION, minClient: this.minClient, secure: true, features: ['jobs', 'calendar', 'mail', 'projects', 'important', 'ask', 'today', 'settings', 'files', 'approvals'], importing: null };
       return { status: 200, body: meta };
     }
     const w4 = w4Read(this, path, q);
@@ -279,7 +290,7 @@ export class FixtureServer {
     const known = ['jobs', 'calendar', 'mail', 'projects', 'turns', 'important'];
     const unknown = [...want].filter((w) => !known.includes(w));
     if (unknown.length) return err(400, 'unknown_collection', `Unknown collection: ${unknown.join(', ')}. Available: ${known.join(', ')}.`);
-    const COLL: Record<Entity, string> = { job: 'jobs', calendar: 'calendar', mail: 'mail', project: 'projects', turn: 'turns', item: 'important', ask: 'asks' };
+    const COLL: Record<Entity, string> = { job: 'jobs', calendar: 'calendar', mail: 'mail', project: 'projects', turn: 'turns', item: 'important', ask: 'asks', approval: 'approvals' };
     const upserts: Record<string, unknown[]> = {}, deletes: Record<string, string[]> = {};
     // no cursor, or one from another fixture world (ahead of this one): a snapshot, as the server does for a cursor
     // it cannot serve

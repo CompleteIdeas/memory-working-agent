@@ -28,6 +28,7 @@ import { ConflictAskAbout, useDraftNote } from '../calendar/Calendar';
 import { AskAbout } from '../ask/AskAbout';
 import { useNotNow } from '../calendar/notnow';
 import { openConnectionsAt, providerOfAccount } from '../settings/useConnections';
+import { openApproval } from '../approvals/open';
 import './today.css';
 
 const Check = () => (
@@ -88,7 +89,6 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
   const say = (text: string) => store.notice(text);
   const toCalendar = (date: string | undefined, id: string | null = null) => { openCalendarOn(date ?? dayKey(now), id); go('calendar'); };
   /** Where a card or a line opens, in place. */
-  const CLASSIC = `${location.pathname}?ui=v1`;
   const open = (o: TodayOpen) => {
     switch (o.kind) {
       case 'job': case 'jobs': if (openWork) openWork(); else say('Open the pill at the top to see the job.'); return;
@@ -97,8 +97,9 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
       case 'mail': go('inbox'); return; // TODO(W3 follow-up): open this message in the reader directly
       // S3: reconnecting (or connecting a calendar) is Settings › Connections, at that account
       case 'reconnect': openConnectionsAt(providerOfAccount(o.id)); go('connections'); return;
-      // W6: what the new app can't do yet opens the classic app for this visit only (`?ui=v1` is not remembered)
-      case 'approval': case 'approvals': say('Approvals open in the classic app for now…'); location.assign(CLASSIC); return;
+      // S4: approvals are reviewed and decided here, in the approval sheet
+      case 'approval': openApproval(o.id ?? null); return;
+      case 'approvals': openApproval(null); return;
       default: say('That is in your helper’s activity list in the classic app.');
     }
   };

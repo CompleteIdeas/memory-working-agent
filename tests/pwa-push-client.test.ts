@@ -2,7 +2,7 @@
 // notification lands in the app (web/src/v2/shell/notifyRoute.ts).
 import { describe, it, expect } from 'vitest';
 import { pushState, pushWords, unblockSteps, platformName, type PushFacts } from '../web/src/pwa/push';
-import { parseNotifyHash, hashOfOpenUrl } from '../web/src/v2/shell/notifyRoute';
+import { parseNotifyHash, hashOfOpenUrl, placeOf } from '../web/src/v2/shell/notifyRoute';
 
 const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36';
 const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
@@ -36,6 +36,10 @@ describe('where a tapped notification lands', () => {
   it('parses the places, refusing odd ids', () => {
     expect(parseNotifyHash('#/today')).toEqual({ to: 'today' });
     expect(parseNotifyHash('#/approval/ap_1')).toEqual({ to: 'approval', id: 'ap_1' });
+    // S4: "Something needs your OK" opens that approval in the approval sheet (decided there), not just Today
+    expect(placeOf({ to: 'approval', id: 'ap_1' })).toEqual({ view: 'today', sheet: 'approval', id: 'ap_1' });
+    expect(placeOf({ to: 'job', id: 'j_abc' })).toEqual({ view: 'today', sheet: 'work', id: 'j_abc' });
+    expect(placeOf({ to: 'settings' })).toEqual({ view: 'settings', sheet: null, id: null });
     expect(parseNotifyHash('#/job/j_abc')).toEqual({ to: 'job', id: 'j_abc' });
     expect(parseNotifyHash('#/job/%3Cscript%3E')).toEqual({ to: 'work' });
     expect(parseNotifyHash('#/work')).toEqual({ to: 'work' });
