@@ -8,7 +8,11 @@
  * The pill opens the working sheet; the Ask bar opens the Ask sheet.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { useMeta, useNotices, useStatusPill } from '../store/react';
+import { useMeta, useNotices, useNow, useStatusPill, useStore } from '../store/react';
+import { useUpdate } from '../../pwa/react';
+import { applyUpdate, serverTooOld } from '../../pwa/register';
+import { updateWords } from '../../pwa/update';
+import { offlineWords } from '../../pwa/offline';
 import { WorkingSheet, type AskAbout } from './sheets';
 import { Calendar, Important, Settings, Today, type View } from './screens';
 import { AskSheet } from '../screens/ask/AskSheet';
@@ -90,13 +94,53 @@ function Toasts() {
   );
 }
 
-function UpdateBar() {
+/**
+ * P2: "A new version is ready · Reload". Two sources, one banner: a new build's service worker waiting (src/pwa/), or the
+ * API's 426 (the store's updateReady), which also makes the page look for that worker first. Reload waits up to 15 s
+ * for actions on their way to land; anything still in flight then is put in the outbox with its key (parkInflight) and
+ * the outbox is saved, so it is sent again after the reload and never lost (the server answers a repeated key with its
+ * first answer). Then the new worker takes over and the page reloads once. If no new build arrives within ~20 s the
+ * banner says "Couldn’t get the update — try again" and the button works again (src/pwa/update.ts).
+ */
+export const RELOAD_WAIT_MS = 15_000;
+export function UpdateBar() {
+  const store = useStore();
   const { updateReady } = useMeta();
-  if (!updateReady) return null;
+  const update = useUpdate();
+  const [preparing, setPreparing] = useState(false);
+  useEffect(() => { if (updateReady) serverTooOld(); }, [updateReady]);
+  const words = updateWords(update) ?? (updateReady ? { text: 'A new version is ready', button: 'Reload' } : null);
+  if (!words) return null;
+  const busy = preparing || update.phase === 'applying' || update.phase === 'reloading';
+  const reload = async () => {
+    if (busy) return;
+    setPreparing(true);
+    try {
+      const t0 = Date.now();
+      while (store.getState().inflight.length && Date.now() - t0 < RELOAD_WAIT_MS) await new Promise((r) => setTimeout(r, 100));
+      await store.parkInflight();
+      await Promise.race([store.idle(), new Promise((r) => setTimeout(r, 2_000))]);
+    } finally { setPreparing(false); }
+    applyUpdate();
+  };
   return (
     <div className="updatebar" role="alert">
-      <p>A newer version is ready</p>
-      <button type="button" className="vbtn" onClick={() => location.reload()}>Reload</button>
+      <p>{busy ? 'Updating…' : words.text}</p>
+      <button type="button" className="vbtn" disabled={busy} onClick={() => void reload()}>{words.button}</button>
+    </div>
+  );
+}
+
+/** P2: the quiet offline banner: what the screen shows is the saved copy, and what waits to be sent. */
+export function OfflineBar() {
+  const { connection, updatedAt, waitingToSend, updateReady, auth } = useMeta();
+  const now = useNow();
+  const w = offlineWords({ connection, updatedAt, waiting: waitingToSend, now, blocked: updateReady || auth === 'signin' });
+  if (!w) return null;
+  return (
+    <div className="offlinebar" role="status" id="offlinebar">
+      <p>{w.head}</p>
+      {w.waiting && <p className="offlinewait">{w.waiting}</p>}
     </div>
   );
 }
@@ -111,7 +155,8 @@ export function Shell() {
     return v && v in SCREENS ? (v as View) : 'today';
   });
   const [workOpen, setWorkOpen] = useState(false);
-  const [askOpen, setAskOpen] = useState(false);
+  // P1: the home-screen shortcut "Ask" opens with the Ask sheet (?ask=1)
+  const [askOpen, setAskOpen] = useState(() => new URLSearchParams(location.search).get('ask') === '1');
   const [about, setAbout] = useState<AskAbout | null>(null);
   // W4: what the screen has open (a project): the Ask bar and the mic ask there
   const [context, setContext] = useState<AskAbout | null>(null);
@@ -124,7 +169,8 @@ export function Shell() {
   const ask = useCallback((a?: AskAbout) => { setWorkOpen(false); setAbout(a ?? contextRef.current); setAskOpen(true); }, []);
 
   // W5: sign in, pair this phone, or first run on the computer, before the app itself (screens/start)
-  if (start) return <div className="v2app">{start}<UpdateBar /></div>;
+  // P2 (review): the toasts show there too ("Signed out — this phone’s copy was cleared")
+  if (start) return <div className="v2app">{start}<Toasts /><UpdateBar /></div>;
   const Screen = SCREENS[view];
   return (
     <div className="v2app">
@@ -144,6 +190,7 @@ export function Shell() {
         <button type="button" className="avatar avatar-top" aria-label="Settings" onClick={() => go('settings')}><Person /></button>
       </header>
 
+      <OfflineBar />
       <main id="main" ref={main} className="main" tabIndex={-1}>
         <Screen desk={desk} wide={wide} go={go} ask={ask} onContext={setContext} openWork={() => setWorkOpen(true)} />
       </main>

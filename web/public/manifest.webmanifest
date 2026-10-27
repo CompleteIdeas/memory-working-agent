@@ -1,4 +1,5 @@
 {
+  "id": "./",
   "name": "MWA — Memory Working Agent",
   "short_name": "MWA",
   "description": "Your assistant that remembers — it recalls, looks things up, and does the work.",

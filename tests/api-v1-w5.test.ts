@@ -346,6 +346,8 @@ describe('GET /me and POST /session', () => {
     const r = await j(await fetch(`${base}/session`, { method: 'DELETE', headers: { 'idempotency-key': k() } }));
     expect(r.status).toBe(200);
     expect(r.headers.get('set-cookie')).toMatch(/^mwa_session=x;.*Max-Age=0/);
+    // P2 review fix 7: the browser drops the app's caches and storage (IndexedDB, the outbox) for this helper
+    expect(r.headers.get('clear-site-data')).toBe('"cache", "storage"');
     const phone = device(['read']);
     expect((await j(await fetch(`${base}/session`, { method: 'DELETE', headers: as(phone.token, { 'idempotency-key': k() }) }))).body.error.code).toBe('not_a_session');
   });

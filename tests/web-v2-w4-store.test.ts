@@ -304,17 +304,20 @@ describe('W4: asks made offline wait in the outbox', () => {
     w.store.stop();
   });
 
-  it('a choice made offline waits too, and is sent with the same key', async () => {
+  // P2: a priced choice (Do it now / In the background) is made online only; a narrower ask (no price) waits
+  it('offline, a priced choice is refused in place; a narrower ask waits and is sent when back online', async () => {
     const w = world();
     await w.start();
     const r = await w.store.act('ask', { payload: { text: 'learn everything from these two PDFs', files: PDFS } }, 'ask');
     const start = w.store.getState().askOutcomes[r.entryId!].start;
     w.setOnline(false);
     const c = await w.store.act('ask.choose', { id: start.askId, payload: { mode: 'background' } }, 'choose', { quiet: true });
-    expect(c.queued).toBe(true);
+    expect(c).toMatchObject({ ok: false, queued: false, code: 'offline' });
+    const n = await w.store.act('ask.choose', { id: start.askId, payload: { narrowIndex: 0 } }, 'choose', { quiet: true });
+    expect(n.queued).toBe(true);
     w.setOnline(true);
     await until(() => !!w.store.getState().askChoices[start.askId]);
-    expect(w.store.getState().askChoices[start.askId]).toMatchObject({ chosen: 'background', kind: 'job' });
+    expect(w.store.getState().askChoices[start.askId]).toMatchObject({ chosen: 'narrow' });
     w.store.stop();
   });
 });

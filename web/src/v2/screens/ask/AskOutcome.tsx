@@ -200,6 +200,10 @@ export function PlanCard({ askId, plan, projectId, text, onShowWork, onAgain, in
   const [refusal, setRefusal] = useState<Shown | null>(null);
   const [queued, setQueued] = useState<{ entryId?: string; message: string } | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
+  // P2: a priced choice is made online only; offline it says so here and the choices stay, until the helper is back
+  const [offlineNote, setOfflineNote] = useState<string | null>(null);
+  const { connection } = useMeta();
+  useEffect(() => { if (connection === 'live') setOfflineNote(null); }, [connection]);
   const msgRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (autoFocus) msgRef.current?.focus({ preventScroll: false }); }, [autoFocus]);
   const expired = record?.state === 'expired' && !chosen;
@@ -218,6 +222,7 @@ export function PlanCard({ askId, plan, projectId, text, onShowWork, onAgain, in
     if (r.ok) return;
     if (r.queued) { setQueued({ entryId: r.entryId, message: r.message }); return; }
     setPicked(null);
+    if (r.code === 'offline') { setOfflineNote(r.message); return; }
     setRefusal(shownFor(r.code, r.message));
     if (r.code === 'already_chosen') void asks.load(askId);
   };
@@ -283,6 +288,7 @@ export function PlanCard({ askId, plan, projectId, text, onShowWork, onAgain, in
         </>
       ) : (
         <>
+          {offlineNote && <p className="ask-note" role="status">{offlineNote}</p>}
           <div className="acts">
             <button type="button" className="vbtn" disabled={busy} onClick={() => void choose({ mode: 'now' }, optionLabel(plan.now, now))}>{optionLabel(plan.now, now)}</button>
             <button type="button" className="vbtn vbtn-primary" disabled={busy} onClick={() => void choose({ mode: 'background' }, optionLabel(plan.background, now))}>{optionLabel(plan.background, now)}</button>

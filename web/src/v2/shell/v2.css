@@ -640,3 +640,15 @@ dialog.sheet::backdrop { background: rgba(20, 22, 26, .38); }
    cut with an ellipsis on a narrow phone; its full words stay its accessible name and its title */
 .topbar .statuspill { min-width: 0; flex: 0 1 auto; max-width: 100%; }
 .statuspill > span:last-child { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+/* ---------- P2: the quiet offline banner (under the header, above the screen) ---------- */
+.offlinebar { position: sticky; top: var(--head-h); z-index: 24; margin: 0 auto; max-width: 640px; padding: 8px 16px;
+  background: var(--card-2); color: var(--ink); border-bottom: 1px solid var(--line); font-size: 14px; line-height: 1.4; }
+.offlinebar p { margin: 0; }
+.offlinebar .offlinewait { font-weight: 600; margin-top: 2px; }
+@media (min-width: 640px) { .offlinebar { border-radius: 0 0 10px 10px; border: 1px solid var(--line); border-top: 0; } }
+@media (min-width: 900px) { .offlinebar { top: 64px; max-width: 760px; } }
+/* P1: Settings › This device › Install on this phone */
+.installcard ol { margin: 8px 0 0 20px; padding: 0; }
+.installcard li { margin: 4px 0; }
+.installcard .addr { font-family: var(--mono); font-size: 13.5px; overflow-wrap: anywhere; }

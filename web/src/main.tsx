@@ -4,6 +4,8 @@ import App from './App';
 import './index.css';
 import { openExternal } from './api';
 import { FilePage } from './components/FileViewer';
+import { startPwa } from './pwa/register';
+import { chooseUi } from './v2/choose';
 
 // In the desktop app the Tauri webview swallows target="_blank" links, so external links
 // (setup guides, BotFather, etc.) appear dead. Intercept clicks on external http(s) links
@@ -23,6 +25,18 @@ document.addEventListener('click', (e) => {
   }
 });
 
+const isDesktop = !!(
+  (window as unknown as { __MWA_DESKTOP__?: boolean }).__MWA_DESKTOP__ ||
+  (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ ||
+  (window as unknown as { __TAURI__?: unknown }).__TAURI__
+);
+// P1/P2: the worker, the install prompt and (v2) the v2 manifest, before anything renders
+{
+  let stored: string | null = null;
+  try { stored = localStorage.getItem('mwa-ui'); } catch { /* private mode */ }
+  startPwa({ prod: import.meta.env.PROD, desktop: isDesktop, v2: chooseUi(location.search, stored) === 'v2' });
+}
+
 // BL-70: a popped-out file (/view?path=) and a share link (/s/<token>) are pages of their own.
 const sharedToken = /^\/s\/([A-Za-z0-9_-]+)\/?$/.exec(location.pathname)?.[1];
 const viewPath = location.pathname === '/view' ? new URLSearchParams(location.search).get('path') : null;
@@ -34,28 +48,18 @@ createRoot(document.getElementById('root')!).render(
   </StrictMode>,
 );
 
-// PWA service worker. In the DESKTOP app (Tauri) the local server is always present, so the SW
-// adds nothing — and its offline-shell fallback can serve a STALE screen during an update or the
-// brief restart window (this is what made an update look like "settings reset"). So in the desktop
-// we DON'T register it AND we actively remove any SW + caches a previous build left behind, so the
-// install self-heals on next open. In a real browser (PWA install) we keep it: it's network-first
-// + skipWaiting, so it self-updates.
-const isDesktop = !!(
-  (window as unknown as { __MWA_DESKTOP__?: boolean }).__MWA_DESKTOP__ ||
-  (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ ||
-  (window as unknown as { __TAURI__?: unknown }).__TAURI__
-);
-if ('serviceWorker' in navigator) {
-  if (isDesktop) {
-    navigator.serviceWorker.getRegistrations()
-      .then((rs) => Promise.all(rs.map((r) => r.unregister())))
-      .catch(() => { /* non-fatal */ });
-    if ('caches' in window) {
-      caches.keys().then((ks) => Promise.all(ks.map((k) => caches.delete(k)))).catch(() => { /* non-fatal */ });
-    }
-  } else if (import.meta.env.PROD) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => { /* non-fatal */ });
-    });
+// The service worker (v2 build, P1/P2: src/pwa/). In the DESKTOP app (Tauri) the local server is always present, so the
+// worker adds nothing — and an offline-shell fallback can serve a STALE screen during an update or the brief restart
+// window (this is what made an update look like "settings reset"). So in the desktop we DON'T register it AND we
+// actively remove any worker + caches a previous build left behind, so the install self-heals on next open. In a real
+// browser (and an installed phone app) one worker serves both UIs: it precaches this build's files all or nothing,
+// answers pages from the network first (the cached shell when offline), never touches /api, and a new build's worker
+// waits for the person's Reload ("A new version is ready") instead of swapping code under them (src/pwa/sw-logic.ts).
+if ('serviceWorker' in navigator && isDesktop) {
+  navigator.serviceWorker.getRegistrations()
+    .then((rs) => Promise.all(rs.map((r) => r.unregister())))
+    .catch(() => { /* non-fatal */ });
+  if ('caches' in window) {
+    caches.keys().then((ks) => Promise.all(ks.map((k) => caches.delete(k)))).catch(() => { /* non-fatal */ });
   }
 }

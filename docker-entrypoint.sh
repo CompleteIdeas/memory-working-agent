@@ -19,9 +19,42 @@ if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
     echo "[mwa] Tailscale: bringing up userspace networking…"
     tailscaled --tun=userspace-networking --state=/data/tailscaled.state --socket=/tmp/tailscaled.sock >/data/tailscaled.log 2>&1 &
     sleep 2
-    tailscale --socket=/tmp/tailscaled.sock up --authkey="$TAILSCALE_AUTHKEY" --hostname="${TAILSCALE_HOSTNAME:-mwa}" --accept-routes 2>&1 \
-      && echo "[mwa] Tailscale up as '${TAILSCALE_HOSTNAME:-mwa}'." \
-      || echo "[mwa] Tailscale up failed (continuing without it)."
+    if tailscale --socket=/tmp/tailscaled.sock up --authkey="$TAILSCALE_AUTHKEY" --hostname="${TAILSCALE_HOSTNAME:-mwa}" --accept-routes 2>&1; then
+      echo "[mwa] Tailscale up as '${TAILSCALE_HOSTNAME:-mwa}'."
+      # v2 P1: HTTPS on the private address (https://<name>.<tailnet>.ts.net -> MWA), which phones need to install the
+      # app, keep it offline and get notifications. Tailnet only: Funnel (a public address) is never switched on.
+      # Needs MagicDNS + HTTPS certificates enabled in the Tailscale admin (https://login.tailscale.com/admin/dns).
+      # TAILSCALE_SERVE=0 turns it off.
+      # A value from the environment wins, then the one saved in the .env on /data (what the app's setup writes; the
+      # server reads that file too and never overrides the environment, so this script must not either).
+      env_or_file() {
+        eval "_v=\${$1:-}"
+        if [ -z "$_v" ] && [ -f "$ENV_FILE" ]; then
+          _v="$(grep -E "^$1=" "$ENV_FILE" | tail -n1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//' || true)"
+        fi
+        printf '%s' "$_v"
+      }
+      if [ "$(env_or_file TAILSCALE_SERVE)" != "0" ]; then
+        MWA_PORT="$(env_or_file MWA_SERVE_PORT)"; [ -n "$MWA_PORT" ] || MWA_PORT="$(env_or_file PORT)"; [ -n "$MWA_PORT" ] || MWA_PORT=7788
+        if tailscale --socket=/tmp/tailscaled.sock serve --bg --https=443 "http://127.0.0.1:${MWA_PORT}" >/data/tailscale-serve.log 2>&1; then
+          echo "[mwa] Tailscale serve: https on the tailnet -> port ${MWA_PORT} (private; Funnel off)."
+          # tell MWA its own secure address (pairing links, the install card) — only now that the address works, and
+          # never over a value the person set (environment or /data/.env)
+          if [ -z "$(env_or_file MWA_PUBLIC_URL)" ]; then
+            TS_NAME="$(tailscale --socket=/tmp/tailscaled.sock status --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(String((j.Self&&j.Self.DNSName)||"").replace(/[.]$/,""))}catch(e){}})' || true)"
+            if [ -n "$TS_NAME" ]; then export MWA_PUBLIC_URL="https://${TS_NAME}"; echo "[mwa] MWA_PUBLIC_URL=${MWA_PUBLIC_URL}"; fi
+          fi
+        else
+          echo "[mwa] Tailscale serve failed (see /data/tailscale-serve.log). Switch on MagicDNS and HTTPS certificates at https://login.tailscale.com/admin/dns. Continuing."
+        fi
+        # W5: through Tailscale nobody is "this machine", so a password is required (sign in on the phone, then pair it)
+        if [ -z "$(env_or_file MWA_ACCESS_PASSWORD)" ]; then
+          echo "[mwa] WARNING: set MWA_ACCESS_PASSWORD. Over Tailscale it is required to sign in and pair a phone."
+        fi
+      fi
+    else
+      echo "[mwa] Tailscale up failed (continuing without it)."
+    fi
   else
     echo "[mwa] TAILSCALE_AUTHKEY set but tailscaled not installed in this image — skipping."
   fi

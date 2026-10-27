@@ -67,6 +67,7 @@ import { hostAllowed, relayedMode, detectTailscaleServe } from './api/trust.js';
 import { setSettingsRouteDeps } from './api/routes/settings.js';
 import { handleLegacyFiles, signedOutPageAllowed, legacyApiScope } from './api/legacy.js';
 import { applyStoredSettings } from './v2/settings.js';
+import { pwaFileOnly, pwaPublic, uiCacheControl } from './pwa.js';
 import { setJobRouteDeps, capFor, setCap } from './api/routes/jobs.js';
 import { setStreamDeps } from './api/routes/stream.js';
 import { startCalendarSync } from './sync/calendar.js';
@@ -651,6 +652,12 @@ function serveStatic(res: ServerResponse, dir: string, pathname: string): void {
   // SPA: unknown non-asset routes fall back to index.html (client-side routing).
   let rel = normalize(pathname).replace(/^(\.\.[/\\])+/, '').replace(/^[/\\]+/, '');
   let file = join(dir, rel);
+  // P1/P2 (review): /pwa/ and /assets/ are files or nothing — no folder stripping, no SPA fallback (src/pwa.ts)
+  if (pwaFileOnly(rel)) {
+    if (!existsSync(file) || statSync(file).isDirectory()) { res.writeHead(404, { 'cache-control': 'no-cache' }); res.end('not found'); return; }
+    res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream', 'cache-control': uiCacheControl(relative(dir, file)) });
+    res.end(readFileSync(file)); return;
+  }
   // The build's asset paths are relative (base './', for the desktop app), so a page one folder down
   // (a share link, /s/<token>) asks for s/assets/…: drop leading folders until the asset is found.
   for (let parts = rel.split(/[/\\]/); extname(rel) && parts.length > 1 && !existsSync(file);) { parts = parts.slice(1); file = join(dir, ...parts); }
@@ -658,7 +665,8 @@ function serveStatic(res: ServerResponse, dir: string, pathname: string): void {
     if (extname(rel)) { res.writeHead(404); res.end('not found'); return; }
     file = join(dir, 'index.html');
   }
-  res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' });
+  // P1/P2 (src/pwa.ts): hashed assets are immutable; index.html, sw.js and the manifests are always revalidated
+  res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream', 'cache-control': uiCacheControl(relative(dir, file)) });
   res.end(readFileSync(file));
 }
 
@@ -859,7 +867,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       // holds it. v2 (W5): the app's page loads for /pair, the v2 app and a paired device, so they can show their own
       // sign-in and pairing screens (src/api/legacy.ts). Every /api route checks its own callers below.
       if (ACCESS_PW && !p.startsWith('/api/') && !authed(req)) {
-        const shared = p.startsWith('/s/') || p.startsWith('/assets/') || signedOutPageAllowed(p, url.search, hasValidDeviceCookie(req));
+        // P1/P2 (src/pwa.ts): the service worker, the manifests and the install icons are public like /assets/ (a manifest
+        // is fetched without cookies); the worker precaches the shell as index.html?ui=v2, which signedOutPageAllowed lets in
+        const shared = p.startsWith('/s/') || p.startsWith('/assets/') || signedOutPageAllowed(p, url.search, hasValidDeviceCookie(req)) || pwaPublic(p, req);
         if (!shared) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(LOGIN_HTML); return; }
       }
 

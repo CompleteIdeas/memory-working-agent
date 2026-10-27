@@ -148,7 +148,10 @@ export const settingsRoutes: Route[] = [
     handler: ({ req, who }) => {
       if (who?.kind !== 'session') throw new ApiError(400, 'not_a_session', 'This device isn’t signed in with the password.');
       revokeSessionOf(req); // the session itself ends on the server: a copied cookie stops working too
-      return { body: { signedOut: true }, headers: { 'set-cookie': sessionCookie(req, 'x', 0) } };
+      // P2 (review): the browser drops what it kept for this helper — the app's caches and its storage (IndexedDB,
+      // the outbox) — as "Sign out this phone" already does (routes/devices.ts). Not "cookies": on *.ts.net that could
+      // reach the whole tailnet domain (A2 review); the session cookie is ended above by name.
+      return { body: { signedOut: true }, headers: { 'set-cookie': sessionCookie(req, 'x', 0), 'clear-site-data': '"cache", "storage"' } };
     },
   },
   {
@@ -156,7 +159,7 @@ export const settingsRoutes: Route[] = [
     method: 'POST', path: '/session/sign-out-everywhere', scope: 'admin',
     handler: ({ req }) => {
       const n = revokeAllSessions();
-      return { body: { signedOut: n, message: n === 1 ? 'Signed out of 1 browser.' : `Signed out of ${n} browsers.` }, headers: { 'set-cookie': sessionCookie(req, 'x', 0) } };
+      return { body: { signedOut: n, message: n === 1 ? 'Signed out of 1 browser.' : `Signed out of ${n} browsers.` }, headers: { 'set-cookie': sessionCookie(req, 'x', 0), 'clear-site-data': '"cache", "storage"' } };
     },
   },
   {

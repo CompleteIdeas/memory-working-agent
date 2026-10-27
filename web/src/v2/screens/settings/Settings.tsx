@@ -13,6 +13,7 @@ import { WEB_VERSION } from '../../api/client';
 import { Back } from '../../shell/icons';
 import type { ScreenProps } from '../../shell/screens';
 import { PairCodeCard } from './PairNewDevice';
+import { InstallCard } from './InstallCard';
 import { START_CHECK_EVENT } from '../start/events';
 import { accountLine, activeDevices, backgroundLine, lastUsed, money, spendLine, useSettingsData, type ActOutcome } from './useSettings';
 import './settings.css';
@@ -61,6 +62,8 @@ export function Settings({ go }: ScreenProps) {
           <Accounts data={data} admin={admin} />
           <SpendingSection data={data} admin={admin} />
           <Devices data={data} admin={admin} />
+          {/* P1: install on this phone (the browser's Install, iPhone's Add to Home Screen, or the secure address) */}
+          <Section id="this-device" title="This device"><InstallCard publicUrl={data.settings?.publicUrl ?? null} /></Section>
           <RulesSection />
           <HelperSection data={data} admin={admin} />
           <Switches data={data} admin={admin} />

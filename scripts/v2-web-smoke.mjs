@@ -10,7 +10,7 @@
  * and in-browser fixtures (`/?fixtures=1`). Checks: the pill shows and opens the working sheet with the right groups
  * (title = pill, each group's count = the articles listed); the tabs switch; the Ask bar opens the Ask sheet and a
  * message gets its (simulated) answer over the stream; the IndexedDB cache fills; an action made offline waits in
- * the outbox and is sent when back online; a 426 shows "A newer version is ready · Reload"; axe finds 0 violations;
+ * the outbox and is sent when back online; a 426 shows "A new version is ready · Reload"; axe finds 0 violations;
  * nothing scrolls sideways. Screenshots go to --out.
  * Uses the repo's own playwright-core (a dependency) and its Chromium build; axe-core is passed in with --axe.
  */
@@ -203,8 +203,8 @@ try {
     await shot(page, `states-${vp.name}-working-sheet`);
     await axe(page, `states-${vp.name} working sheet`);
     await page.goto(`${BASE}/?fixtures=1&scenario=old-client`);
-    const upd = await page.getByRole('alert').filter({ hasText: 'A newer version is ready' }).waitFor({ timeout: 10_000 }).then(() => true, () => false);
-    check(`old-client-${vp.name}: "A newer version is ready · Reload"`, upd && await page.getByRole('button', { name: 'Reload' }).isVisible());
+    const upd = await page.getByRole('alert').filter({ hasText: 'A new version is ready' }).waitFor({ timeout: 10_000 }).then(() => true, () => false);
+    check(`old-client-${vp.name}: "A new version is ready · Reload"`, upd && await page.getByRole('button', { name: 'Reload' }).isVisible());
     await shot(page, `old-client-${vp.name}`);
     await page.goto(`${BASE}/?fixtures=1&scenario=N06&theme=dark`);
     await page.getByRole('button', { name: 'Working on 1 · 1 waiting for you' }).waitFor({ timeout: 15_000 });
