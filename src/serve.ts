@@ -91,7 +91,7 @@ import { runScheduler } from './scheduler.js';
 // config at its /data volume, and loadConfig() already honors it. setFetchModel/setImageModel
 // below used the constant, so the UI saved to /app/mwa.config.json while the agent read
 // /data/mwa.config.json — the model picker looked like it silently did nothing.
-import { loadConfig, configPath, setStyle, INTERACTION_STYLES, type InteractionStyle } from './config.js';
+import { loadConfig, configPath } from './config.js';
 import { injectionNote, modelWarnings } from './model-safety.js';
 import { loadEnv } from './env.js';
 import { mailboxDirs, watchInbox } from './mailbox.js';
@@ -102,8 +102,9 @@ import { isHosted, hostName } from './hosting.js';
 import { listConnectors, enableConnector, disableConnector, enabledConnectorIds, enableExternalNpm } from './connectors/registry.js';
 import { externalInstallState } from './installer/policy.js';
 import { reviewConnector } from './installer/review.js';
-import { accessPolicy, setAccess, ACCESS_PRESETS, grantedFolders, type AccessPreset } from './tools/access.js';
-import { status, testAnthropic, testAzure, testTelegram, testProvider, envKeyForProvider, upsertEnv, removeEnv } from './wizard.js';
+import { accessPolicy, setAccess, grantedFolders } from './tools/access.js';
+import { legacySave, LEGACY_WHICH } from './assistant-settings.js';
+import { status, testAnthropic, testAzure, testTelegram, upsertEnv, removeEnv } from './wizard.js';
 import { disconnectGoogle } from './connectors/google.js';
 import { disconnectMicrosoft } from './connectors/microsoft.js';
 import { setSetupDeps, listSetupRequests, submitSetupRequest, cancelSetupRequest } from './connect/setup.js';
@@ -223,32 +224,7 @@ function appendNotification(entry: Record<string, unknown>): boolean {
   } catch { return false; /* best-effort — but a receipt must not claim it was saved */ }
 }
 
-/** Persist the chosen brain into mwa.config.json. The cheap tier (fetch) becomes the
- *  picked model; the strong tier (reason) stays Anthropic Sonnet ONLY when an Anthropic
- *  key is present — otherwise it mirrors the picked provider, so a single-provider setup
- *  (e.g. keyless Ollama) doesn't leave reason pointing at a provider with no key (which
- *  would break escalation + the scheduler with "Missing ANTHROPIC_API_KEY"). */
-function setFetchModel(provider: string, model: string): void {
-  const spec = `${provider}:${model}`;
-  let raw: any = {};
-  try { if (existsSync(configPath())) raw = JSON.parse(readFileSync(configPath(), 'utf8')); } catch { /* */ }
-  raw.models = raw.models ?? {};
-  raw.models.fetch = spec;
-  // Reason tier: keep/restore a Sonnet ceiling iff Anthropic is usable; else mirror fetch.
-  raw.models.reason = (provider === 'anthropic' || process.env.ANTHROPIC_API_KEY)
-    ? (provider === 'anthropic' ? spec : (raw.models.reason || 'anthropic:claude-sonnet-4-6'))
-    : spec;
-  writeFileSync(configPath(), JSON.stringify(raw, null, 2) + '\n');
-}
-
-/** Set (or clear, when model is empty) the image-generation model in mwa.config.json. */
-function setImageModel(provider: string, model: string): void {
-  let raw: any = {};
-  try { if (existsSync(configPath())) raw = JSON.parse(readFileSync(configPath(), 'utf8')); } catch { /* */ }
-  raw.models = raw.models ?? {};
-  if (model) raw.models.image = `${provider}:${model}`; else delete raw.models.image;
-  writeFileSync(configPath(), JSON.stringify(raw, null, 2) + '\n');
-}
+// setFetchModel / setImageModel moved to src/assistant-settings.ts (v2 slice S2), shared with the v1 routes.
 
 /** Per-session working dir + memory, so chat follow-ups build on earlier turns.
  *  topicStart = index into history where the CURRENT topic began; only turns from there
@@ -1673,34 +1649,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         if (b.which === 'anthropic') { result = await testAnthropic(b.ANTHROPIC_API_KEY); if (result.ok) upsertEnv({ ANTHROPIC_API_KEY: b.ANTHROPIC_API_KEY }); }
         else if (b.which === 'azure') { result = await testAzure(b.AZURE_GPT_BASE_URL, b.AZURE_GPT_API_KEY, b.AZURE_GPT_DEPLOYMENT); if (result.ok) upsertEnv({ AZURE_GPT_BASE_URL: b.AZURE_GPT_BASE_URL, AZURE_GPT_API_KEY: b.AZURE_GPT_API_KEY, AZURE_GPT_DEPLOYMENT: b.AZURE_GPT_DEPLOYMENT }); }
         else if (b.which === 'telegram') { result = await testTelegram(b.TELEGRAM_BOT_TOKEN); if (result.ok) upsertEnv({ TELEGRAM_BOT_TOKEN: b.TELEGRAM_BOT_TOKEN }); }
-        else if (b.which === 'provider') {
-          const provider = String(b.provider ?? ''), model = String(b.model ?? '');
-          result = await testProvider(provider, model, b.key, b.baseUrl);
-          if (result.ok) {
-            const envKey = envKeyForProvider(provider);
-            const kv: Record<string, string> = {};
-            if (envKey && b.key) kv[envKey] = String(b.key);
-            if (provider === 'azure') { if (b.baseUrl) kv.AZURE_GPT_BASE_URL = String(b.baseUrl); if (model) kv.AZURE_GPT_DEPLOYMENT = model; }
-            if (provider === 'ollama' && b.baseUrl) kv.OLLAMA_BASE_URL = String(b.baseUrl);
-            if (Object.keys(kv).length) upsertEnv(kv);
-            setFetchModel(provider, model); // make the picked brain actually take effect
-          }
-        }
-        else if (b.which === 'image-model') {
-          // Set (or clear) the image-generation model. Save the provider key if given; we don't
-          // run a live image gen to validate (costly) — the first generate_image surfaces errors.
-          const provider = String(b.provider ?? '').trim(), model = String(b.model ?? '').trim();
-          if (!model) { setImageModel(provider, ''); result = { ok: true, message: 'Image generation turned off.' }; }
-          else {
-            const envKey = envKeyForProvider(provider);
-            const kv: Record<string, string> = {};
-            if (envKey && b.key) kv[envKey] = String(b.key);
-            if (provider === 'ollama' && b.baseUrl) kv.OLLAMA_BASE_URL = String(b.baseUrl);
-            if (Object.keys(kv).length) upsertEnv(kv);
-            setImageModel(provider, model);
-            result = { ok: true, message: `Image model set to ${provider}:${model}.` };
-          }
-        }
+        // v2 slice S2: the brain, the image model, access and style are saved by src/assistant-settings.ts, the same
+        // functions the v1 routes (/api/v1/assistant/*) call, so the classic page and the new app can't drift apart.
+        else if (LEGACY_WHICH.has(b.which)) result = await legacySave(b);
         else if (b.which === 'google') {
           const id = String(b.GOOGLE_CLIENT_ID ?? '').trim(), secret = String(b.GOOGLE_CLIENT_SECRET ?? '').trim();
           if (!id || !secret) result = { ok: false, message: 'Paste both the Client ID and the Client secret.' };
@@ -1716,16 +1667,6 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
             if (b.MICROSOFT_TENANT) kv.MICROSOFT_TENANT = String(b.MICROSOFT_TENANT).trim();
             upsertEnv(kv); result = { ok: true, message: 'Saved. Now connect your account.' };
           }
-        }
-        else if (b.which === 'access') {
-          const preset = (ACCESS_PRESETS as readonly string[]).includes(b.preset) ? (b.preset as AccessPreset) : 'assistant';
-          const saved = setAccess(preset, Array.isArray(b.grantedRoots) ? b.grantedRoots.map(String) : undefined);
-          result = { ok: true, message: saved.dropped.length ? `Saved. Couldn't find: ${saved.dropped.join(', ')}` : 'Saved.' };
-        }
-        else if (b.which === 'style') {
-          const style = (INTERACTION_STYLES as readonly string[]).includes(b.style) ? (b.style as InteractionStyle) : 'guided';
-          setStyle(style);
-          result = { ok: true, message: style === 'direct' ? 'Switched to Direct — concise replies.' : 'Switched to Guided — I\'ll explain and suggest next steps.' };
         }
         else if (b.which === 'tailscale') {
           // Store a Tailscale AUTH key (tskey-auth-…), used by the container entrypoint to join the

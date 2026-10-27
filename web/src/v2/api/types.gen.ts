@@ -1489,6 +1489,143 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assistant": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** S2: the assistant itself: brain, image model, providers (whether a key is saved, never the key), access level and granted folders, style, and whether adding plug-ins from npm is available (it depends on the brain). */
+        get: operations["getAssistant"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S2: a provider's models (admin): tool-capable chat models, or image models. A key typed now is used for this listing only and not saved. An empty list when the provider can't be reached or has none. */
+        post: operations["listAssistantModels"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/brain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** S2: check provider + model live with the key (typed now, or the saved one), then save them as the brain (admin). 400 check_failed with the provider's words (the key taken out); 409 fixed when MWA_MODEL chooses the model. The key is write-only. */
+        put: operations["saveAssistantBrain"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/image": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** S2: set the image model (admin). No test image is made (it costs money); the first picture says if it fails. The key is write-only. */
+        put: operations["saveAssistantImage"];
+        post?: never;
+        /** S2: turn image generation off (admin). */
+        delete: operations["turnOffAssistantImage"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** S2: the access level (admin): locked-down (its workspace only, no commands), assistant (granted folders; asks before commands that change things), developer (runs any command). */
+        put: operations["saveAssistantAccess"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S2: grant one more folder (admin). It must be the full path of an existing folder on the helper's computer; a whole drive, a network share, or a folder holding the helper's own keys and settings is refused (400 refused); 400 not_found; 400 bad_folder. */
+        post: operations["grantAssistantFolder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/folders/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S2: stop granting a folder (admin). The path as GET /assistant lists it; 404 not_granted. */
+        post: operations["removeAssistantFolder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/style": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** S2: how it works with you (admin): guided (explains, suggests next steps) or direct (concise). */
+        put: operations["saveAssistantStyle"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2761,6 +2898,68 @@ export interface components {
             expiresAt: number;
             /** @description False when the reviewing model could not be reached (only the automated checks ran); approving then needs acceptRisk. */
             aiReviewed: boolean;
+        };
+        /** @description S2: the assistant itself: its AI brain, the image model, the providers, what it can touch and how it works with you. No key value is ever in it. */
+        AssistantSettings: {
+            brain: {
+                provider: string;
+                model: string;
+                /** @description The server's MWA_MODEL setting chooses the model; a change here is refused (409 fixed). */
+                fixed: boolean;
+                /** @description What is known about the model following instructions planted in what it reads (only when it did not hold). */
+                notes: {
+                    /** @enum {string} */
+                    standing: "failed" | "unmeasured";
+                    text: string;
+                }[];
+            };
+            image: {
+                provider: string;
+                model: string;
+                on: boolean;
+                /** @description The server's MWA_MODEL_IMAGE setting chooses it. */
+                fixed: boolean;
+            };
+            providers: {
+                id: string;
+                label: string;
+                keyless: boolean;
+                /** @description It can have image models. */
+                images: boolean;
+                /** @description A key for this provider is saved on the server (null: it needs none). The key is never sent. */
+                keySaved: boolean | null;
+            }[];
+            access: {
+                /** @enum {string} */
+                preset: "locked-down" | "assistant" | "developer";
+                folders: {
+                    path: string;
+                    /** @description The folder is still there. */
+                    found: boolean;
+                }[];
+                /** @description The helper runs on a server, not this computer (the folders are the server's). */
+                hosted: boolean;
+                host: string;
+            };
+            /** @enum {string} */
+            style: "guided" | "direct";
+            addFromNpm: components["schemas"]["AddFromNpm"];
+            applies: string;
+        };
+        AssistantChange: {
+            assistant: components["schemas"]["AssistantSettings"];
+            message: string;
+        };
+        ModelChoices: {
+            provider: string;
+            /** @enum {string} */
+            kind: "chat" | "image";
+            models: {
+                id: string;
+                name: string | null;
+                /** @description Chat models: whether adding plug-ins from npm would be available with this one as the brain (null for image models). */
+                npmAfter: boolean | null;
+            }[];
         };
     };
     responses: {
@@ -5410,6 +5609,264 @@ export interface operations {
                         plugin: components["schemas"]["CustomPlugin"] | null;
                         message: string;
                     };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getAssistant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The settings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantSettings"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listAssistantModels: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    provider: string;
+                    /** @enum {string} */
+                    kind?: "chat" | "image";
+                    key?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The models. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelChoices"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    saveAssistantBrain: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    provider: string;
+                    model: string;
+                    key?: string;
+                    /** @description Azure or Ollama only. */
+                    baseUrl?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Saved. The message says when adding plug-ins from npm changed with it. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    saveAssistantImage: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    provider: string;
+                    model: string;
+                    key?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Saved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    turnOffAssistantImage: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Off. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    saveAssistantAccess: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    preset: "locked-down" | "assistant" | "developer";
+                };
+            };
+        };
+        responses: {
+            /** @description Saved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    grantAssistantFolder: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    path: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Granted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    removeAssistantFolder: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    path: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Removed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    saveAssistantStyle: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    style: "guided" | "direct";
+                };
+            };
+        };
+        responses: {
+            /** @description Saved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantChange"];
                 };
             };
             default: components["responses"]["Error"];

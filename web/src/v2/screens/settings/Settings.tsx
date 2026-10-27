@@ -67,6 +67,18 @@ export function Settings({ go }: ScreenProps) {
             </p>
           )}
           <Accounts data={data} admin={admin} />
+          {/* S2: the assistant itself (brain, pictures, what it can touch, style) has its own screen */}
+          <Section id="assistant" title="Your assistant">
+            <div className="card setcard">
+              <button type="button" className="plugentry" id="open-assistant" onClick={() => go('assistant')}>
+                <span className="grow">
+                  <span className="rowtitle">Brain, access and style</span>
+                  <span className="s">{admin ? 'Which AI does the thinking, what it can touch on your computer, and how it talks with you.' : 'See which AI does the thinking, what it can touch, and how it talks with you.'}</span>
+                </span>
+                <Chev />
+              </button>
+            </div>
+          </Section>
           {/* S1: plug-ins have their own screen */}
           <Section id="plugins" title="Plug-ins">
             <div className="card setcard">

@@ -1341,6 +1341,95 @@ components:
         reviewer: { type: string }
         expiresAt: { type: integer, description: Approve before this time (ms), or review again. }
         aiReviewed: { type: boolean, description: 'False when the reviewing model could not be reached (only the automated checks ran); approving then needs acceptRisk.' }
+    AssistantSettings:
+      type: object
+      description: 'S2: the assistant itself: its AI brain, the image model, the providers, what it can touch and how it works with you. No key value is ever in it.'
+      required: [brain, image, providers, access, style, addFromNpm, applies]
+      additionalProperties: false
+      properties:
+        brain:
+          type: object
+          required: [provider, model, fixed, notes]
+          additionalProperties: false
+          properties:
+            provider: { type: string }
+            model: { type: string }
+            fixed: { type: boolean, description: 'The server''s MWA_MODEL setting chooses the model; a change here is refused (409 fixed).' }
+            notes:
+              type: array
+              description: What is known about the model following instructions planted in what it reads (only when it did not hold).
+              items:
+                type: object
+                required: [standing, text]
+                additionalProperties: false
+                properties:
+                  standing: { type: string, enum: [failed, unmeasured] }
+                  text: { type: string }
+        image:
+          type: object
+          required: [provider, model, on, fixed]
+          additionalProperties: false
+          properties:
+            provider: { type: string }
+            model: { type: string }
+            on: { type: boolean }
+            fixed: { type: boolean, description: 'The server''s MWA_MODEL_IMAGE setting chooses it.' }
+        providers:
+          type: array
+          items:
+            type: object
+            required: [id, label, keyless, images, keySaved]
+            additionalProperties: false
+            properties:
+              id: { type: string }
+              label: { type: string }
+              keyless: { type: boolean }
+              images: { type: boolean, description: It can have image models. }
+              keySaved: { type: ['boolean', 'null'], description: 'A key for this provider is saved on the server (null: it needs none). The key is never sent.' }
+        access:
+          type: object
+          required: [preset, folders, hosted, host]
+          additionalProperties: false
+          properties:
+            preset: { type: string, enum: [locked-down, assistant, developer] }
+            folders:
+              type: array
+              items:
+                type: object
+                required: [path, found]
+                additionalProperties: false
+                properties:
+                  path: { type: string }
+                  found: { type: boolean, description: The folder is still there. }
+            hosted: { type: boolean, description: 'The helper runs on a server, not this computer (the folders are the server''s).' }
+            host: { type: string }
+        style: { type: string, enum: [guided, direct] }
+        addFromNpm: { $ref: '#/components/schemas/AddFromNpm' }
+        applies: { type: string }
+    AssistantChange:
+      type: object
+      required: [assistant, message]
+      additionalProperties: false
+      properties:
+        assistant: { $ref: '#/components/schemas/AssistantSettings' }
+        message: { type: string }
+    ModelChoices:
+      type: object
+      required: [provider, kind, models]
+      additionalProperties: false
+      properties:
+        provider: { type: string }
+        kind: { type: string, enum: [chat, image] }
+        models:
+          type: array
+          items:
+            type: object
+            required: [id, name, npmAfter]
+            additionalProperties: false
+            properties:
+              id: { type: string }
+              name: { type: ['string', 'null'] }
+              npmAfter: { type: ['boolean', 'null'], description: 'Chat models: whether adding plug-ins from npm would be available with this one as the brain (null for image models).' }
   responses:
     Error:
       description: An error.
@@ -3100,4 +3189,180 @@ paths:
                       - { $ref: '#/components/schemas/CustomPlugin' }
                       - { type: 'null' }
                   message: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /assistant:
+    get:
+      operationId: getAssistant
+      summary: 'S2: the assistant itself: brain, image model, providers (whether a key is saved, never the key), access level and granted folders, style, and whether adding plug-ins from npm is available (it depends on the brain).'
+      responses:
+        '200':
+          description: The settings.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantSettings' }
+        default: { $ref: '#/components/responses/Error' }
+  /assistant/models:
+    post:
+      operationId: listAssistantModels
+      summary: 'S2: a provider''s models (admin): tool-capable chat models, or image models. A key typed now is used for this listing only and not saved. An empty list when the provider can''t be reached or has none.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider]
+              properties:
+                provider: { type: string }
+                kind: { type: string, enum: [chat, image] }
+                key: { type: string }
+      responses:
+        '200':
+          description: The models.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelChoices' }
+        default: { $ref: '#/components/responses/Error' }
+  /assistant/brain:
+    put:
+      operationId: saveAssistantBrain
+      summary: 'S2: check provider + model live with the key (typed now, or the saved one), then save them as the brain (admin). 400 check_failed with the provider''s words (the key taken out); 409 fixed when MWA_MODEL chooses the model. The key is write-only.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, model]
+              properties:
+                provider: { type: string }
+                model: { type: string }
+                key: { type: string }
+                baseUrl: { type: string, description: Azure or Ollama only. }
+      responses:
+        '200':
+          description: Saved. The message says when adding plug-ins from npm changed with it.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantChange' }
+        default: { $ref: '#/components/responses/Error' }
+  /assistant/image:
+    put:
+      operationId: saveAssistantImage
+      summary: 'S2: set the image model (admin). No test image is made (it costs money); the first picture says if it fails. The key is write-only.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, model]
+              properties:
+                provider: { type: string }
+                model: { type: string }
+                key: { type: string }
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantChange' }
+        default: { $ref: '#/components/responses/Error' }
+    delete:
+      operationId: turnOffAssistantImage
+      summary: 'S2: turn image generation off (admin).'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Off.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantChange' }
+        default: { $ref: '#/components/responses/Error' }
+  /assistant/access:
+    put:
+      operationId: saveAssistantAccess
+      summary: 'S2: the access level (admin): locked-down (its workspace only, no commands), assistant (granted folders; asks before commands that change things), developer (runs any command).'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [preset]
+              properties:
+                preset: { type: string, enum: [locked-down, assistant, developer] }
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantChange' }
+        default: { $ref: '#/components/responses/Error' }
+  /assistant/folders:
+    post:
+      operationId: grantAssistantFolder
+      summary: 'S2: grant one more folder (admin). It must be the full path of an existing folder on the helper''s computer; a whole drive, a network share, or a folder holding the helper''s own keys and settings is refused (400 refused); 400 not_found; 400 bad_folder.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path: { type: string }
+      responses:
+        '200':
+          description: Granted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantChange' }
+        default: { $ref: '#/components/responses/Error' }
+  /assistant/folders/remove:
+    post:
+      operationId: removeAssistantFolder
+      summary: 'S2: stop granting a folder (admin). The path as GET /assistant lists it; 404 not_granted.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path: { type: string }
+      responses:
+        '200':
+          description: Removed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantChange' }
+        default: { $ref: '#/components/responses/Error' }
+  /assistant/style:
+    put:
+      operationId: saveAssistantStyle
+      summary: 'S2: how it works with you (admin): guided (explains, suggests next steps) or direct (concise).'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [style]
+              properties:
+                style: { type: string, enum: [guided, direct] }
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantChange' }
         default: { $ref: '#/components/responses/Error' }
