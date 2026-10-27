@@ -169,6 +169,12 @@ export class ImportantFixtures {
     if (it.state === 'open' || it.state === 'snoozed') return this.out(it);
     return it.state === 'handled' && it.handledAt != null && this.h.clock() - it.handledAt <= 30 * DAY ? this.out(it) : undefined;
   }
+  /** S4: an approval's Important item, as the server's triage makes it (src/v2/triage.ts rebuildApprovals). */
+  putApprovalItem(id: string, title: string, phishing: boolean): void {
+    this.putItem({ id: `it_ap_${id}`, source: 'approval', sourceRef: id, ts: this.h.clock() - 5 * MINUTE, from: 'Your helper', fromAddress: null, caution: phishing ? 'phishing' : null,
+      title, why: 'Your helper needs your OK before it goes on.', trust: 'untrusted', kind: null, action: { kind: 'review-approval', label: 'Review' }, projectId: null, mailId: null });
+  }
+  dropApprovalItem(id: string): void { if (this.items.has(`it_ap_${id}`)) this.change(`it_ap_${id}`, { gone: true }); }
   snapshot(): ImportantItem[] { return [...this.items.keys()].map((id) => this.current(id)).filter((x): x is ImportantItem => !!x); }
   private out(it: ImportantItem & { gone?: boolean }): ImportantItem { const { gone: _g, ...rest } = it; void _g; return { ...rest, group: this.groupOf(rest.ts) }; }
 
@@ -412,7 +418,7 @@ export class ImportantFixtures {
     if (kind === 'draft-note') {
       return { status: 200, body: { kind, done: false, route: { view: 'ask', item: it.id, about: { kind: 'conflict', id: it.sourceRef ?? '' }, date: localDay(now) }, message: 'Ask your helper to draft the note.', item: this.out(it) } };
     }
-    return { status: 200, body: { kind, done: false, route: kind === 'reconnect' ? { view: 'settings', section: 'connections', account: it.sourceRef ?? '' } : { view: kind === 'open-job' ? 'job' : 'approval' }, message: 'Open it.', item: this.out(it) } };
+    return { status: 200, body: { kind, done: false, route: kind === 'reconnect' ? { view: 'settings', section: 'connections', account: it.sourceRef ?? '' } : kind === 'open-job' ? { view: 'job' } : { view: 'approval', approvalId: it.sourceRef ?? '' }, message: 'Open it.', item: this.out(it) } };
   }
 
   /** An ask about one thing (the general Ask is the Projects slice's): kept under the item, answered a moment later. */

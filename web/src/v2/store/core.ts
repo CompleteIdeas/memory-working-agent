@@ -23,6 +23,7 @@ import {
   type CalendarItem, type Job, type JobDetail, type MailHeader, type Meta, type Project, type SyncCollection, type SyncResult, type Turn,
   type DraftResult, type MessageSent, type Schemas, type AskBody, type AskChoice, type AskStart, type AskChosen, type TurnMoved,
   type ImportantItem, type ImportantGroup, type ImportantList, type ItemChange, type ItemActionResult, type SkippedList, type TriageRule,
+  type ApprovalView, type ApprovalDecision,
 } from '../api/client';
 import { STORES, type CacheDb, type StoreName } from './cache';
 import { TodayFeed } from './today';
@@ -201,7 +202,16 @@ export interface StoreState {
   skipped: Partial<Record<ImportantGroup, SkippedState>>;
   /** W3: the rules the person taught */
   rules: RulesState;
+  /** S4: approvals by id (waiting, and decided in the last day), from GET /approvals and the stream; never cached on
+   *  the device. `approvalsLoaded`: the list has been read once. */
+  approvals: Record<string, ApprovalView>;
+  approvalsLoaded: boolean;
 }
+
+/** S4: what deciding an approval came to. Not queued when offline: a decision is made on what the person sees now. */
+export type ApprovalOutcome =
+  | { ok: true; outcome: ApprovalDecision['outcome']; message: string; approval: ApprovalView }
+  | { ok: false; code: string; message: string; approval: ApprovalView | null };
 
 export interface StoreOptions {
   client: MwaClient;
@@ -237,6 +247,7 @@ const initial = (fixtures: boolean): StoreState => ({
   outbox: [], inflight: [], notices: [], fixtures,
   items: {}, important: { meta: null, loading: false, loaded: false, error: null }, skipped: {},
   rules: { list: [], loading: false, loaded: false, error: null },
+  approvals: {}, approvalsLoaded: false,
 });
 
 const byId = <T extends { id: string }>(xs: T[]) => Object.fromEntries(xs.map((x) => [x.id, x])) as Record<string, T>;
@@ -329,7 +340,7 @@ export class V2Store {
   private async clearDeviceCopy(): Promise<void> {
     this.set({
       jobs: {}, calendar: {}, conflicts: {}, projects: {}, threads: {}, threadLoaded: {}, live: {}, threadOlder: {}, threadNext: {},
-      askOutcomes: {}, askChoices: {}, asks: {}, refused: {}, items: {}, outbox: [], inflight: [], cursor: 0, updatedAt: null, ready: true,
+      askOutcomes: {}, askChoices: {}, asks: {}, refused: {}, items: {}, outbox: [], inflight: [], cursor: 0, updatedAt: null, ready: true, approvals: {}, approvalsLoaded: false,
       important: { meta: null, loading: false, loaded: false, error: null }, skipped: {}, rules: { list: [], loading: false, loaded: false, error: null },
       mail: { headers: [], note: '', connected: false, loaded: false, loading: false, error: null },
     });
@@ -591,10 +602,66 @@ export class V2Store {
       case 'turn': this.applyTurns(del ? [] : [m.data as Turn], del ? [m.id] : []); break;
       case 'mail': this.mailChanged(); break;
       case 'ask': if (!del && m.data) this.set({ asks: { ...this.s.asks, [m.id]: m.data as AskRecord } }); break;
+      case 'approval': this.putApproval(m.id, del ? null : m.data as ApprovalView); break;
       case 'item': this.upsert('items', del ? [] : [m.data as ImportantItem], del ? [m.id] : []); this.importantChanged(); break;
       default: break; // devices and anything newer: nothing on these screens
     }
     if (seq) this.setCursor(seq);
+  }
+
+  // ---------- S4: approvals ----------
+  private putApproval(id: string, v: ApprovalView | null) {
+    const next = { ...this.s.approvals };
+    if (v) next[id] = v; else delete next[id];
+    this.set({ approvals: next });
+  }
+  /** Read the approvals once per page (the status pill counts a chat's approvals; the stream keeps them current). */
+  private approvalsAsked = false;
+  ensureApprovals(): void {
+    if (this.approvalsAsked || this.s.approvalsLoaded) return;
+    this.approvalsAsked = true;
+    void this.loadApprovals();
+  }
+  /** The waiting approvals and those decided in the last day (the stream keeps them current after). */
+  async loadApprovals(): Promise<void> {
+    try {
+      const r = await this.client.listApprovals();
+      this.set({ approvals: Object.fromEntries([...r.recent, ...r.pending].map((a) => [a.id, a])), approvalsLoaded: true });
+    } catch (e) { this.noteError(e, true); }
+  }
+  /** One approval as it stands now; null when there is none (or the helper can't be reached: then `error`). */
+  async loadApproval(id: string): Promise<{ approval: ApprovalView | null; error: string | null }> {
+    try {
+      const r = await this.client.getApproval(id);
+      this.putApproval(id, r.approval);
+      return { approval: r.approval, error: null };
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) { this.putApproval(id, null); return { approval: null, error: null }; }
+      if (e instanceof SignInRequired) { this.signedOut(); return { approval: null, error: e.message }; }
+      return { approval: null, error: e instanceof NetworkError ? 'I can’t reach your helper right now. Nothing was decided.' : e instanceof Error ? e.message : String(e) };
+    }
+  }
+  /** Approve (it runs now, once) or not this time (with an optional note). Sent at once with its own key, never queued:
+   *  a decision taken offline could run later on what is no longer true. A refusal (decided elsewhere, expired) says so
+   *  and brings the approval up to date. */
+  async decideApproval(id: string, approve: boolean, note?: string, confirmed = false): Promise<ApprovalOutcome> {
+    const key = newKey(this.now());
+    try {
+      const r = approve ? await this.client.approve(id, { key, confirmed }) : await this.client.deny(id, note, { key });
+      this.putApproval(id, r.approval);
+      this.today.changed();
+      return { ok: true, outcome: r.outcome, message: r.message, approval: r.approval };
+    } catch (e) {
+      if (e instanceof SignInRequired) { this.signedOut(); return { ok: false, code: 'locked', message: e.message, approval: null }; }
+      if (e instanceof ApiError && (e.status === 409 || e.status === 404)) {
+        const now = await this.loadApproval(id);
+        this.today.changed();
+        return { ok: false, code: e.code, message: e.message, approval: now.approval };
+      }
+      const message = e instanceof NetworkError ? 'I can’t reach your helper right now, so nothing was decided. Try again when you’re back online.'
+        : e instanceof ApiError ? e.message : 'That didn’t go through. Nothing was decided.';
+      return { ok: false, code: e instanceof ApiError ? e.code : 'network', message, approval: this.s.approvals[id] ?? null };
+    }
   }
 
   // ---------- reads the screens ask for ----------

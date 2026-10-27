@@ -19,6 +19,8 @@
  *      you" with the tag mwa-waiting; a notificationclick on it opens the working sheet at that job in the open page
  *   4. "Send a test" reaches the mock and the page says which push service took it (not "delivered")
  *   3b. with only a classic (v1) tab open, a tap opens the job in v2 there, and the stored choice of v1 is kept
+ *   3c. (S4) an approval waiting is pushed as {kind:"approval", id, tag} only; a tap opens that approval in the approval
+ *       sheet (not Today, not the classic app); Not this time there declines it on the server
  *   5. Turn off: the server forgets it; axe on the section
  *   6. a paired phone (fixture world) sees the shared settings read-only, with a plain line why; axe
  *   6. the server is stopped by its PID; the mock is closed
@@ -233,6 +235,44 @@ try {
     const opened = await card.waitFor({ state: 'visible', timeout: 15_000 }).then(() => true, () => false);
     const kept = await page.evaluate(() => localStorage.getItem('mwa-ui'));
     check('a tap with only a classic (v1) tab: that tab opens the job in v2, and the person\'s choice of v1 is kept', opened && kept === 'v1', `opened=${opened} mwa-ui=${kept} url=${page.url()}`);
+  }
+
+  // ---------- 3c. S4: "Something needs your OK" opens that approval in the approval sheet, decided there ----------
+  if (regId && appDb) {
+    process.env.MWA_APPROVALS_DB = join(dirname(appDb), 'approvals.db');
+    process.env.MWA_APPROVAL_OWNER = 'mwa-serve';
+    const approvals = await import(pathToFileURL(join(ROOT, 'src', 'tools', 'approval.ts')).href);
+    const apId = approvals.stageAction({ tool: 'write_file', executor: 'write_file_granted', summary: 'Create the file /tmp/p3-smoke/PLANTED-notes.md (5 bytes) in a folder you granted.',
+      args: { path: '/tmp/p3-smoke/PLANTED-notes.md', content: 'hello' }, ctx: { sandboxDir: '.', interactive: true }, ttlMs: 30 * 60_000 });
+    const beforeAp = pushes.length;
+    for (let i = 0; i < 75 && pushes.length === beforeAp; i++) await sleep(200);
+    const ap = pushes[beforeAp];
+    let apPayload = '';
+    try { apPayload = ap ? decryptPayload(ap.body, ua.getPrivateKey(), AUTH).toString('utf8') : ''; } catch (e) { apPayload = `(could not decrypt: ${e.message})`; }
+    check('an approval waiting is pushed as exactly {kind:"approval", id, tag} — no file name', apPayload === JSON.stringify({ kind: 'approval', id: apId, tag: 'mwa-approval' }) && !ap.body.includes(Buffer.from('PLANTED')), apPayload);
+    await page.goto(`${BASE}/?ui=v2`);
+    await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 10_000 }).catch(() => {});
+    await page.getByRole('heading', { level: 1 }).first().waitFor({ timeout: 10_000 }).catch(() => {});
+    const cdp3 = await ctx.newCDPSession(page);
+    await cdp3.send('ServiceWorker.enable');
+    const sw = ctx.serviceWorkers()[0];
+    if (sw) await sw.evaluate(async () => { for (const n of await self.registration.getNotifications()) n.close(); });
+    await cdp3.send('ServiceWorker.deliverPushMessage', { origin: `${BASE}/`, registrationId: String(regId), data: apPayload });
+    let shown = [];
+    for (let i = 0; i < 25 && !shown.length && sw; i++) { shown = await sw.evaluate(async () => (await self.registration.getNotifications()).map((n) => ({ body: n.body, tag: n.tag, data: n.data }))); if (!shown.length) await sleep(200); }
+    check('the worker shows "Something needs your OK", pointing at the approval', shown.length === 1 && shown[0].body === 'Something needs your OK' && shown[0].data?.url === `${BASE}/?ui=v2&from=notification#/approval/${apId}`, JSON.stringify(shown));
+    if (sw && shown.length) await sw.evaluate(async () => { const [n] = await self.registration.getNotifications(); self.dispatchEvent(new NotificationEvent('notificationclick', { notification: n })); });
+    const art = page.locator(`#approval-dlg article.ap[data-approval="${apId}"]`);
+    const openedAp = await art.waitFor({ state: 'visible', timeout: 15_000 }).then(() => true, () => false);
+    check('a tap opens that approval in the approval sheet (not Today, not the classic app)', openedAp && !/ui=v1/.test(page.url()), page.url());
+    await page.screenshot({ path: join(OUT, '3c-tap-opens-approval.png') });
+    await axe(page, 'the approval sheet from a notification', '#approval-dlg');
+    if (openedAp) {
+      await art.getByRole('button', { name: 'Not this time' }).click();
+      const said = await art.getByText('OK — it won’t run. Nothing was changed.').waitFor({ timeout: 10_000 }).then(() => true, () => false);
+      const st = approvals.approvalStatus(apId)?.status;
+      check('Not this time there: declined on the server, nothing written', said && st === 'cancelled' && !existsSync('/tmp/p3-smoke/PLANTED-notes.md'), `said=${said} status=${st}`);
+    }
   }
 
   // ---------- 4. Send a test ----------

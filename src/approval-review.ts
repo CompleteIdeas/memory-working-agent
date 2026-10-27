@@ -20,7 +20,7 @@
  * Clef needs MWA_CLEF_TOKEN and MWA_CLEF_ACCOUNT (not the generic Cloudflare variables: setting them is the opt-in). The
  * action, the person's request and the run's taint go to Cloudflare; nothing else does.
  */
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readSync } from 'node:fs';
 import { inGitControlPath, runsLaterReason } from './tools/shell-gate.js';
 import { dirname, join, resolve } from 'node:path';
 import { dbFile } from './paths.js';
@@ -230,4 +230,30 @@ export function logReview(id: string, a: ReviewInput, r: Review, mode: ReviewMod
     mkdirSync(dirname(p), { recursive: true });
     appendFileSync(p, JSON.stringify({ at: Date.now(), id, mode, tool: a.tool, kind: a.kind, tainted: !!a.tainted, interactive: a.interactive, decision: r.decision, by: r.by, reason: r.reason, scores: r.scores, ms: r.ms, action: a.summary.slice(0, 400) }) + '\n');
   } catch { /* best effort */ }
+}
+
+/** v2 (S4): what the reviewer said about one staged action, from the shadow log (its newest line for that id), so the
+ *  approval screen can show it beside the action. Reads at most the last 512 KB of the log; null when the action was
+ *  never reviewed (the reviewer off) or its line has rotated out. */
+export function reviewFor(id: string, env: NodeJS.ProcessEnv = process.env): { decision: 'auto' | 'ask'; by: string; reason: string; mode: ReviewMode; at: number } | null {
+  if (!id) return null;
+  let fd: number | null = null;
+  try {
+    fd = openSync(reviewLogPath(env), 'r');
+    const size = fstatSync(fd).size;
+    const len = Math.min(size, 512 * 1024);
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split('\n');
+    const needle = `"id":${JSON.stringify(id)}`;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes(needle)) continue;
+      try {
+        const j = JSON.parse(lines[i]) as { id?: string; decision?: string; by?: string; reason?: string; mode?: string; at?: number };
+        if (j.id !== id) continue;
+        return { decision: j.decision === 'auto' ? 'auto' : 'ask', by: String(j.by ?? ''), reason: String(j.reason ?? ''), mode: (j.mode === 'on' ? 'on' : 'shadow'), at: Number(j.at ?? 0) };
+      } catch { /* a cut line: keep looking */ }
+    }
+    return null;
+  } catch { return null; } finally { if (fd !== null) try { closeSync(fd); } catch { /* */ } }
 }

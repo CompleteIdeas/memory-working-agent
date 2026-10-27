@@ -18,6 +18,7 @@ import { createContext, useContext, useEffect, useMemo, useState, useSyncExterna
 import { IMPORTANT_FEATURE, type V2Store, type StoreState, type ActionKind, type ActionArgs, type ActResult, type NotImportantScope, type SkippedRow } from './core';
 import { groupItems, handledItems, rulesWithPending, skippedWithPending, withPending } from './important';
 import { groupJobs, pillFor, activeJobs, monthLine } from './status';
+import { looseCount } from '../screens/approvals/words';
 import type { AskBody, AskChoice, CalendarItem, ImportantGroup, ImportantItem, Job, Project, TriageRule } from '../api/client';
 
 const Ctx = createContext<V2Store | null>(null);
@@ -51,6 +52,20 @@ export function useNow(tickMs = 30_000): number {
     return () => clearInterval(t);
   }, [store, tickMs, fixtures]);
   return now;
+}
+
+/** S4: the approvals the store holds (waiting, and decided in the last day). */
+export function useApprovals() {
+  const all = useSlice((s) => s.approvals);
+  const loaded = useSlice((s) => s.approvalsLoaded);
+  return useMemo(() => {
+    const list = Object.values(all);
+    return {
+      all, loaded,
+      pending: list.filter((a) => a.state === 'pending').sort((a, b) => a.createdAt - b.createdAt),
+      recent: list.filter((a) => a.state !== 'pending').sort((a, b) => (b.decidedAt ?? 0) - (a.decidedAt ?? 0)),
+    };
+  }, [all, loaded]);
 }
 
 export function useMeta() {
@@ -94,8 +109,13 @@ const ACTION_WORD: Partial<Record<ActionKind, string>> = {
 };
 
 export function useStatusPill() {
+  const store = useStore();
   const all = useSlice((s) => s.jobs);
-  return useMemo(() => pillFor(Object.values(all)), [all]);
+  const approvals = useSlice((s) => s.approvals);
+  const ready = useSlice((s) => s.ready);
+  // S4 review: a chat's approvals waiting count in the pill too (read once; the stream keeps them current)
+  useEffect(() => { if (ready) store.ensureApprovals(); }, [ready, store]);
+  return useMemo(() => pillFor(Object.values(all), looseCount(Object.values(approvals))), [all, approvals]);
 }
 
 /** Midnight-to-midnight local days → instants; an all-day item's dates are local dates, end exclusive. */

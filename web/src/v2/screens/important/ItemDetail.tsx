@@ -55,7 +55,9 @@ export function ItemDetailSheet({ item, askWith, onClose, controls }: {
   const now = useNow();
   const phishing = item?.caution === 'phishing';
   const open = item?.state === 'open';
-  const act = item?.action && !phishing && item.action.kind !== 'review-reply' ? item.action : null;
+  // S4: a phishing-flagged approval keeps its Review here (not on the row): it opens the approval sheet, whose strongest
+  // warning comes first, so it can be looked at and declined in this app
+  const act = item?.action && (!phishing || item.action.kind === 'review-approval') && item.action.kind !== 'review-reply' ? item.action : null;
   return (
     <>
       <Sheet id="item-dlg" titleId="item-title" title={item?.title ?? ''} open={!!item} onClose={onClose}>
@@ -64,7 +66,7 @@ export function ItemDetailSheet({ item, askWith, onClose, controls }: {
             <div className="senderblock"><SenderLine it={item} now={now} /></div>
             {item.caution === 'unverified' && <p><CautionTag caution={item.caution} /></p>}
             {phishing ? <CautionBox caution={item.caution} why={item.why} /> : item.why && <p className="detailwhy">{item.why}</p>}
-            {act && <ActionPreview it={item} />}
+            {act && !phishing && <ActionPreview it={item} />}
             <div className="acts dacts">
               {act && open && <button type="button" className={`vbtn${act.kind === 'add-to-calendar' || act.kind === 'draft-note' ? ' vbtn-primary' : ''}`} disabled={controls.busy(item)} onClick={() => controls.run(item)}>{act.label}</button>}
               {isCalendar(item) && controls.openCalendar && <button type="button" className="vbtn" onClick={controls.openCalendar}>Open in Calendar</button>}

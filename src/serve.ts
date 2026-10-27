@@ -57,7 +57,8 @@ import { scanSources } from './onboard.js';
 import { buildRegistry } from './tools/build.js';
 import { AGENT_BROWSER_HEADER } from './tools/browser.js';
 import { goalsMentioned, WORK_NOTE_HEAD } from './work-note.js';
-import { listPendingActions, confirmPending, cancelPending, setApprovalOwner, runApproved, recentApprovalOutcomes, recentAutoApproved } from './tools/approval.js';
+import { listPendingActions, setApprovalOwner, runApproved } from './tools/approval.js';
+import { handleLegacyApprovals } from './approval-decisions.js';
 import { logger, readLogs, type LogLevel } from './logger.js';
 import { createV1Handler } from './api/v1.js';
 import { makeAuthenticate, hasValidDeviceCookie } from './api/auth.js';
@@ -1197,22 +1198,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         return;
       }
       // Pending approvals — the ONLY place the app approves anything (BL-03): the model can stage an
-      // action but not approve it; the person approves or declines it here (the chat's approvals panel).
-      if (p === '/api/approvals' && req.method === 'GET') {
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ pending: listPendingActions(), recent: recentApprovalOutcomes(), auto: recentAutoApproved() }));
-        return;
-      }
-      if (p === '/api/approvals/confirm' && req.method === 'POST') {
-        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
-        const b = await readBody(req);
-        // An explicit id only: a person approves the card they are looking at, never "the latest".
-        // The action runs in the context it was staged in (BL-03), so the ctx here only gates.
-        if (!b.id) { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, message: 'which approval? (id is required)' })); return; }
-        const out = await confirmPending(String(b.id), { sandboxDir: resolve('.'), interactive: true });
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: out.startsWith('[CONFIRMED'), message: out }));
-        return;
+      // action but not approve it; the person approves or declines it here (the chat's approvals panel), or in the v2
+      // app (/api/v1/approvals). v2 S4: one decision for both, in src/approval-decisions.ts.
+      if (p === '/api/approvals' || p === '/api/approvals/confirm' || p === '/api/approvals/cancel') {
+        if (await handleLegacyApprovals(req, res, p, { sameOrigin: sameOriginOk, readBody })) return;
       }
       // BL-70: what a share link opens — that one file, read-only: its name, its bytes, its exports.
       if (p.startsWith('/api/share/') && req.method === 'GET') {
@@ -1385,13 +1374,6 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         if (!message) { res.end(JSON.stringify({ ok: false, message: 'Nothing to add.' })); return; }
         const ok = liveRuns.steer(session, message);
         res.end(JSON.stringify({ ok, message: ok ? 'Added to the running task. It is taken into account from the next step.' : 'Nothing is running in this conversation — send it as a message.' }));
-        return;
-      }
-      if (p === '/api/approvals/cancel' && req.method === 'POST') {
-        if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
-        const b = await readBody(req);
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ message: cancelPending(String(b.id ?? '')) }));
         return;
       }
       // BL-62: setup cards. The person types a secret here; it is checked and saved, and never shown back or to the model.

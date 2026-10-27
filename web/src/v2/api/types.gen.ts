@@ -306,7 +306,8 @@ export interface paths {
          * Live updates (server-sent events), resumable from a cursor.
          * @description Events: `hello` {cursor, head}; `change` {seq, entity, id, op, data?} with `id: <seq>` (a job's change carries
          *     its current view in `data`); `live` {session, type, stage, at} — a running try's progress, at most once a
-         *     second per run; `reset` {cursor, reason} — the cursor was older than what is kept: call /sync without
+         *     second per run; an approval's change (S4: staged, decided, run or expired, from any app or Telegram) carries
+         *     its current view (ApprovalView) in `data`; `reset` {cursor, reason} — the cursor was older than what is kept: call /sync without
          *     `since`. A `change` with entity `today` and no data (at most every 5 s) means Today changed (a job,
          *     calendar, item or action changed, an approval or a sync's state moved, or the day passed midnight, 05:00, noon
          *     or 17:00):
@@ -1766,6 +1767,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** S4: what your helper asks your OK for (waiting, oldest first) and what was decided in the last day (read). */
+        get: operations["listApprovals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** S4: one approval, whatever its state (read). 404 when there is none (cleared after a day). */
+        get: operations["getApproval"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S4: approve it: it runs now, once, as the classic app's Approve does (approve). A high-risk one (its view says confirm: true) needs confirmed: true, else 409 confirm_needed naming the risks (the app's "Are you sure?" sends it; the classic app and Telegram are unchanged). 409 already_decided, expired, step_up_required (it stays waiting), refused or not_here; 404 when there is none. */
+        post: operations["approveApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/{id}/deny": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S4: not this time: it will not run (approve). An optional note tells the helper why (it reads it on its next run). 409 already_decided or expired; 404 when there is none. */
+        post: operations["denyApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3150,6 +3225,89 @@ export interface components {
         ConnectionChange: {
             connections: components["schemas"]["Connections"];
             message: string;
+        };
+        /** @description S4: an action your helper staged for your OK, said plainly (src/v2/approvals.ts). A caller without the approve scope gets exact, content and result cut to 300 characters. */
+        ApprovalView: {
+            id: string;
+            /** @description The tool that would run (run_command, write_file, policy_save, add_mcp_server, and so on). */
+            tool: string;
+            /** @enum {string} */
+            kind: "tool" | "captured-policy";
+            /**
+             * @description approved: approved here, it runs in the app that asked for it (Telegram or the mailbox).
+             * @enum {string}
+             */
+            state: "pending" | "approved" | "executing" | "done" | "failed" | "declined" | "expired";
+            /** @description What will happen, in a few words ("Delete report.pdf", "Save a standing preference"). */
+            title: string;
+            rows: {
+                label: string;
+                value: string;
+            }[];
+            ifApprove: string;
+            ifDecline: string;
+            /** @description The action exactly as it will run (the command, the server line), when the title says less. */
+            exact: string | null;
+            /** @description For a file or note it will write: the text (first 4,000 characters). */
+            content: string | null;
+            /** @description Why it asks (the gate's reason). */
+            why: string | null;
+            /** @description The job whose run asked for it. */
+            job: {
+                id: string;
+                title: string;
+            } | null;
+            createdAt: number;
+            expiresAt: number;
+            expiresInSec: number;
+            decidedAt: number | null;
+            /** @description Strongest first. high: money, sending as you, deleting, the network, this computer's controls, a path outside the folders you granted, a new server, outside content, a phishing source. */
+            risks: {
+                /** @enum {string} */
+                kind: "phishing" | "outside" | "money" | "send" | "delete" | "network" | "self" | "outside-folders" | "runs-as-you" | "overwrite" | "granted-folder" | "standing" | "new-server" | "skips-runs" | "someone-else";
+                /** @enum {string} */
+                level: "high" | "warn" | "info";
+                text: string;
+            }[];
+            /** @description A high risk: the app asks "Are you sure?" before approving. */
+            confirm: boolean;
+            /**
+             * @description phishing: what tainted the run was flagged as phishing. Never a Needs-you card or a notification; shown with the strongest warning.
+             * @enum {string|null}
+             */
+            caution: "phishing" | null;
+            /**
+             * @description untrusted: proposed after reading outside content.
+             * @enum {string}
+             */
+            trust: "trusted" | "untrusted";
+            /** @description What MWA's reviewer would have done (shadow) or the fixed rule that always asks. */
+            reviewer: {
+                /** @enum {string} */
+                decision: "auto" | "ask";
+                by: string;
+                reason: string;
+            } | null;
+            /** @description false: asked for in someone else's conversation (a Telegram contact). */
+            forOwner: boolean;
+            ranIn: string | null;
+            /** @description What happened (what it printed, the error, or your note when you said no). */
+            result: string | null;
+        };
+        ApprovalList: {
+            /** @description Waiting, the one waiting longest first. */
+            pending: components["schemas"]["ApprovalView"][];
+            /** @description Decided in the last day, newest first (at most 20). */
+            recent: components["schemas"]["ApprovalView"][];
+        };
+        ApprovalDecision: {
+            /**
+             * @description not_done: approved, but the action's own check refused when it ran; nothing happened (the message says why).
+             * @enum {string}
+             */
+            outcome: "done" | "failed" | "approved" | "declined" | "not_done";
+            message: string;
+            approval: components["schemas"]["ApprovalView"];
         };
     };
     responses: {
@@ -6290,6 +6448,115 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConnectionChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listApprovals: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The approvals. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalList"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getApproval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The approval. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        approval: components["schemas"]["ApprovalView"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    approveApproval: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description The person answered "Are you sure?" with yes. Required when the approval's confirm is true. */
+                    confirmed?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Decided. outcome done (it ran), failed (it ran and failed) or approved (it runs in the app that asked). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalDecision"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    denyApproval: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    note?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Declined. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalDecision"];
                 };
             };
             default: components["responses"]["Error"];
