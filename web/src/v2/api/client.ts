@@ -84,6 +84,14 @@ export type FileRow = Schemas['FileRow'];
 export type FileList = Json<'/files', 'get', 200>;
 export type SettingsPatch = { helperName?: string; ownerName?: string | null; timeZone?: string; firstRunDone?: boolean; features?: { sorting?: boolean }; publicUrl?: string | null };
 export type SpendingPatch = { monthlyUsd?: number | null; perFireUsd?: number | null };
+// P3: web push
+export type PushSubscriptionView = Schemas['PushSubscription'];
+export type PushSettings = Schemas['PushSettings'];
+export type PushList = Json<'/push/subscriptions', 'get', 200>;
+export type PushTestResult = Json<'/push/test', 'post', 200>;
+export type PushKindName = 'approval' | 'waiting' | 'result' | 'morning';
+export type PushSettingsPatch = { kinds?: Partial<Record<PushKindName, boolean>>; morning?: string; quietHours?: string | null };
+export type PushSubscribeBody = { endpoint: string; keys: { p256dh: string; auth: string }; expirationTime?: number | null; platform?: string; replaces?: string };
 
 /** The version this build reports; set by vite.config.ts from web/package.json. */
 declare const __MWA_WEB_VERSION__: string | undefined;
@@ -330,6 +338,13 @@ export class MwaClient {
   async uploadFile(file: Blob, q: { name: string; projectId?: string }, o: { key?: string; signal?: AbortSignal } = {}) {
     return (await this.call<UploadedFile>('POST', '/files', { query: q, raw: { data: file, type: 'application/octet-stream' }, key: o.key, signal: o.signal })).body;
   }
+
+  // ---- P3: web push ----
+  listPushSubscriptions() { return this.get<PushList>('/push/subscriptions'); }
+  addPushSubscription(body: PushSubscribeBody, o: { key?: string } = {}) { return this.post<{ subscription: PushSubscriptionView }>('/push/subscriptions', { body, key: o.key }); }
+  async removePushSubscription(id: string, o: { key?: string } = {}) { return (await this.call<{ removed: string }>('DELETE', '/push/subscriptions/{id}', { path: { id }, key: o.key })).body; }
+  async updatePushSettings(body: PushSettingsPatch, o: { key?: string } = {}) { return (await this.call<PushSettings>('PATCH', '/push/settings', { body, key: o.key })).body; }
+  sendPushTest(o: { key?: string } = {}) { return this.post<PushTestResult>('/push/test', { key: o.key }); }
 }
 
 function toError(status: number, body: unknown): ApiError {

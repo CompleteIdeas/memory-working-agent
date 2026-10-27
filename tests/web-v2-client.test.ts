@@ -92,6 +92,12 @@ const CALLS: Record<string, (c: MwaClient) => unknown> = {
   finishWrap: (c) => c.finishWrap({ day: '2026-11-09' }),
   listTriageRules: (c) => c.listTriageRules(),
   deleteTriageRule: (c) => c.deleteTriageRule('r1'),
+  // P3
+  listPushSubscriptions: (c) => c.listPushSubscriptions(),
+  addPushSubscription: (c) => c.addPushSubscription({ endpoint: 'https://fcm.googleapis.com/fcm/send/x', keys: { p256dh: 'p', auth: 'a' } }),
+  removePushSubscription: (c) => c.removePushSubscription('ps_1'),
+  updatePushSettings: (c) => c.updatePushSettings({ morning: '07:30' }),
+  sendPushTest: (c) => c.sendPushTest(),
   // W5
   getMe: (c) => c.getMe(),
   signIn: (c) => c.signIn('pw'),

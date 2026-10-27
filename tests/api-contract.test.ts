@@ -32,6 +32,10 @@ import { insertAsk, buildPlan } from '../src/v2/ask.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setSettingsRouteDeps } from '../src/api/routes/settings.js';
+import { createECDH, randomBytes } from 'node:crypto';
+import { configureSessions, issueSession } from '../src/api/sessions.js';
+import { saveSubscription } from '../src/v2/push-store.js';
+import { setPushDeps } from '../src/v2/push.js';
 
 const spec = parse(readFileSync(new URL('../api/openapi.yaml', import.meta.url), 'utf8'));
 const METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
@@ -167,12 +171,15 @@ beforeAll(async () => {
     startGoogle: () => 'https://accounts.google.example/consent', startOutlook: () => 'https://login.microsoft.example/consent',
     startOutlookDeviceCode: async () => ({ user_code: 'ABCD-1234', verification_uri: 'https://microsoft.com/devicelogin', expires_in: 900 }),
   });
+  // P3: a password (so a session cookie names its subscriptions' owner) and a push service that always accepts
+  configureSessions({ password: 'contract-push-pw' });
+  setPushDeps({ transport: async () => ({ status: 201 }) });
   const v1 = createV1(v1Routes(), { authenticate: () => TEST_CALLER, sameOrigin: () => true });
   server = createServer(async (req, res) => { if (!(await v1(req, res))) { res.writeHead(404); res.end(); } });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
-afterAll(() => { server?.close(); setSettingsRouteDeps(null); for (const k of ['MWA_CONFIG_PATH', 'MWA_TOKEN_LOG', 'MWA_VAULT_PATH']) delete process.env[k]; setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); setTodayDeps(null); });
+afterAll(() => { server?.close(); setSettingsRouteDeps(null); configureSessions({ password: '' }); setPushDeps(null); for (const k of ['MWA_CONFIG_PATH', 'MWA_TOKEN_LOG', 'MWA_VAULT_PATH']) delete process.env[k]; setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); setTodayDeps(null); });
 
 /** One request per operation (and a few error cases). Slices append theirs. */
 const ids: Record<string, string> = {};
@@ -356,7 +363,22 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /files', path: '/files?projectId=pr_nope&name=notes.txt', init: () => ({ method: 'POST', headers: { 'idempotency-key': `contract-key-${++keyN}`, 'content-type': 'text/plain' }, body: 'x' }), status: 404 },
   { op: 'GET /files', path: () => `/files?projectId=${ids.eventing}`, status: 200 },
   { op: 'GET /files', path: '/files', status: 200 },
+  // P3: web push (a fake push service; the subscriptions belong to a fresh password session each)
+  { op: 'GET /push/subscriptions', path: '/push/subscriptions', status: 200 },
+  { op: 'POST /push/subscriptions', path: '/push/subscriptions', init: () => ({ ...post(), headers: { ...(post().headers as Record<string, string>), cookie: pushSession().cookie }, body: JSON.stringify(pushBrowser()) }), status: 201 },
+  { op: 'POST /push/subscriptions', path: '/push/subscriptions', init: () => ({ ...post(), headers: { ...(post().headers as Record<string, string>), cookie: pushSession().cookie }, body: JSON.stringify({ ...pushBrowser(), endpoint: 'http://evil.example/push' }) }), status: 400 },
+  { op: 'PATCH /push/settings', path: '/push/settings', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ morning: '08:00', kinds: { result: true } }) }), status: 200 },
+  { op: 'PATCH /push/settings', path: '/push/settings', init: () => ({ ...post(), method: 'PATCH', body: JSON.stringify({ morning: '13:00' }) }), status: 400 },
+  { op: 'POST /push/test', path: '/push/test', init: () => { const s = pushSession(); const b = pushBrowser(); saveSubscription({ endpoint: b.endpoint, p256dh: b.keys.p256dh, auth: b.keys.auth, owner: `session:${s.id}`, vendor: 'google' }); return { ...post(), headers: { ...(post().headers as Record<string, string>), cookie: s.cookie } }; }, status: 200 },
+  { op: 'POST /push/test', path: '/push/test', init: () => ({ ...post(), headers: { ...(post().headers as Record<string, string>), cookie: pushSession().cookie } }), status: 409 },
+  { op: 'DELETE /push/subscriptions/{id}', path: () => { const b = pushBrowser(); return `/push/subscriptions/${saveSubscription({ endpoint: b.endpoint, p256dh: b.keys.p256dh, auth: b.keys.auth, owner: 'local', vendor: 'google' }).id}`; }, init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 200 },
+  { op: 'DELETE /push/subscriptions/{id}', path: '/push/subscriptions/ps_nope', init: () => ({ method: 'DELETE', headers: { 'idempotency-key': `contract-key-${++keyN}` } }), status: 404 },
 ];
+function pushSession() { const s = issueSession(); return { id: s.id, cookie: `mwa_session=${s.token}` }; }
+function pushBrowser() {
+  const e = createECDH('prime256v1'); e.generateKeys();
+  return { endpoint: `https://fcm.googleapis.com/fcm/send/${randomBytes(6).toString('hex')}`, keys: { p256dh: e.getPublicKey().toString('base64url'), auth: randomBytes(16).toString('base64url') } };
+}
 
 describe('responses match the contract', () => {
   it('the schema check rejects a wrong response (it is not vacuous)', () => {

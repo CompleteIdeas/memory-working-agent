@@ -74,6 +74,7 @@ import { startCalendarSync } from './sync/calendar.js';
 import { startMailSync, openMail } from './sync/mail.js';
 import { startImportant } from './v2/important-serve.js';
 import { setTodayDeps } from './v2/today.js';
+import { startPushNotifier } from './v2/push.js';
 import { mailSyncOn } from './sync/flags.js';
 import { migrateV2Once, describeReport } from './v2/migrate.js';
 import { reapDeadTries, personAction, jobByGoal, busyReason, viewJob, jobBySchedule, getJob } from './v2/jobs.js';
@@ -801,6 +802,12 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   startImportant({ memory: () => new MwaMemory(SERVE_AGENT, dbFile(), loadConfig().awm.workspace), running: () => new Set(liveRuns.all().map((r) => r.session)) });
   // v2 (A10): Today composes the slices above (what the helper did comes from app.db `actions`). No model calls.
   setTodayDeps({
+    running: () => new Set(liveRuns.all().map((r) => r.session)),
+    pendingApprovals: () => listPendingActions(),
+  });
+  // v2 (P3): web push to the installed app — approvals waiting, jobs waiting, results ready, the morning check-in.
+  // Payloads carry a kind and an id only (src/v2/push.ts); every 30 s, quiet hours and an hourly limit respected.
+  startPushNotifier({
     running: () => new Set(liveRuns.all().map((r) => r.session)),
     pendingApprovals: () => listPendingActions(),
   });

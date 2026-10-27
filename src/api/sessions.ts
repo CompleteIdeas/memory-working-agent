@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { appDb, registerMigrations } from '../v2/db.js';
 import { dbFile } from '../paths.js';
+import { removeSubscriptionsOf } from '../v2/push-store.js';
 
 export const SESSION_MS = 30 * 24 * 3_600_000;
 export const SESSION_COOKIE = 'mwa_session';
@@ -120,13 +121,16 @@ export function revokeSessionOf(req: IncomingMessage): boolean {
   const id = sessionIdOf(cookieToken(req));
   if (!id) return false;
   appDb().prepare('UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').run(Date.now(), id);
+  removeSubscriptionsOf(`session:${id}`); // P3: no more notifications to this browser
   return true;
 }
 /** Sign every password session out (devices are removed one by one in Settings). Returns how many were live. */
 export function revokeAllSessions(): number {
   const now = Date.now();
   setAppSetting('sessions_cutoff', String(now));
-  return appDb().prepare('UPDATE sessions SET revoked_at = ? WHERE revoked_at IS NULL').run(now).changes;
+  const n = appDb().prepare('UPDATE sessions SET revoked_at = ? WHERE revoked_at IS NULL').run(now).changes;
+  removeSubscriptionsOf('session:', { prefix: true }); // P3: every password browser stops getting notifications
+  return n;
 }
 /**
  * Forget sessions that can't come back (W5 re-review): ones older than a session can live, and revoked ones issued

@@ -2,24 +2,45 @@
  * MWA's service worker (v2 build, slices P1/P2). Bundled by web/vite-pwa.ts into dist-ui/sw.js after the app is
  * built, with this build's file list as `__MWA_BUILD__`. The decisions are in sw-logic.ts (unit-tested); this file only
  * wires them to the worker's events. Not part of the page bundle.
+ * P3: push (fixed words per kind; the payload is {kind, id, tag} only), notificationclick (to the right screen) and
+ * pushsubscriptionchange (subscribe again and tell the server).
  */
 import {
   acceptable, cacheName, cachesToDelete, pageAnswer, PRECACHE_TIMEOUT_MS, SHELL_FETCH, precacheUrls, route, tryNetwork,
-  type BuildInfo, type BuildReply, type ToWorker,
+  notificationFor, pickClient, safeTarget, clickPlan, resubscribeRequest, keyBytes,
+  type BuildInfo, type BuildReply, type ToWorker, type OpenMessage,
 } from './sw-logic';
 
 // the few worker types this file needs (the web tsconfig has the DOM lib, not WebWorker)
 interface ExtendableEvent extends Event { waitUntil(p: Promise<unknown>): void }
 interface FetchEvent extends ExtendableEvent { request: Request; respondWith(r: Response | Promise<Response>): void }
 interface MessageEventW extends ExtendableEvent { data: unknown; ports: readonly MessagePort[]; source: { postMessage(m: unknown): void } | null }
+// P3: web push
+interface PushEventW extends ExtendableEvent { data: { text(): string } | null }
+interface NotificationW { data?: { url?: string } | null; close(): void }
+interface NotificationEventW extends ExtendableEvent { notification: NotificationW }
+interface PushSub { endpoint: string; options?: { applicationServerKey?: ArrayBuffer | null }; toJSON(): { endpoint?: string; expirationTime?: number | null; keys?: Record<string, string> } }
+interface PushSubChangeEventW extends ExtendableEvent { oldSubscription?: PushSub | null; newSubscription?: PushSub | null }
+interface WindowClientW { url: string; type?: string; focused?: boolean; visibilityState?: string; postMessage(m: unknown): void; focus(): Promise<unknown>; navigate?(url: string): Promise<unknown> }
 interface WorkerScope {
-  registration: { scope: string };
+  registration: {
+    scope: string;
+    showNotification?(title: string, options: object): Promise<void>;
+    pushManager?: { subscribe(o: { userVisibleOnly: boolean; applicationServerKey: BufferSource }): Promise<PushSub> };
+  };
   navigator?: { onLine?: boolean };
   skipWaiting(): Promise<void>;
-  clients: { claim(): Promise<void> };
+  clients: {
+    claim(): Promise<void>;
+    matchAll?(o: { type: 'window'; includeUncontrolled: boolean }): Promise<readonly WindowClientW[]>;
+    openWindow?(url: string): Promise<unknown>;
+  };
   addEventListener(t: 'install' | 'activate', f: (e: ExtendableEvent) => void): void;
   addEventListener(t: 'fetch', f: (e: FetchEvent) => void): void;
   addEventListener(t: 'message', f: (e: MessageEventW) => void): void;
+  addEventListener(t: 'push', f: (e: PushEventW) => void): void;
+  addEventListener(t: 'notificationclick', f: (e: NotificationEventW) => void): void;
+  addEventListener(t: 'pushsubscriptionchange', f: (e: PushSubChangeEventW) => void): void;
 }
 declare const __MWA_BUILD__: BuildInfo;
 const sw = self as unknown as WorkerScope;
@@ -108,4 +129,61 @@ sw.addEventListener('fetch', (e) => {
   if (r.kind === 'page') { e.respondWith(page(req)); return; }
   if (r.kind === 'precached') { e.respondWith(anyCache(req, r.key)); return; }
   e.respondWith(anyCache(req));
+});
+
+// ── P3: web push ──────────────────────────────────────────────────────────────────────────────────────────────
+// The payload is {kind, id, tag} only; the words shown are fixed per kind (sw-logic.ts). A push must always show a
+// notification (userVisibleOnly), so an unreadable one shows the generic words.
+sw.addEventListener('push', (e) => {
+  let text: string | null = null;
+  try { text = e.data ? e.data.text() : null; } catch { text = null; }
+  const n = notificationFor(text, scope());
+  e.waitUntil(sw.registration.showNotification ? sw.registration.showNotification(n.title, n.options) : Promise.resolve());
+});
+
+sw.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const url = safeTarget(e.notification.data?.url, scope());
+  e.waitUntil((async () => {
+    const list = sw.clients.matchAll ? await sw.clients.matchAll({ type: 'window', includeUncontrolled: true }) : [];
+    const c = pickClient(list, scope());
+    const plan = clickPlan(c);
+    if (c && plan.kind === 'message') {
+      const m: OpenMessage = { type: 'MWA_OPEN', url };
+      c.postMessage(m);
+      await c.focus().catch(() => undefined);
+      return;
+    }
+    if (c && plan.kind === 'navigate' && c.navigate) {
+      await c.navigate(url).catch(() => undefined);
+      await c.focus().catch(() => undefined);
+      return;
+    }
+    await sw.clients.openWindow?.(url);
+  })());
+});
+
+/** The browser replaced the subscription (it expired, or the push service rotated it): subscribe again if it did not
+ *  already, and tell the server, which drops the old endpoint. Sent with this browser's cookie (its device or
+ *  session), as the page would. */
+async function resubscribe(e: PushSubChangeEventW): Promise<void> {
+  const old = e.oldSubscription ?? null;
+  let sub = e.newSubscription ?? null;
+  const api = new URL('api/v1/push/subscriptions', scope()).href;
+  if (!sub) {
+    let key: BufferSource | null = old?.options?.applicationServerKey ?? null;
+    if (!key) {
+      const r = await fetch(api, { credentials: 'same-origin', headers: { 'x-mwa-client': `web/${INFO.version}` } });
+      if (!r.ok) return;
+      key = keyBytes(String(((await r.json()) as { vapidPublicKey?: string }).vapidPublicKey ?? '')) as BufferSource;
+    }
+    if (!sw.registration.pushManager) return;
+    sub = await sw.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+  }
+  const req = resubscribeRequest(sub.toJSON(), old?.endpoint ?? null, INFO.version, `swresub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`);
+  if (!req) return;
+  await fetch(api, { method: 'POST', credentials: 'same-origin', headers: req.headers, body: req.body });
+}
+sw.addEventListener('pushsubscriptionchange', (e) => {
+  e.waitUntil(resubscribe(e).catch(() => undefined));
 });

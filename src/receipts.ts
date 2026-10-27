@@ -16,12 +16,13 @@ import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFi
 import { dirname, join, resolve } from 'node:path';
 import { notifyPath } from './paths.js';
 
-export type ReceiptChannel = 'app' | 'telegram' | 'none';
+export type ReceiptChannel = 'app' | 'telegram' | 'push' | 'none';
 /** stored: written to the app's feed · served: handed to an open app tab (not proof it was read) · sent: accepted by
- *  Telegram · held: waiting for quiet hours to end or a retry · failed / dropped: did not arrive ·
+ *  Telegram · accepted: (web push, P3) the browser vendor's push service took it — NOT that the phone showed it (the
+ *  phone may be off; the service keeps it for a few hours), so it does not count as reached · held: waiting for quiet hours to end or a retry · failed / dropped: did not arrive ·
  *  not-sent: the job's delivery setting kept it quiet · superseded: a later result of the same job
  *  replaced it while it waited (that later one carries the fate). A job with NO channel is `failed`. */
-export type ReceiptStatus = 'stored' | 'served' | 'sent' | 'held' | 'failed' | 'dropped' | 'not-sent' | 'superseded';
+export type ReceiptStatus = 'stored' | 'served' | 'sent' | 'accepted' | 'held' | 'failed' | 'dropped' | 'not-sent' | 'superseded';
 export interface Receipt { ts: number; job: string; fire: string; channel: ReceiptChannel; status: ReceiptStatus; detail?: string; by: string }
 
 const MAX_BYTES = 1_000_000;
@@ -111,7 +112,7 @@ export function jobDeliveries(job: string, receipts: Receipt[] = readReceipts())
     .sort((a, b) => b.ts - a.ts);
 }
 
-const CHANNEL = { app: 'the app', telegram: 'Telegram', none: '' } as const;
+const CHANNEL = { app: 'the app', telegram: 'Telegram', push: 'phone notifications', none: '' } as const;
 /** The time, with the date when it isn't today — a job that stopped firing must not look current. */
 const hhmm = (ts: number) => {
   const d = new Date(ts); const t = d.toTimeString().slice(0, 5);
@@ -122,6 +123,7 @@ function describe(r: Receipt): string {
   const where = CHANNEL[r.channel];
   switch (r.status) {
     case 'sent': return `sent to ${where} ${hhmm(r.ts)}${r.detail ? ` (${r.detail})` : ''}`;
+    case 'accepted': return `handed to the push service ${hhmm(r.ts)} (not proof the phone showed it)`;
     case 'served': return `shown in an open app tab ${hhmm(r.ts)} (not proof it was read)`;
     case 'stored': return `saved in ${where}, not yet shown in an open tab`;
     case 'superseded': return `replaced by a later result before it was sent`;

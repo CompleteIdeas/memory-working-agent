@@ -1284,13 +1284,82 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/push/subscriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** P3: the server's VAPID public key, this caller's web push subscriptions (an admin sees all), and the notification settings. */
+        get: operations["listPushSubscriptions"];
+        put?: never;
+        /** P3: store this browser's push subscription for this caller (a paired device or a password session). Only https endpoints on Google's, Apple's, Mozilla's or Microsoft's push service are accepted (400 bad_endpoint). `replaces` is the endpoint it supersedes (pushsubscriptionchange). */
+        post: operations["addPushSubscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/push/subscriptions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** P3: remove a subscription: the caller's own (an admin: any). */
+        delete: operations["removePushSubscription"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/push/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** P3: which kinds notify, the morning time, and quiet hours (null or "off" for none). */
+        patch: operations["updatePushSettings"];
+        trace?: never;
+    };
+    "/push/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** P3: send a test notification to this caller's own subscriptions now (quiet hours or not; at most 5 per 10 minutes). "accepted" means the push service took it, not that the phone showed it. */
+        post: operations["sendPushTest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         Error: {
             error: {
-                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer; important: bad_group, bad_state, bad_scope, not_handled, not_open, no_action, freemail_domain, kind_not_available, unavailable; W5 settings and files: no_password, wrong_password, not_a_session, bad_body, bad_name, bad_time_zone, bad_url, bad_limit, bad_cap, fixed, bad_config, no_file, no_name, empty_file, unsafe_document, busy, storage_full. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
+                /** @description Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer; important: bad_group, bad_state, bad_scope, not_handled, not_open, no_action, freemail_domain, kind_not_available, unavailable; push (P3): bad_endpoint, bad_keys, bad_kinds, bad_time, bad_quiet, not_subscribed, too_many_tests; W5 settings and files: no_password, wrong_password, not_a_session, bad_body, bad_name, bad_time_zone, bad_url, bad_limit, bad_cap, fixed, bad_config, no_file, no_name, empty_file, unsafe_document, busy, storage_full. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again. */
                 code: string;
                 /** @description Plain words for a person. */
                 message: string;
@@ -2356,6 +2425,43 @@ export interface components {
             /** @description The settings file (mwa.config.json) cannot be read: what is wrong, in plain words. Show it instead of first run. */
             configError: string | null;
             features: components["schemas"]["Feature"][];
+        };
+        /** @description P3: one browser's web push subscription. The endpoint is shown only to the browser that owns it. */
+        PushSubscription: {
+            id: string;
+            /** @description This caller's own (this device or this signed-in browser). */
+            mine: boolean;
+            /** @enum {string} */
+            vendor: "google" | "apple" | "mozilla" | "microsoft" | "test";
+            /** @description Plain words, such as "Google's push service". */
+            service: string;
+            platform: string | null;
+            /** @enum {string} */
+            owner: "device" | "session" | "local";
+            createdAt: number;
+            /** @description When the push service last accepted a message for it (not proof it was shown). */
+            lastOk: number | null;
+            lastError: string | null;
+            /** @description Only on the caller's own subscriptions. */
+            endpoint?: string;
+        };
+        PushSettings: {
+            kinds: {
+                approval: boolean;
+                waiting: boolean;
+                result: boolean;
+                morning: boolean;
+            };
+            /** @description The morning check-in time (05:00 to 11:30), in timeZone. */
+            morning: string;
+            timeZone: string;
+            quietHours: {
+                /** @description HH:MM-HH:MM, or null for none. The same quiet hours Telegram respects (the helper computer's clock). */
+                value: string | null;
+                /** @description Set by the deployment (MWA_QUIET_HOURS); not changeable here. */
+                fixed: boolean;
+                invalid: boolean;
+            };
         };
         Spending: {
             month: {
@@ -4710,6 +4816,167 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UploadedFile"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listPushSubscriptions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Subscriptions and settings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description The applicationServerKey for PushManager.subscribe (base64url, an uncompressed P-256 point). */
+                        vapidPublicKey: string;
+                        subscriptions: components["schemas"]["PushSubscription"][];
+                        settings: components["schemas"]["PushSettings"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    addPushSubscription: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    endpoint: string;
+                    keys: {
+                        p256dh: string;
+                        auth: string;
+                    };
+                    expirationTime?: number | null;
+                    platform?: string;
+                    replaces?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Stored. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        subscription: components["schemas"]["PushSubscription"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    removePushSubscription: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        removed: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updatePushSettings: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    kinds?: {
+                        approval?: boolean;
+                        waiting?: boolean;
+                        result?: boolean;
+                        morning?: boolean;
+                    };
+                    morning?: string;
+                    quietHours?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description The settings now. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PushSettings"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    sendPushTest: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What the push service said, per subscription. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        accepted: number;
+                        gone: number;
+                        failed: number;
+                        results: {
+                            id: string;
+                            /** @enum {string} */
+                            outcome: "accepted" | "gone" | "retry" | "failed";
+                            status: number;
+                        }[];
+                        message: string;
+                    };
                 };
             };
             default: components["responses"]["Error"];

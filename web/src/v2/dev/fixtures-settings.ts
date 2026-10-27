@@ -22,6 +22,8 @@ export const FIXTURE_PASSWORD = 'example';
 export const FIXTURE_PAIR_CODE = 'K7PQ-M4XZ';
 const PHONE_SCOPES = ['read', 'act', 'approve'] as const;
 const ALL = ['read', 'act', 'approve', 'admin'] as const;
+/** P3: a well-formed VAPID public key (fixture mode never pushes). */
+const FIXTURE_VAPID = 'BKET3AY-FPA446B10F2Viwe2-WuUsHd_v23MRcfPBHuJRXKJpLSzr_SIg1nv4tOAus1oI5CPeXnSi2kkc3zPatQ';
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const norm = (c: string) => c.toUpperCase().replace(/[^A-Z0-9]/g, '');
 
@@ -41,6 +43,7 @@ export class SettingsFixtures {
   accounts: Account[];
   vault: VaultEntry[];
   files = new Map<string, FileRow[]>();
+  push = { kinds: { approval: true, waiting: true, result: true, morning: true }, morning: '07:30', timeZone: 'America/New_York', quietHours: { value: '22:00-07:00' as string | null, fixed: false, invalid: false } };
   private codes = new Set<string>([norm(FIXTURE_PAIR_CODE)]);
   private n = 0;
 
@@ -108,6 +111,8 @@ export class SettingsFixtures {
     if (path === '/spending') return { status: 200, body: this.spending };
     if (path === '/accounts') return { status: 200, body: { accounts: this.accounts } };
     if (path === '/vault') return { status: 200, body: { entries: this.vault } };
+    // P3: notifications (no push service in fixture mode: the list is empty and the settings are kept here)
+    if (path === '/push/subscriptions') return { status: 200, body: { vapidPublicKey: FIXTURE_VAPID, subscriptions: [], settings: this.push } };
     if (path === '/files') {
       const pid = q.get('projectId') || 'general';
       return { status: 200, body: { projectId: pid, folder: `serve/p-${pid}/uploads`, files: this.files.get(pid) ?? [] } };
@@ -241,6 +246,13 @@ export class SettingsFixtures {
       this.files.set(pid, [row, ...(this.files.get(pid) ?? [])]);
       return { status: 201, body: { id: path2, path: path2, name, size: 1024, projectId: pid, pages: 1 } };
     }
+    if (method === 'PATCH' && path === '/push/settings') {
+      const k = (b.kinds && typeof b.kinds === 'object' ? b.kinds : {}) as Record<string, boolean>;
+      this.push = { ...this.push, kinds: { ...this.push.kinds, ...k }, ...(typeof b.morning === 'string' ? { morning: b.morning } : {}),
+        ...(b.quietHours !== undefined ? { quietHours: { ...this.push.quietHours, value: typeof b.quietHours === 'string' && b.quietHours !== 'off' ? b.quietHours : null } } : {}) };
+      return { status: 200, body: this.push };
+    }
+    if (method === 'POST' && path === '/push/test') return err(409, 'not_subscribed', 'Notifications aren’t on for this device yet. Turn them on first.');
     return null;
   }
 }

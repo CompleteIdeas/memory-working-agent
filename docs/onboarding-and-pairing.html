@@ -210,6 +210,23 @@ th{font:500 12px 'IBM Plex Mono',monospace;letter-spacing:.06em;text-transform:u
   <dt>The computer option and sleep</dt><dd>Set the computer to stay awake when plugged in, or accept that MWA pauses while it sleeps. Jobs due while it was off run when it wakes, and MWA tells you they were late.</dd>
 </dl>
 
+<h2 id="notifications">Notifications on your phone</h2>
+<p>MWA can tell your phone when something needs you: an approval waiting, a job waiting for you, a result ready, and your
+morning check-in (once a day, 7:30 by default, and only when there's something to say). Turn them on in
+<b>Settings › Notifications</b> on the phone itself; each phone is turned on separately.</p>
+<dl class="faq">
+  <dt>Android</dt><dd>Open MWA (installed, or in Chrome at your secure address), go to Settings › Notifications, tap <b>Turn on notifications</b>, and choose <b>Allow</b> when the phone asks. Then tap <b>Send a test</b>.</dd>
+  <dt>iPhone and iPad</dt><dd>Install to the Home Screen first: in Safari, Share › <b>Add to Home Screen</b> (iOS 16.4 or later). Open MWA from the new icon, then Settings › Notifications › <b>Turn on notifications</b>, and <b>Allow</b>. In a Safari tab, notifications can't work, and the page says so.</dd>
+  <dt>"Blocked"</dt><dd>If you said Don't Allow, only the phone's settings can undo it, and Settings › Notifications says where: on Android, press and hold the MWA icon › App info › Notifications; on iPhone, Settings › Notifications › MWA.</dd>
+  <dt>Quiet hours</dt><dd>Settings › Notifications › Quiet hours (for example 22:00 to 07:00, on the helper computer's clock). What comes up at night waits until the morning, and is let go if it no longer needs you by then. The same quiet hours apply to Telegram. At most six notifications an hour; several of one kind become one.</dd>
+  <dt>Lost phone</dt><dd>Removing the phone (Settings › Devices) also stops its notifications at once; so does signing out of a browser, or "sign out everywhere".</dd>
+</dl>
+<p class="note"><b>Privacy.</b> Notifications pass through Google's or Apple's push service; they never contain your
+messages or titles. Each one only says something like "Something needs your OK" or "A result is ready", encrypted
+for your phone; the app shows the details from your helper once you open it. Your helper reaches out only to
+Google's, Apple's, Mozilla's or Microsoft's push service, never to any other address a browser might hand it.
+"Sent" in MWA's records means the push service accepted it, not that the phone showed it.</p>
+
 <h2 id="built">What's built and what's still to build</h2>
 <div class="wrap" tabindex="0" role="region" aria-label="Table, scrolls sideways on small screens"><table>
 <thead><tr><th>Piece</th><th>Status</th><th>Notes</th></tr></thead>
@@ -221,7 +238,7 @@ th{font:500 12px 'IBM Plex Mono',monospace;letter-spacing:.06em;text-transform:u
 <tr><td>HTTPS on the private address (<code>tailscale serve</code>) and the "box is closed" checks</td><td><span class="tag ok">built</span></td><td><code>npm run tailscale:serve</code> on a computer (checks MagicDNS, HTTPS certificates and that Funnel is off, then serves); automatic in Docker. Still to build: the in-app setup page's checks and the Railway "public domain removed" check.</td></tr>
 <tr><td>The pairing screens: QR in Settings, the "Pair this phone?" page, install guide, device list</td><td><span class="tag todo">to build</span></td><td>Part of the new interface (Settings and first run).</td></tr>
 <tr><td>Installable app with an offline copy and safe updates</td><td><span class="tag ok">built</span></td><td>Install from Settings › This device; opens offline from the phone's copy; actions wait and are sent once; "A new version is ready · Reload". Tested in Chromium on this computer; the real phone test needs your tailnet.</td></tr>
-<tr><td>Notifications on the phone</td><td><span class="tag todo">to build</span></td><td>The push slice.</td></tr>
+<tr><td>Notifications on the phone</td><td><span class="tag ok">built</span></td><td>Settings › Notifications: approvals, jobs waiting, results ready, the morning check-in; quiet hours, a test button; no personal content in any notification. Tested in Chromium against a local stand-in for the push service; the real phone test needs your tailnet (see <a href="#notifications">Notifications</a>).</td></tr>
 <tr><td>Google and Outlook sign-in that works from a phone</td><td><span class="tag todo">to build</span></td><td>Needs the two decisions below.</td></tr>
 <tr><td>Passkey sign-in (fingerprint or face instead of a password)</td><td><span class="tag todo">proposed</span></td><td>Optional, recommended: it can't be phished or guessed.</td></tr>
 </tbody></table></div>
