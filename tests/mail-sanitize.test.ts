@@ -30,8 +30,8 @@ describe('a hostile HTML email', () => {
     expect(out.imagesHidden).toBe(1);
     expect(out.trackersRemoved).toBe(2);
   });
-  it('a javascript: or data: link keeps only its words; links show their host, never a URL', () => {
-    expect(t).toContain('Click me or this.');
+  it('a javascript: or data: link keeps its words, marked "(link removed)"; links show their host, never a URL', () => {
+    expect(t).toContain('Click me (link removed) or this (link removed).');
     expect(t).not.toMatch(/javascript:|data:text/i);
     expect(t).not.toMatch(/https?:\/\//i);
     expect(t).not.toMatch(/www\./i);
@@ -106,5 +106,13 @@ describe('plain-text bodies and the helpers', () => {
   it('header lines: entities decoded, invisible characters removed, URLs as hosts', () => {
     expect(cleanLine(`It&#39;s here &amp; ready${ZWSP} — see https://x.example/a?b=1`)).toBe("It's here & ready — see x.example");
     expect(linksToHosts('go <https://a.example/x> now')).toBe('go (a.example) now');
+  });
+});
+
+// review of W3: words that themselves say "(paypal.com)" must not pass for the "(host)" the sanitiser adds
+describe('a link with no host cannot fake its host', () => {
+  it('javascript:, data: and vbscript: links read "(link removed)" after their words; relative links keep just their words', () => {
+    const r = sanitizeMail({ html: '<p><a href="javascript:alert(3)">Click me (paypal.com)</a> · <a href="data:text/html,x">Open invoice</a> · <a href="vbscript:x">Run</a> · <a href="#top">Back to top</a></p>' });
+    expect(r.text).toBe('Click me (paypal.com) (link removed) · Open invoice (link removed) · Run (link removed) · Back to top');
   });
 });

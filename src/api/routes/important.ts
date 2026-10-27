@@ -25,7 +25,7 @@ import {
 } from '../../v2/triage.js';
 import { appDb, recordEvent } from '../../v2/db.js';
 import { getMail, parseMailId, mailId } from '../../v2/mail.js';
-import { cleanLine } from '../../v2/mail-text.js';
+import { cleanLine, displayName } from '../../v2/mail-text.js';
 import { addDraft, DraftError, DRAFT_ADDED, AFTER_READING_NOTE } from '../../sync/drafts.js';
 import { draftItem } from '../../v2/calendar.js';
 import { localDate } from '../../sync/tz.js';
@@ -178,7 +178,7 @@ export const importantRoutes: Route[] = [
       if (!p || !row) throw new ApiError(404, 'not_found', 'No such message.');
       const id = mailId(row.account, row.provider_id);
       const now = triageNow();
-      const from = cleanLine(row.from_name, 120) || row.from_addr || 'this sender';
+      const from = displayName(row.from_name) || row.from_addr || 'this sender';
       let rule: { id: string; match: string; value: string } | null = null;
       if (row.from_addr) { const made = putRule('sender', row.from_addr, 'important', now); rule = { id: made.id, match: 'sender', value: made.value }; }
       else {

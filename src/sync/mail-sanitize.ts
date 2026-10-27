@@ -224,7 +224,11 @@ function htmlToText(html: string, counts: { images: number; pixels: number }): {
     } else if (/^mailto:/i.test(href)) {
       const addr = safeDecode(href.slice(7).split('?')[0] ?? '').replace(/[\s<>"]/g, '').slice(0, 200);
       if (addr && !visible.toLowerCase().includes(addr.toLowerCase())) emit(visible ? ` (${addr})` : addr);
-    } // javascript:, data:, vbscript:, file:, relative — the words only
+    } else if (visible && /^[a-z][a-z0-9+.-]*:/i.test(href)) {
+      // javascript:, data:, vbscript:, a file: with no host… — the words, then "(link removed)": words that themselves
+      // say "(paypal.com)" can no longer pass for the "(host)" this sanitiser adds (review of W3)
+      emit(' (link removed)');
+    } // relative links and in-page anchors: the words only
   };
 
   const parser = new Parser({

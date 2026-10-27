@@ -47,7 +47,7 @@ import {
   type ApiItem, type Group, type ItemIn, type ItemRow, type MailKind, type RuleRow, type VerdictRow,
 } from './important.js';
 import { apiMailHeader, listMail, mailAccountsStored, mailId, parseMailId, type MailRow, type MailPageCursor } from './mail.js';
-import { cleanLine } from './mail-text.js';
+import { cleanLine, displayName } from './mail-text.js';
 import { ACT_SUBJECT, URGENT_MONEY, domainOfAddr, isFreemail, phishingSignal, strictLine } from './mail-trust.js';
 import { budgetHold } from '../billing.js';
 import { priceFor, warnUnknownPrice, UNKNOWN_PRICE } from '../model-prices.js';
@@ -613,7 +613,7 @@ async function deepReads(model: TriageModel, rows: MailRow[], now: number, tz: s
     d.transaction(() => {
       recordTriageCall({ ts: now, day: budget.day, purpose: 'triage-deep-read', model: model.id, n: 1, tokensIn: res.usage.input, tokensOut: res.usage.output, costUsd: cost }, d);
       markDeepRead(id, now, cost, d);
-      for (const f of facts) upsertItem(factItem(f, r, id, now, tz), tz, now, d);
+      for (const f of facts) upsertItem(factItem(f, r, id, now, tz, { caution: v.flags === 'low-trust' ? 'unverified' : null }), tz, now, d);
     }).immediate();
   }
 }
@@ -650,7 +650,7 @@ export function atLabel(ms: number, tz: string): string {
 
 // ── items from each source ─────────────────────────────────────────────────────────────────────────────────────
 
-const fromLabel = (r: Pick<MailRow, 'from_name' | 'from_addr'>) => cleanLine(r.from_name, 120) || r.from_addr || 'Unknown sender';
+const fromLabel = (r: Pick<MailRow, 'from_name' | 'from_addr'>) => displayName(r.from_name) || r.from_addr || 'Unknown sender';
 const addrOf = (r: Pick<MailRow, 'from_addr'>) => r.from_addr || 'an unknown address';
 const normTitle = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
@@ -669,12 +669,15 @@ function factKey(mid: string, f: Fact): string { return `fact:${mid}:${f.date}:$
 /**
  * A dated fact found in a newsletter, as an item. Add to calendar (an event) or Remind me (a deadline) — both taps.
  * Its title and place passed the strict filter when read (readFacts); the why names the newsletter's address.
+ * A newsletter that triage marked low-trust (urgent language from a bulk or no-reply sender) gives facts that carry
+ * `caution: 'unverified'` (review of W3): their action stays — it only makes a DRAFT or a reminder the person
+ * confirms — but the item shows the unverified tag. A phishing newsletter is never read for facts at all.
  */
-export function factItem(f: Fact, r: Pick<MailRow, 'from_name' | 'from_addr' | 'received_at'>, mid: string, now: number, tz: string, extra: { reminded?: string; reminderId?: string } = {}): ItemIn {
+export function factItem(f: Fact, r: Pick<MailRow, 'from_name' | 'from_addr' | 'received_at'>, mid: string, now: number, tz: string, extra: { reminded?: string; reminderId?: string; caution?: 'unverified' | null } = {}): ItemIn {
   const key = factKey(mid, f);
   const when = [dayLabel(f.date), timeRange(f.start, f.end)].filter(Boolean).join(', ');
   const from = fromLabel(r), addr = addrOf(r);
-  const base = { sourceRef: mid, dedupeKey: key, ts: r.received_at, from, fromAddr: r.from_addr ?? null, trust: 'untrusted' as const, kind: 'newsletter' };
+  const base = { sourceRef: mid, dedupeKey: key, ts: r.received_at, from, fromAddr: r.from_addr ?? null, trust: 'untrusted' as const, kind: 'newsletter', caution: extra.caution ?? null };
   const preview = { date: f.date, start: f.start, end: f.end, place: f.place, tz, when };
   const data = { mailId: mid, fact: f, preview, ...(extra.reminded ? { reminded: extra.reminded } : {}), ...(extra.reminderId ? { reminderId: extra.reminderId } : {}) };
   if (f.kind === 'event') {
@@ -783,7 +786,7 @@ function rebuildMail(now: number, tz: string): { live: Set<string> } {
           const p = payloadOf(f);
           const fact = p?.fact as Fact | undefined;
           if (!fact || fact.date < localDate(now, tz)) continue; // passed: it leaves the list
-          const x = factItem(fact, r, id, now, tz, { reminded: typeof p?.reminded === 'string' ? p.reminded : undefined, reminderId: typeof p?.reminderId === 'string' ? p.reminderId : undefined });
+          const x = factItem(fact, r, id, now, tz, { reminded: typeof p?.reminded === 'string' ? p.reminded : undefined, reminderId: typeof p?.reminderId === 'string' ? p.reminderId : undefined, caution: v.flags === 'low-trust' ? 'unverified' : null });
           upsertItem(x, tz, now, d);
           live.add(x.dedupeKey);
         }

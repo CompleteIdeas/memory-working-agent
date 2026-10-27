@@ -4,9 +4,12 @@
  * screens come in W2 (Today, Calendar), W3 (Important, mail), W4 (Projects, Ask) and W5 (Settings, first run).
  */
 import { useMemo, useState } from 'react';
-import { useCalendar, useItems, useMail, useMeta, useNow, useProjects, useStore, useThread } from '../store/react';
+import { useCalendar, useMeta, useNow, useProjects, useStore, useThread } from '../store/react';
+import { Important, ImportantBody } from '../screens/important/Important';
 import type { CalendarItem, Project } from '../api/client';
 import { Back, Chev, Person, ProjectIcon, Spark } from './icons';
+
+export { Important };
 import type { AskAbout } from './sheets';
 
 export type View = 'today' | 'calendar' | 'inbox' | 'projects' | 'settings';
@@ -84,7 +87,7 @@ export function Today({ desk, wide, go }: ScreenProps) {
         <section aria-labelledby="sh-next"><h2 className="sh" id="sh-next">On your calendar</h2><Agenda day={today} /></section>
       )}
       {!wide && (
-        <section aria-labelledby="sh-worth"><h2 className="sh" id="sh-worth">Worth a look</h2><ImportantBody /></section>
+        <section aria-labelledby="sh-worth"><h2 className="sh" id="sh-worth">Worth a look</h2><ImportantBody go={go} limit={desk ? undefined : 3} /></section>
       )}
     </>
   );
@@ -93,7 +96,7 @@ export function Today({ desk, wide, go }: ScreenProps) {
     <div className="cols cols-today">
       <aside className="col-side inboxcol" aria-labelledby="ib-h">
         <h2 className="coltitle" id="ib-h">Worth a look <button type="button" className="linkish quietlink" onClick={() => go('inbox')}>All email</button></h2>
-        <ImportantBody />
+        {wide && <ImportantBody go={go} />}
       </aside>
       <div className="col-main">{center}</div>
       <aside className="col-side" aria-labelledby="cd-h">
@@ -117,48 +120,6 @@ export function Calendar({ desk }: ScreenProps) {
     </>
   );
   return desk ? <div className="col-main calwide" style={{ margin: '0 auto' }}>{body}</div> : body;
-}
-
-function ImportantBody() {
-  const items = useItems();
-  if (!items.supported) return <p className="empty" style={{ textAlign: 'left' }}>{items.reason}</p>;
-  return null;
-}
-
-export function Important(_: ScreenProps) {
-  const [all, setAll] = useState(false);
-  if (all) return <AllEmail back={() => setAll(false)} />;
-  return (
-    <>
-      <header className="vh"><div className="vh-text"><p className="vh-kicker">From mail, calendar and files</p><h1>Worth a look</h1></div>
-        <button type="button" className="vbtn allmail" onClick={() => setAll(true)}>All email</button></header>
-      <ImportantBody />
-    </>
-  );
-}
-
-function AllEmail({ back }: { back: () => void }) {
-  const mail = useMail();
-  const { updatedAt } = useMeta();
-  return (
-    <>
-      <button type="button" className="backbtn keep" onClick={back}><Back />Worth a look</button>
-      <header className="vh"><div className="vh-text"><p className="vh-kicker">{updatedAt ? `Updated ${clock(updatedAt)}` : 'Your mail'}</p><h1>All email</h1>
-        <p className="receipt">{mail.note || 'Your helper reads and writes drafts. It never sends.'}</p></div></header>
-      {mail.loading && !mail.loaded && <p className="empty">Loading…</p>}
-      {mail.loaded && !mail.connected && <p className="empty">No mail account is connected yet.</p>}
-      {mail.error && !mail.loaded && <p className="empty">{mail.error}</p>}
-      <ul className="rows">
-        {mail.headers.map((m) => (
-          <li key={m.id}><div className={`mailrow${m.unread ? ' unread' : ''}`}>
-            <span className="top"><span className="from">{m.from.name ?? m.from.addr ?? 'Unknown sender'}</span><span className="time">{clock(m.receivedAt)}</span></span>
-            <span className="subj" style={{ display: 'block' }}>{m.subject}</span>
-            {m.snippet && <span className="prev" style={{ display: 'block' }}>{m.snippet}</span>}
-          </div></li>
-        ))}
-      </ul>
-    </>
-  );
 }
 
 export function Projects({ desk, ask }: ScreenProps) {

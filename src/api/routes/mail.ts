@@ -14,7 +14,7 @@ import { ApiError, type Route } from '../router.js';
 import { apiMailHeader, listMail, parseMailId, type MailPageCursor } from '../../v2/mail.js';
 import { DRAFT_MAX_CHARS, MailError, mailAccounts, mailProviders, openMail, saveReplyDraft, syncMail } from '../../sync/mail.js';
 import { draftMessageId } from '../../sync/mail-mime.js';
-import type { Addr } from '../../v2/mail-text.js';
+import { displayName, type Addr } from '../../v2/mail-text.js';
 
 export const SAVED_MESSAGE = 'Saved to your drafts. Nothing was sent.';
 export const MAILBOX_NOTE = 'Your helper reads and writes drafts. It never sends.';
@@ -94,7 +94,7 @@ export const mailRoutes: Route[] = [
       const m = await openMail(account, providerId).catch(asApi);
       return {
         body: {
-          ...apiMailHeader(m.row), to: m.to, replyTo: m.replyTo, replyGoesElsewhere: m.replyGoesElsewhere, replyNote: replyNote(m.replyTo, m.replyGoesElsewhere),
+          ...apiMailHeader(m.row), to: m.to, replyTo: m.replyTo.map((a) => ({ name: displayName(a.name), addr: a.addr })), replyGoesElsewhere: m.replyGoesElsewhere, replyNote: replyNote(m.replyTo, m.replyGoesElsewhere),
           bodyText: m.body.text, truncated: m.body.truncated, tooComplex: m.body.tooComplex,
           quotedLinesHidden: m.body.quotedLinesHidden, imagesHidden: m.body.imagesHidden, trackersRemoved: m.body.trackersRemoved,
           trust: 'untrusted' as const, fetchedAt: m.fetchedAt,

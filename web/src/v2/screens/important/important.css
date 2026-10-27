@@ -1,0 +1,90 @@
+/* MWA v2, slice W3: the Important list and the mail reader. Most of the list's look is the prototype's, already in
+   shell/v2.css (.items, .itemrow, .srcmark, .skipline, .handledtoggle, .qa…); this file adds what W3 needed beyond it.
+   Caution uses its own WARNING tokens, never the signal orange (which means "this needs you"). */
+
+:root {
+  --warn-bg: #f3e7b8;     /* ochre wash */
+  --warn-ink: #4d3b00;    /* 8.6:1 on --warn-bg */
+  --warn-edge: #8c6d00;   /* borders and the triangle, 3:1+ on card */
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --warn-bg: #3a3014; --warn-ink: #f2d77e; --warn-edge: #c9a63a; }
+}
+:root[data-theme="dark"] { --warn-bg: #3a3014; --warn-ink: #f2d77e; --warn-edge: #c9a63a; }
+
+/* the Undo on a toast */
+.toast .toastact { color: var(--signal); font-weight: 700; padding: 0 10px; min-height: 44px; flex: none; }
+
+/* who it is from: the real address on its own line, never cut short (wraps anywhere) */
+.addrline { display: block; margin-top: 1px; font-size: 14px; color: var(--dim); overflow-wrap: anywhere; word-break: break-all; white-space: normal; }
+.itemrow .addrline { padding-left: 21px; }
+.mailrow .addrline { font-size: 13.5px; }
+.reader .meta.sender { display: block; }
+.reader .meta.sender .sendername { display: block; color: var(--ink); font-size: 16px; }
+.reader .meta.sender .addrline.big { font-size: 16px; font-weight: 700; color: var(--ink); margin-top: 2px; }
+.reader .meta.sender .when { display: block; margin-top: 4px; }
+.mailrow .cautiontag, .skiprow .cautiontag { margin: 4px 0 2px; }
+.it-addr { display: block; margin-top: 4px; font-size: 15px; color: var(--warn-ink); overflow-wrap: anywhere; font-weight: 600; }
+.it-addr .addrmono { font-family: var(--mono); font-size: 13.5px; font-weight: 500; }
+
+/* caution: phishing (clear) and unverified (quiet) */
+.cautiontag { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 13.5px; font-weight: 600; line-height: 1.3; border-radius: 999px; padding: 3px 10px; }
+.cautiontag svg { flex: none; }
+.cautiontag.phishing { background: var(--warn-bg); color: var(--warn-ink); border: 1px solid var(--warn-edge); }
+.cautiontag.unverified { background: transparent; color: var(--dim); border: 1px dashed var(--edge); font-weight: 500; padding: 1px 8px; }
+.item.caution-phishing .itemrow { background: var(--warn-bg); box-shadow: inset 4px 0 0 var(--warn-edge); }
+.item.caution-phishing .itemrow:hover { filter: brightness(.98); }
+.item.caution-phishing .it-why { color: var(--warn-ink); }
+.item.caution-phishing .srcmark, .item.caution-phishing .srcmark svg { color: var(--warn-ink); }
+.cautionbox { margin-top: 14px; background: var(--warn-bg); color: var(--warn-ink); border: 1px solid var(--warn-edge); border-left-width: 4px; border-radius: 8px; padding: 12px 14px; }
+.cautionbox p + p { margin-top: 6px; }
+.cautionhead { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+.cautionhead svg { flex: none; }
+
+/* the reader */
+.reader .meta .addr { overflow-wrap: anywhere; }
+.mailbody { white-space: pre-wrap; overflow-wrap: anywhere; }
+.replywarn { display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--warn-bg); color: var(--warn-ink); border: 1px solid var(--warn-edge); font-weight: 600; overflow-wrap: anywhere; }
+.replywarn svg { flex: none; margin-top: 3px; }
+.replywarn.small { font-size: 14.5px; margin: 6px 0; padding: 8px 10px; }
+.bodynotes { margin-top: 12px; }
+.draftreply .receipt { margin-top: 10px; }
+.draftreply .donebanner { margin-top: 10px; }
+.reader .askrow { margin-top: 16px; }
+#mail-dlg .reader .subject { margin-top: 0; }
+
+/* plain refusals in the server's words */
+.refusal { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: var(--card); border: 1px solid var(--warn-edge); border-left-width: 4px; color: var(--ink); font-weight: 500; }
+.errline { color: var(--ink); }
+
+/* Not important: the scopes */
+.notimp > .soft:first-child { margin-top: 2px; }
+.scopelist { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.scopebtn { justify-content: flex-start; text-align: left; min-height: 48px; width: 100%; overflow-wrap: anywhere; padding: 8px 14px; }
+.scopenote, #notimp-suggest { margin-top: 10px; font-size: 14.5px; }
+.notimp .receipt { margin-top: 14px; }
+
+/* Show them, Your rules */
+.skipsub, .skipwhy { display: block; font-size: 14.5px; }
+.skipwhy { font-size: 13.5px; }
+.skiprow .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ruleline { display: block; overflow-wrap: anywhere; }
+#skip-dlg .sheet-body > .soft, #rules-dlg .sheet-body > .soft { margin-bottom: 8px; }
+.ruleslink { margin: 18px 4px 0; }
+
+/* how sorting is going */
+.sortnote { margin: 14px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--card); color: var(--dim); font-size: 14.5px; border: 1px dashed var(--edge); }
+
+/* the item sheet */
+.itemdetail .detailwhy { margin-top: 6px; }
+.itemdetail .srcmark { display: flex; }
+.itemdetail .senderblock { margin-top: 2px; }
+/* an answer that read someone else's words */
+.qa-a.tainted { border-left: 3px solid var(--warn-edge); }
+.taintnote { display: flex; gap: 6px; align-items: center; font-size: 13.5px; font-weight: 600; color: var(--warn-ink); background: var(--warn-bg); border-radius: 6px; padding: 4px 8px; margin: 2px 0 6px; width: fit-content; max-width: 100%; }
+.taintnote svg { flex: none; }
+.qa-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.qa-pair + .qa-pair { margin-top: 6px; }
+
+/* "Keep it" on a swiped row: there for the keyboard, out of sight otherwise */
+.sr-only-focusable:not(:focus):not(:focus-visible) { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }

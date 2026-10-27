@@ -60,7 +60,7 @@ export const EMAILS: SeedEmail[] = [
     draft: 'Hi! I can help with a 30-minute shift at the book fair on Saturday — any time after 3:30 works. Robert',
   },
   {
-    id: 'm3', from: 'Dana Lee', addr: 'dana@example.com', subject: 'Newsletter: your top 3 for Thursday?', time: 'Yesterday', unread: false, important: true, project: 'ainews',
+    id: 'm3', from: 'Dana Lee', addr: 'dana.lee.news@gmail.com', subject: 'Newsletter: your top 3 for Thursday?', time: 'Yesterday', unread: false, important: true, project: 'ainews',
     preview: 'Can you send your top three stories by Wednesday so I can lay it out?',
     body: ['Hey Robert,', 'Can you send your top three stories by Wednesday so I can lay out Thursday’s issue? Short blurbs are fine.', 'Dana'],
     note: 'Wants your top 3 stories by Wednesday. I’m gathering candidates now.',
@@ -71,7 +71,7 @@ export const EMAILS: SeedEmail[] = [
   { id: 'm6', from: 'Hillside Hardware', addr: 'orders@hillside.example', subject: 'Your order has shipped', time: 'Yesterday', preview: 'Gutter guards (2) are on the way and should arrive Thursday.', body: ['Gutter guards (2) are on the way and should arrive Thursday.'] },
   { id: 'm7', from: 'Oakwood Elementary', addr: 'office@oakwood.example', subject: 'Lunch menu for next week', time: 'Sat', preview: 'Pizza Friday is back! Here is next week’s menu.', body: ['Pizza Friday is back! Here is next week’s menu.'], list: 'office.oakwood.example' },
   { id: 'm8', from: 'The Batch', addr: 'news@thebatch.example', subject: 'This week in AI', time: 'Sat', preview: 'Five stories worth your time this week, plus one tool to try.', body: ['Five stories worth your time this week, plus one tool to try.'], list: 'news.thebatch.example' },
-  { id: 'm10', from: 'Dana Lee', addr: 'dana@example.com', subject: 'Board call → Wednesday 2pm', time: '6:55 AM', preview: 'Tuesday doesn’t work for two of us, so the board call moves to Wednesday at 2.', body: ['Hi all,', 'Tuesday doesn’t work for two of us, so the board call moves to Wednesday at 2pm. Same link.', 'Dana'], note: 'The board call moved to Wednesday 2pm. I updated your calendar.' },
+  { id: 'm10', from: 'Dana Lee', addr: 'dana.lee.news@gmail.com', subject: 'Board call → Wednesday 2pm', time: '6:55 AM', preview: 'Tuesday doesn’t work for two of us, so the board call moves to Wednesday at 2.', body: ['Hi all,', 'Tuesday doesn’t work for two of us, so the board call moves to Wednesday at 2pm. Same link.', 'Dana'], note: 'The board call moved to Wednesday 2pm. I updated your calendar.' },
 ];
 
 /** The Important list ("Worth a look"), for W3 (no v1 route until A9). ts = minutes from midnight today. */
