@@ -19,6 +19,10 @@ export interface ToolContext {
   extraRoots?: string[];
   /** this run has read external content (BL-17) — a tool that writes lasting memory checks it. */
   tainted?: boolean;
+  /** P3 review: WHICH outside content tainted it, when known — `gmail:<provider message id>` (read_email),
+   *  `mail:<app mail id>`, `item:<Important item id>` (an ask about one thing). An approval it stages keeps them,
+   *  so a send staged after reading a phishing-flagged message is never pushed or shown as a Needs-you card. */
+  taintSources?: string[];
   /** this run has read local content (a file, a dropped document) — goals refuse it too (BL-05). */
   readLocal?: boolean;
   /** whether a human is watching this run (gates run_command in Assistant mode). */

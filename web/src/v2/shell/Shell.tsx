@@ -7,6 +7,7 @@
  *     in three columns from 1200 px.
  * The pill opens the working sheet; the Ask bar opens the Ask sheet.
  */
+import { useNotificationRoutes } from './notifyRoute';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useMeta, useNotices, useNow, useStatusPill, useStore } from '../store/react';
 import { useUpdate } from '../../pwa/react';
@@ -171,6 +172,9 @@ export function Shell() {
   // P4: one voice controller; the dock's mic opens the Ask sheet already listening
   const voice = useDictation();
   const ask = useCallback((a?: AskAbout) => { setWorkOpen(false); setAbout(a ?? contextRef.current); setAskOpen(true); }, []);
+  // P3: a tapped notification opens its place (#/today, #/approval/<id>, #/job/<id>, #/settings/notifications)
+  const openWork = useCallback(() => { setAskOpen(false); setWorkOpen(true); }, []);
+  useNotificationRoutes({ go, openWork, ready: !start });
 
   // W5: sign in, pair this phone, or first run on the computer, before the app itself (screens/start)
   // P2 (review): the toasts show there too ("Signed out — this phone’s copy was cleared")

@@ -17,6 +17,7 @@ import { InstallCard } from './InstallCard';
 import { START_CHECK_EVENT } from '../start/events';
 import { accountLine, activeDevices, backgroundLine, lastUsed, money, spendLine, useSettingsData, type ActOutcome } from './useSettings';
 import { VoiceSettings } from '../ask/voice/VoiceSettings';
+import { NotificationsCard } from './Notifications';
 import './settings.css';
 
 type Said = { text: string; error: boolean } | null;
@@ -37,6 +38,11 @@ export function Settings({ go }: ScreenProps) {
   const top = useRef<HTMLDivElement>(null);
   // "Your rules" from the Important list lands here (#rules)
   useEffect(() => {
+    // P3: "Send a test" lands here (#/settings/notifications)
+    if (location.hash === '#notifications' && !data.loading) {
+      document.getElementById('sec-notify')?.scrollIntoView({ block: 'start' });
+      history.replaceState(null, '', location.pathname + location.search);
+    }
     if (location.hash === '#rules' && !data.loading) {
       document.getElementById('sec-rules')?.scrollIntoView({ block: 'start' });
       history.replaceState(null, '', location.pathname + location.search);
@@ -70,7 +76,8 @@ export function Settings({ go }: ScreenProps) {
           <Switches data={data} admin={admin} />
           {admin && <SavedLogins data={data} />}
           <Section id="notify" title="Notifications">
-            <div className="card"><p><b>Coming soon.</b> I’ll be able to tell you on this phone when something needs you or a job is finished. Never ads, and I’ll respect your quiet hours.</p></div>
+            {/* P3: web push for this device, which kinds, the morning time, quiet hours, a test */}
+            <NotificationsCard publicUrl={data.settings?.publicUrl ?? null} admin={admin} />
           </Section>
           <VoiceSettings />
           <Look />

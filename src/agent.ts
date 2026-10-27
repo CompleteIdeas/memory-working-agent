@@ -712,6 +712,8 @@ export async function runAgent(opts: {
   /** start this run already tainted — a plan step fed output from an earlier step that read
    *  external content. */
   startTainted?: boolean;
+  /** P3 review: the outside content this run starts tainted by (an ask about one mail or item): see ToolContext. */
+  taintSources?: string[];
   /** output carried from EARLIER plan steps that read external content. Kept out of `instruction`
    *  and fenced with THIS run's code — a fence minted elsewhere is, by the trust rule's own
    *  wording, just text (isolated review of BL-01). */
@@ -1094,6 +1096,8 @@ export async function runAgent(opts: {
   // F2: set once this run reads untrusted external content (inbox/web) — taints subsequent
   // `remember` writes so model-laundered inbox/web text isn't stored at medium trust.
   let sawUntrustedRead = opts.startTainted === true;
+  // P3 review: which outside content tainted the run (a message read, the item an ask is about), kept on what it stages
+  const taintSources: string[] = (opts.taintSources ?? []).filter((x) => typeof x === 'string').slice(0, 20);
   // A LOCAL read (a file, the docs folder) doesn't make a remembered fact untrusted, but it stops it
   // being forced canonical: a planted file is exactly how the measured injection arrived.
   let sawLocalRead = false;
@@ -2251,6 +2255,7 @@ export async function runAgent(opts: {
       const stepDetail = String(args.path ?? args.dir ?? args.query ?? args.url ?? args.id ?? args.file ?? args.to ?? args.command ?? '');
       emit('step', { n: steps + 1, of: maxSteps, tool: action.action, detail: stepDetail.length > 160 ? `…${stepDetail.slice(-159)}` : stepDetail, elapsedMs: now() - start });
       const callCtx = { sandboxDir: dir, interactive: opts.interactive, personId: opts.personId, identityInDoubt: opts.identityInDoubt, extraRoots: opts.extraRoots, tainted: sawUntrustedRead, readLocal: sawLocalRead, runId, session: opts.session,
+        ...(taintSources.length ? { taintSources: [...taintSources] } : {}),
         personMessage: opts.jobId === undefined ? opts.userMessage ?? (opts.interactive === true ? instruction : undefined) : undefined,
         jobRequest: opts.jobId !== undefined ? (opts.jobRequest ?? opts.jobTask)?.slice(0, 2000) : undefined, // BL-72: what the job was asked, for the reviewer
         jobAllow: opts.jobId !== undefined && !opts.jobSettingsTainted ? opts.jobAllow : undefined, // the person's allowance, never one a tainted chain carried
@@ -2354,6 +2359,11 @@ export async function runAgent(opts: {
       // F2: once this run has pulled in untrusted external content, taint later `remember` writes.
       // Taint on any external call, refused or not — fail-closed.
       if (readsUntrustedContent(action.action) && !draftNo && !pageNo) sawUntrustedRead = true; // a guard refusal reached nothing outside
+      // P3 review: remember which message was read, so what this run stages carries where its taint came from
+      if (action.action === 'read_email' && !refused && typeof (args as Record<string, unknown>).id === 'string' && taintSources.length < 20) {
+        const src = `gmail:${String((args as Record<string, unknown>).id).slice(0, 200)}`;
+        if (!taintSources.includes(src)) taintSources.push(src);
+      }
       // BL-71c: a file from another chat or job may hold what an earlier run fetched — outside content.
       else if (!refused && result.startsWith(OTHER_FOLDER_MARK)) sawUntrustedRead = true;
       // A schedule listing shows instructions MWA stored; it counts as local content only when one came from a

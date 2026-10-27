@@ -15,6 +15,7 @@ import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { appDb, recordEvent, registerMigrations } from '../v2/db.js';
 import type { Scope } from './router.js';
 import { relayedMode, sourceOf as trustedSourceOf } from './trust.js';
+import { removeSubscriptionsOf } from '../v2/push-store.js';
 
 export type CallerKind = 'session' | 'local' | 'device';
 export interface Caller { kind: CallerKind; id: string; scopes: Set<Scope>; viaCookie: boolean }
@@ -162,6 +163,8 @@ export function revokeDevice(id: string): boolean {
     if (!r.changes) return false;
     const seq = recordEvent({ entity: 'device', id, op: 'delete' }, d);
     d.prepare('UPDATE devices SET updated_seq = ? WHERE id = ?').run(seq, id);
+    // P3: a revoked phone gets no more notifications (its push subscriptions go with it)
+    removeSubscriptionsOf(`device:${id}`);
     return true;
   })();
 }

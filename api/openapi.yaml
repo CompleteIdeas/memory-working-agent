@@ -48,7 +48,7 @@ components:
           required: [code, message]
           additionalProperties: false
           properties:
-            code: { type: string, description: 'Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer; important: bad_group, bad_state, bad_scope, not_handled, not_open, no_action, freemail_domain, kind_not_available, unavailable; W5 settings and files: no_password, wrong_password, not_a_session, bad_body, bad_name, bad_time_zone, bad_url, bad_limit, bad_cap, fixed, bad_config, no_file, no_name, empty_file, unsafe_document, busy, storage_full. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again.' }
+            code: { type: string, description: 'Stable, machine-readable: locked, forbidden, not_found, method_not_allowed, cross_origin, idempotency_key_required, idempotency_key_reused, in_progress, client_too_old, bad_json, bad_path, too_large, pair_code_invalid, too_many_attempts, not_a_device, internal; calendar: bad_range, bad_draft, bad_provider, removed, confirmed, no_calendar, needs_reconnect, calendar_error, deleted_in_calendar, removed_but_added; mail: bad_cursor, bad_limit, bad_body, too_long, gone, not_connected, read_only, provider_unavailable, unknown_collection; projects: bad_name, name_taken, general, archived, bad_text, bad_cursor, bad_limit, bad_body, busy, unavailable, not_movable, running, same, nothing_running, no_offer; important: bad_group, bad_state, bad_scope, not_handled, not_open, no_action, freemail_domain, kind_not_available, unavailable; push (P3): bad_endpoint, bad_keys, endpoint_taken, too_many, bad_kinds, bad_time, bad_quiet, not_subscribed, too_many_tests; W5 settings and files: no_password, wrong_password, not_a_session, bad_body, bad_name, bad_time_zone, bad_url, bad_limit, bad_cap, fixed, bad_config, no_file, no_name, empty_file, unsafe_document, busy, storage_full. A refusal that may not hold on a retry (in_progress, no_calendar, needs_reconnect, calendar_error, read_only, provider_unavailable, busy, unavailable) is not remembered against the Idempotency-Key: retrying with the same key runs again.' }
             message: { type: string, description: Plain words for a person. }
     Scope:
       type: string
@@ -1120,6 +1120,46 @@ components:
         firstRunDone: { type: boolean, description: 'First-run setup on the computer was finished or skipped (kept in app.db, not the settings file).' }
         configError: { type: ['string', 'null'], description: 'The settings file (mwa.config.json) cannot be read: what is wrong, in plain words. Show it instead of first run.' }
         features: { type: array, items: { $ref: '#/components/schemas/Feature' } }
+    PushSubscription:
+      type: object
+      description: 'P3: one browser''s web push subscription. The endpoint is shown only to the browser that owns it.'
+      required: [id, mine, vendor, service, platform, owner, createdAt, lastOk, lastError]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        mine: { type: boolean, description: This caller's own (this device or this signed-in browser). }
+        vendor: { type: string, enum: [google, apple, mozilla, microsoft, test] }
+        service: { type: string, description: 'Plain words, such as "Google''s push service".' }
+        platform: { type: [string, 'null'] }
+        owner: { type: string, enum: [device, session, local] }
+        createdAt: { type: integer }
+        lastOk: { type: [integer, 'null'], description: When the push service last accepted a message for it (not proof it was shown). }
+        lastError: { type: [string, 'null'] }
+        endpoint: { type: string, description: Only on the caller's own subscriptions. }
+    PushSettings:
+      type: object
+      required: [kinds, morning, timeZone, quietHours]
+      additionalProperties: false
+      properties:
+        kinds:
+          type: object
+          required: [approval, waiting, result, morning]
+          additionalProperties: false
+          properties:
+            approval: { type: boolean }
+            waiting: { type: boolean }
+            result: { type: boolean }
+            morning: { type: boolean }
+        morning: { type: string, pattern: '^[0-9]{2}:[0-9]{2}$', description: 'The morning check-in time (05:00 to 11:30), in timeZone.' }
+        timeZone: { type: string }
+        quietHours:
+          type: object
+          required: [value, fixed, invalid]
+          additionalProperties: false
+          properties:
+            value: { type: [string, 'null'], description: 'HH:MM-HH:MM, or null for none. In timeZone, the person''s zone (P3 review). The same quiet hours Telegram respects.' }
+            fixed: { type: boolean, description: Set by the deployment (MWA_QUIET_HOURS); not changeable here. }
+            invalid: { type: boolean }
     Spending:
       type: object
       required: [month, limit, background, defaults]
@@ -2705,4 +2745,132 @@ paths:
         '201':
           description: Saved; send `path` in /ask `files`.
           content: { application/json: { schema: { $ref: '#/components/schemas/UploadedFile' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /push/subscriptions:
+    get:
+      operationId: listPushSubscriptions
+      summary: 'P3: the server''s VAPID public key, this caller''s web push subscriptions (an admin sees all), and the notification settings.'
+      responses:
+        '200':
+          description: Subscriptions and settings.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [vapidPublicKey, keysReset, subscriptions, settings]
+                additionalProperties: false
+                properties:
+                  vapidPublicKey: { type: string, description: 'The applicationServerKey for PushManager.subscribe (base64url, an uncompressed P-256 point).' }
+                  keysReset: { type: [integer, 'null'], description: 'When the key file was found unreadable and new keys were made (every device must turn notifications on again), else null.' }
+                  subscriptions: { type: array, items: { $ref: '#/components/schemas/PushSubscription' } }
+                  settings: { $ref: '#/components/schemas/PushSettings' }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      operationId: addPushSubscription
+      summary: 'P3: store this browser''s push subscription for this caller (a paired device or a password session). Only https endpoints on Google''s, Apple''s, Mozilla''s or Microsoft''s push service are accepted (400 bad_endpoint). An endpoint another live device holds is never moved (409 endpoint_taken); past the overall cap, 409 too_many. `replaces` is the endpoint it supersedes (pushsubscriptionchange).'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint, keys]
+              properties:
+                endpoint: { type: string }
+                keys:
+                  type: object
+                  required: [p256dh, auth]
+                  properties:
+                    p256dh: { type: string }
+                    auth: { type: string }
+                expirationTime: { type: [integer, 'null'] }
+                platform: { type: string }
+                replaces: { type: string }
+      responses:
+        '201':
+          description: Stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subscription]
+                additionalProperties: false
+                properties:
+                  subscription: { $ref: '#/components/schemas/PushSubscription' }
+        default: { $ref: '#/components/responses/Error' }
+  /push/subscriptions/{id}:
+    delete:
+      operationId: removePushSubscription
+      summary: 'P3: remove a subscription: the caller''s own (an admin: any).'
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [removed]
+                additionalProperties: false
+                properties:
+                  removed: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /push/settings:
+    patch:
+      operationId: updatePushSettings
+      summary: 'P3: which kinds notify, the morning time, and quiet hours (null or "off" for none). Shared by every device, so admin only; turning notifications on or off for one device is the subscription routes (act).'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                kinds:
+                  type: object
+                  properties:
+                    approval: { type: boolean }
+                    waiting: { type: boolean }
+                    result: { type: boolean }
+                    morning: { type: boolean }
+                morning: { type: string }
+                quietHours: { type: [string, 'null'] }
+      responses:
+        '200':
+          description: The settings now.
+          content: { application/json: { schema: { $ref: '#/components/schemas/PushSettings' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /push/test:
+    post:
+      operationId: sendPushTest
+      summary: 'P3: send a test notification to this caller''s own subscriptions now (quiet hours or not; at most 5 per 10 minutes). "accepted" means the push service took it, not that the phone showed it.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: What the push service said, per subscription.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted, gone, failed, results, message]
+                additionalProperties: false
+                properties:
+                  accepted: { type: integer }
+                  gone: { type: integer }
+                  failed: { type: integer }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, outcome, status]
+                      additionalProperties: false
+                      properties:
+                        id: { type: string }
+                        outcome: { type: string, enum: [accepted, gone, retry, failed] }
+                        status: { type: integer }
+                  message: { type: string }
         default: { $ref: '#/components/responses/Error' }

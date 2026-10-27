@@ -137,3 +137,109 @@ export function acceptable(file: PrecacheEntry, res: { ok: boolean; status: numb
 export type ToWorker = { type: 'SKIP_WAITING' } | { type: 'GET_BUILD' };
 /** The worker's answer to GET_BUILD. */
 export interface BuildReply { type: 'BUILD'; buildId: string; entry: string; version: string }
+
+// ── web push (slice P3) ────────────────────────────────────────────────────────────────────────────────────────
+//
+// A push carries ONLY `{kind, id, tag}` (src/v2/push.ts): it passes through Google's, Apple's, Mozilla's or
+// Microsoft's push service, so no title, sender or word of mail is ever in it. The words a phone shows are fixed
+// here, per kind; the app fetches the details after it opens, at the place the notification is about.
+
+export type PushKindW = 'approval' | 'waiting' | 'result' | 'morning' | 'test';
+export interface PushData { kind: PushKindW; id: string | null; tag: string }
+const KINDS: readonly PushKindW[] = ['approval', 'waiting', 'result', 'morning', 'test'];
+
+/** The payload as sent, or null when it is not one of ours (then a generic notice is shown: a push must show one). */
+export function parsePush(text: string | null | undefined): PushData | null {
+  if (!text) return null;
+  let o: unknown;
+  try { o = JSON.parse(text); } catch { return null; }
+  if (!o || typeof o !== 'object') return null;
+  const r = o as Record<string, unknown>;
+  if (!KINDS.includes(r.kind as PushKindW)) return null;
+  const id = typeof r.id === 'string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(r.id) ? r.id : null;
+  return { kind: r.kind as PushKindW, id, tag: `mwa-${r.kind as string}` };
+}
+
+/** The fixed words per kind. Nothing from the payload is shown but the kind. */
+export const PUSH_WORDS: Record<PushKindW | 'other', { title: string; body: string }> = {
+  approval: { title: 'Your helper', body: 'Something needs your OK' },
+  waiting: { title: 'Your helper', body: 'A job is waiting for you' },
+  result: { title: 'Your helper', body: 'A result is ready' },
+  morning: { title: 'Your helper', body: 'Here’s your morning' },
+  test: { title: 'Your helper', body: 'Notifications are working on this device' },
+  other: { title: 'Your helper', body: 'Something new — open to see' },
+};
+
+/** Where tapping a notification opens the app: the v2 app at Today, the approval, the job (the working sheet). */
+export function pushTarget(p: PushData | null, scope: string): string {
+  // `from=notification`: v2 for this visit only — a person who chose the classic app keeps it (App.tsx, P3 review)
+  const base = new URL('./?ui=v2&from=notification', scope).href;
+  if (!p) return `${base}#/today`;
+  const id = p.id ? encodeURIComponent(p.id) : null;
+  switch (p.kind) {
+    case 'approval': return id ? `${base}#/approval/${id}` : `${base}#/today`;
+    case 'waiting': case 'result': return id ? `${base}#/job/${id}` : `${base}#/work`;
+    case 'test': return `${base}#/settings/notifications`;
+    default: return `${base}#/today`;
+  }
+}
+
+export interface NotificationPlan { title: string; options: { body: string; tag: string; renotify: boolean; icon: string; badge: string; data: { url: string; kind: string } } }
+/** What to show for one push. One tag per kind: a newer notification of a kind replaces the older one. */
+export function notificationFor(text: string | null | undefined, scope: string): NotificationPlan {
+  const p = parsePush(text);
+  const w = PUSH_WORDS[p?.kind ?? 'other'];
+  return {
+    title: w.title,
+    options: {
+      body: w.body, tag: p?.tag ?? 'mwa-other', renotify: true,
+      icon: new URL('pwa/icon-192.png', scope).href, badge: new URL('pwa/monochrome-512.png', scope).href,
+      data: { url: pushTarget(p, scope), kind: p?.kind ?? 'other' },
+    },
+  };
+}
+
+export interface ClientLike { url: string; type?: string; focused?: boolean; visibilityState?: string }
+/** Which open window to reuse for a tap: a focused one of ours first, then a visible one, then any; null = open one. */
+export function pickClient<T extends ClientLike>(clients: readonly T[], scope: string): T | null {
+  const ours = clients.filter((c) => (c.type ?? 'window') === 'window' && c.url.startsWith(new URL(scope).origin));
+  return ours.find((c) => c.focused) ?? ours.find((c) => c.visibilityState === 'visible') ?? ours[0] ?? null;
+}
+
+/** A notification's own URL, kept only if it is the app at our origin (anything else opens Today). */
+export function safeTarget(url: unknown, scope: string): string {
+  try {
+    const u = new URL(String(url));
+    if (u.origin === new URL(scope).origin) return u.href;
+  } catch { /* fall through */ }
+  return pushTarget(null, scope);
+}
+
+/** The message the worker posts to an open page to move it to the notification's place. */
+export interface OpenMessage { type: 'MWA_OPEN'; url: string }
+
+/** Tap on a notification with this window open: tell the v2 page where to go (it stays loaded, keeping what it has),
+ *  or load the v2 app there (a v1 tab, or a page that is not the app). */
+export function clickPlan(client: ClientLike | null): { kind: 'message' } | { kind: 'navigate' } | { kind: 'open' } {
+  if (!client) return { kind: 'open' };
+  return /[?&]ui=v2(&|#|$)/.test(client.url) ? { kind: 'message' } : { kind: 'navigate' };
+}
+
+/** The browser replaced the push subscription (pushsubscriptionchange): the request that tells the server. */
+export function resubscribeRequest(sub: { endpoint?: string; expirationTime?: number | null; keys?: Record<string, string> }, oldEndpoint: string | null, version: string, key: string): { headers: Record<string, string>; body: string } | null {
+  if (!sub.endpoint || !sub.keys?.p256dh || !sub.keys?.auth) return null;
+  return {
+    headers: { 'content-type': 'application/json', 'idempotency-key': key, 'x-mwa-client': `web/${version}` },
+    body: JSON.stringify({ endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth }, expirationTime: sub.expirationTime ?? null, ...(oldEndpoint && oldEndpoint !== sub.endpoint ? { replaces: oldEndpoint } : {}) }),
+  };
+}
+
+/** base64url to bytes (the VAPID public key for PushManager.subscribe). */
+export function keyBytes(b64u: string): Uint8Array {
+  const s = b64u.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = (4 - (s.length % 4)) % 4;
+  const bin = atob(s + '='.repeat(pad));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}

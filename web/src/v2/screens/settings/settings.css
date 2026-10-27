@@ -72,3 +72,12 @@ select.setinput { appearance: auto; }
 .addrask { margin: 12px 0; padding: 12px; border-radius: 8px; background: var(--card-2); border-left: 4px solid var(--signal); }
 .addrask .dollarrow { margin-top: 8px; }
 .configerr { margin-top: 12px; padding: 12px; border-radius: 8px; background: var(--card); border-left: 4px solid var(--signal); overflow-wrap: anywhere; }
+
+/* P3: Settings › Notifications */
+#notify-card fieldset { border: 0; padding: 0; margin: 14px 0 0; min-width: 0; }
+#notify-card legend { padding: 0; margin-bottom: 6px; }
+#notify-card .checkrow { display: flex; align-items: center; gap: 8px; min-height: 44px; }
+#notify-card .checkrow input { width: 20px; height: 20px; flex: none; }
+#notify-card input[type="time"] { min-height: 44px; font: inherit; padding: 0 8px; }
+#notify-card .notifyquiet .setrow { flex-wrap: wrap; gap: 8px; align-items: center; }
+#notify-privacy { margin-top: 14px; }

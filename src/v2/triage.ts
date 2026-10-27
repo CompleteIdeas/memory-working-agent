@@ -45,6 +45,7 @@ import {
   apiItem, dropVerdict, getVerdict, itemId, payloadOf, liveItemsWhere, listRules, markDeepRead, markGone, putVerdict, recordTriageCall, spentOn,
   upsertItem, verdictsFor, visibleItem, MAIL_KINDS, GROUPS, groupOf,
   type ApiItem, type Group, type ItemIn, type ItemRow, type MailKind, type RuleRow, type VerdictRow,
+  phishingSource,
 } from './important.js';
 import { apiMailHeader, listMail, mailAccountsStored, mailId, parseMailId, type MailRow, type MailPageCursor } from './mail.js';
 import { cleanLine, displayName } from './mail-text.js';
@@ -862,6 +863,9 @@ function rebuildApprovals(now: number, tz: string): void {
         source: 'approval', sourceRef: a.id, dedupeKey: key, ts: a.createdAt, from: 'Your helper',
         title: plainWhy(a.summary, 120) || 'Something needs your OK', why: 'Your helper needs your OK before it goes on.',
         trust: a.tainted ? 'untrusted' : 'trusted', action: { kind: 'review-approval', payload: { approvalId: a.id } },
+        // P3 review: staged by a run tainted by a phishing-flagged mail or item: it carries the caution (never a
+        // Needs-you card, never a push)
+        caution: phishingSource(a.taintSources, d) ? 'phishing' : null,
       }, tz, now, d);
       live.add(key);
     }

@@ -11,3 +11,12 @@ export function chooseUi(search: string, stored: string | null, pathname = '/'):
   if (q.get('fixtures') === '1') return 'v2';
   return stored === 'v2' ? 'v2' : 'v1';
 }
+
+/** What to remember in `mwa-ui` for this visit: the asked UI, except for a tapped notification (`from=notification`),
+ *  which opens v2 for that visit only — a person who chose the classic app keeps it until W6 (P3 review). */
+export function uiToRemember(search: string): 'v1' | 'v2' | null {
+  const q = new URLSearchParams(search);
+  const ui = q.get('ui');
+  if (ui !== 'v1' && ui !== 'v2') return null;
+  return q.get('from') === 'notification' ? null : ui;
+}

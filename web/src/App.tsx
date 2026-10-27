@@ -11,7 +11,7 @@ import { TaskRail, TasksPage } from './components/Tasks';
 import { Settings } from './components/Settings';
 import { StatusChip } from './components/TaskParts';
 import { stateLine, STATUS_LABEL, type TaskStatus } from './tasks';
-import { chooseUi } from './v2/choose';
+import { chooseUi, uiToRemember } from './v2/choose';
 
 // D5 (usability review 2026-10-24): Chat · Tasks · Files · Memory · Settings. Connect, Log and Warm-start moved into
 // Settings; Work became Tasks. Phones get a bottom tab bar instead of a nav row that was cut off at 390 px.
@@ -195,8 +195,10 @@ export default function App() {
     let stored: string | null = null;
     try { stored = localStorage.getItem('mwa-ui'); } catch { /* private mode */ }
     const pick = chooseUi(location.search, stored, location.pathname);
-    const asked = new URLSearchParams(location.search).get('ui');
-    if (asked === 'v1' || asked === 'v2') { try { localStorage.setItem('mwa-ui', asked); } catch { /* */ } }
+    // P3 review: a tapped notification opens v2 for that visit only (`from=notification`): a person who chose the
+    // classic app keeps it (until W6 makes v2 the default)
+    const remember = uiToRemember(location.search);
+    if (remember) { try { localStorage.setItem('mwa-ui', remember); } catch { /* */ } }
     return pick;
   });
   if (ui === 'v2') return <Suspense fallback={null}><V2App /></Suspense>;

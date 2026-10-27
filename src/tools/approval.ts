@@ -70,6 +70,8 @@ export interface PendingAction {
   /** staged by a run that had read the person's own files (F02: not "outside content", and the card says which). */
   readLocal?: boolean;
   kind?: ApprovalKind;
+  /** P3 review: the outside content that tainted the run that staged it (ToolContext.taintSources) */
+  taintSources?: string[];
 }
 
 /** Audit hook — wire to AWM from the agent layer so every approval is recorded. */
@@ -167,6 +169,7 @@ function toAction(r: Row): PendingAction {
     id: r.id, tool: r.tool, summary: r.summary, createdAt: r.created_at, expiresAt: r.expires_at, status: r.status as ApprovalStatus,
     personId: ctx.personId, identityInDoubt: ctx.identityInDoubt, runId: ctx.runId, session: ctx.session,
     tainted: r.tainted === 1, readLocal: ctx.readLocal === true, kind: (r.kind as ApprovalKind) ?? 'tool',
+    ...(Array.isArray(ctx.taintSources) && ctx.taintSources.length ? { taintSources: ctx.taintSources } : {}),
   };
 }
 /** Two stagings of the same thing: same tool, same arguments (or the same summary when there are none). */
@@ -277,6 +280,7 @@ export function stageAction(a: {
   const ctx: ToolContext = {
     sandboxDir: c.sandboxDir, extraRoots: c.extraRoots, tainted: c.tainted === true, readLocal: c.readLocal,
     interactive: c.interactive, personId: c.personId, identityInDoubt: c.identityInDoubt, runId: c.runId, session: c.session,
+    ...(c.taintSources?.length ? { taintSources: c.taintSources.filter((x) => typeof x === 'string').slice(0, 20).map((x) => x.slice(0, 220)) } : {}),
   };
   store().prepare(`INSERT INTO approvals (id, tool, executor, args, summary, ctx, kind, tainted, status, created_at, expires_at, updated_at, owner)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`)
@@ -383,7 +387,7 @@ export function recentApprovalOutcomes(): { id: string; tool: string; status: Ap
   return rows.map((r) => { const a = toAction(r); return { id: r.id, tool: r.tool, status: r.status as ApprovalStatus, owner: ownerLabel(r.owner), summary: r.summary, kind: a.kind ?? 'tool', ...(a.session ? { session: a.session } : {}), ...(r.result ? { result: r.result.slice(0, 300) } : {}), at: r.updated_at, createdAt: r.created_at }; });
 }
 
-export interface PendingView { id: string; tool: string; summary: string; expiresInSec: number; expiresAt: number; tainted: boolean; readLocal: boolean; kind: ApprovalKind; session?: string; runId?: string; /** who it was staged for (v2 A10: Today shows the owner's only) */ personId?: string; /** when it was staged, so the app can place the card in the task that raised it */ createdAt: number; }
+export interface PendingView { id: string; tool: string; summary: string; expiresInSec: number; expiresAt: number; tainted: boolean; readLocal: boolean; kind: ApprovalKind; session?: string; runId?: string; /** who it was staged for (v2 A10: Today shows the owner's only) */ personId?: string; /** when it was staged, so the app can place the card in the task that raised it */ createdAt: number; /** P3 review: what tainted it (ToolContext.taintSources) */ taintSources?: string[]; }
 
 /** List pending actions, newest first. With `scope`, only those from that session or person — the
  *  model's own list/cancel tools are scoped (BL-03 review); the person's app lists everything. */
@@ -393,7 +397,7 @@ export function listPendingActions(scope?: { session?: string; personId?: string
   const rows = store().prepare(`SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at DESC`).all() as Row[];
   return rows.map(toAction)
     .filter((a) => !scope || inScope(a, scope))
-    .map((a) => ({ id: a.id, tool: a.tool, summary: a.summary, expiresInSec: Math.max(0, Math.round((a.expiresAt - now) / 1000)), expiresAt: a.expiresAt, tainted: a.tainted === true, readLocal: a.readLocal === true, kind: a.kind ?? 'tool', session: a.session, ...(a.runId ? { runId: a.runId } : {}), ...(a.personId ? { personId: a.personId } : {}), createdAt: a.createdAt }));
+    .map((a) => ({ id: a.id, tool: a.tool, summary: a.summary, expiresInSec: Math.max(0, Math.round((a.expiresAt - now) / 1000)), expiresAt: a.expiresAt, tainted: a.tainted === true, readLocal: a.readLocal === true, kind: a.kind ?? 'tool', session: a.session, ...(a.runId ? { runId: a.runId } : {}), ...(a.personId ? { personId: a.personId } : {}), createdAt: a.createdAt, ...(a.taintSources ? { taintSources: a.taintSources } : {}) }));
 }
 
 /** Confirm + execute a pending action by id (omit id → the single most recent). Called only by

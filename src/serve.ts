@@ -74,6 +74,8 @@ import { startCalendarSync } from './sync/calendar.js';
 import { startMailSync, openMail } from './sync/mail.js';
 import { startImportant } from './v2/important-serve.js';
 import { setTodayDeps } from './v2/today.js';
+import { startPushNotifier } from './v2/push.js';
+import { setLocalOwnerValid } from './v2/push-store.js';
 import { mailSyncOn } from './sync/flags.js';
 import { migrateV2Once, describeReport } from './v2/migrate.js';
 import { reapDeadTries, personAction, jobByGoal, busyReason, viewJob, jobBySchedule, getJob } from './v2/jobs.js';
@@ -576,6 +578,8 @@ async function runChat(p: ChatParams, sink: ChatSink): Promise<void> {
         // A6: the thing an ask is about starts the run tainted when its words are someone else's
         startTainted: !!((ctx && ctxTainted) || resumed?.tainted || ex?.startTainted),
       } : {}),
+      // P3 review: an ask about one thing (a mail, an Important item) is tainted BY that thing: what it stages says so
+      ...(ex?.about && ex.startTainted ? { taintSources: [`${ex.about.kind}:${ex.about.id}`] } : {}),
       workspace: cfg.awm.workspace, session: sessionId, interactive: true, // a human is watching → ask_user can ask them
       style: cfg.style, // guided (proactive/plain) vs direct (concise) — independent of access preset
       personContext, // S2: per-person adaptation block (empty for the shared/unknown profile)
@@ -801,6 +805,15 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
   startImportant({ memory: () => new MwaMemory(SERVE_AGENT, dbFile(), loadConfig().awm.workspace), running: () => new Set(liveRuns.all().map((r) => r.session)) });
   // v2 (A10): Today composes the slices above (what the helper did comes from app.db `actions`). No model calls.
   setTodayDeps({
+    running: () => new Set(liveRuns.all().map((r) => r.session)),
+    pendingApprovals: () => listPendingActions(),
+  });
+  // v2 (P3): web push to the installed app — approvals waiting, jobs waiting, results ready, the morning check-in.
+  // Payloads carry a kind and an id only (src/v2/push.ts); every 30 s, quiet hours and an hourly limit respected.
+  // P3 review: "this machine" owns notifications only while it is trusted as such (no password, nothing relaying):
+  // setting a password, or serving through a relay, removes the subscriptions made as `local`
+  setLocalOwnerValid(!ACCESS_PW && !relayedMode());
+  startPushNotifier({
     running: () => new Set(liveRuns.all().map((r) => r.session)),
     pendingApprovals: () => listPendingActions(),
   });
