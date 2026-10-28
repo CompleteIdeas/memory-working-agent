@@ -18,8 +18,9 @@ import type { Account, Device, FileRow, HelperSettings, Me, Spending, VaultEntry
 import { PluginFixtures } from './fixtures-plugins';
 import { AssistantFixtures } from './fixtures-assistant';
 import { ConnectionFixtures } from './fixtures-connections';
+import { MemoryFixtures } from './fixtures-memory';
 
-type Resp = { status: number; body: unknown; headers?: Record<string, string> };
+type Resp = { status: number; body: unknown; headers?: Record<string, string>; text?: string };
 const err = (status: number, code: string, message: string): Resp => ({ status, body: { error: { code, message } } });
 const MINUTE = 60_000, DAY = 86_400_000;
 export const FIXTURE_PASSWORD = 'example';
@@ -40,7 +41,9 @@ const ADMIN: RegExp[] = [/^POST \/session\/sign-out-everywhere$/, /^POST \/pair\
   // S2: every change to the assistant itself (and its model list, which uses the saved key)
   /^(POST|PUT|DELETE) \/assistant(\/|$)/,
   // S3: every change to a connection
-  /^(POST|PUT|DELETE) \/connections(\/|$)/];
+  /^(POST|PUT|DELETE) \/connections(\/|$)/,
+  // S5: every change to memory, and both downloads
+  /^POST \/memory\//, /^GET \/memory\/export$/, /^GET \/spending\/calls\.csv$/];
 
 export class SettingsFixtures {
   passwordSet: boolean;
@@ -60,6 +63,8 @@ export class SettingsFixtures {
   assistant: AssistantFixtures;
   /** S3: Settings › Connections (./fixtures-connections.ts) */
   connections: ConnectionFixtures;
+  /** S5: What I remember, Activity and the spending detail (./fixtures-memory.ts) */
+  memory: MemoryFixtures;
   push = { kinds: { approval: true, waiting: true, result: true, morning: true }, morning: '07:30', timeZone: 'America/New_York', quietHours: { value: '22:00-07:00' as string | null, fixed: false, invalid: false } };
   private codes = new Set<string>([norm(FIXTURE_PAIR_CODE)]);
   private n = 0;
@@ -102,6 +107,7 @@ export class SettingsFixtures {
     this.files.set('general', []);
     this.plugins = new PluginFixtures(scenario, clock);
     this.assistant = new AssistantFixtures(scenario, this.plugins);
+    this.memory = new MemoryFixtures(scenario, clock, () => this.spending);
   }
 
   me(): Me {
@@ -128,6 +134,8 @@ export class SettingsFixtures {
     if (as) return as;
     const cn = this.connections.read(path);
     if (cn) return cn;
+    const mem = this.memory.read(path, q);
+    if (mem) return mem;
     if (path === '/devices') return { status: 200, body: { devices: this.devices } };
     if (path === '/settings') return { status: 200, body: this.settings };
     if (path === '/spending') return { status: 200, body: this.spending };
@@ -150,6 +158,8 @@ export class SettingsFixtures {
     if (as) return as;
     const cn = this.connections.write(method, path, body); // S3 (and Connect, from the same state)
     if (cn) return cn;
+    const mem = this.memory.write(method, path, body);
+    if (mem) return mem;
     if (method === 'POST' && path === '/session') {
       if (!this.passwordSet) return err(409, 'no_password', 'No password is set on this helper. Pair this device with a code from the computer instead.');
       if (typeof b.password !== 'string' || !b.password) return err(400, 'bad_body', 'Type your password.');

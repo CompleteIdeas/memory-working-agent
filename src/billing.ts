@@ -163,9 +163,16 @@ export function budgetHold(nowMs = Date.now(), path = tokenLogPath()): { held: b
   return { held: used >= usd, usedUsd: round(used), budgetUsd: usd };
 }
 
+/** The last `days` days of calls as a CSV download (1 to 366 days; anything else is 30): classic and v1 alike. */
+export function callsCsvFor(days: unknown, nowMs = Date.now(), path = tokenLogPath()): { days: number; filename: string; body: string } {
+  const d = Math.max(1, Math.min(366, Math.round(Number(days ?? 30)) || 30));
+  return { days: d, filename: `mwa-model-calls-${d}d.csv`, body: callsCsv(readCalls(path, nowMs - d * 86_400_000)) };
+}
+
 /** The calls as CSV: one row per model call. */
 export function callsCsv(calls: Call[]): string {
-  const esc = (v: unknown) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  // S5 review: a cell a spreadsheet would read as a formula (= + - @, a tab or a CR first) is kept as text
+  const esc = (v: unknown) => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const head = 'time,session,job,model,route,host,background,tokens_in,tokens_cached,tokens_out,tokens_reasoning,cost_usd';
   return [head, ...calls.map((c) => [new Date(c.ts).toISOString(), c.session, c.job, c.model, c.route, c.served, c.bg ? 'yes' : 'no', c.in, c.cached, c.out, c.reasoning, c.cost.toFixed(6)].map(esc).join(','))].join('\n') + '\n';
 }

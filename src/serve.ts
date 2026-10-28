@@ -122,7 +122,9 @@ import { setProjectRouteDeps, type ChatStart, type ChatExtras } from './api/rout
 import { setAskRouteDeps } from './api/routes/ask.js';
 import { finishAsk, setNarrowModel, narrowPrompt, firstJson, framedQuestion, askOfferAccepted, narrowAffordable, NARROW_CAP_USD } from './v2/ask.js';
 import { newLedger, withLedger, metered } from './spend.js';
-import { readCalls, billingSummary, callsCsv, setMonthlyBudget, providerBalance, monthStart, budgetHold } from './billing.js';
+import { readCalls, billingSummary, callsCsvFor, setMonthlyBudget, providerBalance, monthStart, budgetHold } from './billing.js';
+import { listFacts, forgetFact, correctFact, exportMemory, forgetPreference, listRoutines, setRoutine } from './memory-settings.js';
+import { readRuns } from './activity.js';
 import { thinkMode, thinkDue, thinkOnce, thinkEveryMs, thinkDailyUsd, readThoughts, latestThoughts } from './thinking.js';
 import { exportDoc, exportFormats } from './doc-export.js';
 import { dbFile, runLogPath, notifyPath, installLogPath } from './paths.js';
@@ -145,8 +147,6 @@ const MIME: Record<string, string> = {
 // The agent id serve reads/writes memory under. Override with MWA_AGENT_ID to point an instance
 // at a memory store written by a different agent (e.g. testing a ported USEA store under its own id).
 const SERVE_AGENT = process.env.MWA_AGENT_ID ?? 'mwa-serve';
-/** The stores whose routines the Memory tab lists and promotes: this app's, and the Telegram connector's. */
-const ROUTINE_AGENTS = [...new Set([SERVE_AGENT, process.env.MWA_TELEGRAM_AGENT_ID ?? 'mwa-agent'])];
 
 export async function readBody(req: AsyncIterable<Buffer | string>): Promise<any> {
   // Collect raw bytes, then decode UTF-8 ONCE. Decoding per-chunk (raw += c) corrupts a
@@ -974,9 +974,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         return;
       }
       if (p === '/api/billing.csv' && req.method === 'GET') {
-        const days = Math.max(1, Math.min(366, Number(url.searchParams.get('days') ?? 30) || 30));
-        res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="mwa-model-calls-${days}d.csv"`, 'cache-control': 'no-store' });
-        res.end(callsCsv(readCalls(undefined, Date.now() - days * 86_400_000)));
+        const f = callsCsvFor(url.searchParams.get('days') ?? 30); // S5: the same file as GET /api/v1/spending/calls.csv
+        res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="${f.filename}"`, 'cache-control': 'no-store' });
+        res.end(f.body);
         return;
       }
       if (p === '/api/billing/budget' && req.method === 'POST') {
@@ -992,11 +992,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       if (p === '/api/policies/forget' && req.method === 'POST') {
         if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
-        const rule = String(b.rule ?? '').slice(0, 600);
-        let removed = 0;
-        try { const m = new MwaMemory(SERVE_AGENT, dbFile()); removed = await m.removePolicy(rule); m.close(); } catch { /* */ }
+        const o = await forgetPreference(String(b.rule ?? '')); // S5: src/memory-settings.ts, shared with /api/v1/memory/preferences/remove
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: removed > 0, removed, message: removed > 0 ? 'Removed. It no longer applies to new tasks.' : 'No standing preference with those words was found.' }));
+        res.end(JSON.stringify({ ok: o.ok, removed: o.ok ? o.removed : 0, message: o.message }));
         return;
       }
       if (p === '/api/sources') {
@@ -1017,9 +1015,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         return;
       }
       if (p === '/api/memories') {
-        const dbPath = dbFile();
-        let memories: Awaited<ReturnType<MwaMemory['recentMemories']>> = [];
-        try { const m = new MwaMemory(SERVE_AGENT, dbPath); memories = await m.recentMemories(40); m.close(); } catch { /* */ }
+        const { facts: memories } = await listFacts({ limit: 40 }); // S5: src/memory-settings.ts, shared with /api/v1/memory
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ memories }));
         return;
@@ -1035,9 +1031,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       }
       // F1 Glass Box — export everything MWA knows as portable Markdown ("it's yours").
       if (p === '/api/memory/export') {
-        const dbPath = dbFile();
-        let md = '# What MWA knows about you\n';
-        try { const m = new MwaMemory(SERVE_AGENT, dbPath); md = await m.exportMarkdown(); m.close(); } catch { /* */ }
+        const md = await exportMemory(); // S5: shared with /api/v1/memory/export
         res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8', 'content-disposition': 'attachment; filename="mwa-memory.md"' });
         res.end(md);
         return;
@@ -1046,9 +1040,8 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       if (p === '/api/memory/forget' && req.method === 'POST') {
         if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
-        const dbPath = dbFile();
-        let ok = false;
-        try { const m = new MwaMemory(SERVE_AGENT, dbPath); ok = await m.forget(String(b.id ?? '')); m.close(); } catch { /* */ }
+        // S5: shared with /api/v1/memory/{id}/forget: only a fact the Memory list shows can be forgotten here
+        const { ok } = await forgetFact(String(b.id ?? ''));
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok }));
         return;
@@ -1057,17 +1050,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       if (p === '/api/memory/correct' && req.method === 'POST') {
         if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
-        const dbPath = dbFile();
-        let ok = false; let id: string | null = null;
-        try {
-          const m = new MwaMemory(SERVE_AGENT, dbPath);
-          const concept = String(b.concept ?? '').slice(0, 80);
-          const content = String(b.content ?? '').trim();
-          if (b.id && content) { id = await m.correctFact(String(b.id), concept, content); ok = !!id; }
-          m.close();
-        } catch { /* */ }
+        // S5: shared with /api/v1/memory/{id}/correct (the same checks; only a fact the Memory list shows)
+        const o = await correctFact(String(b.id ?? ''), String(b.content ?? ''), b.concept === undefined ? undefined : String(b.concept).replace(/[\r\n]+/g, ' ').slice(0, 80), { confirmed: b.confirmed === true });
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok, id }));
+        res.end(JSON.stringify(o.ok ? { ok: true, id: o.id } : { ok: false, id: null, code: o.code, message: o.message }));
         return;
       }
       // Onboarding wizard — scan the folders/files the user points at into candidate memories.
@@ -1163,11 +1149,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         return;
       }
       if (p === '/api/runs') {
-        const logp = runLogPath();
-        let runs: any[] = [];
-        try {
-          runs = readFileSync(logp, 'utf8').trim().split('\n').slice(-60).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean).reverse();
-        } catch { /* no log yet */ }
+        const runs = readRuns(60); // S5: src/activity.ts (the v1 /activity view is a redacted projection of the same lines)
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ runs }));
         return;
@@ -1453,11 +1435,7 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       // Both stores that share this database: the web app's and the Telegram connector's (BL-12 review —
       // a routine proposed in Telegram must be promotable here, into the store its runs recall from).
       if (p === '/api/routines' && req.method === 'GET') {
-        const dbPath = dbFile();
-        const routines: unknown[] = [];
-        for (const agent of ROUTINE_AGENTS) {
-          try { const m = new MwaMemory(agent, dbPath); routines.push(...(await m.listRoutines()).map((r) => ({ ...r, agent }))); m.close(); } catch { /* */ }
-        }
+        const routines = await listRoutines(); // S5: src/memory-settings.ts, shared with /api/v1/memory
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ routines }));
         return;
@@ -1465,17 +1443,10 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       if ((p === '/api/routines/promote' || p === '/api/routines/retire') && req.method === 'POST') {
         if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
-        const dbPath = dbFile();
-        let out: { ok: boolean; error?: string } = { ok: false, error: 'not done' };
-        const agent = ROUTINE_AGENTS.includes(String(b.agent ?? SERVE_AGENT)) ? String(b.agent ?? SERVE_AGENT) : null;
-        if (!agent) out = { ok: false, error: 'unknown store' };
-        else try {
-          const m = new MwaMemory(agent, dbPath);
-          out = p.endsWith('/promote') ? await m.promoteRoutine(String(b.id ?? '')) : await m.retireRoutine(String(b.id ?? ''));
-          m.close();
-        } catch (e) { out = { ok: false, error: (e as Error).message.slice(0, 120) }; }
+        // S5: src/memory-settings.ts, shared with /api/v1/memory/routines/{id}/promote|retire
+        const o = await setRoutine(String(b.id ?? ''), p.endsWith('/promote') ? 'promote' : 'retire', b.agent ?? SERVE_AGENT);
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify(out));
+        res.end(JSON.stringify(o.ok ? { ok: true } : { ok: false, error: o.message }));
         return;
       }
       if (p === '/api/skills') {

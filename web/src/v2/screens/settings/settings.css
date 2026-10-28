@@ -129,3 +129,38 @@ select.setinput { appearance: auto; }
 .conncheck { margin-top: 12px; }
 .conncode .paircode { margin: 10px 0; }
 .connpage .setcard > .soft { margin-top: 10px; }
+
+/* S5: Settings › What I remember, Activity and Spending */
+.memsearch { display: flex; flex-direction: column; gap: 6px; margin: 12px 0 4px; }
+.memsearch label { font-weight: 600; }
+.memcount { margin: 6px 0 0; }
+.memfact .memtextline { color: var(--ink); white-space: pre-wrap; }
+.memfact .memsrc { color: var(--dim); font-size: 14px; margin-top: 2px; }
+.memedit { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.memedit label { font-weight: 600; font-size: 15px; }
+.setinput.memtext { min-height: 96px; padding: 10px 14px; resize: vertical; line-height: 1.4; font-family: inherit; }
+.agechip { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 10px; background: var(--card-2); border: 1px solid var(--line); font-size: 13px; font-weight: 600; vertical-align: 1px; }
+.agechip.older { border-color: var(--signal); color: var(--signal); }
+.prefline { font-weight: 500; }
+.setrow pre.steps { margin: 6px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--card-2); font-family: var(--mono); font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }
+.runlist { list-style: none; margin: 8px 0 0; }
+.runrow .runtop { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; }
+.runrow .runtop .rowtitle { flex: 1 1 200px; min-width: 0; }
+.runrow .runwhen { color: var(--dim); font-size: 14px; white-space: nowrap; }
+.runrow .runsum { font-style: italic; }
+.amount { font-weight: 700; flex: none; font-variant-numeric: tabular-nums; }
+.spendchart { margin: 12px 0 4px; }
+.spendchart .sbars { display: flex; align-items: flex-end; gap: 2px; height: 96px; padding-bottom: 1px; border-bottom: 1px solid var(--edge); }
+.spendchart .sbar { flex: 1 1 0; min-width: 3px; background: var(--ink); border-radius: 2px 2px 0 0; }
+.spendchart .sbar.none { background: var(--line); }
+.spendchart figcaption { margin-top: 4px; }
+.spendchart .axis { display: flex; justify-content: space-between; color: var(--dim); font-size: 13px; }
+.spendchart figcaption .s { display: block; margin-top: 6px; }
+.daytable { margin-top: 8px; }
+.daytable summary { min-height: 44px; display: flex; align-items: center; font-weight: 600; cursor: pointer; }
+.daytable table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.daytable th, .daytable td { text-align: left; padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line); }
+.daytable td { text-align: right; }
+.daytable thead th:not(:first-child) { text-align: right; }
+.memorig { padding: 8px 10px; border-radius: 8px; background: var(--card-2); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
+.morebtn { align-self: flex-start; }

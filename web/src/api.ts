@@ -223,9 +223,10 @@ export async function setRoutine(id: string, action: 'promote' | 'retire', agent
 export async function forgetMemory(id: string): Promise<{ ok: boolean }> {
   try { const r = await fetch('/api/memory/forget', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) }); return await r.json(); } catch { return { ok: false }; }
 }
-/** F1 Glass Box — correct a fact (supersede with the user's text; becomes trusted). */
-export async function correctMemory(id: string, concept: string, content: string): Promise<{ ok: boolean }> {
-  try { const r = await fetch('/api/memory/correct', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, concept, content }) }); return await r.json(); } catch { return { ok: false }; }
+/** F1 Glass Box — correct a fact (supersede with the user's text; becomes trusted). `confirmed`: the person saw that a
+ *  fact from outside becomes trusted (S5 review: the server refuses one without it, and one that keeps the outside text). */
+export async function correctMemory(id: string, concept: string, content: string, confirmed = false): Promise<{ ok: boolean; code?: string; message?: string }> {
+  try { const r = await fetch('/api/memory/correct', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, concept, content, ...(confirmed ? { confirmed: true } : {}) }) }); return await r.json(); } catch { return { ok: false }; }
 }
 export async function getSkills(): Promise<{ name: string; content: string }[]> {
   try { const r = await fetch('/api/skills'); return (await r.json()).skills ?? []; } catch { return []; }

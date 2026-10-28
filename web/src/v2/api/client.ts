@@ -108,6 +108,19 @@ export type ConnectionService = 'google' | 'outlook' | 'telegram' | 'tailscale';
 export type ApprovalView = Schemas['ApprovalView'];
 export type ApprovalList = Schemas['ApprovalList'];
 export type ApprovalDecision = Schemas['ApprovalDecision'];
+// S5: memory, activity, spending detail
+export type MemoryView = Schemas['MemoryView'];
+export type MemoryFact = Schemas['MemoryFact'];
+export type MemoryRoutine = Schemas['MemoryRoutine'];
+export type RoutineChange = Schemas['RoutineChange'];
+export type MemoryCorrected = Json<'/memory/{id}/correct', 'post', 200>;
+export type MemoryForgotten = Json<'/memory/{id}/forget', 'post', 200>;
+export type PreferenceRemoved = Json<'/memory/preferences/remove', 'post', 200>;
+export type ActivityView = Schemas['ActivityView'];
+export type ActivityRun = Schemas['ActivityRun'];
+export type SpendingDetail = Schemas['SpendingDetail'];
+/** S5: a file the server sends as a download (the memory export, the spending CSV), read with the app's headers. */
+export interface DownloadedFile { text: string; type: string; filename: string }
 export type PushList = Json<'/push/subscriptions', 'get', 200>;
 export type PushTestResult = Json<'/push/test', 'post', 200>;
 export type PushKindName = 'approval' | 'waiting' | 'result' | 'morning';
@@ -247,6 +260,19 @@ export class MwaClient {
   }
   private async get<T>(template: ApiPath, o?: CallOpts): Promise<T> { return (await this.call<T>('GET', template, o)).body; }
   private async post<T>(template: ApiPath, o?: CallOpts): Promise<T> { return (await this.call<T>('POST', template, o)).body; }
+  /** S5: a GET whose answer is a file (Markdown, CSV), with the same headers and errors as every call: a link can't
+   *  carry a paired device's key, so the app fetches the file and hands it to the browser to save. */
+  private async file(template: ApiPath, o: CallOpts, fallbackName: string): Promise<DownloadedFile> {
+    const url = this.url(template, o);
+    this.opts.onRequest?.('GET', url, template);
+    let res: Response;
+    try { res = await this.f(url, { method: 'GET', headers: { accept: '*/*', 'x-mwa-client': `web/${this.version}` }, credentials: 'same-origin', signal: o.signal }); }
+    catch (e) { if ((e as { name?: string })?.name === 'AbortError') throw e; throw new NetworkError(undefined, e); }
+    const text = await res.text().catch(() => '');
+    if (!res.ok) { let body: unknown = null; try { body = JSON.parse(text); } catch { /* not JSON */ } throw toError(res.status, body); }
+    const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? fallbackName;
+    return { text, type: (res.headers.get('content-type') ?? 'text/plain').split(';')[0], filename: name };
+  }
 
   // ---- meta, pairing, devices ----
   getMeta() { return this.get<Meta>('/meta'); }
@@ -349,6 +375,10 @@ export class MwaClient {
   getSettings() { return this.get<HelperSettings>('/settings'); }
   async updateSettings(body: SettingsPatch, o: { key?: string } = {}) { return (await this.call<HelperSettings>('PATCH', '/settings', { body, key: o.key })).body; }
   getSpending() { return this.get<Spending>('/spending'); }
+  /** S5: the 30-day chart, by model, the costliest, tokens and the provider's balance */
+  getSpendingDetail() { return this.get<SpendingDetail>('/spending/detail'); }
+  /** S5: one row per model call (admin) */
+  downloadSpendingCsv(days = 30) { return this.file('/spending/calls.csv', { query: { days } }, `mwa-model-calls-${days}d.csv`); }
   async updateSpending(body: SpendingPatch, o: { key?: string } = {}) { return (await this.call<Spending>('PATCH', '/spending', { body, key: o.key })).body; }
   listAccounts() { return this.get<{ accounts: Account[] }>('/accounts'); }
   /** S3: `how` picks Outlook's code or browser sign-in and read-only access; nothing sent keeps the server's choice. */
@@ -412,6 +442,20 @@ export class MwaClient {
   approve(id: string, o: { key?: string; confirmed?: boolean } = {}) { return this.post<ApprovalDecision>('/approvals/{id}/approve', { path: { id }, body: o.confirmed ? { confirmed: true } : {}, key: o.key }); }
   /** Not this time; the note tells the helper why. */
   deny(id: string, note?: string, o: { key?: string } = {}) { return this.post<ApprovalDecision>('/approvals/{id}/deny', { path: { id }, body: note ? { note } : {}, key: o.key }); }
+  // ---- S5: what your helper remembers, and what it has been doing ----
+  getMemory(q: { q?: string; limit?: number } = {}) { return this.get<MemoryView>('/memory', { query: q }); }
+  /** `confirmed`: for a fact that came from outside, the person said yes to "what you write becomes something I trust" */
+  correctMemory(id: string, text: string, o: { key?: string; name?: string; confirmed?: boolean } = {}) {
+    return this.post<MemoryCorrected>('/memory/{id}/correct', { path: { id }, body: { text, ...(o.name ? { name: o.name } : {}), ...(o.confirmed ? { confirmed: true } : {}) }, key: o.key });
+  }
+  /** `confirmed`: the person said yes to "Forget this for good?" (without it: 409 confirm_needed, nothing changes) */
+  forgetMemory(id: string, o: { key?: string; confirmed?: boolean } = {}) { return this.post<MemoryForgotten>('/memory/{id}/forget', { path: { id }, body: o.confirmed ? { confirmed: true } : {}, key: o.key }); }
+  /** everything as Markdown (admin) */
+  exportMemory() { return this.file('/memory/export', {}, 'mwa-memory.md'); }
+  removePreference(rule: string, o: { key?: string; confirmed?: boolean } = {}) { return this.post<PreferenceRemoved>('/memory/preferences/remove', { body: o.confirmed ? { rule, confirmed: true } : { rule }, key: o.key }); }
+  promoteRoutine(id: string, store: string, o: { key?: string; confirmed?: boolean } = {}) { return this.post<RoutineChange>('/memory/routines/{id}/promote', { path: { id }, body: o.confirmed ? { store, confirmed: true } : { store }, key: o.key }); }
+  retireRoutine(id: string, store: string, o: { key?: string } = {}) { return this.post<RoutineChange>('/memory/routines/{id}/retire', { path: { id }, body: { store }, key: o.key }); }
+  getActivity(q: { limit?: number } = {}) { return this.get<ActivityView>('/activity', { query: q }); }
 }
 
 function toError(status: number, body: unknown): ApiError {
