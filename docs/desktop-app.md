@@ -1,5 +1,19 @@
 # Running MWA without a terminal (the non-technical front door)
 
+> **Status at 0.10.0 (2026-10-28).** This page was the plan written for v0.2; most of it has happened since, and the
+> recipes below are kept as the record of how. Where things stand now:
+>
+> - **Docker (Path A): built.** The `Dockerfile` builds AWM, MWA and the web app from source, bakes the recall models
+>   into the image, and `.github/workflows/docker-publish.yml` publishes `ghcr.io/completeideas/mwa`. Run it with
+>   `MWA_ACCESS_PASSWORD` set (see [deployment.md](deployment.md)); the `VOLUME` line shown below was removed because
+>   Railway rejects it.
+> - **Tauri desktop app (Path B): built for Windows** in `src-tauri/` (a tray app that supervises the Node sidecar,
+>   with an installer). Code signing and macOS/Linux builds are not done.
+> - **Hosted (Path C): built.** The same image runs on Railway or another container host behind a password, and the
+>   new app installs on a phone from its https address and pairs with a QR code ([new-app.md](new-app.md)).
+> - To wait for the server to come up, poll `GET /api/health` (it answers `{ok, db}` without signing in);
+>   `/api/status`, used in the steps below, now needs a signed-in caller like every other `/api` route.
+
 The engine is a web app (`mwa serve` → a browser UI). Two ways to give a non-technical
 person ("the Mom test") a no-terminal way to run it. **Neither is built/verified in the
 dev sandbox** (no Rust toolchain for Tauri; the Docker image needs a from-source rebuild

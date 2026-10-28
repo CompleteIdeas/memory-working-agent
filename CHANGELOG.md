@@ -1,5 +1,106 @@
 # Changelog
 
+## 0.10.0 (2026-10-28) — the new app
+
+About 100 commits since 0.9.1, built in slices (A0–A10 server, W1–W6 web, P1–P4 phone, S1–S6 settings) from the
+v2 concept Robert approved on 2026-10-26 (`docs/v2-build-plan.md`). Every slice was read by a fresh-context security
+reviewer and its findings fixed before merge; each has a Playwright smoke with axe at phone and desktop width
+(`scripts/v2-*-smoke.mjs`).
+
+The new app is the default:
+- **Today, Calendar, Important and Projects** are the four tabs, with an Ask bar on every screen. Today is one read
+  (`GET /api/v1/today`): what needs you, what's next on the calendar, what was done for you since you last looked,
+  the top Important items, a morning check-in (05:00–12:00) and an evening wrap (from 17:00), in your time zone.
+- **The classic app is kept for one release.** Settings › About › "Use the classic app" switches to it and is
+  remembered; `?ui=v1` opens it for one visit; the classic app shows "Back to the new app" everywhere.
+- **Works on a phone.** Installable (PWA, `manifest-v2.webmanifest`), an offline app shell with what it last saw and
+  an outbox for actions taken offline, a "new version is ready" prompt that waits for in-flight actions. Phones need
+  an https address: `npm run tailscale:serve` on a computer, or the Docker image's own `tailscale serve` (Funnel is
+  never switched on). Pair a phone from Settings › Devices with a QR code.
+- **Notifications** (web push, VAPID and RFC 8291 in `node:crypto`, no new dependency) for an approval waiting, a job
+  waiting for you, a result ready and the morning check-in. Payloads carry no personal content (`{kind, id, tag}`);
+  only known push services are contacted; quiet hours in your own zone; at most 6 an hour (`MWA_PUSH_PER_HOUR`);
+  never a phishing-traced approval.
+- **Voice input** through the browser's speech recognition: tap or hold the mic, the words land in the Ask box, and
+  nothing is sent by itself.
+
+Background work you can see and trust:
+- **Jobs and tries with honest status** (`app.db`, `src/v2/jobs.ts`, `src/v2/status.ts`): working, waiting for you,
+  continuing, stopped by you, partly done, stopped, scheduled, done. An automatic continuation no longer shows as
+  failed, and incomplete work no longer says done. `mwa migrate-v2 [--dry-run]` moves goals, scheduled tasks and
+  results into jobs (lossless, idempotent; also run at server start).
+- **A dollar limit on every run** (`AgentBudget.maxUsd`), estimates from the job's own history ("Finish the last 10
+  pages · about 3¢"), and a per-fire default for repeating jobs (`MWA_FIRE_CAP_USD`, 25¢).
+- **Ask**: a big ask (more than 20 steps, 30¢ or 40 pages, or "learn everything / go through all") gets a plan card
+  with now / in the background / narrower, each with its own limit. "Ask about this" answers about one email, event,
+  draft, job or item in place, and starts tainted when the thing holds someone else's words.
+- **Projects**, each with one continuous thread; a new message is routed to a suggested project (85%, 34 of 40, on
+  the labelled fixture; vague messages stay in General). Memories written during a project's runs carry its tag, and
+  an answer says when it used another project's memories.
+
+Mail and calendar:
+- **Calendar sync** (Google, Outlook) every 30 minutes, with double-booking detection. **Events the helper proposes
+  are drafts held in MWA** until you confirm them; nothing reaches your calendar before that (`MWA_V2_DRAFTS`).
+- **Mail header sync** (Gmail history, IMAP, Graph delta) every 15 minutes (`MWA_MAIL_SYNC`). Bodies are never stored
+  on the server or the phone; the reader sanitises HTML in a worker with a 2-second budget (no scripts, remote images,
+  hidden text or invisible characters; links shown as their host). Reply drafts are saved, never sent.
+- **Important ("Worth a look")**: triage cheapest first (your rules, deterministic skips, known contacts, then one
+  tool-less batched call on the background model), about $0.05 a day with a $0.15 hard cap. A phishing signal
+  (brand mismatch, look-alike domains, an address in the display name, urgent language from a new unauthenticated
+  sender) flags a message and can't be cleared by a model.
+
+Settings, all of it in the new app (no hand-offs to the classic app remain):
+- **Your assistant**: brain and picture model (checked with the saved key when you only change the model), access
+  preset, granted folders, style.
+- **Plug-ins** (`?view=plugins`): the MCP library on and off, keys (write-only), your own plug-ins, and add from npm
+  after a safety review; approve installs only the reviewed version, and an unreviewed or dangerous one needs an
+  explicit accept.
+- **Connections**: Gmail with an app password, Outlook with a code sign-in, Google and Microsoft sign-in apps,
+  Telegram, Tailscale, disconnect (says what stops working), cancel a waiting sign-in.
+- **Approvals** decided in the new app on one shared decision path with the classic app and Telegram; a high-risk or
+  phishing-traced approval needs a second confirm on the server (409 `confirm_needed`), and a double tap can't approve.
+- **What I remember, Activity and Spending**: facts with search, correct, forget and export; correcting a fact that
+  came from outside asks first and needs your own words; standing preferences and routines; a redacted activity log;
+  spending by day and a CSV of the calls.
+- **Getting going**: first-run brain setup, "Help me learn about you" (warm-up from a folder, Get to know me from your
+  inbox), setup cards, and where memory is kept (SQLite or Postgres).
+- Devices (rename, remove, pair, sign out, sign out everywhere), your rules, helper name and time zone, saved
+  logins, notifications, look.
+
+The API:
+- **`/api/v1`**, a versioned API a second client (an Android app) can be built against: a hand-written OpenAPI
+  contract (`api/openapi.yaml`) with generated types and contract tests, an `Idempotency-Key` on every write (two
+  identical requests act once), a client-version header (426 below the minimum), `/stream` (server-sent events with a
+  resumable cursor) and `/sync` for offline catch-up. `GET /api/v1/meta` lists the features. Routes are in
+  [docs/api-reference.md](docs/api-reference.md).
+- **Three kinds of caller**: a password session, this machine (only when nothing can relay to it), and a paired
+  device with scopes read / act / approve (no admin). Pairing tokens are 256-bit and stored only as hashes; revoking
+  is immediate.
+
+Security, from the reviews:
+- Every request's Host is checked (`MWA_ALLOWED_HOSTS`; 421 otherwise) against DNS rebinding; "this machine" is
+  refused whenever the server can be reached through a relay (`MWA_RELAYED`, Docker, Tailscale, hosted). In Docker or
+  on a hosted install, set `MWA_ACCESS_PASSWORD`: without it nobody can sign in or make the first pairing code.
+- Server-side sessions (sign-out ends one; sign out everywhere); a sign-in throttle per source that never refuses the
+  right password; `MWA_TRUSTED_PROXY` (IPs or CIDR ranges) for the forwarded address.
+- Every legacy `/api` route now takes the same callers and scopes as `/api/v1`; health, login and share links stay
+  public.
+- Google and Outlook loopback sign-ins carry state and PKCE; one Outlook code flow at a time; browser sign-in is
+  refused on a hosted install.
+- Folder grants refuse the helper's own data, settings, vault, browser profiles and tokens, compared after following
+  links and without case on Windows; the warm-up walk never follows links and skips files named like secrets.
+- Model base URLs can't be cloud metadata or link-local addresses.
+- A `.docx` is inflated with a hard 20 MB ceiling and its stated sizes are never trusted (`src/tools/safe-zip.ts`);
+  uploads are capped (25 MB a file, `MWA_UPLOAD_QUOTA_MB` in all).
+- CSV cells that start with `= + - @`, tab or CR are kept as text; the memory export masks pasted secrets.
+- Notes saved from files or email stay untrusted; only your own words become trusted.
+
+Also: a missing connection is offered ("I can't yet, but I could if you connect Google Calendar") instead of being
+worked around, and "What I did" names actions in plain words. The `agent-working-memory` dependency moves to
+`^0.20.1`, matching the vendored pin (`vendor/agent-working-memory` has been at 0.20.1 since 0.7.0; the declared
+range was still `^0.10.0`). New docs: [docs/new-app.md](docs/new-app.md) (a tour with screenshots) and
+[docs/why-mwa.md](docs/why-mwa.md) (why memory is the basis, with a scorecard).
+
 ## 0.9.1 (2026-10-27) — reading documents, and knowing what it costs
 
 - **The document reader reads by page and reads on.** `read_document` takes `pages` ("3-5", "7", "4-") and heads

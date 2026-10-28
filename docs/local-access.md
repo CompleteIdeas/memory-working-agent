@@ -1,8 +1,16 @@
 # Local-machine access model
 
 > Status: **built** (2026-06-15). Preset chosen at setup (default Assistant), changeable in
-> Connections → "What it can touch on this computer". `src/tools/access.ts` +
-> `src/tools/builtins.ts` enforcement.
+> Settings › Your assistant › Brain, access and style (the new app, 0.10) or the classic app's settings.
+> `src/tools/access.ts` + `src/tools/builtins.ts` enforcement; the one save path for both apps is
+> `src/assistant-settings.ts`.
+>
+> **0.10: what a granted folder may not be.** A new folder must be an existing absolute folder, not a drive root or
+> a network share, may neither contain nor sit inside any of the helper's own data places (the data folder,
+> `agent.db`, the vault, browser profiles, logs, sign-in tokens, wherever env vars moved them), and may not hold the
+> helper's `.env` or `mwa.config.json`. The check is made after following links and junctions, and without case on Windows. The warm-up
+> walk (Settings › Help me learn about you) never follows links, skips files named like tokens, secrets or keys, and
+> stops at 5,000 entries, 8 folders deep and 5 MB a file (`src/onboard.ts`).
 
 When MWA runs on someone's machine, the agent's built-in tools are the real local-machine
 surface — and because the agent reads **untrusted content** (email, web pages) driven by a
@@ -60,7 +68,7 @@ command goes where it wants), so it's gated by **posture**, not a path check.
       reads); `read_file`/`write_file`/`list_files` accept absolute paths inside granted roots.
 - [x] `tools.access.preset` (locked-down | assistant | developer, default assistant) +
       `run_command` gating (off / interactive-only / on) threaded via `ToolContext.interactive`.
-- [x] Setup-time preset picker (onboarding) + permissions panel in Connections
+- [x] Setup-time preset picker (onboarding) + permissions panel (classic: Connections; new app: Settings › Your assistant)
       (switch preset, grant/revoke folders).
 - [x] The run is told its granted folders (2026-10-24, usability review F07): a `FOLDERS YOU CAN READ`
       line in the prompt names each one with a file count (`sourcesLine()` in `access.ts`; absent when

@@ -38,7 +38,7 @@ memory.close();
 | `MwaMemory` | the AWM substrate (in-process). Pass a `workspace` for cross-agent shared recall. `NullMemory` disables it. |
 | `getProvider(role)` + `RoutedProvider` | provider resolution from config + the cheap→strong tier router (escalates on struggle). |
 | `buildRegistry(cfg)` | the tool registry: built-ins + MCP servers + the runtime tool-management tools. Register your own `RegisteredTool`s too. |
-| `requireApproval(tool)` | wrap a write/irreversible tool so it previews then runs only after `confirm_action` (chat) or `/api/approvals/confirm` (UI). |
+| `requireApproval(tool)` | wrap a write/irreversible tool so it previews then runs only after `confirm_action` (chat), `POST /api/v1/approvals/{id}/approve` (the new app or a paired phone) or `/api/approvals/confirm` (the classic app). Not re-exported from the package root: import it from `memory-working-agent/dist/tools/approval.js`. |
 
 ## Plugging in a domain (the "new agent")
 
@@ -50,7 +50,8 @@ is built on MWA without forking the harness.
 
 ## Safety knobs (set for unattended use)
 
-- `budget.maxTokens` / `maxWallMs` / `maxSteps` — hard caps per run.
+- `budget.maxTokens` / `maxWallMs` / `maxSteps` — hard caps per run; `budget.maxUsd` (0.10) is a dollar
+  cap on the run's own spend, checked before each step.
 - `interactive: false` for scheduled/unattended runs — `confirm_action` then refuses
   to execute writes unless `MWA_ALLOW_UNATTENDED_WRITES=1`.
 - access preset (`mwa.config.json` `tools.access`) — `locked-down` / `assistant` /

@@ -4,8 +4,14 @@ How to run MWA (Memory Working Agent) anywhere — local desktop, self-hosted Do
 Railway (cloud), or Azure (USEA). One image, one config model; only the **target** and the
 **memory backend** change.
 
-> Versions: MWA **0.5.0**, AWM **0.10.0** (pluggable backend). Not yet published to npm —
-> deploys build from source (the repo + the vendored AWM submodule).
+> Versions: MWA **0.10.0**, AWM **0.20.1** (vendored at `vendor/agent-working-memory`). Published to npm as
+> `memory-working-agent` and as the Docker image `ghcr.io/completeideas/mwa`; the steps below also work from source
+> (the repo + the vendored AWM submodule).
+>
+> **0.10.0 changes two things here.** The new app is the default UI (the classic one stays at Settings › About ›
+> "Use the classic app" for this release). And Docker, Railway and any other networked install now **must** set
+> `MWA_ACCESS_PASSWORD`: these run in relayed mode, where nobody counts as "this machine", so without a password
+> nobody can sign in or pair a phone. Back up `app.db` (beside `agent.db`) with the rest of `/data`.
 
 ---
 
@@ -25,7 +31,7 @@ misbehaves. PGlite is not recommended (single-process; Windows/Node22 crash) —
 
 ---
 
-## 1. What persists (the 3 things that ARE your install)
+## 1. What persists (the things that ARE your install)
 
 Everything else is disposable code. Back these up before any update/migration:
 
@@ -33,6 +39,7 @@ Everything else is disposable code. Back these up before any update/migration:
 |---|---|---|---|
 | **`.env`** | secrets: model API keys, Tailscale key, bot tokens | `%APPDATA%\com.completeideas.mwa\data\.env` | `/data/.env` (volume) |
 | **memory** | the AWM store (everything it knows) | `…\data\agent.db` (+ `-wal`,`-shm`) | `/data/agent.db` *or* Postgres |
+| **app data** | `app.db`: jobs, projects and threads, Important, calendar cache, mail headers, paired devices, sessions; and `push-vapid.json` (the notification key) | `…\data\app.db` | `/data/app.db` |
 | **`mwa.config.json`** | model choice, access preset, MCP tools | `%LOCALAPPDATA%\MWA\runtime\mwa.config.json` | `/data` or image |
 
 Secrets live **only** here (gitignored, mode 0600). Memory is portable between backends with
@@ -71,10 +78,12 @@ docker run -d --name mwa -p 7788:7788 -v mwa-data:/data \
   -e MWA_ACCESS_PASSWORD=change-me \
   ghcr.io/completeideas/mwa     # or: docker build -t mwa . && docker run … mwa
 ```
-- Open `http://<host>:7788`, unlock, finish setup in the browser.
+- Open `http://<host>:7788`, sign in with the password, finish setup in the browser. To use it from a phone, pair it
+  from Settings › Devices; the phone needs an https address (Tailscale, §6).
 - `/data` (volume) holds `.env`, `agent.db`, the workspace. Recall models are baked into the
   image layer (NOT the volume) — don't move them.
-- **Always** set `MWA_ACCESS_PASSWORD` *or* keep it reachable only over Tailscale (§6).
+- **Always** set `MWA_ACCESS_PASSWORD`, even when it is reachable only over Tailscale (§6): in a container nobody is
+  "this machine", so the password is how the owner signs in.
 - Synology/NAS: prefer `docker-compose.yml` + a bind mount `/volume1/docker/mwa/data:/data`.
   See `docs/deploy-nas.md`.
 
@@ -95,7 +104,10 @@ The quickest always-on path. Railway's AUP permits this agent class.
 4. **Access** (pick one):
    - Public URL + `MWA_ACCESS_PASSWORD` (set it — the URL is internet-facing), **or**
    - **Tailscale**: set `TAILSCALE_AUTHKEY=tskey-auth-…` → reachable at its tailnet name with
-     **no public port** (set Railway ingress off). Password becomes a second factor.
+     **no public port** (set Railway ingress off). Keep the password: it is how you sign in.
+   - Browser-based Google and Microsoft sign-in is refused on a hosted install; connect Gmail with an app password and
+     Outlook with the code sign-in (Settings › Connections).
+   - Set `MWA_TZ` to your time zone (Railway runs in UTC), so the check-in, quiet hours and calendar days are yours.
 5. **Model**: set the brain by env — `MWA_MODEL=<provider:model>` (e.g.
    `openrouter:~google/gemini-flash-latest`) + the provider key (`OPENROUTER_API_KEY` /
    `ANTHROPIC_API_KEY` / `AZURE_GPT_*`). `MWA_MODEL` makes the container come up **ready-to-chat**
@@ -103,7 +115,7 @@ The quickest always-on path. Railway's AUP permits this agent class.
 6. **Env to set**: `MWA_ACCESS_PASSWORD`, `MWA_MODEL` + the model key, `MWA_CONFIG_PATH=/data/mwa.config.json`
    (so UI setting changes persist on the volume), optional `TELEGRAM_BOT_TOKEN`, optional
    `TAILSCALE_AUTHKEY`, and (if scale) `AWM_STORE_BACKEND` + `AWM_DATABASE_URL`.
-7. **Verify**: open the URL → "MWA — Sign in" → unlock with the password → it's ready on your model.
+7. **Verify**: open the URL → the sign-in screen → sign in with the password → it's ready on your model.
 
 ### Railway gotchas (verified 2026-06-30)
 - **`VOLUME` in the Dockerfile is rejected** — *"docker VOLUME … is not supported, use Railway
@@ -138,8 +150,9 @@ domain pack (`MWA_DOMAIN_PACK`) + 4 domain MCP servers → port the existing 222
 ## 6. Cross-cutting setup
 
 ### Backend (SQLite ⇄ Postgres)
-- **In the app:** Connections → **Memory storage** → *This computer* (SQLite) or *Database
-  server* (paste a `postgres://…` URL; it's validated by connecting + provisions the schema).
+- **In the app:** Settings › **Where memory is kept** → *This computer* (SQLite) or *Database
+  server* (paste a `postgres://…` URL; it's validated by connecting + provisions the schema). The choice is written to
+  the `.env` and switches at the next restart.
 - **By env:** `AWM_STORE_BACKEND=sqlite|postgres`; for Postgres also `AWM_DATABASE_URL`
   (`…?sslmode=require` on Azure). Takes effect on restart.
 - Postgres needs the **pgvector** extension available (the `pgvector/pgvector` image has it;
@@ -147,9 +160,9 @@ domain pack (`MWA_DOMAIN_PACK`) + 4 domain MCP servers → port the existing 222
 
 ### Private access (Tailscale)
 - Generate a Tailscale **auth key** (`tskey-auth-…`, NOT the management API key).
-- Set it in the app (Connections → Tailscale) or as `TAILSCALE_AUTHKEY`. At boot the container
-  joins your tailnet (userspace networking) and is reachable at its tailnet name — **no public
-  port**. Keep `MWA_ACCESS_PASSWORD` as a second factor.
+- Set it in the app (Settings › Connections › Tailscale; takes effect after a restart) or as `TAILSCALE_AUTHKEY`. At
+  boot the container joins your tailnet (userspace networking) and is reachable at its tailnet name — **no public
+  port**. Keep `MWA_ACCESS_PASSWORD`: it is how you sign in.
 - HTTPS for phones (v2 P1): the container also runs `tailscale serve --bg --https=443 http://127.0.0.1:<port>` (tailnet
   only, Funnel never on) and sets `MWA_PUBLIC_URL=https://<name>.<tailnet>.ts.net` unless you set it. Phones need that
   https address to install the app and keep it offline. Needs MagicDNS + HTTPS certificates enabled in the Tailscale admin
@@ -164,8 +177,8 @@ domain pack (`MWA_DOMAIN_PACK`) + 4 domain MCP servers → port the existing 222
   newlines from values.
 
 ### Health & rollback
-- Health: `GET /api/health` → `{ok, db, memoryCount, uptimeSec, schedulerLastTickAgoSec}`
-  (503 if the DB is unreachable). Docker `HEALTHCHECK` uses it.
+- Health: `GET /api/health` → `{ok, db}` for anyone; a signed-in caller also gets `memoryCount`, `uptimeSec`,
+  `schedulerLastTickAgoSec` and the active runs (503 if the DB is unreachable). Docker `HEALTHCHECK` uses it.
 - Rollback (desktop): restore the pre-update backup dir + restart the sidecar.
 - Rollback (cloud): redeploy the previous image/revision; `/data` (or Postgres) is unchanged.
 

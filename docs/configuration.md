@@ -45,6 +45,29 @@ environment, or in the `.env` file on the data volume (`MWA_ENV_PATH`, default `
 The write-approval gate (dry-run→confirm) and the S6 per-person **step-up** gate (a 2nd factor for a
 flagged identity before a sensitive confirm) are always on; they are not env-toggled.
 
+> **Docker and hosted installs need `MWA_ACCESS_PASSWORD`.** They run in relayed mode, where nobody counts as "this
+> machine", so with no password nobody can sign in or make the first pairing code for a phone.
+
+## The new app, sync and notifications (0.10)
+| Var | Default | Purpose |
+|---|---|---|
+| `MWA_APP_DB` | `<dir of agent.db>/app.db` | The app's own database: jobs and tries, projects and threads, Important items, the calendar cache, mail headers, devices, sessions, push subscriptions, the event log behind `/api/v1/stream`. AWM keeps the knowledge in `agent.db`. |
+| `MWA_TZ` | this machine's zone | Your time zone: Today's check-in (05:00–12:00) and wrap (from 17:00), quiet hours, the calendar's days. Set it on a server that runs in UTC (Railway). Settings › Your helper shows it read-only when set here. |
+| `MWA_OWNER_NAME` | unset | What the helper calls you. Settings › Your helper sets it otherwise (`owner.name` in `mwa.config.json`); set here, it is read-only in the app. |
+| `MWA_HOSTED` | detected | `1`/`0` says whether this is a hosted install (Railway, Azure Container Apps, Cloud Run, a Docker container are detected). Hosted installs say "your server" instead of "this computer", refuse browser-based Google/Microsoft sign-in (`400 browser_not_here`), and run in relayed mode. |
+| `MWA_CALENDAR_SYNC` | on | `0` turns off the 30-minute Google/Outlook calendar sync. |
+| `MWA_MAIL_SYNC` | on | `0` turns off the 15-minute mail header sync (Gmail history, IMAP, Graph delta). Bodies are never stored. |
+| `MWA_V2_DRAFTS` | on | Events the helper proposes are drafts held in MWA until you confirm them. `0` restores the old behaviour (a real "[Proposed]" event on your calendar). |
+| `MWA_TRIAGE` | on when a model is set | `0` turns off mail sorting into Important (the switch in Settings writes the same setting; set here, it is read-only in the app). Sorting runs on the background model, about $0.05 a day, hard cap $0.15. |
+| `MWA_FIRE_CAP_USD` | `0.25` | The dollar limit for each run of a repeating job that has none of its own (`0` = none). |
+| `MWA_QUIET_HOURS` | unset | Quiet hours for notifications and Telegram, e.g. `21:00-07:00`, in your zone. Set here, it can't be changed in the app; otherwise Settings › Notifications. |
+| `MWA_PUSH_PER_HOUR` | `6` | Most notifications sent in an hour (1–60); the rest wait. |
+| `MWA_PUSH_SUBJECT` | a generic `mailto:` | The VAPID contact sent to push services (a `mailto:` or `https:` you choose). Never the tailnet address. |
+| `MWA_PUSH_VAPID` | `<dir of agent.db>/push-vapid.json` | Where the push signing key is kept (mode 0600). If it changes or is lost, every phone has to turn notifications on again. |
+| `MWA_MAX_UPLOAD_MB` | `25` | Largest single upload (`POST /api/v1/files`). |
+| `TAILSCALE_SERVE` | on (Docker) | With `TAILSCALE_AUTHKEY` set, the Docker image serves https on the tailnet (`tailscale serve`, Funnel never on) and sets `MWA_PUBLIC_URL`. `0` turns that off. On a computer, `npm run tailscale:serve` does the same and prints the `.env` lines to add. |
+| `MWA_FAKE_NOW` | unset | Tests and screenshots only: freezes Today's clock. |
+
 ## Model
 | Var | Default | Purpose |
 |---|---|---|

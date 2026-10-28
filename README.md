@@ -1,381 +1,260 @@
 # MWA — Memory Working Agent
 
-A lightweight, turnkey **autonomous coding orchestrator** that runs a *cheap* model
-on the [AWM](https://www.npmjs.com/package/agent-working-memory) decision substrate.
-The cheap model **conducts** — it recalls prior decisions, dispatches coding subtasks
-to a worker, reads files for ground truth, supersedes facts that go stale, and drives
-the task to done **without a human** — while AWM keeps it on-goal and lets it get
-smarter with reuse.
+A personal assistant that remembers. MWA checks in on you each morning, sorts your mail into a short list of what
+matters, keeps your calendar in view, sends a notification when something needs you, and works through longer
+requests in the background while you get on with your day. It runs on your own computer, a home server or a hosted
+container, and you use it from a browser or your phone.
 
-> Thesis: capability for *orchestration* lives in the **substrate**, not the model
-> weights. A cheap conductor + memory can match a frontier model on cost — and at
-> scale, memory does something no context window can.
+It is built on [AWM (agent-working-memory)](https://github.com/CompleteIdeas/agent-working-memory): every run starts by
+recalling what MWA already knows about the request and about you, and ends by writing down what it learned, with a
+record of where each fact came from and how far to trust it. That is what lets a cheap model do useful work without
+being told everything again, and what keeps instructions hidden in an email from turning into actions.
 
-> **New in 0.4.0 — the memory substrate.** MWA was rebuilt from the substrate up: every memory
-> and action now carries **provenance, trust, namespace, and an action record**, and six
-> capabilities — transparency, injection safety, governance, honest confidence, topic scoping,
-> self-improving routines — sit on that spine. One smart memory doing what other harnesses need
-> many bolt-on subsystems for. **→ [Read the story: docs/the-memory-substrate.md](docs/the-memory-substrate.md)**
+**New in 0.10.0: the new app.** Today, Calendar, Important and Projects on a phone or a desktop, installable, with
+notifications, voice input, approvals you can read, and every setting in one place. See the
+[tour of the new app](docs/new-app.md) and the [CHANGELOG](CHANGELOG.md).
 
----
+<p>
+<img src="https://raw.githubusercontent.com/CompleteIdeas/memory-working-agent/master/docs/images/desktop-today.png" alt="Today in the new app on a computer: things that need you, what was done for you, and your day" width="640">
+<img src="https://raw.githubusercontent.com/CompleteIdeas/memory-working-agent/master/docs/images/phone-approvals.png" alt="An approval on a phone, in plain words" width="190">
+</p>
 
-## Two results
+*Screenshots use the app's built-in example data; every name and address in them is invented.*
 
-### 1. Orchestration — cheap conductor matches frontier (A/B/C benchmark)
+## Contents
 
-3 objective tasks × 2 runs, fixed graders, real models:
+- [What it does](#what-it-does)
+- [Why it is different, and why AWM](#why-it-is-different-and-why-awm)
+- [Install and run](#install-and-run)
+- [Use it from your phone](#use-it-from-your-phone)
+- [A quick tour](#a-quick-tour)
+- [Configuration](#configuration)
+- [For developers](#for-developers)
+- [Documentation](#documentation)
+- [Status](#status)
 
-| arm | model | AWM | pass | total cost | avg dispatches |
-|---|---|---|---|---|---|
-| **A** | gpt-5-4-mini | on | **6/6** | $0.019 | 1 |
-| **B** | gpt-5-4-mini | off | **6/6** | $0.013 | 1 |
-| **C** | Claude Sonnet | off | 4/6 | $0.069 | 1 |
+## What it does
 
-- **Cheap matches (here, beats) frontier at ~3.5× lower cost** — both gpt-5-4-mini arms hit 100%; Sonnet's 2 misses were both the hard no-`.reverse()` constraint on the palindrome task (a strong-prior trap; small N=2, not a claim that cheap is generally better).
-- **The orchestration win is modest on easy tasks** — the hybrid loop one-shots each task (1 dispatch) with or without memory, so AWM's per-task overhead is tiny but so is its savings. That's the honest V1→V2 lesson: AWM's *decisive* value isn't here — it's at scale (Result 2).
+- **Checks in on you.** Today shows what needs you, what is next on your calendar, and what was done for you since
+  you last looked, with a morning check-in and an evening wrap in your time zone.
+- **Notifies you.** Installed on a phone, it sends a notification when an approval is waiting, a job needs you, a
+  result is ready, or the morning check-in has something to say. Notifications carry no personal content, and quiet
+  hours are respected.
+- **Works in the background.** Hand over a job ("go through these two PDFs and tell me what changed") and it runs
+  with a cost estimate and a dollar limit, shows how far it got, and can be stopped, continued or given a note.
+  Repeating jobs and watches ("tell me if the price changes") run on a schedule.
+- **Sorts your mail.** Gmail (signed in, or with an app password) and Outlook are sorted into Important ("Worth a look") cheapest
+  first: your rules, then fixed rules, then one batched model call, for about $0.05 a day. Suspected phishing is
+  flagged and can't be acted on. It drafts replies; it never sends mail.
+- **Keeps your calendar.** Google and Outlook calendars sync every 30 minutes; double bookings are pointed out, and
+  events the helper proposes stay drafts until you confirm them.
+- **Asks before it acts.** Anything that writes outside its own folder, reaches the network, deletes, costs money or
+  sends as you waits for your OK, in plain words, with a second confirm for risky ones.
+- **Remembers, and lets you see what it remembers.** Settings › What I remember lists what it knows, where each fact
+  came from, and lets you correct, forget or export it.
+- **Extends with plug-ins.** MCP servers (web search, GitHub, Notion and others) can be turned on from Settings, or
+  added from npm after a safety review.
 
-### 2. Memory at scale — what a context window structurally can't do
+## Why it is different, and why AWM
 
-The orchestration win is modest on easy tasks (recall overhead vs savings). The
-*decisive* win is at scale, and it's the reason AWM exists: **past ~500K tokens you
-can no longer keep a large project's context alive by carrying it.** Measured on a
-real large software project:
+Most assistants answer when asked and forget between conversations; most automation does a fixed thing on a
+schedule. MWA sits between the two: it acts on its own within limits you set, and carries what it learns from one
+day to the next. Memory is the basis of the system, not a feature beside it. The same AWM store holds what MWA knows
+about you, the jobs it has been asked to do, what it did, and how much each piece can be trusted. Approvals, the
+injection defence, the "What I did" account and the way it adapts to each person all read from it.
 
-| to answer one question, carry… | tokens | AWM scoped recall |
+What AWM brings that a vector database or a notes file does not: retrieval tuned on a real store, a gate on what is
+worth keeping, `supersede` when a fact changes so the old value stops coming back, consolidation that matures the
+store over time, scoping so projects don't bleed into each other, and provenance on every memory.
+
+**The honest scorecard, in short** (full table with sources and limits in [docs/why-mwa.md](docs/why-mwa.md)):
+
+| Area | Measured | Still weak |
 |---|---|---|
-| the whole system (code + docs) | **~29,000,000** — fits in no window, any tier | **~630, flat** |
-| a real notes/transcript repo | ~2,000,000 | ~630, flat |
-| the accumulated memory (~20K memories) | ~1,300,000 | ~630, flat |
+| AWM recall | 92.7% right memory first on 300 queries over 11,262 real memories, p50 256 ms (AWM 0.20.0, 2026-10-20) | Multi-hop is the agent's job; time words don't filter yet |
+| Memory over two weeks | Facts said on day 1, asked on day 13–14: MWA 3 of 4, without memory 0 of 4; invented details 8 against a plain loop's 37 (2026-10-19) | The same assessment's pre-registered verdict was "no evidence of promise yet": a missed schedule failed the reliability bar |
+| Cheap model with studied memory | 39 of 54 at under a cent an answer, against 46 of 54 for an expensive model reading the files at 88 times the cost (2026-10-25) | Behind on joining several facts and judging proposals |
+| Planted instructions | The default model (GPT-6.1 Sol) followed none in 32 trials (2026-10-20) | One kind of attack; depends on the model you pick |
+| The new app | Every slice passes its Playwright and accessibility smoke at phone and desktop width | Not yet scored on the usability rubric or tried on real phones over weeks |
 
-Empirically, on real questions, scoped recall used **~5× fewer tokens** than opening
-the single best-matching doc, **switched between projects with 0% cross-project bleed**,
-stayed **correct after code changed** (via `supersede`, which a notes file can't),
-and **compressed structured results another ~48%** (TOON). Full methodology, honest
-caveats, and the where-it-doesn't-win scorecard: **[results/RESULTS-V2.md](results/RESULTS-V2.md)**.
+## Install and run
 
----
+You need an API key for a model provider (OpenRouter, OpenAI, Anthropic, Azure OpenAI or Google Gemini), or a local
+model through [Ollama](https://ollama.com) with no key. The default model is GPT-6.1 Sol through OpenRouter; see
+[Choosing a model](docs/models.md) before picking a cheaper one.
 
-## Why AWM — and why not the usual alternatives
+### On your computer (npm)
 
-Most "memory for AI" is a vector database with a retrieval wrapper. [AWM](vendor/agent-working-memory)
-is a *cognitive substrate*: it decides what's worth keeping, strengthens what gets
-used, forgets noise, and **knows when a fact has changed**. That difference is what
-lets a cheap conductor hold up over a long, messy, real project instead of drowning
-in its own history.
-
-### The alternatives, honestly
-
-| Approach | What breaks as the project grows |
-|---|---|
-| **Stuff the context window** | Hard wall. Past the window you summarize — and summarizing silently drops the one fact you needed next. 29M tokens fits in no tier, any model. |
-| **Notes file** (`CLAUDE.md`, markdown) | The *whole* file rides in every prompt, and it goes stale **silently** — nothing tells you a line is now wrong. One file = no project isolation. |
-| **Plain RAG / vector DB** | Returns top-k chunks with no salience, decay, or correction — so it surfaces the **old** value next to the new one, and noise grows with the corpus. |
-| **Rolling summary** | Lossy by construction; overwrites the specifics you'll want verbatim later (a column name, a working query, a prior correction). |
-| **Flat fact store** (Mem0-style) | Better — but no consolidation, no Hebbian reinforcement, no staleness signal. Facts pile up flat and you pay for the dead weight on every query. |
-| **AWM** | Scoped recall stays ~630 tokens **flat** as the store grows; `supersede` retires stale facts so recall stops returning them; salience-gating makes the ~90% never-recalled memories cost ≈0; agent/workspace scoping gives 0% cross-project bleed. |
-
-### The real wins (measured, not asserted)
-
-- **Flat cost at scale.** ~630 tokens to answer a question whether the store holds 600 memories or 20,000 — ~2,000× less than carrying the store, ~5× less than opening the single best-matching doc file. (`src/repo-qa.ts`)
-- **Stays correct when reality changes.** A fact changes between visits → `supersede` → recall returns the new value, not the old. A notes file or plain vector store can't signal this. (`src/staleness.ts`)
-- **No cross-project bleed.** Interleave several projects in one store → 0% wrong-project recall, via agent/workspace scoping. (`src/contextswitch.ts`)
-- **Capability moves into the substrate.** On a real domain workload, gpt-5.4-mini primed by AWM scored **14/15 vs a frontier model's 7/15 at ~1/40th the cost** — the hard-won knowledge lived in memory, not the model's weights. ([AWM-Native Harness pattern](vendor/agent-working-memory/docs/patterns/awm-native-harness.md))
-
-### What's actually under the hood (specs)
-
-Grounded in cognitive science — ACT-R activation decay, Hebbian learning,
-complementary learning systems, synaptic homeostasis + tagging — not ad-hoc heuristics:
-
-- **Recall pipeline:** BM25 + dense embeddings (`bge-small-en-v1.5`, 384-d) + a cross-encoder reranker (`ms-marco-MiniLM-L-6-v2`), with query expansion (`flan-t5-small`), prefix-tag / entity-bridge boosts, and optional confidence-based abstention. ~300 ms typical, all in-process.
-- **Write pipeline:** novelty + salience gating (low-value writes stage or drop), **reinforce-on-duplicate** (restating a fact with new detail merges + re-embeds rather than discarding), **supersede-on-correction**, and a `canonical` class with a salience floor for source-of-truth facts. <10 ms per write.
-- **Engines:** Activation (recall), Connection (Hebbian graph), Consolidation ("sleep" — cluster, strengthen, bridge, decay), Retraction (forget). Consolidation is what makes recall *mature* over time instead of just accumulating.
-- **Content fade:** un-recalled memories degrade their body but keep their cue pathways (concept + tags + embedding), so old memories stay findable while recall keeps the hot ones full-fidelity. Write-and-forget is safe.
-- **Backends:** SQLite (embedded, multi-process-safe WAL — the default) or PGlite (embedded Postgres + pgvector).
-- **Output compression:** TOON encodes structured tool results ~50–65% smaller, losslessly (every encode is verified `encode→decode→deep-equal`).
-- **Embedded, no server:** MWA links AWM **in-process** — `EngramStore` + engines + `performWrite` directly — so there's no daemon and no network hop. AWM is vendored as a git submodule at `vendor/agent-working-memory`, so a bug fix or feature found while building the agent flows straight back upstream.
-
-Full methodology + the honest where-it-doesn't-win scorecard: **[results/RESULTS-V2.md](results/RESULTS-V2.md)**; AWM internals: its own **[README](vendor/agent-working-memory/README.md)**.
-
----
-
-## Install (Docker) — one container, onboards itself
-
-The container is the whole app: open it in a browser, get **guided setup** on first run,
-then just chat. Everything persistent (secrets `.env`, AWM memory, workspace, model
-cache) lives on the `/data` volume — on your disk. Your provider key is entered in the
-setup screen and only ever goes to the AI provider you chose.
-
-Pull the published image (no local build needed):
-
-```bash
-docker run -d -p 127.0.0.1:7788:7788 -v mwa-data:/data --name mwa \
-  ghcr.io/completeideas/mwa:latest
-# open http://localhost:7788 → pick a model → chat. (Build locally instead with
-# `docker build -t mwa .` if you've cloned the repo with --recurse-submodules.)
-```
-
-Or use Compose (`cp .env.example .env`, then `docker compose up -d`).
-
-**Running it on a network / NAS?** Set an access password and lock it down:
-
-```bash
-docker run -d -p 7788:7788 -v mwa-data:/data --name mwa \
-  -e MWA_ACCESS_PASSWORD='a-strong-password' \
-  ghcr.io/completeideas/mwa:latest
-```
-
-`MWA_ACCESS_PASSWORD` puts the whole UI + API behind a login (empty = no gate, the
-localhost default). For an always-on box (so scheduled tasks fire) — including a
-**Synology NAS** — see **[docs/deploy-nas.md](docs/deploy-nas.md)** (Container Manager,
-Tailscale-only access, volume mapping, RAM notes).
-
-## Quickstart (local, turnkey)
-
-Prereqs: Node 22+ (and a C toolchain for `better-sqlite3`). Either run the wizard
-(`npm run wizard` → http://localhost:7788) or put API keys in `.env` directly
-(see [Config](#config)).
+Needs Node 22 or newer and a C toolchain for `better-sqlite3`.
 
 ```bash
 git clone --recurse-submodules https://github.com/CompleteIdeas/memory-working-agent.git
 cd memory-working-agent
-npm install       # links the vendored AWM submodule + web app as npm workspaces
-npm run build     # builds AWM (submodule) + MWA + the web app (→ dist-ui)
-npm run serve     # → opens http://localhost:7788 — guided setup, then just chat with it
+npm install       # links the vendored AWM submodule and the web app as npm workspaces
+npm run build     # builds AWM, MWA and the web app (dist-ui)
+npm run serve     # opens http://localhost:7788
 ```
 
-`mwa serve` (also the default, `mwa` with no args) is the one command for humans: it
-opens a local web app in your browser — connect a model, then talk to your assistant and
-**watch it remember, look things up, and do the work** (the live "activity spine"). Keys
-stay on your machine. For developers there's also `mwa run "<instruction>"` (headless),
-`mwa watch` (a drop-folder), `mwa connect telegram`, and `npm run bench` (the A/B/C
-benchmark UI).
+The first screen asks you to pick a brain (provider and key), how much it may touch on your computer, and your
+name, then offers to connect calendar and email and pair your phone. On this computer with no password set, you are
+the owner without signing in. `mwa serve --data <dir>` keeps all runtime files in one folder; `MWA_NO_OPEN=1` stops
+it opening a browser.
 
-**Connecting email** (Gmail or Outlook) uses a guided **bring-your-own** sign-in — you
-make a free Google/Microsoft app once and the token stays on your machine; there's **no
-managed broker** (no per-user cost, no third-party token custody). See
-**[docs/connect-email.md](docs/connect-email.md)** for the steps and the plan to make it
-near-turnkey via a homegrown `mwa connect` helper.
+Already cloned without submodules? Run `git submodule update --init`, then `npm install && npm run build`.
 
-> Already cloned without submodules? Run `git submodule update --init` then
-> `npm install && npm run build`. AWM lives at `vendor/agent-working-memory` and is
-> built from source, so MWA always runs the exact AWM it vendors — fix it there and
-> the change flows upstream.
+### Docker
 
-`npm run setup` (published as the `mwa` bin) is turnkey and non-interactive — it reads
-your `.env`, checks the AWM substrate, and writes `mwa.config.json` (model tiers,
-enabled tools, escalation). Re-run it any time; edit the file to change tooling.
+```bash
+docker run -d --name mwa -p 127.0.0.1:7788:7788 -v mwa-data:/data \
+  -e MWA_ACCESS_PASSWORD='a-strong-password' \
+  ghcr.io/completeideas/mwa:latest
+# open http://localhost:7788, sign in with the password, then set it up in the browser
+```
 
-### Tools
+**Set `MWA_ACCESS_PASSWORD` in Docker.** Inside a container nobody counts as "this machine" (the request could have
+been relayed), so without a password nobody can sign in or pair a phone. Everything that persists (the `.env` with
+your keys, the memory store, `app.db`, the workspace) lives on the `/data` volume. Compose works too:
+`cp .env.example .env`, set the password, `docker compose up -d`. For a Synology or other NAS see
+[docs/deploy-nas.md](docs/deploy-nas.md).
 
-The brain calls **native function-calling tools**. Beyond the orchestration tools
-(`dispatch`/`recall`/`read`/`supersede`/`done`), MWA has a pluggable **tool registry**
-(`src/tools/`): each tool is a `ToolDef` + handler, enabled by name in `mwa.config.json`.
+### Hosted (Railway or another container host)
 
-Built-ins: `run_command` (sandbox shell), `read_file`, `list_files`, `http_request`.
+The same image runs on Railway, Azure Container Apps or Cloud Run. Attach a volume at `/data`, set
+`MWA_ACCESS_PASSWORD`, and MWA honours the platform's `$PORT`. A hosted install refuses browser-based Google and
+Microsoft sign-in (use a Gmail app password or Outlook's code sign-in instead). Steps and gotchas are in
+[docs/deployment.md](docs/deployment.md).
 
-**MCP bridge (live).** Point `tools.mcpServers` at any MCP server and its tools register
-into the same registry — namespaced `<server>__<tool>`, no code:
+## Use it from your phone
 
-```jsonc
-// mwa.config.json
-"tools": {
-  "builtins": ["run_command", "read_file", "list_files"],
-  "mcpServers": {
-    "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] }
+A phone needs an https address to install the app, keep it offline and receive notifications.
+
+- **On a computer or NAS:** with [Tailscale](https://tailscale.com) installed and MagicDNS and HTTPS certificates
+  switched on in your tailnet, run `npm run tailscale:serve`. It serves MWA privately on your tailnet (Funnel stays
+  off) and prints the `.env` lines to add: `MWA_PUBLIC_URL`, `MWA_ALLOWED_HOSTS` and `MWA_ACCESS_PASSWORD`.
+- **In Docker:** set `TAILSCALE_AUTHKEY` and the container joins your tailnet, serves https itself and sets
+  `MWA_PUBLIC_URL` (`TAILSCALE_SERVE=0` turns that off).
+- **Hosted:** use the https address the platform gives you.
+
+Then on the computer open Settings › Devices › **Pair a new device**, scan the QR code with the phone, and install
+it from Settings › This device. Each paired phone has its own token with read, act and approve rights (no admin), and
+can be removed at any time. The [onboarding and pairing walkthrough](docs/onboarding-and-pairing.html) has the
+details.
+
+## A quick tour
+
+<p>
+<img src="https://raw.githubusercontent.com/CompleteIdeas/memory-working-agent/master/docs/images/phone-today.png" alt="Today on a phone" width="190">
+<img src="https://raw.githubusercontent.com/CompleteIdeas/memory-working-agent/master/docs/images/phone-important.png" alt="Important on a phone, with a phishing warning" width="190">
+<img src="https://raw.githubusercontent.com/CompleteIdeas/memory-working-agent/master/docs/images/phone-conversation.png" alt="A project conversation on a phone" width="190">
+<img src="https://raw.githubusercontent.com/CompleteIdeas/memory-working-agent/master/docs/images/phone-memory.png" alt="What I remember on a phone" width="190">
+</p>
+
+- **Today**: needs you, next up, done for you, the check-in and the wrap.
+- **Calendar**: your day and week, double bookings, drafts to confirm.
+- **Important**: mail and items worth a look, with why, Mark handled, Not important and Ask about this.
+- **Projects**: one running conversation per project, its jobs and files.
+- **Ask** (on every screen, by typing or voice): small questions are answered at once; a big ask comes back as a plan
+  with "now" or "in the background", each with an estimate and a limit.
+- **Settings**: connections, your assistant (brain, access, folders, style), plug-ins, what I remember, activity and
+  spending, devices, notifications, your rules, and About, where **Use the classic app** switches back to the
+  previous interface for this release.
+
+<img src="https://raw.githubusercontent.com/CompleteIdeas/memory-working-agent/master/docs/images/desktop-plugins.png" alt="The plug-ins page on a computer" width="640">
+
+The full walk-through, with every screen at phone and desktop width, is [docs/new-app.md](docs/new-app.md).
+
+## Configuration
+
+Most settings are made in the app. Deployment settings are environment variables, read from the process
+environment or the `.env` on the data volume; the full list is [docs/configuration.md](docs/configuration.md). The
+ones you are most likely to need:
+
+| Variable | What it does |
+|---|---|
+| `MWA_ACCESS_PASSWORD` | Puts the app and API behind a password. Required for Docker, hosted and any networked install. |
+| `MWA_PUBLIC_URL` | The address phones use (pairing QR codes, the install card). |
+| `MWA_ALLOWED_HOSTS` | Extra host names the server answers to; anything else gets 421. |
+| `MWA_SERVE_HOST` / `MWA_SERVE_PORT` | Bind address (default `127.0.0.1`) and port (default 7788, or `$PORT`). |
+| `MWA_DATA_DIR` | Where every runtime file goes (default `./data`). |
+| `MWA_MODEL`, `MWA_BACKGROUND_MODEL` | The model for chats, and a cheaper one for background work. |
+| `MWA_MONTHLY_BUDGET_USD` | Monthly spending budget; scheduled work waits at 100%. |
+| `MWA_TZ` | Your time zone, for the check-in, quiet hours and the calendar. |
+| `AWM_STORE_BACKEND` | Memory storage: `sqlite` (default), `pglite` or `postgres` (with `AWM_DATABASE_URL`). |
+| `TAILSCALE_AUTHKEY` | Docker only: join your tailnet and serve https on it. |
+
+The access level (locked-down, assistant, developer) and the folders MWA may read are set in Settings › Your
+assistant; see [docs/local-access.md](docs/local-access.md).
+
+## For developers
+
+MWA is also a harness you can build on. The pieces it is made of are exported:
+
+- **The agent loop** (`runAgent`), **the memory** (`MwaMemory`, in process, no daemon), **the model router**
+  (`RoutedProvider`, cheap to strong on struggle) and **the tool registry** (`buildRegistry`: built-ins, MCP servers,
+  your own tools). See [docs/embedding-mwa.md](docs/embedding-mwa.md).
+- **The client API** at `/api/v1`: a hand-written OpenAPI contract (`api/openapi.yaml`), idempotency keys on every
+  write, server-sent events with a resumable cursor, and `/sync` for offline catch-up. A second client, such as an
+  Android app, can be built against it. Every route is in [docs/api-reference.md](docs/api-reference.md).
+- **Command line:**
+
+  ```text
+  mwa serve [--port N] [--data DIR]        the web app (also: mwa with no arguments)
+  mwa run "<instruction>" --dir .          one headless run (--max-steps, --max-min)
+  mwa watch [--once]                       work instruction files dropped in <workspace>/inbox
+  mwa connect <gmail|outlook|telegram>     connect from the terminal
+  mwa consolidate                          run AWM's consolidation pass (safe any time; good as a cron)
+  mwa migrate-v2 [--dry-run] [--force]     move goals and scheduled tasks into jobs (also runs at start)
+  mwa setup                                write mwa.config.json from .env
+  ```
+
+- **Plug-ins by config.** MCP servers can also be listed in `mwa.config.json`; their tools register as
+  `<server>__<tool>`:
+
+  ```jsonc
+  "tools": {
+    "mcpServers": {
+      "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] }
+    }
   }
-}
-```
+  ```
 
-So MWA drives the whole MCP ecosystem (filesystem, github, postgres — even AWM itself)
-on the cheap-conductor + memory substrate. The brain sees built-in and MCP tools as one
-unified tool list. (Uses `@modelcontextprotocol/sdk`; servers that fail to connect are
-logged and skipped, never aborting a run.)
+- **Shared memory across surfaces.** Set `awm.workspace` in `mwa.config.json` and the web app, the CLI and
+  Telegram recall each other's decisions (SQLite backend).
+- **Tests and checks:** `npm test` (vitest), `node node_modules/typescript/bin/tsc --noEmit`, `npm run test:perf`,
+  the Playwright smokes in `scripts/v2-*-smoke.mjs`, and `node scripts/v2-screenshots.mjs` to regenerate the
+  pictures in `docs/images/`.
+- **Benchmarks:** `npm run gauntlet` (memory ablation: AWM against RAG, notes, long context and none),
+  `npm run bench` (the original orchestration benchmark), and the evidence experiments in `src/retention.ts`,
+  `src/repo-qa.ts`, `src/staleness.ts` and `src/contextswitch.ts`.
 
-### Run it live
+AWM is vendored as a git submodule at `vendor/agent-working-memory` and built from source, so MWA always runs the
+exact AWM it pins (0.20.1).
 
-Give the agent a free-form instruction and a working directory — it works toward it
-over many steps on the AWM substrate, then stops on done / stuck / budget:
+## Documentation
 
-```bash
-mwa run "add a /health route to server.js and verify it returns 200" --dir .
-# dev: npm run agent -- "…instruction…" --dir . --max-steps 40 --max-min 10
-```
+| | |
+|---|---|
+| [docs/new-app.md](docs/new-app.md) | A tour of the new app, screen by screen |
+| [docs/why-mwa.md](docs/why-mwa.md) | Why memory is the basis, and the full scorecard |
+| [docs/configuration.md](docs/configuration.md) | Every environment variable |
+| [docs/deployment.md](docs/deployment.md), [docs/deploy-nas.md](docs/deploy-nas.md) | Desktop, Docker, NAS, Railway, Azure |
+| [docs/onboarding-and-pairing.html](docs/onboarding-and-pairing.html) | Tailscale, the https address and pairing a phone |
+| [docs/connect-email.md](docs/connect-email.md) | Gmail and Outlook |
+| [docs/local-access.md](docs/local-access.md) | What it can touch on your computer |
+| [docs/models.md](docs/models.md) | Choosing a model, and which resist planted instructions |
+| [docs/connector-security.md](docs/connector-security.md), [docs/browser.md](docs/browser.md) | Plug-in and browser safety |
+| [docs/api-reference.md](docs/api-reference.md) | The HTTP API, classic and `/api/v1` |
+| [docs/embedding-mwa.md](docs/embedding-mwa.md) | Using MWA as a library |
+| [docs/the-memory-substrate.md](docs/the-memory-substrate.md) | How provenance and trust were built into memory |
+| [docs/true-agent-and-person-profile.md](docs/true-agent-and-person-profile.md) | The per-person profile and step-up verification |
 
-It recalls prior context, acts via tools (`dispatch` codegen / `run_command` / `read` /
-`recall` / `supersede` / any MCP tool), verifies its work, and self-determines done — no
-fixed grader. Long runs stay **flat in tokens**: only recent steps sit in the prompt, older
-context returns via recall, and it **sleeps (consolidates)** on phase boundaries. The cheap
-brain conducts; the worker escalates cheap→strong only when it stalls. Memory persists across
-runs (`--db`, default `./data/agent.db`) — so it gets sharper the more you use it.
-
-### Talk to it from your phone (chat connector)
-
-A connector bridges a messaging channel to the agent (message in → run → reply out):
-
-```bash
-# get a bot token from @BotFather, then:
-TELEGRAM_BOT_TOKEN=… TELEGRAM_ALLOWED_CHATS=<your chat id> mwa connect telegram
-```
-
-Text the bot an instruction; it runs the agent and replies with the result + output
-files. **Security:** the agent can run commands, so only chat ids in
-`TELEGRAM_ALLOWED_CHATS` are served — message the bot once to learn your id, then add
-it. Email (Gmail) and WhatsApp (Twilio) follow the same connector pattern.
-
-### Mailbox (file I/O)
-
-`mwa watch` polls `<workspace>/inbox/` for instruction files, works each in
-`outputs/<id>/`, and writes a report to `outbox/<id>.md`. Drop a `.md`/`.txt` in,
-get results + generated files out — no server.
-
-V2 evidence experiments (deterministic where possible):
-
-```bash
-npx tsx src/retention.ts      # decision survives N distractors at flat token cost
-npx tsx src/repo-qa.ts        # scan → wipe → return: recall vs notes-file vs long-context
-npx tsx src/staleness.ts      # code changes between visits: supersede stays correct
-npx tsx src/contextswitch.ts  # interleaved projects: 0% cross-project bleed at scale
-npx tsx src/headtohead.ts     # AWM recall vs grep+read a real docs repo (needs a work snapshot)
-```
-
-One command in Docker (reproducible, no local toolchain):
-
-```bash
-docker build -t mwa-bench .
-docker run --rm --env-file .env -v mwa-hf:/data/hf -e BENCH_RUNS=2 mwa-bench
-```
-
-## Config
-
-`.env` (gitignored; never baked into the image — passed at runtime):
-
-```
-ANTHROPIC_API_KEY=...                 # high-model arm (Claude Sonnet)
-AZURE_GPT_BASE_URL=https://<res>.api.cognitive.microsoft.com/openai/v1
-AZURE_GPT_API_KEY=...                 # brain (gpt-5-4-mini, Azure Responses API)
-AZURE_GPT_DEPLOYMENT=gpt-5-4-mini
-```
-
-If `AZURE_GPT_*` is absent, the brain falls back to Claude Haiku automatically. Every runtime env
-knob — memory backend (`AWM_STORE_BACKEND` = sqlite/pglite/postgres), access/security, per-person,
-scheduler, connectors — is enumerated in **[docs/configuration.md](docs/configuration.md)**.
-
-### Shared memory across agents/CLIs (opt-in)
-
-Set `awm.workspace` in `mwa.config.json` to a name and every MWA surface (web, CLI, Telegram,
-mailbox) joins it — so a decision made on one surface/agent is recalled by another. Unset =
-isolated per-agent (the default). This is the one thing a per-process notes file or vector index
-can't do; in the cross-agent benchmark, AWM recalls another agent's decisions **100%** where
-RAG/notes/no-memory score **0%** (per-process stores can't share). See `docs/gauntlet.md`.
-
-```json
-{ "awm": { "workspace": "home" } }
-```
-
-### Who it's talking to (per-person Profile)
-
-MWA adapts to the person on the other end and learns about them over time. It resolves *who's
-talking* from the channel (Telegram chat id, email sender, a web `?person=` name), keeps a
-**per-person, hard-isolated** profile (one person's notes never surface for another), and primes a
-compact "who I'm talking to" block each turn so it matches their style, depth, and how to draw the
-most useful exchange out of them — **tone/format only, never facts and never the safety gates**. It
-learns durable facts about them (so it stops re-asking) into a bounded, self-recompressing **dossier**,
-and tracks a small **intake** set (what to call you / how to reach you / role / working style).
-
-Identity is watched, not assumed: if a message **contradicts** what's on record (a different name or
-contact), MWA flags the turn, redacts the stored profile from its own prompt, and — for a
-sensitive/irreversible action — **mechanically blocks** it until a second factor is verified
-out-of-band through a validated connection (**step-up verification**). The suspicion is sticky across
-turns, so splitting the claim from the request can't slip past it. Off-switches: `MWA_PERSON_PROFILE=0`,
-`MWA_PERSON_LEARN=0`. Design + threat model: **[docs/true-agent-and-person-profile.md](docs/true-agent-and-person-profile.md)**.
-
-### Maintenance — `mwa consolidate`
-
-```
-mwa consolidate          # cluster overlapping memories, strengthen/decay edges, sweep staging,
-                         # create syntheses — matures the store. Safe anytime; good as a cron.
-```
-
-The agent also consolidates automatically during long runs; this command covers stores built
-from many short interactions. (Recall defaults to a rerank-only path — measured ~2× faster than
-adding query-expansion, with no accuracy cost even on paraphrase queries; set
-`AWM_RECALL_EXPAND=1` to restore expansion-by-default.)
-
-### Benchmark
-
-`npm run gauntlet` / `npm run gauntlet:crossagent` run a controlled, single-factor ablation
-(memory substrate as the only variable; AWM vs vector-RAG vs notes vs long-context vs none) with
-deterministic scoring, token + recall-latency metrics, and pass^k confidence intervals. The
-honest write-up — including where AWM *ties* a well-built RAG and where it wins by construction —
-is in [`docs/gauntlet.md`](docs/gauntlet.md).
-
-## Operations, security & embedding
-
-Running MWA as a real service or backend:
-
-- **Security:** set `MWA_ACCESS_PASSWORD` (or keep it on a private network / Tailscale); secrets live only in a local `.env` (mode `0600`) — never in API responses or the npm tarball. File/command reach is gated by the access preset (`locked-down` / `assistant` / `developer`) + a granted-roots allowlist. State-changing endpoints require a same-origin request (CSRF). Irreversible/production writes go through a dry-run→confirm gate; if the person's identity is in doubt, that confirm additionally requires **step-up** (a 2nd factor). Adding an arbitrary MCP server requires explicit approval; removing tools is always allowed. Outside Developer mode, the model's fetch tools and the bundled fetch server can't reach this machine, the private network or cloud metadata addresses. The check is made on each connection's own DNS answer, so a name that changes its address (DNS rebinding) can't get past it. Links in an MCP tool call's arguments are checked before the call, as a best effort: a host given without `http://`, or as a separate host and port, isn't seen, and what a third-party server fetches after that is up to its own code. **The model is part of the security:** MWA fences what it reads from email and the web, but only some models keep to the fence — gpt-5.4-mini ignored planted instructions in 8 of 8 trials, while cheaper models followed them in 2 to 4 of 8. See [Choosing a model](docs/models.md); MWA warns at startup about a model that failed or hasn't been measured.
-- **Limits & lifecycle:** per-run token + wall-clock + step caps; a concurrency cap and idle-session eviction protect the box; SIGTERM drains in-flight work before exit; `/api/health` reports DB + scheduler liveness (the Docker healthcheck uses it).
-- **Observability:** structured logs at `data/mwa.log` (JSONL), surfaced via `GET /api/logs`.
-- **As a backend/library:** compose `runAgent` + `MwaMemory` + the tool registry directly — see **[docs/embedding-mwa.md](docs/embedding-mwa.md)**.
-- **HTTP API:** every `mwa serve` endpoint is documented in **[docs/api-reference.md](docs/api-reference.md)**.
-
-## How it works
-
-The brain runs a **hybrid memory↔grep loop** (the discipline validated in V2),
-not pure recall. Each turn it calls one **native function-calling tool** (the proven
-USEA design — the API returns validated tool calls, not hand-parsed JSON):
-
-- `recall` — scoped, full-content recall of prior decisions/learnings (first, and
-  re-queried mid-task framed to the current sub-problem).
-- `read` — read a sandbox file for ground truth when memory is silent or to verify.
-- `dispatch` — hand a concrete coding step to the worker; result + decision written to AWM.
-- `supersede` — replace a recalled fact the moment a result proves it wrong (stay fresh).
-- `done` — only after a dispatch produced passing tests *this run* (guarded against
-  a recalled "success" tricking it into skipping the work).
-
-Components:
-
-- **brain** (`src/brain.ts`) — the loop above; native tools via `src/provider.ts` (Azure gpt-5-4-mini on `chat/completions`, Anthropic via SDK), text-JSON fallback for non-tool models.
-- **router** (`src/model-router.ts`) — `classifyIntent` picks the starting tier; consecutive worker failures escalate cheap→strong, AWM shared across the switch.
-- **worker** (`src/worker.ts`) — codegen+exec into a sandbox, runs the fixed test, reports pass/fail. The grader is protected from overwrite.
-- **AWM** (`src/awm.ts`) — in-process substrate: `MwaMemory` (recall + write + supersede + feedback) for arm A; `NullMemory` for AWM-off arms. Same loop, memory swaps.
-- **tasks** (`src/tasks.ts`) — objective, ungameable; each ships a fixed test, plus a hard constraint checked against the produced code.
-- **benchmark** (`src/benchmark.ts`) — arms A/B/C × tasks × N → `results/`.
-
-## Layout
-
-```
-src/
-  cli.ts                                               # `mwa` entry: run · watch · connect · wizard · setup
-  brain.ts  agent.ts                                   # hybrid loops: bench conductor + live agent
-  provider.ts  model-router.ts  env.ts  util.ts        # native tool-calling providers + cheap→strong router
-  awm.ts                                               # in-process AWM substrate (recall/write/supersede/schedule)
-  tools/ (registry · builtins · build · mcp)           # pluggable tool registry + MCP client bridge
-  connectors/ (telegram · google)                      # chat + Gmail/Calendar (read + draft, never send)
-  mailbox.ts  scheduler.ts  wizard.ts  config.ts       # file I/O · scheduled tasks · onboarding · config
-  worker.ts  tasks.ts  benchmark.ts  server.ts         # worker + A/B/C bench + live UI
-  retention.ts staleness.ts repo-qa.ts contextswitch.ts headtohead.ts  # V2 evidence experiments
-vendor/agent-working-memory/                           # AWM — git submodule, built from source
-mcp-servers/search.mjs                                 # bundled keyless web-search MCP server
-results/RESULTS-V2.md                                  # the honest V2 writeup
-Dockerfile  docker-entrypoint.sh  README.md
-```
+Dated assessments, pilots and reviews (for example [docs/assessment-2026-10-19.md](docs/assessment-2026-10-19.md)
+and [docs/reviews/](docs/reviews/)) are kept as written at the time.
 
 ## Status
 
-**0.9.1** (Apache-2.0, sub-1.0 on purpose; every release in [CHANGELOG.md](CHANGELOG.md)). Since 0.5.0:
-approvals only a person can give, fenced tool output and taint lineage, job contracts and outcomes (0.6.0);
-background work with goals, memory that answers, the agent browser and vault, a Files area, GPT-6.1 Sol by
-default, and the assessments and pilots that chose them (0.7.0); the browser after its review (0.7.1); the
-task-centred web app from the usability review, frames, and a model that can look at the page (0.8.0).
-Core loop + A/B/C benchmark + Docker + serve UI verified; the brain embodies the USEA-tuned hybrid
-loop (recall-first, grep-on-miss, supersede-on-divergence). Shipping: the live agent (`mwa run` /
-`mwa serve`), mailbox (`mwa watch`), Telegram + Gmail/Outlook/Calendar connectors (read + draft only),
-a scheduler on AWM's task ledger (with a cheap change-detection gate that starts as a dry run until you
-arm it), an MCP tool bridge, multi-provider
-models (Anthropic/Azure/OpenAI/OpenRouter/Ollama), a **pluggable memory backend** (SQLite · PGlite ·
-Postgres), the **per-person Profile + step-up** identity layer, and AWM vendored as a built-from-source
-submodule. Dry-run→confirm write approval + CSRF + trust-tiered provenance are in place. V2 measured
-where AWM decisively wins — long-horizon retention, context switching, staleness, and scale — with the
-honest scorecard in [results/RESULTS-V2.md](results/RESULTS-V2.md). Latest audit + fix ledger:
-[docs/gap-analysis-2026-07.md](docs/gap-analysis-2026-07.md).
+**0.10.0** (Apache-2.0; under 1.0 on purpose). Every release is in [CHANGELOG.md](CHANGELOG.md). 0.10.0 is
+mostly an interface and safety release: the new app, the `/api/v1` client API, phone install, notifications and
+voice, with each slice reviewed for security before it merged. What has not been measured yet: the new app on the
+usability rubric, and weeks of real use on a phone. The classic app is still reachable from Settings › About for this
+release and will be removed after it.
