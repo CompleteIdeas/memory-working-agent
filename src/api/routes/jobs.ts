@@ -8,7 +8,7 @@
  *
  * Slice A3b: every job carries its estimates (Continue = what is left x its rate, Start over = the whole job; see
  * src/v2/estimate.ts) and, once done, what was guessed against what it cost. Continue and Start over take an optional
- * `capUsd` - the most the new run may spend (default twice the estimate, at least 5 cents; at most $20). A run that
+ * `capUsd` - the most the new run may spend (default twice the estimate, at least $0.25 and at least $0.50 for a first guess; at most $20). A run that
  * reaches it waits for the person; it never continues by itself.
  *
  * Review of A3a: every caller of /api/v1 is the owner (the password session, this machine, or a device paired by the
