@@ -56,7 +56,7 @@ flagged identity before a sensitive confirm) are always on; they are not env-tog
 | `MWA_OWNER_NAME` | unset | What the helper calls you. Settings › Your helper sets it otherwise (`owner.name` in `mwa.config.json`); set here, it is read-only in the app. |
 | `MWA_HOSTED` | detected | `1`/`0` says whether this is a hosted install (Railway, Azure Container Apps, Cloud Run, a Docker container are detected). Hosted installs say "your server" instead of "this computer", refuse browser-based Google/Microsoft sign-in (`400 browser_not_here`), and run in relayed mode. |
 | `MWA_CALENDAR_SYNC` | on | `0` turns off the 30-minute Google/Outlook calendar sync. |
-| `MWA_MAIL_SYNC` | on | `0` turns off the 15-minute mail header sync (Gmail history, IMAP, Graph delta). Bodies are never stored. |
+| `MWA_MAIL_SYNC` | on | `0` turns off the 15-minute mail header sync (Gmail history, IMAP, Graph delta). Bodies are fetched when a message is opened, never written to disk, and held in memory for up to 15 minutes. |
 | `MWA_V2_DRAFTS` | on | Events the helper proposes are drafts held in MWA until you confirm them. `0` restores the old behaviour (a real "[Proposed]" event on your calendar). |
 | `MWA_TRIAGE` | on when a model is set | `0` turns off mail sorting into Important (the switch in Settings writes the same setting; set here, it is read-only in the app). Sorting runs on the background model, about $0.05 a day, hard cap $0.15. |
 | `MWA_FIRE_CAP_USD` | `0.25` | The dollar limit for each run of a repeating job that has none of its own (`0` = none). |

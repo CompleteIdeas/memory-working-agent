@@ -50,7 +50,7 @@ is built on MWA without forking the harness.
 
 ## Safety knobs (set for unattended use)
 
-- `budget.maxTokens` / `maxWallMs` / `maxSteps` — hard caps per run; `budget.maxUsd` (0.10) is a dollar
+- `budget.maxTokens` / `maxWallMs` / `maxSteps` — hard caps per run; `budget.maxUsd` (new in 0.10; no cap when unset) is a dollar
   cap on the run's own spend, checked before each step.
 - `interactive: false` for scheduled/unattended runs — `confirm_action` then refuses
   to execute writes unless `MWA_ALLOW_UNATTENDED_WRITES=1`.

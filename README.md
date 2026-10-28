@@ -8,7 +8,9 @@ container, and you use it from a browser or your phone.
 It is built on [AWM (agent-working-memory)](https://github.com/CompleteIdeas/agent-working-memory): every run starts by
 recalling what MWA already knows about the request and about you, and ends by writing down what it learned, with a
 record of where each fact came from and how far to trust it. That is what lets a cheap model do useful work without
-being told everything again, and what keeps instructions hidden in an email from turning into actions.
+being told everything again. Content from outside (an email, a web page, a file) stays marked as untrusted, so the
+model is told to treat instructions hidden in it as text rather than orders (how well that holds depends on the
+model).
 
 **New in 0.10.0: the new app.** Today, Calendar, Important and Projects on a phone or a desktop, installable, with
 notifications, voice input, approvals you can read, and every setting in one place. See the
@@ -48,8 +50,10 @@ notifications, voice input, approvals you can read, and every setting in one pla
   flagged and can't be acted on. It drafts replies; it never sends mail.
 - **Keeps your calendar.** Google and Outlook calendars sync every 30 minutes; double bookings are pointed out, and
   events the helper proposes stay drafts until you confirm them.
-- **Asks before it acts.** Anything that writes outside its own folder, reaches the network, deletes, costs money or
-  sends as you waits for your OK, in plain words, with a second confirm for risky ones.
+- **Asks before it acts.** Writing outside its own folder, running a command that reaches out, deleting, spending
+  money or sending as you waits for your OK, in plain words, with a second confirm for risky ones. Plain web requests
+  (`http_request`, GET or POST) run without asking but are logged, and a run with nobody watching stops and asks
+  after three outward actions.
 - **Remembers, and lets you see what it remembers.** Settings › What I remember lists what it knows, where each fact
   came from, and lets you correct, forget or export it.
 - **Extends with plug-ins.** MCP servers (web search, GitHub, Notion and others) can be turned on from Settings, or
@@ -67,21 +71,25 @@ What AWM brings that a vector database or a notes file does not: retrieval tuned
 worth keeping, `supersede` when a fact changes so the old value stops coming back, consolidation that matures the
 store over time, scoping so projects don't bleed into each other, and provenance on every memory.
 
-**It does this on cheap models.** Background work (scheduled jobs, hand-offs, thinking time) runs on GPT-6 Luna,
-about a twentieth of the price of GPT-6.1 Sol. Chats run on Sol, which is mid-priced, not a frontier model. AWM has no
-language model inside, so remembering costs nothing per recall. Measured: Luna wrote morning briefs and watches
-27 of 28 right at about half a cent each, against Sol's 26 of 28 at 11 cents. A week of real hosted use cost about
-20 cents a run. Details and caveats are in [docs/why-mwa.md](docs/why-mwa.md#what-it-costs-and-on-which-models).
+**It can do this on cheap models.** Chats run on GPT-6.1 Sol, listed at $2 / $10 per million tokens. Background
+work (scheduled jobs, hand-offs, thinking time) uses `MWA_BACKGROUND_MODEL`, which is unset by default, so it also
+runs on Sol until you set it; we recommend `MWA_BACKGROUND_MODEL=openrouter:openai/gpt-6-luna` ($0.10 / $0.50, read
+2026-10-28), which is what the maintainer's hosted instance uses. With MWA's checks on, Luna wrote morning briefs
+and watches 27 of 28 right at about $0.0045 each, against Sol's 26 of 28 at $0.108. AWM calls no hosted model: its
+embeddings and reranker run locally, so recall, write and consolidation cost no API money (MWA's own learning
+steps, such as learning about you, do call the model). A week of real hosted use on 0.7.x to 0.8.1, with
+everything on Sol, cost about 20 cents a run. Details and caveats are in
+[docs/why-mwa.md](docs/why-mwa.md#what-it-costs-and-on-which-models).
 
-**The honest scorecard, in short** (full table with sources and limits in [docs/why-mwa.md](docs/why-mwa.md)):
+**The scorecard, in short** (full table with sources and limits in [docs/why-mwa.md](docs/why-mwa.md)):
 
 | Area | Measured | Still weak |
 |---|---|---|
 | AWM recall | 92.7% right memory first on 300 queries over 11,262 real memories, p50 256 ms (AWM 0.20.0, 2026-10-20) | Multi-hop is the agent's job; time words don't filter yet |
-| Memory over two weeks | Facts said on day 1, asked on day 13–14: MWA 3 of 4, without memory 0 of 4; invented details 8 against a plain loop's 37 (2026-10-19) | The same assessment's pre-registered verdict was "no evidence of promise yet": a missed schedule failed the reliability bar |
-| Cheap model with studied memory | 39 of 54 at under a cent an answer, against 46 of 54 for an expensive model reading the files at 88 times the cost (2026-10-25) | Behind on joining several facts and judging proposals |
-| Planted instructions | The default model (GPT-6.1 Sol) followed none in 32 trials (2026-10-20) | One kind of attack; depends on the model you pick |
-| The new app | Every slice passes its Playwright and accessibility smoke at phone and desktop width | Not yet scored on the usability rubric or tried on real phones over weeks |
+| Memory over two weeks | Facts said on day 1, asked on day 13–14: MWA 3 of 4, then 4 of 4 on a second pass; without memory 0 of 4 (2026-10-19) | The pre-registered verdict was "no evidence of promise yet" (a missed schedule failed the reliability bar), the "memory makes it better" bar was inconclusive then failed, and twice stale memories outranked a correction |
+| Cheap model with studied memory | 39 of 54 at under a cent an answer, against 46 of 54 for an expensive model reading the files at 88 times the cost; tied on "why was this decided" and on judging a proposal (2026-10-25) | 39 is the best of about eight memory configurations; behind on lookups and joining several facts |
+| Planted instructions in a file it reads | The default model (GPT-6.1 Sol) followed none in 32 trials (2026-10-20) | One kind of attack; depends on the model you pick |
+| The new app | The web and settings slices pass their Playwright and accessibility smokes at 390 and 1440 wide | Not yet scored on the usability rubric or tried on real phones over weeks |
 
 ## Install and run
 
@@ -144,7 +152,7 @@ A phone needs an https address to install the app, keep it offline and receive n
 Then on the computer open Settings › Devices › **Pair a new device**, scan the QR code with the phone, and install
 it from Settings › This device. Each paired phone has its own token with read, act and approve rights (no admin), and
 can be removed at any time. The [onboarding and pairing walkthrough](docs/onboarding-and-pairing.html) has the
-details.
+details (it is an HTML page: GitHub shows its source, so download it or open it from a clone in a browser).
 
 ## A quick tour
 
@@ -199,9 +207,10 @@ MWA is also a harness you can build on. The pieces it is made of are exported:
   (`RoutedProvider`, cheap to strong on struggle) and **the tool registry** (`buildRegistry`: built-ins, MCP servers,
   your own tools). See [docs/embedding-mwa.md](docs/embedding-mwa.md).
 - **The client API** at `/api/v1`: a hand-written OpenAPI contract (`api/openapi.yaml`), idempotency keys on every
-  write, server-sent events with a resumable cursor, and `/sync` for offline catch-up. A second client, such as an
+  signed-in write, server-sent events with a resumable cursor, and `/sync` for offline catch-up. A second client, such as an
   Android app, can be built against it. Every route is in [docs/api-reference.md](docs/api-reference.md).
-- **Command line:**
+- **Command line.** `mwa` is the package's bin: install it globally (`npm i -g memory-working-agent`), run it with
+  `npx memory-working-agent <command>`, or from a clone use `node dist/cli.js` after `npm run build`.
 
   ```text
   mwa serve [--port N] [--data DIR]        the web app (also: mwa with no arguments)
@@ -244,7 +253,7 @@ exact AWM it pins (0.20.1).
 | [docs/why-mwa.md](docs/why-mwa.md) | Why memory is the basis, and the full scorecard |
 | [docs/configuration.md](docs/configuration.md) | Every environment variable |
 | [docs/deployment.md](docs/deployment.md), [docs/deploy-nas.md](docs/deploy-nas.md) | Desktop, Docker, NAS, Railway, Azure |
-| [docs/onboarding-and-pairing.html](docs/onboarding-and-pairing.html) | Tailscale, the https address and pairing a phone |
+| [docs/onboarding-and-pairing.html](docs/onboarding-and-pairing.html) | Tailscale, the https address and pairing a phone (an HTML page to download and open) |
 | [docs/connect-email.md](docs/connect-email.md) | Gmail and Outlook |
 | [docs/local-access.md](docs/local-access.md) | What it can touch on your computer |
 | [docs/models.md](docs/models.md) | Choosing a model, and which resist planted instructions |
@@ -261,6 +270,7 @@ and [docs/reviews/](docs/reviews/)) are kept as written at the time.
 
 **0.10.0** (Apache-2.0; under 1.0 on purpose). Every release is in [CHANGELOG.md](CHANGELOG.md). 0.10.0 is
 mostly an interface and safety release: the new app, the `/api/v1` client API, phone install, notifications and
-voice, with each slice reviewed for security before it merged. What has not been measured yet: the new app on the
+voice. Most slices were security-reviewed before they merged (all but A4, W1 and P4; see the CHANGELOG). What
+has not been measured yet: the new app on the
 usability rubric, and weeks of real use on a phone. The classic app is still reachable from Settings › About for this
 release and will be removed after it.

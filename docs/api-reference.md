@@ -61,7 +61,7 @@ The source is the socket peer; `X-Forwarded-For` is believed only from a proxy l
   (bodies over 1 MB, except uploads), `500 internal`.
 - With nobody signed in, only a public route answers; every other path, existing or not, is **401** (no route map for
   strangers).
-- **Idempotency.** Every non-GET, non-public request must send `Idempotency-Key` (8–128 of `A-Za-z0-9._:-`), else
+- **Idempotency.** Every signed-in write (any non-GET request to a non-public route; sign-in and pairing need none) must send `Idempotency-Key` (8–128 of `A-Za-z0-9._:-`), else
   `400 idempotency_key_required`. A retry with the same key and the same request gets the first answer back (header
   `idempotent-replay: true`) for 48 h; the same key on a different request is `409 idempotency_key_reused`; one still
   running is `409 in_progress`. Refusals marked transient (sign in again, busy, a failed live check) and 5xx release
@@ -108,8 +108,8 @@ The source is the socket peer; `X-Forwarded-For` is believed only from a proxy l
 
 | Method | Path | Scope | Query | Returns |
 |---|---|---|---|---|
-| GET | `/stream` | read | `cursor` (or `Last-Event-ID`) | **SSE.** `hello {cursor, head}`, then `change` events (`{seq, entity, id, op, data?}` with `id:` = the sequence) for jobs, tries, calendar, items, projects, turns, asks, approvals, devices (admin callers only) and a coarse `today` notice (at most every 5 s); `live` events (a running try's progress, at most once a second per run); `reset` when the cursor is older than the 7 days kept. Keep-alive comment every 15 s. Another person's jobs are never sent |
-| GET | `/sync` | read | `since`, `collections` (comma list of `jobs, calendar, mail, projects, turns, important, today`; default `jobs`) | `{cursor, reset, more, upserts: {<collection>: [...]}, deletes: {<collection>: [ids]}}`. `since` absent, 0 or too old gives a full snapshot with `reset: true`. Pages of at most 500 events or about 5 MB: `more: true` means call again with the returned cursor. Mail is headers only. `400 unknown_collection` |
+| GET | `/stream` | read | `cursor` (or `Last-Event-ID`) | **SSE.** `hello {cursor, head}`, then `change` events (`{seq, entity, id, op, data?}` with `id:` = the sequence) for jobs, tries, calendar, items, projects, turns, asks, approvals, devices (admin callers only) and a coarse `today` notice (at most every 5 s); bare notices `{seq, entity, id, op}` with no data for `mail`, `action`, `setup` and `inbox_scan`; when an approval changes, the job waiting on it is sent too; `live` events (a running try's progress, at most once a second per run); `reset` when the cursor is older than the 7 days kept. Keep-alive comment every 15 s. Another person's jobs are never sent. `400 bad_cursor` |
+| GET | `/sync` | read | `since`, `collections` (comma list of `jobs, calendar, mail, projects, turns, important, today`; default `jobs`) | `{cursor, reset, more, upserts: {<collection>: [...]}, deletes: {<collection>: [ids]}}`. `since` absent, 0 or too old gives a full snapshot with `reset: true`. Pages of at most 500 events or about 5 MB: `more: true` means call again with the returned cursor. Mail is headers only. `400 unknown_collection\|bad_cursor` |
 
 ### Today
 
@@ -135,13 +135,13 @@ the session `p-<id>`. The answer arrives on `/stream` and in the thread.
 | POST | `/projects/{id}/messages` | act | `{text, stay?, person?}` (text up to 8000) | 202 `{session, state: started\|offer, runId?, turnId?, message?}`. `409 archived`, `409 busy` (one run per project), `400 bad_text`, `503 unavailable` |
 | GET | `/projects/{id}/work` | read | — | `{jobs}` working for this project |
 | GET | `/projects/{id}/files` | read | — | `{files, folder}` (the project's folder, at most 500, newest first) |
-| POST | `/projects/{id}/stop` | act | `{runId?}` | `{stopped, message}`: the running step finishes, nothing new starts. `409 nothing_running`, `409 not_running` (that run already finished) |
-| POST | `/projects/{id}/steer` | act | `{text, runId?}` | `{added, message}`: taken into account at the next step. `409 nothing_running` |
+| POST | `/projects/{id}/stop` | act | `{runId?}` | `{stopped, message}`: the running step finishes, nothing new starts. `409 nothing_running`, `409 not_running` (that run already finished), `400 bad_run` (a `runId` that isn't a string) |
+| POST | `/projects/{id}/steer` | act | `{text, runId?}` | `{added, message}`: taken into account at the next step. `409 nothing_running\|not_running`, `400 bad_run` |
 | GET | `/projects/{id}/live` | read | — | **SSE**: the running answer's events (the classic chat's event names) until its final event; `gone` when nothing is running |
 | POST | `/projects/{id}/offer/accept` | act | `{message?, person?}` | 202: "Work on it" for a waiting offer to work in the background. `409 no_offer` |
 | POST | `/turns/{id}/move` | act | `{projectId}` | `{turn, from, message, undo: {projectId}}`: moves a message and its answer |
 | POST | `/ask` | act | `{text, projectId?, about?: {kind, id}, files?: [paths], mode?: auto\|now\|background, capUsd?, source?: typed\|voice}` | 202 `{askId, projectId, route, kind: answer\|plan\|job, ...}`. `answer` runs now in the thread; `plan` is a big ask not yet started (cost/time per option and narrower asks); `job` was handed to the background with a spending limit. `about` (kind `item, mail, event, draft, job, conflict`) is answered in place, fenced, never a plan or a job, and takes no files. `files` = up to 10 paths as `POST /files` returns them. `capUsd` $0.01–$20. Errors: `400 bad_text\|bad_mode\|bad_source\|bad_about\|bad_files\|bad_file\|bad_cap`, `404` |
-| POST | `/ask/{id}/choose` | act | `{mode: now\|background}` or `{narrowIndex}`, `capUsd?` | 202, a plan's choice, made once (the same choice again replays the first answer). `409 not_a_plan\|already_chosen\|in_progress\|archived\|files_gone`, `410 expired` (a plan older than a day) |
+| POST | `/ask/{id}/choose` | act | `{mode: now\|background}` or `{narrowIndex}`, `capUsd?` | 202, a plan's choice, made once (the same choice again replays the first answer). `400 bad_choice` (neither or both of `mode` and `narrowIndex`, an unknown mode, or no narrower ask at that position), `400 bad_cap`, `404`, `409 not_a_plan\|already_chosen\|in_progress\|archived\|files_gone`, `410 expired` (a plan older than a day) |
 | GET | `/ask/{id}` | read | — | `{ask, turn}` |
 | GET | `/ask?about=kind:id` | read | — | `{about, asks}`: the questions asked about one thing, oldest first |
 | GET | `/ask/suggestions?about=kind:id` | read | — | `{about, suggestions}`: 2–3 questions from templates, no model call |
@@ -167,7 +167,7 @@ done`. Every v1 caller acts for the owner; another person's job (a Telegram cont
 | GET | `/jobs/{id}` | read | — | `{job, tries}` |
 | GET | `/jobs/{id}/estimate` | read | — | `{continue?, startOver?, basis, samples}`. `409 not_estimable` (a repeating job) |
 | POST | `/jobs/{id}/stop` | act | — | the job and a message. `409 nothing_running`, `409 running_elsewhere` (finishing in another MWA process) |
-| POST | `/jobs/{id}/continue` | act | `{capUsd?}` | 202. Default limit twice the estimate (at least 5 cents), at most $20; a run that reaches it waits for the person. `409 not_continuable\|nothing_left\|already_running\|refused`, `400 bad_cap` |
+| POST | `/jobs/{id}/continue` | act | `{capUsd?}` | 202. Default limit: twice the estimate, or the estimate plus three of the job's largest steps and the wrap-up, whichever is more; at least $0.25 ($0.50 when the estimate is a first guess); at most $20; a run that reaches it waits for the person. `409 not_continuable\|nothing_left\|already_running\|refused`, `400 bad_cap` |
 | POST | `/jobs/{id}/start-over` | act | `{capUsd?}` | 202, same rules |
 | POST | `/jobs/{id}/open` | act | — | marks a result as seen |
 | POST | `/jobs/{id}/pause` · `/resume` · `/cancel` | act | — | for a repeating job or a reminder, through the same schedule control as the model's tools. `409 not_recurring\|refused` |
@@ -222,7 +222,7 @@ The same decision code as the classic `/api/approvals/confirm` and `/cancel` (`s
 | GET | `/approvals` | read | — | `{pending, recent}` (pending oldest first; recent = decided in the last day). A caller without `approve` sees file text, the exact action and its output cut to 300 characters |
 | GET | `/approvals/{id}` | read | — | `{approval}` in any state |
 | POST | `/approvals/{id}/approve` | approve | `{confirmed?, note?}` | `{outcome: done\|failed\|approved\|not_done, message, approval}`. A high-risk one (`confirm` in its view: phishing-traced, outside content, money, sending, deleting, the network) needs `confirmed: true`, else `409 confirm_needed` naming the risks. `409 already_decided\|expired\|step_up_required\|refused\|not_here`, `404` |
-| POST | `/approvals/{id}/deny` | approve | `{note?}` (up to 500 characters, passed to the helper) | `{outcome: declined, message, approval}` |
+| POST | `/approvals/{id}/deny` | approve | `{note?}` (up to 500 characters, passed to the helper) | `{outcome: declined, message, approval}`. The same refusals as approve except `confirm_needed`: `409 already_decided\|expired\|step_up_required\|refused\|not_here`, `400 bad_note`, `404` |
 
 There is no "always allow this kind". A decision is final; one made on another device or in Telegram is 409 here.
 
@@ -236,7 +236,7 @@ Every change takes effect on the next message. Key values go in, never out.
 | POST | `/plugins/{id}/enable` | admin | — | `{plugin, message}`. `409 needs_keys\|not_enabled`, `404` |
 | POST | `/plugins/{id}/disable` | admin | — | `{plugin, message}` |
 | PUT | `/plugins/{id}/keys` | admin | `{keys: {NAME: value}}` | only names the plug-in declares. `400 unknown_key\|bad_value\|bad_body` |
-| DELETE | `/plugins/{id}/keys/{name}` | admin | — | clears one key. `409 in_use` (on and required), `404 not_saved` |
+| DELETE | `/plugins/{id}/keys/{name}` | admin | — | clears one key. `400 unknown_key` (a name the plug-in doesn't declare), `409 in_use` (on and required), `404 not_saved` |
 | DELETE | `/plugins/{id}` | admin | — | removes one of the owner's own. `400 library_plugin` (turn it off instead), `404` |
 | POST | `/plugins/review` | admin | `{package}` | `{review}`: the safety review of an npm package; nothing is installed. `400 bad_package`, `409 npm_unavailable` (needs a strong enough brain), `503 review_failed` |
 | POST | `/plugins/approve` | admin | `{package, acceptRisk?}` | installs a package reviewed in the last 30 minutes at the version reviewed. `409 review_first\|not_installable\|unreviewed\|risky\|name_taken` (`unreviewed` and `risky` need `acceptRisk: true`; never overwrites an existing plug-in) |
@@ -261,7 +261,7 @@ Each answers `{assistant, message}`.
 
 | Method | Path | Scope | Body | Returns, refusals |
 |---|---|---|---|---|
-| GET | `/connections` | read | — | Google, Outlook, Telegram, Tailscale: connected, how, needs reconnecting, which sign-ins work here (`server` when hosted). Never a key, secret, password or token |
+| GET | `/connections` | read | — | Google, Outlook, Telegram, Tailscale: connected, how, needs reconnecting, which sign-ins work here (`server` when hosted), returned as the view itself. Never a key, secret, password or token. The writes below answer `{connections, message}` |
 | POST | `/connections/gmail/app-password` | admin | `{address, appPassword}` | checked over IMAP, then saved |
 | PUT | `/connections/google/app` | admin | `{clientId, clientSecret}` | your own Google sign-in app |
 | PUT | `/connections/outlook/app` | admin | `{clientId, tenant?}` | your own Microsoft app |
@@ -299,7 +299,7 @@ Connections answers are `{connections, message}`; a failed live check is `400 ch
 | POST | `/setup/inbox` | admin | `{days?: 1–730 (30), confirmed}` | 202 `{scan, message}`. It costs money: without `confirmed: true` the answer is `409 confirm_needed` with the estimate. `409 already_running\|no_email` |
 | POST | `/setup/inbox/stop` | admin | — | stops between rounds; what it learned is kept |
 | GET | `/setup/cards` | read | — | `{cards, canSubmit}`: a password or key the helper asked for mid-task (never a value) |
-| POST | `/setup/cards/{id}/submit` | admin | `{values}` | checked, saved, never sent back. `409 not_waiting` |
+| POST | `/setup/cards/{id}/submit` | admin | `{values}` | checked, saved, never sent back. `400 bad_value` (no values), `409 not_waiting` |
 | POST | `/setup/cards/{id}/cancel` | approve | — | closes it without filling it |
 | PUT | `/setup/storage` | admin | `{kind: sqlite\|postgres, url? (postgres://…), bringMemory?, confirmed}` | where memory is kept, from the next restart; the address never comes back. `409 confirm_needed`, `409 fixed` (the server's `AWM_STORE_BACKEND`/`AWM_DATABASE_URL` decides), `400 bad_kind\|bad_url` |
 
@@ -375,7 +375,7 @@ nothing stopped, `message` runs as a plain message, still without the offer.
 | `/api/vault` | GET | `{entries:[{name, site?, fields:[names], savedAt?}]}` — saved logins and keys, never a value |
 | `/api/vault/forget` | POST | `{name}` — deletes one entry. **Same-origin only.** Saving stays in the vault card the agent opens (BL-63). |
 | `/api/quiet` | GET | `{window: "HH:MM-HH:MM" \| null, timeZone, fixed, invalid}` — quiet hours (BL-07) |
-| `/api/quiet` | POST | `{value: "HH:MM-HH:MM" \| "off"}` — sets or clears them in `mwa.config.json`; refused when `MWA_QUIET_HOURS` fixes the window. **Same-origin only.** |
+| `/api/quiet` | POST | `{value: "HH:MM-HH:MM" \| "off"}` — sets or clears them in `mwa.config.json`; refused when `MWA_QUIET_HOURS` fixes the window. **Admin only, same-origin.** |
 
 ## Status & observability
 

@@ -29,7 +29,7 @@ A **homegrown helper script** (no vendor, no recurring cost) closes the gap to t
   apps and `/api/v1/connections` (`src/connection-settings.ts`).
 - **Gmail with an app password** (IMAP, no Google Cloud project needed): Settings ›
   Connections › Use an app password.
-- **Outlook with a code** (device-code sign-in): a short code to type at Microsoft's page on
+- **Outlook with a code** (device-code sign-in, since 0.5.0; 0.10 adds it to the new app's Settings screen): a short code to type at Microsoft's page on
   any device, so it works on a server or a NAS with no local browser. One code flow at a time;
   a waiting sign-in can be cancelled.
 - Loopback OAuth (`localhost:7799` Google, `localhost:7798` Microsoft) with `state` and PKCE;
@@ -40,7 +40,8 @@ A **homegrown helper script** (no vendor, no recurring cost) closes the gap to t
   IMAP login) marks the account "needs reconnect"; Today, the Calendar and Important then
   offer Reconnect, which opens Settings › Connections at that account.
 - **Mail and calendar sync** (0.10): headers every 15 minutes, calendar every 30, bodies
-  fetched only when you open a message and never stored.
+  fetched only when you open a message, never written to disk, and held in memory for up to 15
+  minutes (`src/sync/mail.ts`).
 
 ## What a user does today (manual BYO)
 
@@ -94,7 +95,7 @@ script falls back to the fully-manual guided steps (the current UI cards).
 1. **Connect-then-copy (document now, works today):** run the one-time connect on a laptop
    (loopback works), then copy `google-token.json` / `microsoft-token.json` onto
    the server's `/data` volume, beside `agent.db`. Reliable for both providers, zero new code.
-2. **Device-code flow (built for Outlook in 0.10):** user enters a short code at a URL on any device — no
+2. **Device-code flow (built for Outlook since 0.5.0):** user enters a short code at a URL on any device — no
    redirect needed. Works well for **Microsoft Graph**; Google's device flow has scope
    limits that may exclude Gmail, so it's provider-dependent.
 3. **Real redirect URI:** register the server's HTTPS URL as the redirect (needs a
@@ -110,7 +111,7 @@ script falls back to the fully-manual guided steps (the current UI cards).
 - [ ] Token import/export helper for remote installs (document "connect-then-copy" now).
 - [x] `invalid_grant` detection → "needs reconnect" and a Reconnect prompt (0.10; handles
       Google's 7-day Testing expiry). `src/sync/errors.ts`.
-- [x] Microsoft device-code flow for headless/remote (0.10: Settings › Connections › Outlook ›
+- [x] Microsoft device-code flow for headless/remote (since 0.5.0; in the new app at Settings › Connections › Outlook ›
       Connect with a code).
 - [x] Gmail by app password (IMAP), no Google Cloud project needed.
 - [x] Read-only scope option (already shipped — toggle in the Connections card).

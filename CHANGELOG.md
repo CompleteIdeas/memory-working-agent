@@ -3,9 +3,11 @@
 ## 0.10.0 (2026-10-28) — the new app
 
 About 100 commits since 0.9.1, built in slices (A0–A10 server, W1–W6 web, P1–P4 phone, S1–S6 settings) from the
-v2 concept Robert approved on 2026-10-26 (`docs/v2-build-plan.md`). Every slice was read by a fresh-context security
-reviewer and its findings fixed before merge; each has a Playwright smoke with axe at phone and desktop width
-(`scripts/v2-*-smoke.mjs`).
+v2 concept Robert approved on 2026-10-26 (`docs/v2-build-plan.md`). Every slice except A4, W1 and P4 was read by a
+fresh-context reviewer and its findings fixed before merge. The web and settings slices (W1–W5, S1–S6, P4) have
+Playwright smokes with axe at 390 and 1440 wide; the install/offline smoke runs at phone width and the push smoke
+at one phone width (`scripts/v2-*-smoke.mjs`). The server slices (A0–A10) are covered by route and contract tests,
+not Playwright.
 
 The new app is the default:
 - **Today, Calendar, Important and Projects** are the four tabs, with an Ask bar on every screen. Today is one read
@@ -29,20 +31,21 @@ Background work you can see and trust:
   continuing, stopped by you, partly done, stopped, scheduled, done. An automatic continuation no longer shows as
   failed, and incomplete work no longer says done. `mwa migrate-v2 [--dry-run]` moves goals, scheduled tasks and
   results into jobs (lossless, idempotent; also run at server start).
-- **A dollar limit on every run** (`AgentBudget.maxUsd`), estimates from the job's own history ("Finish the last 10
+- **A dollar limit on every job and plan option** (`AgentBudget.maxUsd`; chats keep their step, time and token
+  limits), estimates from the job's own history ("Finish the last 10
   pages · about 3¢"), and a per-fire default for repeating jobs (`MWA_FIRE_CAP_USD`, 25¢).
 - **Ask**: a big ask (more than 20 steps, 30¢ or 40 pages, or "learn everything / go through all") gets a plan card
   with now / in the background / narrower, each with its own limit. "Ask about this" answers about one email, event,
   draft, job or item in place, and starts tainted when the thing holds someone else's words.
 - **Projects**, each with one continuous thread; a new message is routed to a suggested project (85%, 34 of 40, on
-  the labelled fixture; vague messages stay in General). Memories written during a project's runs carry its tag, and
+  a labelled fixture that the weights were tuned on; vague messages stay in General). Memories written during a project's runs carry its tag, and
   an answer says when it used another project's memories.
 
 Mail and calendar:
 - **Calendar sync** (Google, Outlook) every 30 minutes, with double-booking detection. **Events the helper proposes
   are drafts held in MWA** until you confirm them; nothing reaches your calendar before that (`MWA_V2_DRAFTS`).
-- **Mail header sync** (Gmail history, IMAP, Graph delta) every 15 minutes (`MWA_MAIL_SYNC`). Bodies are never stored
-  on the server or the phone; the reader sanitises HTML in a worker with a 2-second budget (no scripts, remote images,
+- **Mail header sync** (Gmail history, IMAP, Graph delta) every 15 minutes (`MWA_MAIL_SYNC`). Bodies are fetched when
+  you open a message, never written to disk or stored on the phone, and held in memory for up to 15 minutes; the reader sanitises HTML in a worker with a 2-second budget (no scripts, remote images,
   hidden text or invisible characters; links shown as their host). Reply drafts are saved, never sent.
 - **Important ("Worth a look")**: triage cheapest first (your rules, deterministic skips, known contacts, then one
   tool-less batched call on the background model), about $0.05 a day with a $0.15 hard cap. A phishing signal
@@ -69,8 +72,8 @@ Settings, all of it in the new app (no hand-offs to the classic app remain):
 
 The API:
 - **`/api/v1`**, a versioned API a second client (an Android app) can be built against: a hand-written OpenAPI
-  contract (`api/openapi.yaml`) with generated types and contract tests, an `Idempotency-Key` on every write (two
-  identical requests act once), a client-version header (426 below the minimum), `/stream` (server-sent events with a
+  contract (`api/openapi.yaml`) with generated types and contract tests, an `Idempotency-Key` on every signed-in
+  write (two identical requests act once; sign-in and pairing need none), a client-version header (426 below the minimum), `/stream` (server-sent events with a
   resumable cursor) and `/sync` for offline catch-up. `GET /api/v1/meta` lists the features. Routes are in
   [docs/api-reference.md](docs/api-reference.md).
 - **Three kinds of caller**: a password session, this machine (only when nothing can relay to it), and a paired
@@ -98,8 +101,10 @@ Security, from the reviews:
 Also: a missing connection is offered ("I can't yet, but I could if you connect Google Calendar") instead of being
 worked around, and "What I did" names actions in plain words. The `agent-working-memory` dependency moves to
 `^0.20.1`, matching the vendored pin (`vendor/agent-working-memory` has been at 0.20.1 since 0.7.0; the declared
-range was still `^0.10.0`). New docs: [docs/new-app.md](docs/new-app.md) (a tour with screenshots) and
-[docs/why-mwa.md](docs/why-mwa.md) (why memory is the basis, with a scorecard).
+range was still `^0.10.0`). New docs: [docs/new-app.md](docs/new-app.md) (a tour with screenshots),
+[docs/why-mwa.md](docs/why-mwa.md) (why memory is the basis, with a scorecard) and
+[docs/onboarding-and-pairing.html](docs/onboarding-and-pairing.html) (Tailscale, the https address and pairing a
+phone).
 
 ## 0.9.1 (2026-10-27) — reading documents, and knowing what it costs
 

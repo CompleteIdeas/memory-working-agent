@@ -8,7 +8,7 @@ info:
 
     Conventions:
     - JSON in and out; every error is `{"error": {"code", "message"}}`.
-    - Every write (POST/PUT/PATCH/DELETE) needs an `Idempotency-Key` header (8–128 of `A-Z a-z 0-9 . _ : -`). A retry
+    - Every signed-in write (POST/PUT/PATCH/DELETE; sign-in and pairing need none) needs an `Idempotency-Key` header (8–128 of `A-Z a-z 0-9 . _ : -`). A retry
       with the same key gets the first answer back (`Idempotent-Replay: true`) and does not act twice.
     - Send `X-MWA-Client: web/<version>` (or `android/<version>`). A client older than `minClient` (see /meta) gets
       `426 client_too_old` and must reload.
