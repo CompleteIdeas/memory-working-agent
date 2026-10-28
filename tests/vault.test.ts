@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { vaultSave, vaultList, vaultForget, resolveVaultRefs, redactVault, _resetVaultCache } from '../src/vault/vault.js';
-import { openVaultRequest, submitSetupRequest, _resetSetupRequests } from '../src/connect/setup.js';
+import { openVaultRequest, listSetupRequests, submitSetupRequest, _resetSetupRequests } from '../src/connect/setup.js';
 import { connectTools } from '../src/tools/connect.js';
 import { classifyTool, outputSource } from '../src/tools/governance.js';
 
@@ -71,6 +71,14 @@ describe('saving through a card', () => {
     expect(await tool('vault_request').handler({ name: 'x', site: 'x.example' }, { sandboxDir: '.', interactive: false })).toMatch(/^\(refused/);
     expect(await tool('vault_request').handler({ name: 'x', site: 'x.example' }, { sandboxDir: '.', interactive: true, tainted: true })).toMatch(/^\(refused/);
     expect(await tool('vault_forget').handler({ name: 'x' }, { sandboxDir: '.', interactive: true, tainted: true })).toMatch(/^\(refused/);
+  });
+
+  it('S6 review: a login with no site is refused (it could be sent to any website), and no card opens', async () => {
+    const before = listSetupRequests().length;
+    for (const site of [undefined, '', '   ']) {
+      expect(await tool('vault_request').handler({ name: 'no-site', site }, { sandboxDir: '.', interactive: true })).toMatch(/^\(refused: say which website/);
+    }
+    expect(listSetupRequests().length).toBe(before);
   });
 
   it('is classified as local, and its output is MWA\'s own', () => {

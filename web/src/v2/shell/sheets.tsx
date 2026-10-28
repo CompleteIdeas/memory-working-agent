@@ -7,7 +7,9 @@
  * its title; `#ask-dlg` with `textbox "Message your helper"` and `button "Send"`; both close with `button "Close"`.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { useApprovals, useJobs, useProjectMap, useStatusPill, useStore } from '../store/react';
+import { useApprovals, useJobs, useProjectMap, useSetupCards, useStatusPill, useStore } from '../store/react';
+import { openSetupCard } from '../screens/setup/SetupCardSheet';
+import { cardStateLine } from '../screens/setup/words';
 import { openApproval } from '../screens/approvals/open';
 import { forJob, groupPending } from '../screens/approvals/words';
 import { jobLine, money } from '../store/status';
@@ -58,6 +60,8 @@ export function WorkingSheet({ open, onClose, onAskAbout }: { open: boolean; onC
   const approvals = useApprovals();
   // S4 review: as Today and push — no phishing-flagged ones here, and someone else's in their own, quieter group
   const groups = groupPending(approvals.pending);
+  // S6: a password or key the helper asked for mid-task
+  const setup = useSetupCards();
   // S4: what waits for the person's OK, read when the sheet opens (the stream keeps it current after)
   useEffect(() => { if (open) void store.loadApprovals(); }, [open, store]);
   // a waiting job's Review: its one approval, or the list when it has several (or the list has not caught up yet)
@@ -107,7 +111,20 @@ export function WorkingSheet({ open, onClose, onAskAbout }: { open: boolean; onC
             ))}
           </section>
         )}
-        {!jobs.groups.length && !groups.mine.length && !groups.others.length && <p className="empty">Nothing running. I’ll keep an eye on your day.</p>}
+        {setup.waiting.length > 0 && (
+          <section className="jobgroup approvals" aria-labelledby="jg-setup">
+            <h3 className="jg-h" id="jg-setup">Needs a password or key · {setup.waiting.length}</h3>
+            {setup.waiting.map((c) => (
+              <article key={c.id} className="job plain" aria-labelledby={`sct-${c.id}`}>
+                <span className="ptag">{c.where}</span>
+                <h4 id={`sct-${c.id}`}>{c.name}</h4>
+                <p style={{ marginTop: 6 }}>{cardStateLine(c)}</p>
+                <div className="acts"><button type="button" className="vbtn vbtn-primary" onClick={() => openSetupCard(c.id)}>{setup.canSubmit ? 'Fill it in' : 'Look at it'}</button></div>
+              </article>
+            ))}
+          </section>
+        )}
+        {!jobs.groups.length && !groups.mine.length && !groups.others.length && !setup.waiting.length && <p className="empty">Nothing running. I’ll keep an eye on your day.</p>}
         {jobs.groups.map((g) => (
           <section key={g.key} className={`jobgroup ${GROUP_CLASS[g.key]}`} aria-labelledby={`jg-${g.key}`}>
             <h3 className="jg-h" id={`jg-${g.key}`}>{g.title} · {g.jobs.length}</h3>

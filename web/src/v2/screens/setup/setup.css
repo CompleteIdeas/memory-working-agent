@@ -1,0 +1,31 @@
+/* v2 S6: getting going — the no-brain bar, setup cards, learning from a folder or the inbox, where memory is kept */
+.brainbar { position: sticky; top: var(--head-h); z-index: 23; margin: 0 auto; max-width: 640px; padding: 10px 16px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  background: var(--card); color: var(--ink); border-left: 4px solid var(--signal); border-bottom: 1px solid var(--line); font-size: 15px; line-height: 1.4; }
+.brainbar p { margin: 0; flex: 1 1 220px; font-weight: 500; }
+@media (min-width: 640px) { .brainbar { border-radius: 0 0 10px 10px; border: 1px solid var(--line); border-left: 4px solid var(--signal); border-top: 0; } }
+@media (min-width: 900px) { .brainbar { top: 64px; max-width: 760px; } }
+
+.sc-body .sclist { list-style: none; margin: 0; padding: 0; }
+.sccard h3 { margin: 4px 0 2px; font-size: 19px; }
+.sccard .scask { margin: 12px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--card-2); border-left: 4px solid var(--signal); }
+.sccard .schow { margin-top: 10px; overflow-wrap: anywhere; }
+.sccard .schow p { margin: 4px 0; }
+.sccard .scfield { display: flex; flex-direction: column; }
+.sccard .adminnote { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--card-2); }
+
+.learnnotes { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.notelist { list-style: none; margin: 10px 0 0; padding: 0; max-height: 460px; overflow: auto; }
+.noterow { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.noterow input { width: 22px; height: 22px; margin-top: 2px; flex: none; }
+.noterow label { flex: 1; min-width: 0; overflow-wrap: anywhere; cursor: pointer; }
+.noterow .notetext { display: block; margin-top: 4px; color: var(--ink); white-space: pre-wrap; }
+.scanlog { margin: 8px 0 0; padding: 8px 12px 8px 28px; border-radius: 8px; background: var(--card-2); font-size: 14px; overflow-wrap: anywhere; }
+.scanlog li { margin: 2px 0; }
+.learned { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--card-2); border-left: 4px solid var(--line); }
+.learnedlist { margin: 8px 0 0 18px; padding: 0; overflow-wrap: anywhere; }
+.confirmask { margin-top: 10px; padding: 12px; border-radius: 8px; background: var(--card-2); border-left: 4px solid var(--signal); }
+.checkrow { display: flex; gap: 10px; align-items: flex-start; margin-top: 10px; font-weight: 400; }
+.checkrow input { width: 22px; height: 22px; flex: none; }
+.storagepage .okline { font-weight: 600; }
+.obbrain .setform, .obaccess .aschoices { text-align: left; }

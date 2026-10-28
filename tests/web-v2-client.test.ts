@@ -157,6 +157,18 @@ const CALLS: Record<string, (c: MwaClient) => unknown> = {
   getActivity: (c) => c.getActivity({ limit: 30 }),
   getSpendingDetail: (c) => c.getSpendingDetail(),
   downloadSpendingCsv: (c) => c.downloadSpendingCsv(30),
+  // S6: getting going (setup-card values and the database address go in, never out)
+  getSetup: (c) => c.getSetup(),
+  warmMemory: (c) => c.warmMemory(),
+  scanFolder: (c) => c.scanFolder('/Users/robert/Documents/Barn'),
+  saveFolderNotes: (c) => c.saveFolderNotes('scan_1', [{ id: 'c1', name: 'Feeding' }]),
+  getInboxScan: (c) => c.getInboxScan(),
+  startInboxScan: (c) => c.startInboxScan({ days: 30, confirmed: true }),
+  stopInboxScan: (c) => c.stopInboxScan(),
+  listSetupCards: (c) => c.listSetupCards(),
+  submitSetupCard: (c) => c.submitSetupCard('setup_1', { TELEGRAM_BOT_TOKEN: '1:abc' }),
+  cancelSetupCard: (c) => c.cancelSetupCard('setup_1'),
+  saveStorage: (c) => c.saveStorage({ kind: 'postgres', url: 'postgres://u:p@db.example/mwa', confirmed: true }),
 };
 const URL_ONLY = new Set(['streamUrl', 'calendarDraftIcsUrl', 'projectLiveUrl']); // GET links opened by EventSource or a download
 

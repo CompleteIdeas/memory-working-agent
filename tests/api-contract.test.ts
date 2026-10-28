@@ -43,6 +43,8 @@ import { setAssistantDeps } from '../src/assistant-settings.js';
 import { setConnectionDeps } from '../src/connection-settings.js';
 import { stageAction, registerExecutor } from '../src/tools/approval.js';
 import { MwaMemory } from '../src/awm.js';
+import { setSetupFlowDeps, scanFolder, _resetInboxScan } from '../src/setup-flow.js';
+import { setSetupDeps, openSetupRequest, openVaultRequest, findService } from '../src/connect/setup.js';
 
 const spec = parse(readFileSync(new URL('../api/openapi.yaml', import.meta.url), 'utf8'));
 const METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
@@ -210,6 +212,20 @@ beforeAll(async () => {
   ids.routine = (await mem.saveRoutine('Weekly entries check', '1. Open the entries page.\n2. List what closes this week.')).id!;
   mem.close();
   writeFileSync(join(s5, 'runs.jsonl'), JSON.stringify({ ts: Date.now() - 60_000, session: '', instruction: 'Check the entries', reason: 'done', steps: 3, toolCalls: 2, actions: ['web_fetch'], costUsd: 0.012, summary: 'Two close Friday.' }) + '\n');
+  // S6: getting going — stubs for the inbox, the memory models, the database check and the .env; a folder with one
+  // document read once; a Telegram card (its check passes) and a vault card to close
+  setSetupFlowDeps({ ingestAvailable: () => true, warm: async () => {}, checkPostgres: async () => {}, migrate: async () => ({ ok: true, message: 'copied' }),
+    ingest: (o) => new Promise((r) => { o.signal.addEventListener('abort', () => r({ unique: 0, learned: 0 })); }),
+    saveEnvFile: () => {}, removeEnvFile: () => {}, envFile: () => ({}), fromHost: () => false });
+  setSetupDeps({ save: () => {}, gmailConnected: () => false, checkGmail: async () => ({ ok: true, message: 'ok' }), outlookConnected: () => false, outlookAppReady: () => false,
+    startOutlookDeviceCode: async () => ({ user_code: 'X', verification_uri: 'https://microsoft.example', expires_in: 900 }), telegramConnected: () => false, checkTelegram: async () => ({ ok: true, message: 'Bot works' }) });
+  const s6Docs = mkdtempSync(join(tmpdir(), 'mwa-s6-contract-'));
+  writeFileSync(join(s6Docs, 'barn.md'), ['# Feeding', 'Hay at six and grain at seven, every day of the week, all year.', ''].join('\n'));
+  ids.s6Folder = s6Docs;
+  const sc = await scanFolder(s6Docs);
+  ids.s6Scan = sc.ok ? sc.scan.id : '';
+  ids.s6Card = openSetupRequest(findService('telegram')!).id;
+  ids.s6Vault = openVaultRequest('barn bookings', 'bookings.example', ['password']).id;
   // P3: a password (so a session cookie names its subscriptions' owner) and a push service that always accepts
   configureSessions({ password: 'contract-push-pw' });
   setPushDeps({ transport: async () => ({ status: 201 }) });
@@ -218,7 +234,7 @@ beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
-afterAll(() => { server?.close(); setSettingsRouteDeps(null); setPluginRouteDeps(null); delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN; delete process.env.TAVILY_API_KEY; configureSessions({ password: '' }); setPushDeps(null); for (const k of ['MWA_CONFIG_PATH', 'MWA_TOKEN_LOG', 'MWA_VAULT_PATH', 'MWA_DB', 'MWA_AGENT_ID', 'MWA_RUNLOG']) delete process.env[k]; setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); setTodayDeps(null); setAssistantDeps(null); setConnectionDeps(null); });
+afterAll(() => { server?.close(); setSettingsRouteDeps(null); setPluginRouteDeps(null); delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN; delete process.env.TAVILY_API_KEY; configureSessions({ password: '' }); setPushDeps(null); for (const k of ['MWA_CONFIG_PATH', 'MWA_TOKEN_LOG', 'MWA_VAULT_PATH', 'MWA_DB', 'MWA_AGENT_ID', 'MWA_RUNLOG']) delete process.env[k]; setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); setTodayDeps(null); setAssistantDeps(null); setConnectionDeps(null); setSetupFlowDeps(null); _resetInboxScan(); });
 
 /** One request per operation (and a few error cases). Slices append theirs. */
 const ids: Record<string, string> = {};
@@ -488,6 +504,26 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /files', path: '/files?projectId=pr_nope&name=notes.txt', init: () => ({ method: 'POST', headers: { 'idempotency-key': `contract-key-${++keyN}`, 'content-type': 'text/plain' }, body: 'x' }), status: 404 },
   { op: 'GET /files', path: () => `/files?projectId=${ids.eventing}`, status: 200 },
   { op: 'GET /files', path: '/files', status: 200 },
+  // S6: getting going
+  { op: 'GET /setup', path: '/setup', status: 200 },
+  { op: 'POST /setup/warm', path: '/setup/warm', init: post, status: 200 },
+  { op: 'POST /setup/folder/scan', path: '/setup/folder/scan', init: () => ({ ...post(), body: JSON.stringify({ path: ids.s6Folder }) }), status: 200 },
+  { op: 'POST /setup/folder/scan', path: '/setup/folder/scan', init: () => ({ ...post(), body: JSON.stringify({ path: 'relative/folder' }) }), status: 400 },
+  { op: 'POST /setup/folder/save', path: '/setup/folder/save', init: () => ({ ...post(), body: JSON.stringify({ scanId: ids.s6Scan, keep: [{ id: 'c1' }] }) }), status: 200 },
+  { op: 'POST /setup/folder/save', path: '/setup/folder/save', init: () => ({ ...post(), body: JSON.stringify({ scanId: 'scan_nope', keep: [{ id: 'c1' }] }) }), status: 409 },
+  { op: 'GET /setup/inbox', path: '/setup/inbox', status: 200 },
+  { op: 'POST /setup/inbox', path: '/setup/inbox', init: () => ({ ...post(), body: JSON.stringify({ days: 30 }) }), status: 409 },
+  { op: 'POST /setup/inbox', path: '/setup/inbox', init: () => ({ ...post(), body: JSON.stringify({ days: 30, confirmed: true }) }), status: 202 },
+  { op: 'POST /setup/inbox/stop', path: '/setup/inbox/stop', init: post, status: 200 },
+  { op: 'POST /setup/inbox/stop', path: '/setup/inbox/stop', init: post, status: 409 },
+  { op: 'GET /setup/cards', path: '/setup/cards', status: 200 },
+  { op: 'POST /setup/cards/{id}/submit', path: () => `/setup/cards/${ids.s6Card}/submit`, init: () => ({ ...post(), body: JSON.stringify({ values: { TELEGRAM_BOT_TOKEN: '1:abc' } }) }), status: 200 },
+  { op: 'POST /setup/cards/{id}/submit', path: '/setup/cards/setup_nope/submit', init: () => ({ ...post(), body: JSON.stringify({ values: {} }) }), status: 404 },
+  { op: 'POST /setup/cards/{id}/cancel', path: () => `/setup/cards/${ids.s6Vault}/cancel`, init: post, status: 200 },
+  { op: 'POST /setup/cards/{id}/cancel', path: () => `/setup/cards/${ids.s6Vault}/cancel`, init: post, status: 409 },
+  { op: 'PUT /setup/storage', path: '/setup/storage', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ kind: 'sqlite' }) }), status: 409 },
+  { op: 'PUT /setup/storage', path: '/setup/storage', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ kind: 'sqlite', confirmed: true }) }), status: 200 },
+  { op: 'PUT /setup/storage', path: '/setup/storage', init: () => ({ ...post(), method: 'PUT', body: JSON.stringify({ kind: 'postgres', url: 'http://x', confirmed: true }) }), status: 400 },
   // P3: web push (a fake push service; the subscriptions belong to a fresh password session each)
   { op: 'GET /push/subscriptions', path: '/push/subscriptions', status: 200 },
   { op: 'POST /push/subscriptions', path: '/push/subscriptions', init: () => ({ ...post(), headers: { ...(post().headers as Record<string, string>), cookie: pushSession().cookie }, body: JSON.stringify(pushBrowser()) }), status: 201 },

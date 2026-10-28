@@ -10,6 +10,8 @@
  *   unpaired    no password, and this is a phone on the network: pairing only (the code K7PQ-M4XZ works)
  *   phone       signed in as the paired phone "Robert’s Pixel" (read, act, approve; no admin)
  *   first-run   this computer, first-run setup not done yet, nothing connected
+ *   fresh       as first-run, and no AI brain yet (S6: first run starts with the brain; ./fixtures-setup.ts)
+ *   no-brain, setup-card, phone-card: S6's scenarios (./fixtures-setup.ts)
  *   hosted, conn-setup, reconnect: Settings › Connections' scenarios (./fixtures-connections.ts)
  *   (any other) this computer signed in with the password, set up, Google connected
  * EVERYTHING HERE IS EXAMPLE DATA.
@@ -19,6 +21,7 @@ import { PluginFixtures } from './fixtures-plugins';
 import { AssistantFixtures } from './fixtures-assistant';
 import { ConnectionFixtures } from './fixtures-connections';
 import { MemoryFixtures } from './fixtures-memory';
+import { SetupFixtures } from './fixtures-setup';
 
 type Resp = { status: number; body: unknown; headers?: Record<string, string>; text?: string };
 const err = (status: number, code: string, message: string): Resp => ({ status, body: { error: { code, message } } });
@@ -43,7 +46,9 @@ const ADMIN: RegExp[] = [/^POST \/session\/sign-out-everywhere$/, /^POST \/pair\
   // S3: every change to a connection
   /^(POST|PUT|DELETE) \/connections(\/|$)/,
   // S5: every change to memory, and both downloads
-  /^POST \/memory\//, /^GET \/memory\/export$/, /^GET \/spending\/calls\.csv$/];
+  /^POST \/memory\//, /^GET \/memory\/export$/, /^GET \/spending\/calls\.csv$/,
+  // S6: getting going (closing a setup card is allowed: it needs approve, not admin)
+  /^POST \/setup\/(warm|folder\/scan|folder\/save|inbox|inbox\/stop)$/, /^PUT \/setup\/storage$/, /^POST \/setup\/cards\/[^/]+\/submit$/];
 
 export class SettingsFixtures {
   passwordSet: boolean;
@@ -65,12 +70,18 @@ export class SettingsFixtures {
   connections: ConnectionFixtures;
   /** S5: What I remember, Activity and the spending detail (./fixtures-memory.ts) */
   memory: MemoryFixtures;
+  /** S6: getting going (./fixtures-setup.ts) */
+  setup: SetupFixtures;
   push = { kinds: { approval: true, waiting: true, result: true, morning: true }, morning: '07:30', timeZone: 'America/New_York', quietHours: { value: '22:00-07:00' as string | null, fixed: false, invalid: false } };
   private codes = new Set<string>([norm(FIXTURE_PAIR_CODE)]);
   private n = 0;
 
   constructor(private scenario: string, private clock: () => number) {
     const now = clock();
+    const named = scenario;
+    // S6: `fresh` is first run on a new computer with no AI brain: first run for everything but the brain
+    if (scenario === 'fresh') scenario = 'first-run';
+    if (scenario === 'phone-card') scenario = 'phone'; // S6: the paired phone, with setup cards waiting
     this.passwordSet = scenario !== 'unpaired' && scenario !== 'first-run';
     this.signedIn = scenario !== 'signed-out' && scenario !== 'unpaired';
     this.kind = scenario === 'phone' ? 'device' : scenario === 'first-run' ? 'local' : 'session';
@@ -106,8 +117,9 @@ export class SettingsFixtures {
     ];
     this.files.set('general', []);
     this.plugins = new PluginFixtures(scenario, clock);
-    this.assistant = new AssistantFixtures(scenario, this.plugins);
+    this.assistant = new AssistantFixtures(named, this.plugins);
     this.memory = new MemoryFixtures(scenario, clock, () => this.spending);
+    this.setup = new SetupFixtures(named, this.assistant, clock, () => this.accounts.some((a) => a.connected));
   }
 
   me(): Me {
@@ -136,6 +148,8 @@ export class SettingsFixtures {
     if (cn) return cn;
     const mem = this.memory.read(path, q);
     if (mem) return mem;
+    const su = this.setup.read(path, this.kind !== 'device');
+    if (su) return su;
     if (path === '/devices') return { status: 200, body: { devices: this.devices } };
     if (path === '/settings') return { status: 200, body: this.settings };
     if (path === '/spending') return { status: 200, body: this.spending };
@@ -160,6 +174,8 @@ export class SettingsFixtures {
     if (cn) return cn;
     const mem = this.memory.write(method, path, body);
     if (mem) return mem;
+    const su = this.setup.write(method, path, body);
+    if (su) return su;
     if (method === 'POST' && path === '/session') {
       if (!this.passwordSet) return err(409, 'no_password', 'No password is set on this helper. Pair this device with a code from the computer instead.');
       if (typeof b.password !== 'string' || !b.password) return err(400, 'bad_body', 'Type your password.');

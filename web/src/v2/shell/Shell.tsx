@@ -15,7 +15,7 @@ import { applyUpdate, serverTooOld } from '../../pwa/register';
 import { updateWords } from '../../pwa/update';
 import { offlineWords } from '../../pwa/offline';
 import { WorkingSheet, type AskAbout } from './sheets';
-import { Activity, Assistant, Calendar, Connections, Important, Memory, Plugins, Settings, Spending, Today, type View } from './screens';
+import { Activity, Assistant, Calendar, Connections, Important, Learn, Memory, Plugins, Settings, Spending, Storage, Today, type View } from './screens';
 import { AskSheet } from '../screens/ask/AskSheet';
 import { Projects } from '../screens/projects/Projects';
 import { Arrow, Person, Spark, TabCalendar, TabImportant, TabProjects, TabToday, Close } from './icons';
@@ -24,6 +24,9 @@ import { MicButton } from '../screens/ask/voice/Mic';
 import { useDictation } from '../screens/ask/voice/useDictation';
 import { ApprovalSheet } from '../screens/approvals/ApprovalSheet';
 import { useApprovalOpener } from '../screens/approvals/open';
+import { SetupCardSheet, useSetupCardOpener } from '../screens/setup/SetupCardSheet';
+import { BrainBar } from '../screens/setup/BrainBar';
+import { GO_EVENT } from '../screens/start/events';
 
 const TABS: { view: View; label: string; icon: ReactNode }[] = [
   { view: 'today', label: 'Today', icon: <TabToday /> },
@@ -31,7 +34,7 @@ const TABS: { view: View; label: string; icon: ReactNode }[] = [
   { view: 'inbox', label: 'Important', icon: <TabImportant /> },
   { view: 'projects', label: 'Projects', icon: <TabProjects /> },
 ];
-const SCREENS = { today: Today, calendar: Calendar, inbox: Important, projects: Projects, settings: Settings, plugins: Plugins, assistant: Assistant, connections: Connections, memory: Memory, activity: Activity, spending: Spending };
+const SCREENS = { today: Today, calendar: Calendar, inbox: Important, projects: Projects, settings: Settings, plugins: Plugins, assistant: Assistant, connections: Connections, memory: Memory, activity: Activity, spending: Spending, learn: Learn, storage: Storage };
 
 function useMedia(q: string): boolean {
   const [m, setM] = useState(() => typeof window !== 'undefined' && window.matchMedia(q).matches);
@@ -180,6 +183,15 @@ export function Shell() {
   const [approval, setApproval] = useState<{ id: string | null; at: number } | null>(null);
   useApprovalOpener(useCallback((id: string | null) => { setAskOpen(false); setWorkOpen(false); setApproval({ id, at: Date.now() }); }, []));
   useNotificationRoutes({ go, openWork, ready: !start });
+  // S6: setup cards (a password or key the helper asked for), opened from Today, the working sheet or Settings
+  const [setupCard, setSetupCard] = useState<{ id: string | null; at: number } | null>(null);
+  useSetupCardOpener(useCallback((id: string | null) => { setAskOpen(false); setWorkOpen(false); setSetupCard({ id, at: Date.now() }); }, []));
+  // S6: first run's "Open Connections when I finish" (and any screen outside the app's own) asks to go somewhere
+  useEffect(() => {
+    const h = (e: Event) => { const v = (e as CustomEvent<{ view?: unknown }>).detail?.view; if (typeof v === 'string' && v in SCREENS) go(v as View); };
+    window.addEventListener(GO_EVENT, h);
+    return () => window.removeEventListener(GO_EVENT, h);
+  }, [go]);
 
   // W5: sign in, pair this phone, or first run on the computer, before the app itself (screens/start)
   // P2 (review): the toasts show there too ("Signed out — this phone’s copy was cleared")
@@ -204,6 +216,8 @@ export function Shell() {
       </header>
 
       <OfflineBar />
+      {/* S6: without a working AI brain, every screen says so plainly */}
+      <BrainBar view={view} onFix={() => go('assistant')} />
       <main id="main" ref={main} className="main" tabIndex={-1}>
         <Screen desk={desk} wide={wide} go={go} ask={ask} onContext={setContext} openWork={() => setWorkOpen(true)} />
       </main>
@@ -227,6 +241,7 @@ export function Shell() {
       <UpdateBar />
       <WorkingSheet open={workOpen} onClose={() => setWorkOpen(false)} onAskAbout={ask} />
       <ApprovalSheet request={approval} onClose={() => setApproval(null)} />
+      <SetupCardSheet request={setupCard} onClose={() => setSetupCard(null)} />
       <AskSheet open={askOpen} about={about} dictation={voice} onClose={() => setAskOpen(false)} onShowWork={() => { setAskOpen(false); setWorkOpen(true); }} />
     </div>
   );

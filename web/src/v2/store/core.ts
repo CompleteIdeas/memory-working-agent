@@ -23,7 +23,7 @@ import {
   type CalendarItem, type Job, type JobDetail, type MailHeader, type Meta, type Project, type SyncCollection, type SyncResult, type Turn,
   type DraftResult, type MessageSent, type Schemas, type AskBody, type AskChoice, type AskStart, type AskChosen, type TurnMoved,
   type ImportantItem, type ImportantGroup, type ImportantList, type ItemChange, type ItemActionResult, type SkippedList, type TriageRule,
-  type ApprovalView, type ApprovalDecision,
+  type ApprovalView, type ApprovalDecision, type SetupCard,
 } from '../api/client';
 import { STORES, type CacheDb, type StoreName } from './cache';
 import { TodayFeed } from './today';
@@ -206,6 +206,13 @@ export interface StoreState {
    *  the device. `approvalsLoaded`: the list has been read once. */
   approvals: Record<string, ApprovalView>;
   approvalsLoaded: boolean;
+  /** S6: setup cards (a password or key the helper asked for mid-task), from GET /setup/cards, read again when the
+   *  stream says one changed; never cached on the device and never a value. `setupCanSubmit`: this device may fill
+   *  them (admin). `inboxSeq`: bumped when the stream says the inbox scan started or ended. */
+  setupCards: SetupCard[];
+  setupCanSubmit: boolean;
+  setupLoaded: boolean;
+  inboxSeq: number;
 }
 
 /** S4: what deciding an approval came to. Not queued when offline: a decision is made on what the person sees now. */
@@ -248,6 +255,7 @@ const initial = (fixtures: boolean): StoreState => ({
   items: {}, important: { meta: null, loading: false, loaded: false, error: null }, skipped: {},
   rules: { list: [], loading: false, loaded: false, error: null },
   approvals: {}, approvalsLoaded: false,
+  setupCards: [], setupCanSubmit: false, setupLoaded: false, inboxSeq: 0,
 });
 
 const byId = <T extends { id: string }>(xs: T[]) => Object.fromEntries(xs.map((x) => [x.id, x])) as Record<string, T>;
@@ -340,7 +348,7 @@ export class V2Store {
   private async clearDeviceCopy(): Promise<void> {
     this.set({
       jobs: {}, calendar: {}, conflicts: {}, projects: {}, threads: {}, threadLoaded: {}, live: {}, threadOlder: {}, threadNext: {},
-      askOutcomes: {}, askChoices: {}, asks: {}, refused: {}, items: {}, outbox: [], inflight: [], cursor: 0, updatedAt: null, ready: true, approvals: {}, approvalsLoaded: false,
+      askOutcomes: {}, askChoices: {}, asks: {}, refused: {}, items: {}, outbox: [], inflight: [], cursor: 0, updatedAt: null, ready: true, approvals: {}, approvalsLoaded: false, setupCards: [], setupLoaded: false,
       important: { meta: null, loading: false, loaded: false, error: null }, skipped: {}, rules: { list: [], loading: false, loaded: false, error: null },
       mail: { headers: [], note: '', connected: false, loaded: false, loading: false, error: null },
     });
@@ -603,10 +611,28 @@ export class V2Store {
       case 'mail': this.mailChanged(); break;
       case 'ask': if (!del && m.data) this.set({ asks: { ...this.s.asks, [m.id]: m.data as AskRecord } }); break;
       case 'approval': this.putApproval(m.id, del ? null : m.data as ApprovalView); break;
+      case 'setup': void this.loadSetupCards(); break; // S6: a data-less notice: GET /setup/cards again
+      case 'inbox_scan': this.set({ inboxSeq: this.s.inboxSeq + 1 }); break;
       case 'item': this.upsert('items', del ? [] : [m.data as ImportantItem], del ? [m.id] : []); this.importantChanged(); break;
       default: break; // devices and anything newer: nothing on these screens
     }
     if (seq) this.setCursor(seq);
+  }
+
+  // ---------- S6: setup cards ----------
+  private setupAsked = false;
+  /** Read the setup cards once per page (an older server has none); the stream keeps them current. */
+  ensureSetupCards(): void {
+    if (this.setupAsked || this.s.setupLoaded || !this.s.meta?.features.includes('setup')) return;
+    this.setupAsked = true;
+    void this.loadSetupCards();
+  }
+  async loadSetupCards(): Promise<void> {
+    if (!this.s.meta?.features.includes('setup')) return;
+    try {
+      const r = await this.client.listSetupCards();
+      this.set({ setupCards: r.cards, setupCanSubmit: r.canSubmit, setupLoaded: true });
+    } catch (e) { this.noteError(e, true); }
   }
 
   // ---------- S4: approvals ----------

@@ -2019,6 +2019,181 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** S6: whether the AI brain works (and what is missing when it doesn't), where memory is kept, the inbox scan, how many setup cards wait (read). */
+        get: operations["getSetup"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/setup/warm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S6: get the local memory models ready; the first time downloads them (about 500 MB, a few minutes) (admin). 503 unavailable when they can't be loaded. */
+        post: operations["warmMemory"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/setup/folder/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S6: read one folder into notes to look over (admin). It must pass Your assistant's folder rules (400 bad_folder, not_found or refused). No AI is used; nothing is saved or granted. */
+        post: operations["scanFolder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/setup/folder/save": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S6: keep some notes from a folder scan, edited or not (admin). They are kept as notes from your files (outside content, never trusted as instructions). 409 scan_expired after 30 minutes. */
+        post: operations["saveFolderNotes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/setup/inbox": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** S6: "Get to know me": how the inbox scan is going and what it learned (read). */
+        get: operations["getInboxScan"];
+        put?: never;
+        /** S6: start learning from the inbox (admin). It uses the AI brain, so it asks first: without confirmed: true the answer is 409 confirm_needed with what it may cost and take. 409 already_running, no_email or busy. */
+        post: operations["startInboxScan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/setup/inbox/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S6: stop the inbox scan after the round it is on; what it learned is kept (admin). 409 not_running. */
+        post: operations["stopInboxScan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/setup/cards": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** S6: setup cards: a password or key your helper asked for mid-task, waiting or recent (read). Never a value. canSubmit: this device may fill them (admin). */
+        get: operations["listSetupCards"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/setup/cards/{id}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S6: fill a setup card (admin): only its own fields are taken, checked against the service, then saved; what was typed never comes back, not even in a refusal. 400 check_failed (the card stays open), 409 not_waiting, 404. */
+        post: operations["submitSetupCard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/setup/cards/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S6: close a setup card without filling it (approve). 409 not_waiting, 404. */
+        post: operations["cancelSetupCard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/setup/storage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** S6: where memory is kept: this computer (sqlite) or a Postgres server (admin). It asks first (confirmed: true, else 409 confirm_needed) and takes effect at the restart. A Postgres address is checked by connecting (400 bad_url or check_failed) and never comes back; bringMemory copies this computer's memory there first (400 copy_failed: nothing switched). 409 fixed when the server's settings choose it. */
+        put: operations["saveStorage"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3608,6 +3783,124 @@ export interface components {
                 remainingUsd: number;
                 at: number;
             } | null;
+        };
+        /** @description S6: whether your helper can think at all: the AI brain chosen has what it needs (a key, or Ollama). */
+        BrainState: {
+            ready: boolean;
+            /** @description Empty when none is chosen. */
+            provider: string;
+            model: string;
+            /** @description What is missing, in plain words; null when it works. */
+            missing: string | null;
+        };
+        /** @description S6: where memory is kept. Never the database address: only its server name, and only for admin. */
+        StorageView: {
+            /**
+             * @description What this run of your helper uses.
+             * @enum {string}
+             */
+            running: "sqlite" | "postgres" | "pglite";
+            /**
+             * @description What it uses after the next restart.
+             * @enum {string}
+             */
+            next: "sqlite" | "postgres" | "pglite";
+            restartNeeded: boolean;
+            /** @description The server's AWM_STORE_BACKEND / AWM_DATABASE_URL settings choose it; it can't be changed here. */
+            fixed: boolean;
+            hosted: boolean;
+            host: string;
+            /** @description The database server's name (host only), for admin. */
+            server: string | null;
+            nextServer: string | null;
+        };
+        InboxEstimate: {
+            days: number;
+            maxEmails: number;
+            rounds: number;
+            /** @description At most this much. */
+            usd: number;
+            ms: number;
+            text: string;
+        };
+        /** @description S6: "Get to know me": learning from the inbox. What it learned is listed by name; every fact it writes is a note from your email (untrusted). */
+        InboxScan: {
+            id: string | null;
+            /** @enum {string} */
+            state: "idle" | "running" | "stopping" | "done" | "stopped" | "failed";
+            days: number;
+            startedAt: number | null;
+            endedAt: number | null;
+            /** @description How it is going, in your helper's words (the last 60 lines). */
+            log: string[];
+            /** @description The names of the facts learned (the first 60). They come from email: show them as outside content. */
+            learned: string[];
+            learnedCount: number;
+            /** @description Emails read, once it ends. */
+            emails: number | null;
+            message: string;
+            /** @description An email account is connected. */
+            available: boolean;
+            estimate: components["schemas"]["InboxEstimate"];
+        };
+        SetupCardField: {
+            /** @description The key to send its value under. */
+            name: string;
+            label: string;
+            help: string | null;
+            /** @description Typed into a password field. */
+            secret: boolean;
+            optional: boolean;
+        };
+        /** @description S6: a password or key your helper asked for mid-task. Never holds a value. */
+        SetupCard: {
+            id: string;
+            name: string;
+            /** @description The steps, in plain words. */
+            howTo: string;
+            /** @description The conversation or job that asked. */
+            where: string;
+            fields: components["schemas"]["SetupCardField"][];
+            /** @enum {string} */
+            state: "waiting" | "done" | "failed" | "cancelled" | "expired";
+            message: string;
+            expiresInSec: number;
+            /** @description A login for the vault (and the one site it is used on), not a connection. */
+            vault: null | {
+                site: string | null;
+            };
+        };
+        SetupState: {
+            brain: components["schemas"]["BrainState"];
+            storage: components["schemas"]["StorageView"];
+            inbox: components["schemas"]["InboxScan"];
+            /** @description What reading a folder costs and takes. */
+            folderNote: string;
+            cardsWaiting: number;
+        };
+        FolderNote: {
+            id: string;
+            name: string;
+            text: string;
+            /** @description The file it came from. */
+            source: string;
+        };
+        FolderScan: {
+            /** @description Send it back with the notes to keep (it lasts 30 minutes). */
+            scanId: string;
+            folder: string;
+            filesScanned: number;
+            truncated: boolean;
+            message: string;
+            notes: components["schemas"]["FolderNote"][];
+        };
+        InboxChange: {
+            scan: components["schemas"]["InboxScan"];
+            message: string;
+        };
+        SetupCardChange: {
+            card: components["schemas"]["SetupCard"] | null;
+            message: string;
         };
     };
     responses: {
@@ -7139,6 +7432,311 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ActivityView"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getSetup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupState"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    warmMemory: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ready. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ready: boolean;
+                        message: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    scanFolder: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    path: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The notes. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FolderScan"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    saveFolderNotes: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    scanId: string;
+                    keep: {
+                        id: string;
+                        name?: string;
+                        text?: string;
+                    }[];
+                };
+            };
+        };
+        responses: {
+            /** @description Saved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        saved: number;
+                        message: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getInboxScan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The scan. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxScan"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    startInboxScan: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    days?: number;
+                    confirmed?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Started; follow it with GET /setup/inbox (the stream sends an inbox_scan notice when it starts and ends). */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    stopInboxScan: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stopping. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listSetupCards: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The cards. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        cards: components["schemas"]["SetupCard"][];
+                        canSubmit: boolean;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    submitSetupCard: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    values: {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description Saved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupCardChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    cancelSetupCard: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Closed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupCardChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    saveStorage: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    kind: "sqlite" | "postgres";
+                    url?: string;
+                    bringMemory?: boolean;
+                    confirmed?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Saved for the next restart. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        storage: components["schemas"]["StorageView"];
+                        message: string;
+                    };
                 };
             };
             default: components["responses"]["Error"];

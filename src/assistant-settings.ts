@@ -270,6 +270,18 @@ export function protectedFolders(): { holds: string[]; data: string[] } {
   return { holds: [...new Set(holds)], data: [...new Set(data)] };
 }
 
+/** S6 (review): a file or folder that is the helper's own: inside its data (memory, vault, sign-in tokens, logs,
+ *  browser profiles), or its .env / mwa.config.json themselves. Compared where it really is (links followed). */
+export function isProtectedPath(path: string): boolean {
+  try {
+    const k = key(path);
+    const prot = protectedFolders();
+    if (prot.data.some((f) => inside(k, key(f)))) return true;
+    const own = [resolve(process.env.MWA_ENV_PATH ?? '.env'), resolve(configPath())].map((f) => key(f));
+    return own.includes(k);
+  } catch { return true; }
+}
+
 /** Why a folder can't be newly granted, or null when it can. */
 export function folderProblem(path: string): { code: string; message: string } | null {
   const p = String(path ?? '').trim();
