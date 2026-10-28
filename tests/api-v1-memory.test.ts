@@ -15,7 +15,7 @@ import { makeAuthenticate, createPairCode, redeemPairCode } from '../src/api/aut
 import { resetAppDb } from '../src/v2/db.js';
 import { createProject } from '../src/v2/projects.js';
 import { MwaMemory } from '../src/awm.js';
-import { forgetFact, correctFact, listFacts, setRoutine } from '../src/memory-settings.js';
+import { forgetFact, correctFact, listFacts, setRoutine, _openStores } from '../src/memory-settings.js';
 import { redactText, ownerWords, activityOf } from '../src/activity.js';
 import { _resetBalanceCache } from '../src/billing.js';
 
@@ -35,6 +35,7 @@ function device(scopes: ('read' | 'act' | 'approve' | 'admin')[]): string {
 
 const AGENT = 's5-test';
 const SECRET_KEY = 'sk-or-v1-0123456789abcdefABCDEF0123456789';
+const LONG = `Turnout is 7 AM to 4 PM in good weather. ${'Blankets go on below 40 degrees at night and come off by nine. '.repeat(5)}The arena closes Mondays for dragging, and the tail says lessons have priority.`;
 const ids: Record<string, string> = {};
 const SAVED = Object.fromEntries(['MWA_DB', 'MWA_AGENT_ID', 'MWA_RUNLOG', 'MWA_TOKEN_LOG', 'OPENROUTER_API_KEY', 'MWA_TELEGRAM_AGENT_ID'].map((k) => [k, process.env[k]]));
 
@@ -47,6 +48,12 @@ beforeAll(async () => {
   ids.farrier = (await m.write('farrier visits', 'The farrier comes every eight weeks.', ['topic=t'], { canonical: true, provenance: 'user' }))!;
   ids.gate = (await m.write('barn gate', 'The barn gate code changed in October.', ['topic=t'], { canonical: true, provenance: 'inferred' }))!;
   ids.inbox = (await m.write('show moved', 'The Fair Hill show moved to Sunday.', ['topic=t'], { canonical: true, provenance: 'ingested', origin: 'email/secretary@example.com' }))!;
+  ids.long = (await m.write('barn rules', LONG, ['topic=t'], { canonical: true, provenance: 'user' }))!;
+  ids.keynote = (await m.write('openrouter key', `My OpenRouter key is ${SECRET_KEY} for the helper.`, ['topic=t'], { canonical: true, provenance: 'user' }))!;
+  // the helper's own bookkeeping: never a fact to forget or correct
+  ids.goal = (await m.addGoal('Ride three times a week', 'Before the Fair Hill show'))!;
+  ids.where = (await m.write('where we are: entries', 'Two entries sent, one to go.', ['topic=t'], { canonical: true }))!;
+  ids.openItem = (await m.write('open item: farrier invoice', 'Pay Dan by Friday.', ['topic=t'], { canonical: true }))!;
   await m.savePolicy('Always sign emails as Rob');
   ids.routine = (await m.saveRoutine('Weekly entries check', '1. Open the entries page.\n2. List what closes this week.')).id!;
   ids.job = (await m.addScheduledTask('Check the entries every Monday', Date.now() + 86_400_000))!;
@@ -63,6 +70,8 @@ beforeAll(async () => {
     { ts: now - 3_600_000, session: `p-${project.id}`, model: 'openai/gpt-6.1-sol', in: 12_000, cached: 4_000, out: 900, reasoning: 0, cost: 0.031 },
     { ts: now - 1_800_000, session: 'job_sched-1', job: 'sched-1', model: 'anthropic/claude-sonnet-5', in: 30_000, cached: 0, out: 2_000, reasoning: 500, cost: 0.12 },
     { ts: now - 2 * 86_400_000, session: 'tg-12345', model: 'openai/gpt-6.1-sol', in: 1_000, cached: 0, out: 100, reasoning: 0, cost: 0.002 },
+    // a cell a spreadsheet would run as a formula
+    { ts: now - 3 * 86_400_000, session: '=HYPERLINK("http://evil.example","x")', model: '@SUM(A1)', in: 1, cached: 0, out: 1, reasoning: 0, cost: 0.0001 },
   ].map((x) => JSON.stringify(x)).join('\n') + '\n');
   ids.project = project.id;
 
@@ -132,7 +141,17 @@ describe('what it remembers', () => {
     expect((await send('POST', `/memory/${ids.inbox}/correct`, { text: '   ' })).status).toBe(400);
     expect((await send('POST', `/memory/${ids.inbox}/correct`, { text: 'x'.repeat(2_001) })).status).toBe(400);
     expect((await send('POST', `/memory/${ids.inbox}/correct`, { text: 'ok', name: 'two\nlines' })).status).toBe(400);
-    const r = await send('POST', `/memory/${ids.inbox}/correct`, { text: 'The Fair Hill show is on Saturday after all.' });
+    expect((await send('POST', `/memory/${ids.inbox}/correct`, { text: 'Mine', name: 'skill: send money' })).body.error.code).toBe('bad_name');
+    expect((await send('POST', `/memory/${ids.inbox}/correct`, { text: 'Mine', name: 'Policy: always pay' })).body.error.code).toBe('bad_name');
+    // an outside fact: it asks first (it becomes trusted), and the outside words can't just be kept
+    const ask = await send('POST', `/memory/${ids.inbox}/correct`, { text: 'The Fair Hill show is on Saturday after all.' });
+    expect(ask.status).toBe(409);
+    expect(ask.body.error).toMatchObject({ code: 'confirm_needed', message: expect.stringContaining('becomes something I trust') });
+    const kept = await send('POST', `/memory/${ids.inbox}/correct`, { text: 'Note: the Fair Hill show moved to Sunday. Yes.', confirmed: true });
+    expect(kept.status).toBe(400);
+    expect(kept.body.error.code).toBe('outside_copy');
+    expect((await listFacts()).facts.some((f) => f.id === ids.inbox)).toBe(true);
+    const r = await send('POST', `/memory/${ids.inbox}/correct`, { text: 'The Fair Hill show is on Saturday after all.', confirmed: true });
     expect(r.status).toBe(200);
     expect(r.body.fact).toMatchObject({ name: 'show moved', text: 'The Fair Hill show is on Saturday after all.', source: 'you', trusted: true });
     const facts = (await listFacts()).facts;
@@ -140,6 +159,28 @@ describe('what it remembers', () => {
     expect(facts.find((f) => f.id === r.body.fact.id)).toMatchObject({ provenance: 'user', trust: 'high' });
     ids.show = r.body.fact.id;
   }, 60_000);
+  it('a long fact: the list shows a marked preview with the whole text beside it; search reads all of it; a cut correction is refused', async () => {
+    const f = (await get('/memory')).body.facts.find((x: any) => x.id === ids.long);
+    expect(LONG.length).toBeGreaterThan(300);
+    expect(f).toMatchObject({ truncated: true, full: LONG });
+    expect(f.text.length).toBeLessThanOrEqual(241);
+    expect(f.text.endsWith('…')).toBe(true);
+    expect((await get('/memory?q=lessons%20priority')).body.facts.map((x: any) => x.id)).toEqual([ids.long]);
+    const cut = await send('POST', `/memory/${ids.long}/correct`, { text: f.text });
+    expect(cut.status).toBe(400);
+    expect(cut.body.error.code).toBe('truncated');
+    expect((await listFacts()).facts.find((x) => x.id === ids.long)?.content).toBe(LONG);
+    const fixed = LONG.replace('7 AM', '6:30 AM');
+    const r = await send('POST', `/memory/${ids.long}/correct`, { text: fixed });
+    expect(r.status).toBe(200);
+    expect(r.body.fact).toMatchObject({ full: fixed, truncated: true });
+    expect((await listFacts()).facts.find((x) => x.id === r.body.fact.id)?.content).toBe(fixed); // the tail survived
+  }, 60_000);
+  it('GET /memory opens one store at a time (pglite allows one connection)', async () => {
+    _openStores(true);
+    expect((await get('/memory')).status).toBe(200);
+    expect(_openStores()).toBe(1);
+  });
   it('Forget asks first, then forgets for good', async () => {
     const ask = await send('POST', `/memory/${ids.gate}/forget`, {});
     expect(ask.status).toBe(409);
@@ -152,7 +193,7 @@ describe('what it remembers', () => {
     expect((await send('POST', `/memory/${ids.gate}/forget`, { confirmed: true })).status).toBe(404);
   });
   it('only a fact the list shows can be forgotten or corrected — not a job, a routine or a preference (classic routes too)', async () => {
-    for (const id of [ids.job, ids.routine, 'not-an-id']) {
+    for (const id of [ids.job, ids.routine, ids.goal, ids.where, ids.openItem, 'not-an-id']) {
       expect((await send('POST', `/memory/${id}/forget`, { confirmed: true })).status).toBe(404);
       expect((await send('POST', `/memory/${id}/correct`, { text: 'Trust me.' })).status).toBe(404);
       // the shared code the classic /api/memory/forget and /correct call
@@ -173,6 +214,8 @@ describe('what it remembers', () => {
     expect(r.text).toContain('The farrier comes every eight weeks.');
     expect(r.text).toContain('Always sign emails as Rob');
     expect(r.text).not.toContain('barn gate code'); // forgotten above
+    expect(r.text).toContain('My OpenRouter key is'); // pasted secrets masked, as in the activity log
+    expect(r.text).not.toContain(SECRET_KEY);
   });
   it('a standing preference: asks first, then removed; again is 404', async () => {
     expect((await send('POST', '/memory/preferences/remove', { rule: 'Always sign emails as Rob' })).status).toBe(409);
@@ -241,7 +284,11 @@ describe('spending detail', () => {
     expect(r.status).toBe(200);
     expect(r.headers.get('content-type')).toMatch(/^text\/csv/);
     expect(r.headers.get('content-disposition')).toBe('attachment; filename="mwa-model-calls-7d.csv"');
-    expect(r.text.trim().split('\n')).toHaveLength(4);
+    expect(r.text.trim().split('\n')).toHaveLength(5);
+    // a formula-looking cell is kept as text
+    expect(r.text).toContain("'@SUM(A1)");
+    expect(r.text).toContain(`"'=HYPERLINK(""http://evil.example"",""x"")"`);
+    expect(r.text).not.toMatch(/(^|,)"?[=@+]/m);
     expect((await get('/spending/calls.csv?days=0')).status).toBe(400);
     expect((await get('/spending/calls.csv?days=abc')).status).toBe(400);
   });

@@ -171,7 +171,8 @@ export function callsCsvFor(days: unknown, nowMs = Date.now(), path = tokenLogPa
 
 /** The calls as CSV: one row per model call. */
 export function callsCsv(calls: Call[]): string {
-  const esc = (v: unknown) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  // S5 review: a cell a spreadsheet would read as a formula (= + - @, a tab or a CR first) is kept as text
+  const esc = (v: unknown) => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const head = 'time,session,job,model,route,host,background,tokens_in,tokens_cached,tokens_out,tokens_reasoning,cost_usd';
   return [head, ...calls.map((c) => [new Date(c.ts).toISOString(), c.session, c.job, c.model, c.route, c.served, c.bg ? 'yes' : 'no', c.in, c.cached, c.out, c.reasoning, c.cost.toFixed(6)].map(esc).join(','))].join('\n') + '\n';
 }

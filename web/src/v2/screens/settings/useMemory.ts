@@ -49,6 +49,11 @@ export function countLine(v: Pick<MemoryView, 'total' | 'query'>, shown: number)
   if (v.query) return v.total ? `${v.total} thing${v.total === 1 ? ' matches' : 's match'} “${v.query}”${v.total > shown ? `, the newest ${shown} shown` : ''}.` : `Nothing matches “${v.query}”.`;
   return v.total ? `${v.total} thing${v.total === 1 ? '' : 's'} I’ve learned${v.total > shown ? `, the newest ${shown} shown` : ''}.` : 'Nothing learned yet.';
 }
+/** Shown above an outside fact's correction box: saving it is the person's yes (sent as `confirmed`). */
+export const OUTSIDE_WARNING = 'This came from outside — email, files or the web. What you write here becomes something I trust.';
+/** The most the list loads; past it, search finds older ones. */
+export const MAX_LIST = 500;
+
 export function routineLine(r: MemoryRoutine): string {
   if (r.status === 'active') return 'In use: its steps guide similar tasks.';
   if (r.status === 'retired') return 'Retired: it no longer guides new tasks.';
@@ -167,7 +172,7 @@ export function useMemoryData() {
       }
     };
     return {
-      correct: (f: MemoryFact, text: string) => act((k) => client.correctMemory(f.id, text, { key: k }), (r) => live.current.setData((d) => ({ ...d, facts: d.facts.map((x) => (x.id === f.id && r.fact ? r.fact : x)) })), true),
+      correct: (f: MemoryFact, text: string) => act((k) => client.correctMemory(f.id, text, { key: k, confirmed: !f.trusted }), (r) => live.current.setData((d) => ({ ...d, facts: d.facts.map((x) => (x.id === f.id && r.fact ? r.fact : x)) })), true),
       forget: (f: MemoryFact) => act((k) => client.forgetMemory(f.id, { key: k, confirmed: true }), () => live.current.setData((d) => ({ ...d, facts: d.facts.filter((x) => x.id !== f.id), total: Math.max(0, d.total - 1) })), true),
       removePreference: (rule: string) => act((k) => client.removePreference(rule, { key: k, confirmed: true }), (r) => live.current.setData((d) => ({ ...d, preferences: r.preferences }))),
       promote: (r: MemoryRoutine) => act((k) => client.promoteRoutine(r.id, r.store, { key: k, confirmed: true }), () => void live.current.reload()),
@@ -178,7 +183,7 @@ export function useMemoryData() {
       },
     };
   }, [client, store]);
-  return { ...s, view: s.data, admin: isAdmin(s.me), q, search: setQ, limit, showMore: () => setLimit((n) => Math.min(500, n + 60)), ...actions };
+  return { ...s, view: s.data, admin: isAdmin(s.me), q, search: setQ, limit, showMore: () => setLimit((n) => Math.min(MAX_LIST, n + 60)), ...actions };
 }
 
 export function useActivity() {

@@ -1051,9 +1051,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
         // S5: shared with /api/v1/memory/{id}/correct (the same checks; only a fact the Memory list shows)
-        const o = await correctFact(String(b.id ?? ''), String(b.content ?? ''), b.concept === undefined ? undefined : String(b.concept).replace(/[\r\n]+/g, ' ').slice(0, 80));
+        const o = await correctFact(String(b.id ?? ''), String(b.content ?? ''), b.concept === undefined ? undefined : String(b.concept).replace(/[\r\n]+/g, ' ').slice(0, 80), { confirmed: b.confirmed === true });
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: o.ok, id: o.ok ? o.id : null }));
+        res.end(JSON.stringify(o.ok ? { ok: true, id: o.id } : { ok: false, id: null, code: o.code, message: o.message }));
         return;
       }
       // Onboarding wizard — scan the folders/files the user points at into candidate memories.

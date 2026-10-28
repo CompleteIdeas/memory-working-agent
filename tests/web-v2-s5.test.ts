@@ -55,7 +55,11 @@ describe('S5 fixture mode answers like the server', () => {
     valid('/memory/{id}/forget', 'post', call(s, 'POST', '/memory/mem_1/forget', { confirmed: true }));
     expect(call(s, 'POST', '/memory/mem_1/forget', { confirmed: true }).status).toBe(404);
     expect(call(s, 'POST', '/memory/mem_2/correct', { text: ' ' }).status).toBe(400);
-    const c = valid('/memory/{id}/correct', 'post', call(s, 'POST', '/memory/mem_4/correct', { text: 'Entries close Thursday.' }));
+    // mem_4 came from an email: it asks first, and the outside words can't just be kept
+    expect(call(s, 'POST', '/memory/mem_4/correct', { text: 'Entries close Thursday.' }).status).toBe(409);
+    expect(call(s, 'POST', '/memory/mem_4/correct', { text: 'Entries for the Fair Hill horse trials close Friday at 5 PM. OK', confirmed: true }).status).toBe(400);
+    expect((call(s, 'POST', '/memory/mem_2/correct', { text: 'x', name: 'goal: y' }).body as any).error.code).toBe('bad_name');
+    const c = valid('/memory/{id}/correct', 'post', call(s, 'POST', '/memory/mem_4/correct', { text: 'Entries close Thursday.', confirmed: true }));
     expect(c.body.fact).toMatchObject({ text: 'Entries close Thursday.', source: 'you', trusted: true });
     expect(call(s, 'POST', '/memory/rt_entries_v2/forget', { confirmed: true }).status).toBe(404); // a routine is not a fact
     const rule = get(s, '/memory').body.preferences[0];
@@ -65,6 +69,17 @@ describe('S5 fixture mode answers like the server', () => {
     const p = valid('/memory/routines/{id}/promote', 'post', call(s, 'POST', '/memory/routines/rt_entries_v2/promote', { confirmed: true, store: 'mwa-serve' }));
     expect(p.body.routine.status).toBe('active');
     expect(valid('/memory/routines/{id}/retire', 'post', call(s, 'POST', '/memory/routines/rt_entries_v2/retire', { store: 'mwa-serve' })).body.routine.status).toBe('retired');
+  });
+  it('a long fact: a marked preview with the whole text; a correction made from the preview is refused', () => {
+    const s = new FixtureServer('N00');
+    const long = get(s, '/memory').body.facts.find((f: any) => f.name === 'Barn rules');
+    expect(long).toMatchObject({ truncated: true });
+    expect(long.full.length).toBeGreaterThan(240);
+    expect(long.text.endsWith('…')).toBe(true);
+    expect(get(s, '/memory?q=lessons%20priority').body.facts.map((f: any) => f.name)).toEqual(['Barn rules']);
+    expect((call(s, 'POST', `/memory/${long.id}/correct`, { text: long.text }).body as any).error.code).toBe('truncated');
+    const ok = valid('/memory/{id}/correct', 'post', call(s, 'POST', `/memory/${long.id}/correct`, { text: long.full.replace('7 AM', '6:30 AM') }));
+    expect(ok.body.fact.full).toContain('lessons have priority');
   });
   it('a paired phone reads but cannot change memory or download either file', () => {
     const s = new FixtureServer('phone');

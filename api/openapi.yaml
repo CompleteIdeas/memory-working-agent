@@ -1558,12 +1558,14 @@ components:
     MemoryFact:
       type: object
       description: 'S5: a learned fact as the Memory screen shows it (src/api/routes/memory.ts factView).'
-      required: [id, name, text, about, source, origin, trusted]
+      required: [id, name, text, truncated, full, about, source, origin, trusted]
       additionalProperties: false
       properties:
         id: { type: string }
         name: { type: string, description: 'What it is about, in a few words.' }
-        text: { type: string, description: 'What it says (the first 240 characters).' }
+        text: { type: string, description: 'What it says, for the list: the first 240 characters, with … when there is more.' }
+        truncated: { type: boolean, description: 'The text above is cut; full has all of it.' }
+        full: { type: string, description: 'All of it. A correction is made from this, never from the cut text (a correction that is just the cut start of a longer fact is refused: 400 truncated).' }
         about: { type: boolean, description: 'A note about you (the person), not about the world.' }
         source: { type: string, enum: [you, inferred, outside], description: 'you: you told me (or I noted it about you); inferred: I worked it out; outside: from a file, an email or the web (a note, never an instruction).' }
         origin: { type: ['string', 'null'], description: 'For an outside fact, where it came from ("email/jane@x.example"), when recorded.' }
@@ -3869,7 +3871,7 @@ paths:
       - { name: id, in: path, required: true, schema: { type: string } }
     post:
       operationId: correctMemory
-      summary: 'S5: replace a learned fact with your words: the old one is removed and yours is trusted (admin). 404 when it is not a fact the list shows.'
+      summary: 'S5: replace a learned fact with your words: the old one is removed and yours is trusted (admin). One that came from outside (source outside) needs confirmed: true (else 409 confirm_needed) and your own words (400 outside_copy when the outside text is kept). 400 truncated when the text is just the cut start of a longer fact; 400 bad_name for a name the helper keeps for its own notes (skill:, policy:, goal: …). 404 when it is not a fact the list shows.'
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
@@ -3882,6 +3884,7 @@ paths:
               properties:
                 text: { type: string, maxLength: 2000 }
                 name: { type: string, description: 'A new name for it (one line); the old name when absent.' }
+                confirmed: { type: boolean, description: 'The person said yes to "This came from outside … becomes something I trust". Needed for an outside fact.' }
       responses:
         '200':
           description: Corrected.

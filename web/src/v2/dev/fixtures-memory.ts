@@ -13,7 +13,13 @@ const err = (status: number, code: string, message: string): Resp => ({ status, 
 const MINUTE = 60_000, HOUR = 3_600_000, DAY = 86_400_000;
 const AGENT = 'mwa-serve';
 
-const FACTS: Omit<MemoryFact, 'id'>[] = [
+/** A fact as the server keeps it (the whole text); the list's preview is made from it as factView does. */
+type Kept = Omit<MemoryFact, 'id' | 'text' | 'truncated' | 'full'> & { id?: string; text: string };
+const PREVIEW = 240;
+const view = (f: Kept & { id: string }): MemoryFact => ({ ...f, text: f.text.length > PREVIEW ? `${f.text.slice(0, PREVIEW).trimEnd()}…` : f.text, truncated: f.text.length > PREVIEW, full: f.text });
+const flat = (t: string) => t.toLowerCase().replace(/[\s….]+/g, ' ').trim();
+const RESERVED = /^\s*(agent run|agent step|session|scheduled|skills?|question|lessons?|polic(?:y|ies)|action|routine|goal|where we are|open item|learned facts|event|id|person [^:]+)\s*:/i;
+const FACTS: Kept[] = [
   { name: 'Juniper’s farrier', text: 'Dan Ortiz shoes Juniper every six weeks, Tuesday mornings. Next visit Nov 17.', about: false, source: 'you', origin: null, trusted: true },
   { name: 'Your name and role', text: 'Robert, eventing rider and dad of two; runs the barn’s entries.', about: true, source: 'you', origin: null, trusted: true },
   { name: 'School pickup', text: 'Pickup is at 3:15 on weekdays, 12:30 on early-release Wednesdays.', about: false, source: 'you', origin: null, trusted: true },
@@ -22,6 +28,7 @@ const FACTS: Omit<MemoryFact, 'id'>[] = [
   { name: 'Barn newsletter', text: 'The stable’s newsletter comes the first Monday of each month.', about: false, source: 'inferred', origin: null, trusted: true },
   { name: 'School pickup', text: 'Pickup is at 3:00 on weekdays.', about: false, source: 'inferred', origin: null, trusted: true },
   { name: 'AI news picks', text: 'You like two-line blurbs and links, no more than five stories.', about: false, source: 'inferred', origin: null, trusted: true },
+  { name: 'Barn rules', text: 'Turnout is 7 AM to 4 PM in good weather; horses come in early if it storms. Blankets go on below 40°F at night and come off by 9 AM. Hay is fed three times a day, grain twice. Clean your stall’s water bucket daily and sign the board when you ride. The arena is closed for dragging on Mondays from noon to 2 PM, and lessons have priority on weekday evenings.', about: false, source: 'you', origin: null, trusted: true },
   { name: 'Dentist appointment', text: 'Dr. Patel’s office moved the cleaning to Thursday at 4.', about: false, source: 'outside', origin: 'email/frontdesk@patel-dental.example', trusted: false },
 ];
 const PREFERENCES = ['Always sign emails as Rob.', 'Never book anything on a Sunday morning.', 'Keep summaries under five bullet points.'];
@@ -32,7 +39,7 @@ const ROUTINES: MemoryRoutine[] = [
 ];
 
 export class MemoryFixtures {
-  facts: MemoryFact[];
+  facts: (Kept & { id: string })[];
   preferences: string[];
   routines: MemoryRoutine[];
   runs: ActivityRun[];
@@ -58,7 +65,7 @@ export class MemoryFixtures {
     if (!Number.isInteger(limit) || limit < 1 || limit > 500) return err(400, 'bad_limit', '`limit` is a whole number from 1 to 500.');
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
     const hits = words.length ? this.facts.filter((f) => words.every((w) => `${f.name} ${f.text}`.toLowerCase().includes(w))) : this.facts;
-    return { status: 200, body: { facts: hits.slice(0, limit), total: hits.length, query, preferences: this.preferences, routines: this.routines } };
+    return { status: 200, body: { facts: hits.slice(0, limit).map(view), total: hits.length, query, preferences: this.preferences, routines: this.routines } };
   }
 
   private detail(): SpendingDetail {
@@ -159,13 +166,20 @@ export class MemoryFixtures {
       const text = typeof b.text === 'string' ? b.text.trim() : '';
       if (!text) return err(400, 'bad_text', 'Type what it should say.');
       if (text.length > 2_000) return err(400, 'bad_text', 'That’s too long. Keep it under 2,000 characters.');
+      if (b.name !== undefined && (typeof b.name !== 'string' || /[\r\n]/.test(b.name))) return err(400, 'bad_name', 'The name is one line of text.');
+      if (typeof b.name === 'string' && RESERVED.test(b.name)) return err(400, 'bad_name', 'That name is one I use for my own notes (skills, preferences, jobs and so on). Pick another.');
       const i = this.facts.findIndex((x) => x.id === id);
       if (i < 0) return err(404, 'not_found', 'That memory isn’t there any more, or it isn’t one you can correct here.');
       const old = this.facts[i];
-      const fact: MemoryFact = { ...old, id: `mem_c${++this.n}`, name: typeof b.name === 'string' && b.name.trim() ? b.name.trim() : old.name, text, source: 'you', origin: null, trusted: true };
+      if (old.text.length > PREVIEW && flat(text) === flat(old.text.slice(0, PREVIEW))) return err(400, 'truncated', 'That’s only the start of this memory. Open it again to correct the whole text, or the rest would be lost.');
+      if (!old.trusted) {
+        if (flat(text).includes(flat(old.text))) return err(400, 'outside_copy', 'This came from outside, so write it in your own words: keeping the outside text would make it something I trust.');
+        if (b.confirmed !== true) return err(409, 'confirm_needed', 'This came from outside: email, files or the web. What you write here becomes something I trust. Send confirmed: true to go ahead.');
+      }
+      const kept = { ...old, id: `mem_c${++this.n}`, name: typeof b.name === 'string' && b.name.trim() ? b.name.trim() : old.name, text, source: 'you' as const, origin: null, trusted: true };
       // the correction is the newest memory now
-      this.facts = [fact, ...this.facts.filter((x) => x !== old)];
-      return { status: 200, body: { fact, message: 'Corrected. I’ll use what you wrote from now on.' } };
+      this.facts = [kept, ...this.facts.filter((x) => x !== old)];
+      return { status: 200, body: { fact: view(kept), message: 'Corrected. I’ll use what you wrote from now on.' } };
     }
     return null;
   }

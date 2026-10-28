@@ -122,13 +122,25 @@ try {
       await main.getByRole('button', { name: 'Clear' }).click();
       check(`${L}: cleared, everything is back`, await visible(main.getByText('Gutter quote')));
 
-      // correct a fact
+      // a long fact: a preview, all of it on request, and Correct starts from all of it
+      const rules = main.getByRole('group', { name: 'Barn rules' });
+      check(`${L}: a long fact shows a cut preview`, await visible(rules.getByText(/^Turnout is 7 AM[^…]*…$/)));
+      await rules.getByRole('button', { name: 'Show all of it' }).click();
+      check(`${L}: …and all of it on request`, await visible(rules.getByText(/lessons have priority on weekday evenings\.$/)));
+      await rules.getByRole('button', { name: 'Correct: Barn rules' }).click();
+      const longEdit = rules.getByLabel('What it should say');
+      check(`${L}: Correct starts from the whole text`, (await longEdit.inputValue()).endsWith('lessons have priority on weekday evenings.'));
+      check(`${L}: a counter says how much fits`, await visible(rules.getByText(/^\d{3} of 2,000 characters$/)));
+      await rules.getByRole('button', { name: 'Cancel' }).click();
+
+      // correct a fact that came from an email: it starts empty, shows the outside words, and says it becomes trusted
       await main.getByRole('button', { name: 'Correct: Fair Hill entries' }).click();
-      const edit = main.getByLabel('What it should say');
-      check(`${L}: the correction field opens with the text`, (await edit.inputValue()) === 'Entries for the Fair Hill horse trials close Friday at 5 PM.');
+      const edit = main.getByLabel('What it should say, in your words');
+      check(`${L}: an outside fact's correction starts empty`, (await edit.inputValue()) === '');
+      check(`${L}: …with its words shown and the warning`, await visible(main.getByText('What it says now:')) && await visible(main.getByText('This came from outside — email, files or the web. What you write here becomes something I trust.')));
       await axe(page, `${L} correcting`);
       await edit.fill('Fair Hill entries close Thursday at noon this year.');
-      await main.getByRole('button', { name: 'Save correction' }).click();
+      await main.getByRole('button', { name: 'Save, and trust it' }).click();
       check(`${L}: corrected, a toast says so`, await visible(page.locator('#toasts').getByText('Corrected. I’ll use what you wrote from now on.')));
       check(`${L}: the new words are shown, as yours`, await visible(section(main, /^You told me/).getByText('Fair Hill entries close Thursday at noon this year.')));
 

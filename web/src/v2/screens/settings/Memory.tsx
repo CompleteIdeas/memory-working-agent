@@ -11,7 +11,7 @@ import { Back } from '../../shell/icons';
 import type { ScreenProps } from '../../shell/screens';
 import type { MemoryFact, MemoryRoutine } from '../../api/client';
 import { Note, Section, said, type Said } from './Settings';
-import { ageMarks, countLine, groupFacts, routineLine, sourceLabel, useMemoryData } from './useMemory';
+import { MAX_LIST, OUTSIDE_WARNING, ageMarks, countLine, groupFacts, routineLine, sourceLabel, useMemoryData } from './useMemory';
 import './settings.css';
 
 type Data = ReturnType<typeof useMemoryData>;
@@ -45,7 +45,9 @@ export function Memory({ go }: ScreenProps) {
           </form>
           <p className="soft memcount" role="status">{data.loading ? 'Looking…' : countLine(v, v.facts.length)}</p>
           <Facts data={data} />
-          {v.total > v.facts.length && <div className="acts"><button type="button" className="vbtn" onClick={data.showMore}>Show more</button></div>}
+          {v.total > v.facts.length && (data.limit < MAX_LIST
+            ? <div className="acts"><button type="button" className="vbtn" onClick={data.showMore}>Show more</button></div>
+            : <p className="soft">These are the newest {MAX_LIST}. Search to find older ones.</p>)}
           {!data.q && <Preferences data={data} />}
           {!data.q && v.routines.length > 0 && <Routines data={data} />}
           {data.admin && <ExportCard data={data} />}
@@ -82,13 +84,16 @@ function Facts({ data }: { data: Data }) {
 
 function Fact({ f, data, age }: { f: MemoryFact; data: Data; age?: 'newest' | 'older' }) {
   const [mode, setMode] = useState<'view' | 'edit' | 'confirm'>('view');
-  const [draft, setDraft] = useState(f.text);
+  // an outside fact starts empty (its words are shown read-only): what is typed becomes trusted
+  const start = () => (f.trusted ? f.full : '');
+  const [draft, setDraft] = useState(start);
+  const [all, setAll] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Said>(null);
   const tid = `fact-${f.id}`;
   const save = async (e: FormEvent) => {
     e.preventDefault();
-    if (!draft.trim() || draft.trim() === f.text) { setMode('view'); return; }
+    if (!draft.trim() || draft.trim() === f.full) { setMode('view'); return; }
     setBusy(true); setNote(null);
     const o = await data.correct(f, draft.trim());
     setBusy(false);
@@ -99,15 +104,27 @@ function Fact({ f, data, age }: { f: MemoryFact; data: Data; age?: 'newest' | 'o
       <span className="rowtitle" id={tid}>{f.name}{age && <span className={`agechip${age === 'older' ? ' older' : ''}`}>{age === 'older' ? 'older, may be out of date' : 'newest'}</span>}</span>
       {mode === 'edit' ? (
         <form className="memedit" onSubmit={save}>
-          <label htmlFor={`${tid}-edit`}>What it should say</label>
-          <textarea id={`${tid}-edit`} className="setinput memtext" rows={3} maxLength={2000} value={draft} onChange={(e) => setDraft(e.target.value)} autoFocus />
+          {!f.trusted && (
+            <>
+              <span className="s">What it says now:</span>
+              <span className="s memorig">{f.full}</span>
+              <span className="s warnline" id={`${tid}-warn`}>{OUTSIDE_WARNING}</span>
+            </>
+          )}
+          <label htmlFor={`${tid}-edit`}>{f.trusted ? 'What it should say' : 'What it should say, in your words'}</label>
+          <textarea id={`${tid}-edit`} className="setinput memtext" rows={f.full.length > 240 ? 6 : 3} maxLength={2000} value={draft} onChange={(e) => setDraft(e.target.value)}
+            aria-describedby={`${tid}-count${f.trusted ? '' : ` ${tid}-warn`}`} autoFocus />
+          <span className="s" id={`${tid}-count`}>{draft.length.toLocaleString('en-US')} of 2,000 characters</span>
           <span className="acts">
-            <button type="submit" className="vbtn vbtn-primary" disabled={busy}>Save correction</button>
-            <button type="button" className="vbtn vbtn-quiet" disabled={busy} onClick={() => { setMode('view'); setDraft(f.text); }}>Cancel</button>
+            <button type="submit" className="vbtn vbtn-primary" disabled={busy}>{f.trusted ? 'Save correction' : 'Save, and trust it'}</button>
+            <button type="button" className="vbtn vbtn-quiet" disabled={busy} onClick={() => { setMode('view'); setDraft(start()); }}>Cancel</button>
           </span>
         </form>
       ) : (
-        <span className="s memtextline">{f.text}</span>
+        <>
+          <span className="s memtextline">{all ? f.full : f.text}</span>
+          {f.truncated && <button type="button" className="linkish morebtn" aria-expanded={all} onClick={() => setAll((x) => !x)}>{all ? 'Show less' : 'Show all of it'}</button>}
+        </>
       )}
       <span className="s memsrc">{sourceLabel(f)}</span>
       {mode === 'confirm' && (
@@ -122,7 +139,7 @@ function Fact({ f, data, age }: { f: MemoryFact; data: Data; age?: 'newest' | 'o
             </>
           ) : (
             <>
-              <button type="button" className="vbtn" aria-label={`Correct: ${f.name}`} onClick={() => { setDraft(f.text); setNote(null); setMode('edit'); }}>Correct</button>
+              <button type="button" className="vbtn" aria-label={`Correct: ${f.name}`} onClick={() => { setDraft(start()); setNote(null); setMode('edit'); }}>Correct</button>
               <button type="button" className="vbtn vbtn-quiet" aria-label={`Forget: ${f.name}`} onClick={() => { setNote(null); setMode('confirm'); }}>Forget</button>
             </>
           )}

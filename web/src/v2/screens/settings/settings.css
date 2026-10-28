@@ -162,3 +162,5 @@ select.setinput { appearance: auto; }
 .daytable th, .daytable td { text-align: left; padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line); }
 .daytable td { text-align: right; }
 .daytable thead th:not(:first-child) { text-align: right; }
+.memorig { padding: 8px 10px; border-radius: 8px; background: var(--card-2); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
+.morebtn { align-self: flex-start; }

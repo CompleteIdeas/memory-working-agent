@@ -1186,8 +1186,9 @@ export class MwaMemory implements Memory {
 
   /** Recent memories (newest-first), for the UI "Memory" view — makes the substrate
    *  tangible. Filters out internal bookkeeping engrams (run outcomes, session/sleep
-   *  summaries, scheduled tasks) so the user sees only genuine learned facts. */
-  async recentMemories(limit = 40): Promise<{ id: string; concept: string; content: string; trust: TrustTier; provenance: string; origin?: string }[]> {
+   *  summaries, scheduled tasks) so the user sees only genuine learned facts. `full` (S5): the whole text, as a
+   *  correction must be made from it; otherwise the first 240 characters. */
+  async recentMemories(limit = 40, full = false): Promise<{ id: string; concept: string; content: string; trust: TrustTier; provenance: string; origin?: string }[]> {
     try {
       await this.init();
       const all: any[] = (await this.store.getEngramsByAgent(this.agentId)) ?? [];
@@ -1199,7 +1200,7 @@ export class MwaMemory implements Memory {
         // F1 Glass Box: surface where each fact came from + how much it's trusted. Legacy engrams
         // written before the spine have no src= tag → 'unknown' (honest), and trustOf fails them
         // closed to 'untrusted' — so the two labels agree instead of contradicting.
-        return { id: e.id, concept: e.concept ?? '', content: String(e.content ?? '').slice(0, 240), trust: this.trustOf(e), provenance: get('src=') ?? 'unknown', origin: get('origin=') };
+        return { id: e.id, concept: e.concept ?? '', content: full ? String(e.content ?? '') : String(e.content ?? '').slice(0, 240), trust: this.trustOf(e), provenance: get('src=') ?? 'unknown', origin: get('origin=') };
       });
     } catch { return []; }
   }

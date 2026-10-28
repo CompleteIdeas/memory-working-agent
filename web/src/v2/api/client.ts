@@ -444,7 +444,10 @@ export class MwaClient {
   deny(id: string, note?: string, o: { key?: string } = {}) { return this.post<ApprovalDecision>('/approvals/{id}/deny', { path: { id }, body: note ? { note } : {}, key: o.key }); }
   // ---- S5: what your helper remembers, and what it has been doing ----
   getMemory(q: { q?: string; limit?: number } = {}) { return this.get<MemoryView>('/memory', { query: q }); }
-  correctMemory(id: string, text: string, o: { key?: string; name?: string } = {}) { return this.post<MemoryCorrected>('/memory/{id}/correct', { path: { id }, body: o.name ? { text, name: o.name } : { text }, key: o.key }); }
+  /** `confirmed`: for a fact that came from outside, the person said yes to "what you write becomes something I trust" */
+  correctMemory(id: string, text: string, o: { key?: string; name?: string; confirmed?: boolean } = {}) {
+    return this.post<MemoryCorrected>('/memory/{id}/correct', { path: { id }, body: { text, ...(o.name ? { name: o.name } : {}), ...(o.confirmed ? { confirmed: true } : {}) }, key: o.key });
+  }
   /** `confirmed`: the person said yes to "Forget this for good?" (without it: 409 confirm_needed, nothing changes) */
   forgetMemory(id: string, o: { key?: string; confirmed?: boolean } = {}) { return this.post<MemoryForgotten>('/memory/{id}/forget', { path: { id }, body: o.confirmed ? { confirmed: true } : {}, key: o.key }); }
   /** everything as Markdown (admin) */

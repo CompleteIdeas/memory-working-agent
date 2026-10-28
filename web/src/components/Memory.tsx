@@ -20,19 +20,28 @@ function badge(m: MemoryItem): { text: string; cls: string } {
   return { text: 'my inference', cls: 'text-dim border-edge' };
 }
 
+const PREVIEW = 240;
+const OUTSIDE_WARNING = 'This came from outside — email, files or the web. What you write here becomes something I trust.';
+
 function Fact({ m, onChanged, age }: { m: MemoryItem; onChanged: () => void; age?: 'newest' | 'older' }) {
+  // S5 review: the list holds the whole text (a correction starts from all of it, never a cut preview), and a fact
+  // from outside starts empty with its words shown read-only: what is typed becomes trusted
+  const outside = m.trust === 'untrusted';
+  const start = () => (outside ? '' : m.content);
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(m.content);
+  const [draft, setDraft] = useState(start);
+  const [all, setAll] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const b = badge(m);
+  const long = m.content.length > PREVIEW;
 
   async function save() {
     if (!draft.trim() || draft.trim() === m.content) { setEditing(false); return; }
     setBusy(true); setErr('');
-    const r = await correctMemory(m.id, m.concept, draft.trim());
+    const r = await correctMemory(m.id, m.concept, draft.trim(), outside);
     setBusy(false);
-    if (r.ok) { setEditing(false); onChanged(); } else { setErr("Couldn't save that correction. Please try again."); }
+    if (r.ok) { setEditing(false); onChanged(); } else { setErr(r.message || "Couldn't save that correction. Please try again."); }
   }
   async function forget() {
     if (!window.confirm(`Forget this permanently?\n\n${m.concept}`)) return;
@@ -50,18 +59,28 @@ function Fact({ m, onChanged, age }: { m: MemoryItem; onChanged: () => void; age
       </div>
       {editing ? (
         <div className="mt-1.5">
-          <textarea aria-label={`Correct: ${m.concept}`} value={draft} onChange={(e) => setDraft(e.target.value)} rows={3}
-            className="w-full rounded-[4px] border border-edge bg-surface px-3 py-2 text-[14px] resize-y" />
+          {outside && (
+            <>
+              <div className="text-[13px] text-dim">What it says now:</div>
+              <div className="text-[14px] leading-snug break-words whitespace-pre-wrap rounded-[4px] border border-line px-3 py-2 mt-0.5">{m.content}</div>
+              <p className="text-[13px] text-signal mt-1" id={`warn-${m.id}`}>{OUTSIDE_WARNING}</p>
+            </>
+          )}
+          <textarea aria-label={`Correct: ${m.concept}`} value={draft} onChange={(e) => setDraft(e.target.value)} rows={long ? 6 : 3} maxLength={2000}
+            aria-describedby={`count-${m.id}${outside ? ` warn-${m.id}` : ''}`}
+            className="w-full rounded-[4px] border border-edge bg-surface px-3 py-2 text-[14px] resize-y mt-1" />
+          <div className={`text-[12px] ${draft.length >= 2000 ? 'text-signal' : 'text-dim'}`} id={`count-${m.id}`}>{draft.length.toLocaleString()} of 2,000 characters{draft.length >= 2000 ? ' — that’s the most a correction can hold' : ''}</div>
           <div className="flex gap-2 mt-1.5">
-            <button disabled={busy} onClick={save} className="btn small primary">Save correction</button>
-            <button disabled={busy} onClick={() => { setEditing(false); setDraft(m.content); setErr(''); }} className="btn small">Cancel</button>
+            <button disabled={busy} onClick={save} className="btn small primary">{outside ? 'Save, and trust it' : 'Save correction'}</button>
+            <button disabled={busy} onClick={() => { setEditing(false); setDraft(start()); setErr(''); }} className="btn small">Cancel</button>
           </div>
         </div>
       ) : (
         <>
-          <div className="text-dim text-[14px] leading-snug break-words">{m.content}</div>
+          <div className="text-dim text-[14px] leading-snug break-words whitespace-pre-wrap">{long && !all ? `${m.content.slice(0, PREVIEW).trimEnd()}…` : m.content}</div>
+          {long && <button className="linkbtn text-[13px]" aria-expanded={all} onClick={() => setAll((x) => !x)}>{all ? 'Show less' : 'Show all of it'}</button>}
           <div className="flex gap-2 mt-1.5">
-            <button onClick={() => { setDraft(m.content); setErr(''); setEditing(true); }} className="btn small" aria-label={`Correct: ${m.concept}`}>Correct</button>
+            <button onClick={() => { setDraft(start()); setErr(''); setEditing(true); }} className="btn small" aria-label={`Correct: ${m.concept}`}>Correct</button>
             <button disabled={busy} onClick={forget} className="btn small" aria-label={`Forget: ${m.concept}`}>Forget</button>
           </div>
         </>

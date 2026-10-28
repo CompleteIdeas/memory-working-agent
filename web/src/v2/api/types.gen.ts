@@ -1903,7 +1903,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** S5: replace a learned fact with your words: the old one is removed and yours is trusted (admin). 404 when it is not a fact the list shows. */
+        /** S5: replace a learned fact with your words: the old one is removed and yours is trusted (admin). One that came from outside (source outside) needs confirmed: true (else 409 confirm_needed) and your own words (400 outside_copy when the outside text is kept). 400 truncated when the text is just the cut start of a longer fact; 400 bad_name for a name the helper keeps for its own notes (skill:, policy:, goal: …). 404 when it is not a fact the list shows. */
         post: operations["correctMemory"];
         delete?: never;
         options?: never;
@@ -3492,8 +3492,12 @@ export interface components {
             id: string;
             /** @description What it is about, in a few words. */
             name: string;
-            /** @description What it says (the first 240 characters). */
+            /** @description What it says, for the list: the first 240 characters, with … when there is more. */
             text: string;
+            /** @description The text above is cut; full has all of it. */
+            truncated: boolean;
+            /** @description All of it. A correction is made from this, never from the cut text (a correction that is just the cut start of a longer fact is refused: 400 truncated). */
+            full: string;
             /** @description A note about you (the person), not about the world. */
             about: boolean;
             /**
@@ -6944,6 +6948,8 @@ export interface operations {
                     text: string;
                     /** @description A new name for it (one line); the old name when absent. */
                     name?: string;
+                    /** @description The person said yes to "This came from outside … becomes something I trust". Needed for an outside fact. */
+                    confirmed?: boolean;
                 };
             };
         };
