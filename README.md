@@ -67,6 +67,12 @@ What AWM brings that a vector database or a notes file does not: retrieval tuned
 worth keeping, `supersede` when a fact changes so the old value stops coming back, consolidation that matures the
 store over time, scoping so projects don't bleed into each other, and provenance on every memory.
 
+**It does this on cheap models.** Background work (scheduled jobs, hand-offs, thinking time) runs on GPT-6 Luna,
+about a twentieth of the price of GPT-6.1 Sol. Chats run on Sol, which is mid-priced, not a frontier model. AWM has no
+language model inside, so remembering costs nothing per recall. Measured: Luna wrote morning briefs and watches
+27 of 28 right at about half a cent each, against Sol's 26 of 28 at 11 cents. A week of real hosted use cost about
+20 cents a run. Details and caveats are in [docs/why-mwa.md](docs/why-mwa.md#what-it-costs-and-on-which-models).
+
 **The honest scorecard, in short** (full table with sources and limits in [docs/why-mwa.md](docs/why-mwa.md)):
 
 | Area | Measured | Still weak |

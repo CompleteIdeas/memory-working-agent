@@ -83,6 +83,46 @@ This is why memory is the basis rather than a feature: the same store holds what
 been asked to do, what it did, and how far each piece of it can be trusted. The approval rules, the
 injection defence, the "What I did" account and the per-person behaviour all read from it.
 
+## What it costs, and on which models
+
+None of the results on this page come from an expensive frontier model. MWA is built to do its work on cheap ones,
+and memory is a large part of why that works.
+
+- **Background work runs on GPT-6 Luna.** Scheduled jobs, "work on it" hand-offs and thinking time go to
+  `MWA_BACKGROUND_MODEL`; the hosted instance sets it to `openrouter:openai/gpt-6-luna`. Luna listed at $0.10 / $0.50
+  per million tokens in and out on OpenRouter (2026-10-23), and MWA asks for OpenAI's flex tier for background calls
+  (`MWA_OPENROUTER_FLEX=background`, half that price). That is about a twentieth of GPT-6.1 Sol ($2 / $10).
+- **Chats run on GPT-6.1 Sol**, a mid-priced model, because a person is waiting and it held 0 of 32 planted
+  instructions (`docs/models.md`). `MWA_MODEL` changes it.
+- **AWM itself costs nothing per recall.** It has no language model inside: embeddings and the reranker run locally
+  in process. Every recall, write, supersede and consolidation is free of API cost, so remembering more does not
+  make each run dearer. A scoped recall puts about 630 tokens in front of the model instead of the whole history
+  (`results/RESULTS-V2.md`).
+
+What that buys, measured:
+
+| Work | On the cheap model | On the dearer model | Source |
+|---|---|---|---|
+| Morning briefs and change-only watches, 14 scenarios × 2, with MWA's checks on | Luna 27 of 28 at about $0.0045 a brief (DeepSeek V4.1 Flash the same) | Sol 26 of 28 at $0.108 a brief | `docs/configuration.md` (`MWA_BACKGROUND_MODEL`), `docs/build-queue.md` BL-73, 2026-10-23 |
+| Questions about a project's own history | Luna with studied memory 39 of 54 at $0.0075 an answer | Sol reading the files 46 of 54 at $0.658 an answer (88 times the cost) | `docs/experience-pilot-2026-10-23.md` |
+| Three research jobs (a newsletter, a product comparison, a guide) | Luna $0.14 for all three, every file written | Sol $2.08 to $2.62 | `src/provider.ts` (`backgroundCalls` note), 2026-10-23 |
+| Two weeks of a simulated assistant | gpt-5.4-mini, $0.155 a person-day | — | `docs/assessment-2026-10-19.md` |
+| A week of real use on the hosted instance (chat on Sol) | — | 55 runs for $11.01, about 20 cents a run | `docs/reviews/production-review-2026-10-27.md` |
+
+The pragmatic side:
+
+- **A cheap model needs the harness.** Luna's first long run of scheduled jobs (2026-10-23) went badly: wrong
+  reminder times, "no change" messages from change-only watches, briefs that gave up. Luna was not the cause. The
+  checks added in BL-73 were the fix: a calendar listing alongside email that moves an event, a gate on watch
+  messages, and an open-items list. With them, Luna scored 27 of 28. Without them, use a better model.
+- **Cheap is not free on long tasks.** A run that reads a lot (a 73-page rulebook, a full inbox) still costs tens of
+  cents to a dollar. Every run has a step and dollar budget, and Settings shows the month's spend and a budget that
+  holds scheduled jobs at 100%.
+- **The cheap model is weaker at judgement.** In the pilot it trailed on joining several facts (4 of 9 against 8)
+  and on judging a proposal. MWA keeps the dearer model where a person is waiting, and `MWA_BACKGROUND_BOSS=on`
+  adds Sol as a checker over Luna's background work. In the bake-off the checker added at most one point, at about
+  16 times the cost.
+
 ## The scorecard
 
 Realistic: real numbers, with the date and version they come from. Positive: where MWA and AWM do well, said
@@ -117,8 +157,9 @@ plainly. Pragmatic: what is still weak or not measured yet. Small samples are ca
 - **The harness is the weak part, not the memory.** The assessment's misses were turning a request into the right
   job, watches without state and corrections that did not reach the jobs they were about. Several were fixed
   afterwards and checked by replay; a full rerun is still owed.
-- **It costs more than a bare loop.** Cents a day, but more than ten times a plain model with cron. The new app adds
-  limits and estimates so you see that cost before it is spent.
+- **It runs on cheap models.** Background work on GPT-6 Luna costs fractions of a cent a brief, and AWM adds no
+  API cost of its own. It still costs more than a bare loop with cron (14 times, in the assessment), because it
+  reads and checks more; the new app shows limits and estimates before that is spent.
 - **0.10.0 is mostly an interface and safety release.** Its security work was reviewed slice by slice, but how it
   does for a real person over weeks on a phone has not been measured yet.
 
