@@ -101,7 +101,8 @@ select.setinput { appearance: auto; }
 .pluglist { margin: 2px 0 6px 20px; padding: 0; list-style: disc; }
 .plugtrust { display: flex; align-items: center; gap: 8px; min-height: 44px; font-weight: 600; }
 .plugtrust input { width: 20px; height: 20px; flex: none; }
-.plugentry { width: 100%; text-align: left; background: none; border: 0; color: inherit; font: inherit; padding: 0; display: flex; align-items: center; gap: 12px; min-height: 56px; }
+.plugentry { width: 100%; text-align: left; background: none; border: 0; color: inherit; font: inherit; padding: 12px 0; display: flex; align-items: center; gap: 12px; min-height: 56px; }
+.plugentry + .plugentry { border-top: 1px solid var(--line); } /* rows in one card (Memory and activity) read as separate rows */
 .plugentry .grow { flex: 1; min-width: 0; }
 .plugentry .rowtitle { display: block; font-weight: 600; overflow-wrap: anywhere; }
 .plugentry .s { display: block; color: var(--dim); font-size: 15px; overflow-wrap: anywhere; }

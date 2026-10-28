@@ -47,6 +47,9 @@ const scrub = (s) => s
   .replace(/dana\.lee\.news@gmail\.com/g, 'dana.lee@example.com')
   .replace(/resolve-team@protonmail\.com/g, 'resolve-team@mail.example')
   .replace(/robert@gmail\.com/g, 'alex@example.com')
+  // a fictional brand for the phishing example (no real company's name in the pictures)
+  .replace(/paypa1-security/g, 'paywi5e-security')
+  .replace(/PayPal/g, 'Paywise')
   .replace(/Robert/g, 'Alex')
   .replace(/robert/g, 'alex');
 
@@ -74,6 +77,8 @@ const visible = (loc, ms = 10_000) => loc.first().waitFor({ state: 'visible', ti
 const made = [];
 async function shot(page, name) {
   await page.waitForTimeout(600);
+  // no focus ring in the pictures (a dialog focuses its close button when it opens)
+  await page.evaluate(() => { const a = document.activeElement; if (a && a !== document.body && typeof a.blur === 'function') a.blur(); });
   const file = join(OUT, `${name}.png`);
   await page.screenshot({ path: file });
   const kb = Math.round(statSync(file).size / 1024);
