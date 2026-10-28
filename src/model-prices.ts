@@ -19,7 +19,7 @@ export interface ModelPrice {
 const ROWS: [RegExp, ModelPrice][] = [
   // OpenAI (through OpenRouter or direct)
   [/gpt-6\.1-sol/i, { in: 2, out: 10, cacheRead: 0.2 }],
-  [/gpt-6-luna/i, { in: 0.25, out: 2, cacheRead: 0.025, approx: true }],
+  [/gpt-6-luna/i, { in: 0.1, out: 0.5, cacheRead: 0.01 }], // OpenRouter list price, read 2026-10-28 (flex is half)
   [/gpt-5\.4-mini/i, { in: 0.75, out: 4.5, cacheRead: 0.075 }],
   // DeepSeek, Google (background-model candidates in the 2026-10 job bake-off)
   [/deepseek-v4\.1-flash/i, { in: 0.15, out: 0.6, approx: true }],
