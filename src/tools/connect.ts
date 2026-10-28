@@ -74,6 +74,8 @@ export function connectTools(): RegisteredTool[] {
         const name = vaultName(String(args.name ?? ''));
         if (!name) return 'Give the entry a short name.';
         const site = String(args.site ?? '').trim() || undefined;
+        // S6 review: a login with no site could be sent to any website; the vault only keeps one for a named site
+        if (!site) return '(refused: say which website or API host this login is for — it will only ever be sent there.)';
         const fields = Array.isArray(args.fields) ? args.fields.map(String).filter(Boolean) : [];
         const r = openVaultRequest(name, site, fields, ctx.session);
         return `A vault card for "${name}"${site ? ` (${site})` : ''} is now showing in the MWA app, above the chat box. Tell the person to type ${r.fields.map((f) => f.label).join(' and ')} there, not in this chat. Once saved, use it as ${r.fields.map((f) => `{{vault:${name}.${f.env}}}`).join(', ')}.`;

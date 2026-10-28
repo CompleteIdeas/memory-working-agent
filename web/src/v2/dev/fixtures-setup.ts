@@ -136,7 +136,7 @@ export class SetupFixtures {
       let host = '';
       try { host = new URL(url).hostname; } catch { host = ''; }
       if (!/^postgres(ql)?:\/\//i.test(url) || !host) return err(400, 'bad_url', 'Enter a Postgres connection address, like postgres://user:password@host:5432/database.');
-      if (/bad/i.test(url)) return err(400, 'check_failed', 'I couldn’t connect to that database: connection refused. Check the address and password, and that the pgvector extension is available.');
+      if (/bad/i.test(url)) return err(400, 'check_failed', 'I couldn’t connect to that database. Check the address and password, and that the pgvector extension is available.');
       this.storage = { ...this.storage, next: 'postgres', restartNeeded: true, nextServer: host };
       return { status: 200, body: { storage: this.storage, message: `Connected. Your database server (${host}) becomes the memory store when your helper restarts.${b.bringMemory === true ? ' Your memory was copied over (imported 214 memories).' : ' Your memory on this computer stays where it is; it isn’t copied.'}` } };
     }

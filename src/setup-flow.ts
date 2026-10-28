@@ -161,6 +161,8 @@ export const FOLDER_NOTE = 'Reading a folder uses no AI, so it costs nothing. I 
 const SCAN_TTL_MS = 30 * 60_000;
 export interface FolderScan { id: string; folder: string; at: number; candidates: (Candidate & { id: string })[]; filesScanned: number; truncated: boolean }
 const scans = new Map<string, FolderScan>();
+/** Tests: forget every scan (as a restart does). */
+export function _resetScans(): void { scans.clear(); }
 function sweepScans(now = deps.now()): void { for (const [k, s] of scans) if (now - s.at > SCAN_TTL_MS) scans.delete(k); }
 
 /** Read one folder (it must pass the folder rules) into candidate notes. Nothing is saved, nothing is granted. */
@@ -241,16 +243,20 @@ export async function legacyScan(paths: unknown): Promise<{ candidates: Candidat
   return { ...r, refused };
 }
 
-/** Classic /api/onboard/save: the wizard's interview answers (the owner's words) and notes from a scan (outside: any
- *  note whose text came from a scanned file stays a note from that file). */
+/** Classic /api/onboard/save: the wizard's interview answers (the owner's words) and notes from a scan. S6 review: a
+ *  note the wizard got from a file carries its `source` and is always kept as a note from that file (untrusted) — the
+ *  match against the last scan is only a second net (it is lost after 30 minutes or a restart). Only a note with no
+ *  source that matches no scanned text — words the owner typed — is kept as theirs. */
 export async function legacySaveNotes(items: unknown): Promise<number> {
   sweepScans();
   const all = [...scans.values()].flatMap((s) => s.candidates);
-  const list = Array.isArray(items) ? items.slice(0, 200) as { concept?: unknown; content?: unknown }[] : [];
+  const list = Array.isArray(items) ? items.slice(0, 200) as { concept?: unknown; content?: unknown; source?: unknown }[] : [];
   const rows = list.map((it) => {
     const name = String(it?.concept ?? ''), text = String(it?.content ?? '');
+    const source = typeof it?.source === 'string' && it.source.trim() ? it.source.trim() : null;
+    if (source) return { name, text, outside: source };
     const t = flat(text);
-    const from = t.length >= 4 ? all.find((c) => { const ct = flat(c.content); return ct.includes(t) || t.includes(ct) || (t.length >= 40 && ct.includes(t.slice(0, 40))); }) : undefined;
+    const from = t.length >= 4 ? all.find((c) => { const ct = flat(c.content); return ct.includes(t) || t.includes(ct) || (t.length >= 40 && ct.includes(t.slice(0, 40))) || (t.length >= 40 && ct.includes(t.slice(-40))); }) : undefined;
     return { name, text, outside: from ? from.source : null };
   });
   return writeFacts(rows);
@@ -435,8 +441,10 @@ export async function saveStorage(b: { kind?: unknown; url?: unknown; bringMemor
   let parsed: URL | null = null;
   try { parsed = url ? new URL(url) : null; } catch { parsed = null; }
   if (!url || url.length > 2000 || !LINE.test(url) || !/^postgres(ql)?:\/\//i.test(url) || !parsed?.hostname) return fail('bad_url', 'Enter a Postgres connection address, like postgres://user:password@host:5432/database.');
-  try { await deps.checkPostgres(url); } catch (e) {
-    return fail('check_failed', `I couldn’t connect to that database: ${scrubUrl((e as Error).message, url).slice(0, 200)}. Check the address and password, and that the pgvector extension is available.`);
+  // S6 review: the same words whatever went wrong (refused, timed out, wrong password), so the check can't be used to
+  // probe which hosts and ports answer
+  try { await deps.checkPostgres(url); } catch {
+    return fail('check_failed', 'I couldn’t connect to that database. Check the address and password, and that the pgvector extension is available.');
   }
   const lead = `Connected. Your database server (${parsed.hostname}) becomes the memory store when your helper restarts.`;
   if (b.bringMemory === true) {

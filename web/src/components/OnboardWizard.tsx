@@ -107,7 +107,8 @@ export function OnboardWizard(props: { onDone: () => void; onSkip?: () => void; 
   async function save() {
     const keep = items.filter((i) => i.keep && i.content.trim());
     setPhase('saving');
-    const r = await onboardSave(keep.map((i) => ({ concept: i.concept, content: i.content })));
+    // S6 review: a note from a file says which file, so it stays a note from it (untrusted) even after editing
+    const r = await onboardSave(keep.map((i) => ({ concept: i.concept, content: i.content, ...(i.source ? { source: i.source } : {}) })));
     setSavedCount(r.saved ?? keep.length);
     setPhase('done');
   }

@@ -12,9 +12,11 @@
  * Path access is confined to the folders the user has granted (resolveAllowed) —
  * onboarding can't read arbitrary disk.
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { lstat, readdir, realpath } from 'node:fs/promises';
 import { docxText } from './tools/safe-zip.js';
-import { extname, basename, join } from 'node:path';
+import { extname, basename, join, sep } from 'node:path';
+import { isProtectedPath } from './assistant-settings.js';
 import { resolveAllowed } from './tools/access.js';
 import { INTERVIEW_QUESTIONS } from './awm-api.js';
 
@@ -26,7 +28,8 @@ export interface Candidate {
   source: string;
 }
 
-const DOC_EXT = new Set(['.md', '.mdx', '.markdown', '.txt', '.rst', '.pdf', '.docx', '.csv', '.json', '.html', '.htm']);
+// S6 review: no .json — config, token and cache files are JSON far more often than notes are
+const DOC_EXT = new Set(['.md', '.mdx', '.markdown', '.txt', '.rst', '.pdf', '.docx', '.csv', '.html', '.htm']);
 const MAX_FILES = 60;
 const MAX_CANDIDATES = 150;
 const CHUNK_TARGET = 900; // chars per non-markdown chunk
@@ -90,22 +93,48 @@ function chunk(text: string, source: string): Candidate[] {
   return out;
 }
 
-function collectFiles(sandboxDir: string, paths: string[], roots?: string[]): string[] {
+/** S6 review: files never read for warm-up, whatever folder they sit in — sign-in tokens, keys, .env files, vaults. */
+const SECRET_NAME = /token|secret|credential|password|vault|^\.env($|\.)|\.(key|pem|p12|pfx|kdbx)$/i;
+/** S6 review: the walk is bounded — entries looked at, folder depth, file size — and yields between folders. */
+export const WALK_LIMITS = { maxEntries: 5_000, maxDepth: 8, maxBytes: 5 * 1024 * 1024 };
+const yieldNow = () => new Promise<void>((r) => setImmediate(r));
+const real = async (p: string) => { try { return await realpath(p); } catch { return null; } };
+const within = (child: string, parent: string) => {
+  const c = process.platform === 'win32' ? child.toLowerCase() : child, q = process.platform === 'win32' ? parent.toLowerCase() : parent;
+  return c === q || c.startsWith(q.endsWith(sep) ? q : q + sep);
+};
+
+/**
+ * The documents to read under the pointed-at paths. S6 review (a junction to the helper's data folder handed a Google
+ * refresh token back as a note): links and junctions are never followed (lstat), every entry is resolved where it
+ * really is and must stay inside the folder pointed at and outside the helper's own data and settings
+ * (assistant-settings.ts isProtectedPath), and files named like tokens, keys, .env or a vault are skipped.
+ */
+async function collectFiles(sandboxDir: string, paths: string[], roots?: string[]): Promise<string[]> {
   const files: string[] = [];
-  const walk = (abs: string) => {
-    if (files.length >= MAX_FILES) return;
-    let st; try { st = statSync(abs); } catch { return; }
+  let seen = 0;
+  const walk = async (abs: string, top: string, depth: number): Promise<void> => {
+    if (files.length >= MAX_FILES || ++seen > WALK_LIMITS.maxEntries) return;
+    let st; try { st = await lstat(abs); } catch { return; }
+    if (st.isSymbolicLink()) return; // a link or a junction: never followed
+    const r = await real(abs);
+    if (!r || !within(r, top) || isProtectedPath(r)) return;
     if (st.isDirectory()) {
-      if (/[\\/](node_modules|\.git|dist|build)$/.test(abs)) return;
-      for (const e of readdirSync(abs)) walk(join(abs, e));
-    } else if (DOC_EXT.has(extname(abs).toLowerCase())) {
+      if (depth >= WALK_LIMITS.maxDepth || /[\\/](node_modules|\.git|dist|build)$/.test(abs)) return;
+      let entries: string[] = [];
+      try { entries = await readdir(abs); } catch { return; }
+      await yieldNow();
+      for (const e of entries) { if (files.length >= MAX_FILES || seen > WALK_LIMITS.maxEntries) break; await walk(join(abs, e), top, depth + 1); }
+    } else if (st.isFile() && DOC_EXT.has(extname(abs).toLowerCase()) && !SECRET_NAME.test(basename(abs)) && st.size <= WALK_LIMITS.maxBytes) {
       files.push(abs);
     }
   };
   for (const p of paths) {
     // confine to granted folders, or (S6) to the folders the owner pointed at just now, after the folder rules
     const full = roots ? resolveAllowed(sandboxDir, p, roots) : resolveAllowed(sandboxDir, p);
-    if (full) walk(full);
+    if (!full) continue;
+    const top = await real(full);
+    if (top) await walk(full, top, 0);
   }
   return files.slice(0, MAX_FILES);
 }
@@ -119,7 +148,7 @@ export interface ScanResult {
 /** Read the pointed-at folders/files and return candidate memories to refine. `roots` (S6): read only inside these
  *  folders (already checked against the folder rules) instead of the granted ones. */
 export async function scanSources(sandboxDir: string, paths: string[], roots?: string[]): Promise<ScanResult> {
-  const files = collectFiles(sandboxDir, paths, roots);
+  const files = await collectFiles(sandboxDir, paths, roots);
   const candidates: Candidate[] = [];
   for (const f of files) {
     if (candidates.length >= MAX_CANDIDATES) break;

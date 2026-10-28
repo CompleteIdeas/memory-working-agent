@@ -107,8 +107,9 @@ export async function onboardScan(paths: string[]): Promise<{ ok: boolean; candi
   const r = bounceIfLocked(await fetch('/api/onboard/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ paths }) }));
   try { return await r.json(); } catch { return { ok: false, candidates: [], filesScanned: 0, truncated: false }; }
 }
-/** Save the memories the user confirmed (owner-provided → trusted + canonical). */
-export async function onboardSave(memories: { concept: string; content: string; tags?: string[] }[]): Promise<{ ok: boolean; saved: number }> {
+/** Save the memories the user confirmed: the interview answers are the owner's (trusted); notes from files are not. */
+/** S6 review: a note from a scanned file sends its `source`, and is kept as a note from that file (never trusted). */
+export async function onboardSave(memories: { concept: string; content: string; source?: string; tags?: string[] }[]): Promise<{ ok: boolean; saved: number }> {
   const r = bounceIfLocked(await fetch('/api/onboard/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ memories }) }));
   try { return await r.json(); } catch { return { ok: false, saved: 0 }; }
 }

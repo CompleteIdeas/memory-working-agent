@@ -6,16 +6,17 @@
 // comes back and only the .env changes. No mailbox, no model, no database server, no real .env: all stubs.
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createV1 } from '../src/api/router.js';
 import { v1Routes } from '../src/api/v1.js';
 import { makeAuthenticate, createPairCode, redeemPairCode } from '../src/api/auth.js';
 import { resetAppDb } from '../src/v2/db.js';
-import { setSetupFlowDeps, _resetInboxScan, legacySaveNotes, legacyScan, scrubUrl, brainState, type IngestRunOpts } from '../src/setup-flow.js';
+import { setSetupFlowDeps, _resetInboxScan, legacySaveNotes, legacyScan, scrubUrl, brainState, _resetScans, type IngestRunOpts } from '../src/setup-flow.js';
 import { setSetupDeps, openSetupRequest, openVaultRequest, findService, _resetSetupRequests } from '../src/connect/setup.js';
 import { runIngest } from '../src/ingest.js';
+import { WALK_LIMITS } from '../src/onboard.js';
 import { listFacts } from '../src/memory-settings.js';
 import { accessPolicy } from '../src/tools/access.js';
 
@@ -150,6 +151,46 @@ describe('warming memory up from a folder', () => {
     // the scan is used up
     expect((await send('POST', '/setup/folder/save', { scanId: r.body.scanId, keep: [{ id: 'c2' }] })).body.error.code).toBe('scan_expired');
   });
+  it('review: links and junctions are never followed, secrets and JSON are skipped, big files too', async () => {
+    const folder = join(docs, 'walk'); mkdirSync(folder);
+    writeFileSync(join(folder, 'notes.md'), '# Barn\nThe barn opens at six in the morning and closes at nine at night.\n');
+    writeFileSync(join(folder, 'token.md'), '# Token\nrefresh-token-SHOULD-NOT-LEAK and some more words here to pass.\n');
+    writeFileSync(join(folder, 'settings.json'), JSON.stringify({ note: 'json-SHOULD-NOT-LEAK and more words here to pass the length' }));
+    writeFileSync(join(folder, 'huge.txt'), `huge-SHOULD-NOT-LEAK ${'x'.repeat(6 * 1024 * 1024)}`);
+    // the helper's data folder (dirname of MWA_DB) holds a Google sign-in token, as the review found
+    mkdirSync(join(dir, 'tok'), { recursive: true });
+    writeFileSync(join(dir, 'google-token.md'), '# Google\nrefresh_token data-SHOULD-NOT-LEAK and some more words to pass the check.\n');
+    writeFileSync(join(dir, 'tok', 'notes.md'), '# Tok\ndata-dir-SHOULD-NOT-LEAK and some more words to pass the length check.\n');
+    symlinkSync(dir, join(folder, 'data-junction'), 'junction');
+    symlinkSync(join(dir, 'tok'), join(folder, 'tok-junction'), 'junction');
+    const r = await send('POST', '/setup/folder/scan', { path: folder });
+    expect(r.status).toBe(200);
+    expect(r.body.notes.map((x: any) => x.source)).toEqual(['notes.md']);
+    expect(r.text).not.toContain('SHOULD-NOT-LEAK');
+    // the classic path too
+    const c = await legacyScan([folder]);
+    expect(JSON.stringify(c)).not.toContain('SHOULD-NOT-LEAK');
+    // a junction pointed at directly is the helper's data: refused by the folder rules
+    expect((await send('POST', '/setup/folder/scan', { path: join(folder, 'data-junction') })).body.error.code).toBe('refused');
+  });
+  it('review: the walk is bounded (entries and depth)', async () => {
+    const deep = join(docs, 'deep'); let p = deep;
+    for (let i = 0; i < WALK_LIMITS.maxDepth + 3; i++) { p = join(p, `d${i}`); }
+    mkdirSync(p, { recursive: true });
+    writeFileSync(join(p, 'deep.md'), '# Deep\ndeep-SHOULD-NOT-SHOW and more words to pass the length check here.\n');
+    writeFileSync(join(deep, 'top.md'), '# Top\nThe top note is read, and it has enough words to count as a note.\n');
+    const r = await send('POST', '/setup/folder/scan', { path: deep });
+    expect(r.body.notes.map((x: any) => x.source)).toEqual(['top.md']);
+  });
+  it('review: classic notes that came from a file stay untrusted even after the scan is gone or edited', async () => {
+    _resetScans();
+    expect(await legacySaveNotes([
+      { concept: 'Feed plan', content: 'Edited from the file: hay twice a day, grain at seven.', source: 'barn.md' },
+      { concept: 'My own note', content: 'Call the vet about the grey mare on Thursday.' },
+    ])).toBe(2);
+    expect((await listFacts({ q: 'hay twice' })).facts[0].trust).toBe('untrusted');
+    expect((await listFacts({ q: 'grey mare' })).facts[0].trust).not.toBe('untrusted');
+  });
   it('classic: the interview answers are the owner’s words; text from a scanned file stays a note from it', async () => {
     const folder = join(docs, 'classic-docs'); mkdirSync(folder);
     writeFileSync(join(folder, 'notes.txt'), 'The arena is closed on Mondays for dragging and the outdoor ring floods after heavy rain.');
@@ -243,6 +284,8 @@ describe('where memory is kept', () => {
     const bad = await send('PUT', '/setup/storage', { kind: 'postgres', url: PG_URL, confirmed: true });
     expect(bad.status).toBe(400);
     expect(bad.body.error.code).toBe('check_failed');
+    // review: the same words whatever went wrong (no "refused" vs "timed out" vs "password" to probe with)
+    expect(bad.body.error.message).toBe('I couldn’t connect to that database. Check the address and password, and that the pgvector extension is available.');
     expect(bad.text).not.toContain(PG_PASSWORD);
     expect(bad.text).not.toContain(PG_URL);
     expect(envFile.size).toBe(0);
