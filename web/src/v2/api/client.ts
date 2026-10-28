@@ -119,6 +119,19 @@ export type PreferenceRemoved = Json<'/memory/preferences/remove', 'post', 200>;
 export type ActivityView = Schemas['ActivityView'];
 export type ActivityRun = Schemas['ActivityRun'];
 export type SpendingDetail = Schemas['SpendingDetail'];
+// S6: getting going (the brain's state, warming memory up, the inbox scan, setup cards, where memory is kept)
+export type SetupState = Schemas['SetupState'];
+export type BrainState = Schemas['BrainState'];
+export type StorageView = Schemas['StorageView'];
+export type InboxScan = Schemas['InboxScan'];
+export type InboxChange = Schemas['InboxChange'];
+export type SetupCard = Schemas['SetupCard'];
+export type SetupCardChange = Schemas['SetupCardChange'];
+export type FolderScan = Schemas['FolderScan'];
+export type FolderNote = Schemas['FolderNote'];
+export type SetupCards = Json<'/setup/cards', 'get', 200>;
+export type FolderSaved = Json<'/setup/folder/save', 'post', 200>;
+export type StorageChange = { storage: StorageView; message: string };
 /** S5: a file the server sends as a download (the memory export, the spending CSV), read with the app's headers. */
 export interface DownloadedFile { text: string; type: string; filename: string }
 export type PushList = Json<'/push/subscriptions', 'get', 200>;
@@ -456,6 +469,22 @@ export class MwaClient {
   promoteRoutine(id: string, store: string, o: { key?: string; confirmed?: boolean } = {}) { return this.post<RoutineChange>('/memory/routines/{id}/promote', { path: { id }, body: o.confirmed ? { store, confirmed: true } : { store }, key: o.key }); }
   retireRoutine(id: string, store: string, o: { key?: string } = {}) { return this.post<RoutineChange>('/memory/routines/{id}/retire', { path: { id }, body: { store }, key: o.key }); }
   getActivity(q: { limit?: number } = {}) { return this.get<ActivityView>('/activity', { query: q }); }
+  // ---- S6: getting going ----
+  getSetup() { return this.get<SetupState>('/setup'); }
+  warmMemory(o: { key?: string } = {}) { return this.post<{ ready: boolean; message: string }>('/setup/warm', { key: o.key }); }
+  /** Read one folder into notes to look over; nothing is saved or granted. */
+  scanFolder(path: string, o: { key?: string } = {}) { return this.post<FolderScan>('/setup/folder/scan', { body: { path }, key: o.key }); }
+  saveFolderNotes(scanId: string, keep: { id: string; name?: string; text?: string }[], o: { key?: string } = {}) { return this.post<FolderSaved>('/setup/folder/save', { body: { scanId, keep }, key: o.key }); }
+  getInboxScan() { return this.get<InboxScan>('/setup/inbox'); }
+  /** `confirmed`: the person said yes to what it may cost (without it: 409 confirm_needed with the estimate) */
+  startInboxScan(o: { key?: string; days?: number; confirmed?: boolean } = {}) { return this.post<InboxChange>('/setup/inbox', { body: { ...(o.days ? { days: o.days } : {}), ...(o.confirmed ? { confirmed: true } : {}) }, key: o.key }); }
+  stopInboxScan(o: { key?: string } = {}) { return this.post<InboxChange>('/setup/inbox/stop', { key: o.key }); }
+  listSetupCards() { return this.get<SetupCards>('/setup/cards'); }
+  /** Write-only: the values go to the server and never come back. */
+  submitSetupCard(id: string, values: Record<string, string>, o: { key?: string } = {}) { return this.post<SetupCardChange>('/setup/cards/{id}/submit', { path: { id }, body: { values }, key: o.key }); }
+  cancelSetupCard(id: string, o: { key?: string } = {}) { return this.post<SetupCardChange>('/setup/cards/{id}/cancel', { path: { id }, key: o.key }); }
+  /** The address is write-only. `confirmed`: the person said yes to "from the next restart" */
+  async saveStorage(body: { kind: 'sqlite' | 'postgres'; url?: string; bringMemory?: boolean; confirmed?: boolean }, o: { key?: string } = {}) { return (await this.call<StorageChange>('PUT', '/setup/storage', { body, key: o.key })).body; }
 }
 
 function toError(status: number, body: unknown): ApiError {

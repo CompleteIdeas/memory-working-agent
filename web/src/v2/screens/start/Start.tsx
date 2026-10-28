@@ -6,19 +6,25 @@
  *   Pair         /pair (the QR's link, `/pair#c=CODE`) or "Type a code": "Pair this phone with MWA?", a name for the
  *                phone, Pair (POST /pair: the phone gets its own key as an HttpOnly cookie).
  *   First run    on the computer (admin), until setup is finished or skipped: name the helper, connect Google /
- *                Outlook, turn on what's off, then pair your phone with the code and QR.
+ *                Outlook, turn on what's off, then pair your phone with the code and QR. S6: when the helper has no
+ *                working AI brain, first pick one (provider, key, model: Settings › Your assistant's own form) and how
+ *                much it may touch (while the memory models get ready), and Connect offers the other connections.
  *
  * The shell asks `useStartGate()` first; it returns the screen to show, or null for the app. Words follow
  * docs/onboarding-and-pairing.html and the prototype's first run (N01).
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useMeta, useStore } from '../../store/react';
-import type { Account, ConnectStart, HelperSettings, Me, PairCode } from '../../api/client';
+import type { Account, BrainState, ConnectStart, HelperSettings, Me, PairCode } from '../../api/client';
 import { codeFromHash, guessDeviceName, guessPlatform, messageOf, normalizeCode, useSettingsData } from '../settings/useSettings';
 import { PairCodeCard } from '../settings/PairNewDevice';
 import { ConnectSteps } from '../settings/Settings';
-import { START_CHECK_EVENT } from './events';
+import { START_CHECK_EVENT, goTo } from './events';
+import { Access, ModelForm } from '../settings/Assistant';
+import { useAssistant } from '../settings/useAssistant';
+import { Note, type Said } from '../settings/Settings';
 import '../settings/settings.css';
+import '../setup/setup.css';
 
 /** The pairing page: /pair (the QR's link) or ?view=pair (fixture mode, links inside the app). */
 export function isPairLocation(loc: { pathname: string; search: string } = location): boolean {
@@ -207,7 +213,7 @@ export function PairScreen({ me, onPaired, onCancel }: { me: Me | null; onPaired
 
 // ---------- first run (on the computer) ----------
 
-type Step = 'welcome' | 'names' | 'connect' | 'switches' | 'phone';
+type Step = 'welcome' | 'brain' | 'access' | 'names' | 'connect' | 'switches' | 'phone';
 const SUN = (
   <svg className="sun" viewBox="0 0 84 84" aria-hidden="true"><circle cx="42" cy="42" r="40" fill="var(--card)" /><circle cx="42" cy="46" r="15" fill="var(--accent)" />
     <path d="M14 58h56" stroke="var(--ink)" strokeWidth="3" strokeLinecap="round" /><path d="M42 20v6M24 28l4 4M60 28l-4 4" stroke="var(--ink)" strokeWidth="3" strokeLinecap="round" /></svg>
@@ -215,22 +221,37 @@ const SUN = (
 
 export function FirstRun({ onDone }: { onDone: (s: HelperSettings) => void }) {
   const store = useStore();
+  const { meta } = useMeta();
   const data = useSettingsData();
   const [step, setStep] = useState<Step>('welcome');
+  // S6: is there a working AI brain? Without one, first run starts by setting it up (decided once, when it is known)
+  const [brain, setBrain] = useState<BrainState | null | undefined>(undefined);
+  const hasSetup = !!meta?.features.includes('setup');
+  useEffect(() => {
+    if (!meta) return;
+    if (!hasSetup) { setBrain(null); return; }
+    let on = true;
+    store.client.getSetup().then((x) => { if (on) setBrain(x.brain); }).catch(() => { if (on) setBrain(null); });
+    return () => { on = false; };
+  }, [store, meta, hasSetup]);
+  const [fresh, setFresh] = useState<boolean | null>(null);
+  useEffect(() => { if (brain !== undefined && fresh === null) setFresh(!!brain && !brain.ready); }, [brain, fresh]);
+  const [thenConnections, setThenConnections] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   const s = data.settings;
   const off = (s?.features ?? []).filter((f) => !f.on);
   // whether "A few things are off" is a step is decided once, when the settings arrive (turning one on keeps the count)
   const [withSwitches, setWithSwitches] = useState<boolean | null>(null);
   useEffect(() => { if (s && withSwitches === null) setWithSwitches(off.length > 0); }, [s, withSwitches, off.length]);
-  const steps: Step[] = ['welcome', 'names', 'connect', ...(withSwitches ? ['switches' as const] : []), 'phone'];
+  const steps: Step[] = ['welcome', ...(fresh ? ['brain' as const, 'access' as const] : []), 'names', 'connect', ...(withSwitches ? ['switches' as const] : []), 'phone'];
   const at = steps.indexOf(step);
   const next = () => { setRefusal(null); setStep(steps[Math.min(steps.length - 1, at + 1)]); };
   const finish = async () => {
     const o = await data.updateSettings({ firstRunDone: true });
     if (!o.ok) { setRefusal(o.message); return; }
-    const fresh = await store.client.getSettings().catch(() => null);
-    onDone(fresh ?? { ...(s as HelperSettings), firstRunDone: true });
+    const after = await store.client.getSettings().catch(() => null);
+    onDone(after ?? { ...(s as HelperSettings), firstRunDone: true });
+    if (thenConnections) setTimeout(() => goTo('connections'), 0); // S6: "open Connections when I finish"
   };
   const dots = (
     <>
@@ -238,7 +259,7 @@ export function FirstRun({ onDone }: { onDone: (s: HelperSettings) => void }) {
       <p className="sr-only">Step {at + 1} of {steps.length}</p>
     </>
   );
-  if (data.loading) return <StartPage label="Opening"><p className="empty" style={{ paddingTop: 40 }}>Opening…</p></StartPage>;
+  if (data.loading || fresh === null) return <StartPage label="Opening"><p className="empty" style={{ paddingTop: 40 }}>Opening…</p></StartPage>;
   return (
     <StartPage label={`Setup, step ${at + 1}`}>
       {step === 'welcome' && (
@@ -253,8 +274,11 @@ export function FirstRun({ onDone }: { onDone: (s: HelperSettings) => void }) {
           </div>
         </section>
       )}
+      {step === 'brain' && <BrainStep onNext={next} />}
+      {step === 'access' && <AccessStep onNext={next} />}
       {step === 'names' && s && <NamesStep s={s} save={data.updateSettings} onNext={next} />}
-      {step === 'connect' && <ConnectStep accounts={data.accounts ?? []} connect={data.connect} refresh={data.refreshAccounts} onNext={next} />}
+      {step === 'connect' && <ConnectStep accounts={data.accounts ?? []} connect={data.connect} refresh={data.refreshAccounts} onNext={next}
+        more={fresh ? { on: thenConnections, set: setThenConnections } : undefined} />}
       {step === 'switches' && s && <SwitchesStep s={s} save={data.updateSettings} onNext={next} />}
       {step === 'phone' && <PhoneStep createCode={data.createPairCode} now={store.now} onFinish={() => void finish()} saveAddress={(url) => data.updateSettings({ publicUrl: url })} />}
       {refusal && <p className="refusal" role="alert">{refusal}</p>}
@@ -299,8 +323,10 @@ function NamesStep({ s, save, onNext }: { s: HelperSettings; save: ReturnType<ty
   );
 }
 
-function ConnectStep({ accounts, connect, refresh, onNext }: {
+function ConnectStep({ accounts, connect, refresh, onNext, more }: {
   accounts: Account[]; connect: ReturnType<typeof useSettingsData>['connect']; refresh: ReturnType<typeof useSettingsData>['refreshAccounts']; onNext: () => void;
+  /** S6 (first run without a brain): the other connections (Telegram, Tailscale, a Gmail app password) open after setup */
+  more?: { on: boolean; set: (on: boolean) => void };
 }) {
   const [started, setStarted] = useState<ConnectStart | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
@@ -338,6 +364,12 @@ function ConnectStep({ accounts, connect, refresh, onNext }: {
         {refusal && <p className="refusal" role="alert">{refusal}</p>}
         <button type="button" className={any ? 'vbtn vbtn-primary vbtn-wide' : 'vbtn vbtn-quiet'} onClick={onNext}>{any ? 'Next' : 'Skip for now'}</button>
         {!any && <p className="small" style={{ textAlign: 'center', marginTop: 0 }}>You can connect them any time in Settings.</p>}
+        {more && (
+          <label className="checkrow" htmlFor="ob-more">
+            <input id="ob-more" type="checkbox" checked={more.on} onChange={(e) => more.set(e.target.checked)} />
+            <span>Open Connections when I finish, for Telegram, Tailscale (your phone, away from home) or Gmail with an app password.</span>
+          </label>
+        )}
       </div>
     </section>
   );
@@ -397,6 +429,49 @@ function PhoneStep({ createCode, now, onFinish, saveAddress }: {
         <button type="button" className="vbtn vbtn-primary vbtn-wide" onClick={onFinish}>Finish</button>
         <p className="small" style={{ textAlign: 'center', marginTop: 0 }}>No phone right now? You can pair one later in Settings, under Devices.</p>
       </div>
+    </section>
+  );
+}
+
+// ---------- S6: the AI brain and what it may touch (first run without a working brain) ----------
+
+function BrainStep({ onNext }: { onNext: () => void }) {
+  const data = useAssistant();
+  const [note, setNote] = useState<Said>(null);
+  return (
+    <section aria-labelledby="ob-h" className="obbrain">
+      <h1 id="ob-h" tabIndex={-1}>Pick a brain to think with</h1>
+      <p className="lede">I need an AI to read, sort and answer. Choose a provider and paste its key, or run a model on this computer with Ollama (no key).</p>
+      <p className="small">The key stays on the computer your helper runs on. I never show it again.</p>
+      {data.loading && <p className="empty">Loading…</p>}
+      {data.error && <p className="refusal" role="alert">{data.error}</p>}
+      {data.a && (
+        <ModelForm kind="chat" a={data.a} data={data} cancelLabel="Set it up later"
+          onDone={(n) => { setNote(n); onNext(); }} onCancel={onNext} />
+      )}
+      <Note said={note} />
+    </section>
+  );
+}
+
+function AccessStep({ onNext }: { onNext: () => void }) {
+  const store = useStore();
+  const data = useAssistant();
+  const [warm, setWarm] = useState<{ text: string; done: boolean }>({ text: 'Getting your memory ready. The first time downloads about 500 MB, so it can take a few minutes; you can go on meanwhile.', done: false });
+  // the local memory models: started once, here (classic onboarding's "Preparing your memory")
+  useEffect(() => {
+    let on = true;
+    store.client.warmMemory().then((r) => { if (on) setWarm({ text: r.message || 'Your memory is ready.', done: true }); })
+      .catch((e) => { if (on) setWarm({ text: `Your memory isn’t ready yet: ${messageOf(e)} It will get ready the first time I need it.`, done: true }); });
+    return () => { on = false; };
+  }, [store]);
+  return (
+    <section aria-labelledby="ob-h" className="obaccess">
+      <h1 id="ob-h" tabIndex={-1}>How much can it touch?</h1>
+      <p className="lede">Pick how much of this computer your helper may use. You can change it any time in Settings › Your assistant.</p>
+      {data.a && <Access a={data.a} data={data} />}
+      <p className={warm.done ? 'okline' : 'small'} role="status">{warm.text}</p>
+      <div className="actions"><button type="button" className="vbtn vbtn-primary vbtn-wide" onClick={onNext}>Next</button></div>
     </section>
   );
 }

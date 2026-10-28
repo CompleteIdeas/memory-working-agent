@@ -100,6 +100,21 @@ export function Settings({ go }: ScreenProps) {
                 </span>
                 <Chev />
               </button>
+              {/* S6: warm memory up from a folder, Get to know me (the inbox), where memory is kept */}
+              <button type="button" className="plugentry" id="open-learn" onClick={() => go('learn')}>
+                <span className="grow">
+                  <span className="rowtitle">Help me learn about you</span>
+                  <span className="s">{admin ? 'Give me a head start from a folder of your documents, or from your email.' : 'See what I learned from your documents and your email.'}</span>
+                </span>
+                <Chev />
+              </button>
+              <button type="button" className="plugentry" id="open-storage" onClick={() => go('storage')}>
+                <span className="grow">
+                  <span className="rowtitle">Where memory is kept</span>
+                  <span className="s">This computer, or a database server for an always-on helper.</span>
+                </span>
+                <Chev />
+              </button>
               <button type="button" className="plugentry" id="open-activity" onClick={() => go('activity')}>
                 <span className="grow">
                   <span className="rowtitle">Activity</span>

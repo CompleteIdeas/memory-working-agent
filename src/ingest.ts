@@ -18,7 +18,7 @@ import { resolve } from 'node:path';
 import { FACT_SHAPE, factTags, type LearnedFact } from './fact-shape.js';
 import { dbFile } from './paths.js';
 
-interface ScannedMessage { id: string; from: string; subject: string; date: string; snippet: string; }
+export interface ScannedMessage { id: string; from: string; subject: string; date: string; snippet: string; }
 
 /** True when SOME email account is connected (any of the three paths) — gates the scan. */
 export function ingestAvailable(): boolean {
@@ -48,27 +48,44 @@ const EXTRACT_SYSTEM = [
 
 export interface IngestResult { unique: number; learned: number; }
 
-export async function runIngest(opts: { days?: number; max?: number; dbPath?: string; query?: string; onLog?: (m: string) => void } = {}): Promise<IngestResult> {
+export interface IngestOpts {
+  days?: number; max?: number; dbPath?: string; query?: string; onLog?: (m: string) => void;
+  /** v2 S6: stop between rounds (what was learned so far is kept) */
+  signal?: AbortSignal;
+  /** v2 S6: each fact learned, by name (the app lists them, marked as from outside) */
+  onFact?: (name: string) => void;
+  /** tests: where the messages come from, and the model (never a real mailbox or provider in tests) */
+  gather?: (days: number, max: number, onProgress: (scanned: number, unique: number) => void) => Promise<{ source: string; msgs: ScannedMessage[] }>;
+  brain?: { chat: RoutedProvider['chat'] };
+}
+
+export async function runIngest(opts: IngestOpts = {}): Promise<IngestResult> {
   loadEnv();
   const log = opts.onLog ?? ((m: string) => console.log(m));
-  if (!ingestAvailable()) throw new Error('No email account is connected yet — connect Gmail or Outlook first.');
+  if (!opts.gather && !ingestAvailable()) throw new Error('No email account is connected yet — connect Gmail or Outlook first.');
 
   const days = opts.days ?? 30;
   const dbPath = opts.dbPath ?? dbFile();
+  const stopped = () => !!opts.signal?.aborted;
 
   log(`Reading your last ${days} days of email…`);
-  const { source, msgs } = await gatherMessages(days, opts.max ?? 400, opts.query,
-    (scanned, unique) => { if (scanned % 25 === 0) log(`  scanned ${scanned} (${unique} unique so far)…`); });
+  const progress = (scanned: number, unique: number) => {
+    if (stopped()) throw new Error('stopped');
+    if (scanned % 25 === 0) log(`  scanned ${scanned} (${unique} unique so far)…`);
+  };
+  const { source, msgs } = opts.gather ? await opts.gather(days, opts.max ?? 400, progress) : await gatherMessages(days, opts.max ?? 400, opts.query, progress);
+  if (stopped()) { log('Stopped before reading any of them.'); return { unique: msgs.length, learned: 0 }; }
   log(`Found ${msgs.length} unique ${source} messages after collapsing duplicates. Learning from them…`);
 
-  const memory = new MwaMemory('mwa-serve', dbPath);
+  const memory = new MwaMemory(process.env.MWA_AGENT_ID ?? 'mwa-serve', dbPath);
   memory.setSessionId('ingest');
-  const brain = new RoutedProvider(getProvider('brain'), getProvider('high'));
+  const brain = opts.brain ?? new RoutedProvider(getProvider('brain'), getProvider('high'));
 
   let learned = 0;
   const BATCH = 12;
   const batches = Math.ceil(msgs.length / BATCH);
   for (let i = 0; i < msgs.length; i += BATCH) {
+    if (stopped()) { log(`Stopped after ${Math.floor(i / BATCH)} of ${batches} rounds.`); break; }
     const batch = msgs.slice(i, i + BATCH);
     const block = batch.map((m, j) => `${i + j + 1}. ${m.date} | ${m.from} | ${m.subject} | ${m.snippet}`).join('\n');
     try {
@@ -81,7 +98,7 @@ export async function runIngest(opts: { days?: number; max?: number; dbPath?: st
         // action later (F2). canonical here only affects storage salience, not trust.
         const shape = factTags(f); // BL-74: specific topic, people, date, end date
         const id = await memory.write(String(f.concept).slice(0, 80), String(f.content), [...shape.tags, 'confidence_level=observed', 'source=email-ingest'], { canonical: true, eventType: shape.decision ? 'decision' : 'observation', provenance: 'ingested', origin: `email/${source}`, ...(shape.validTo ? { validTo: shape.validTo } : {}) });
-        if (id) learned++;
+        if (id) { learned++; try { opts.onFact?.(String(f.concept).slice(0, 80)); } catch { /* a listener's problem */ } }
       }
       log(`  batch ${Math.floor(i / BATCH) + 1}/${batches} → ${learned} facts learned so far`);
     } catch (e) {

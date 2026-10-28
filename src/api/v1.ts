@@ -24,6 +24,7 @@ import { assistantRoutes } from './routes/assistant.js';
 import { connectionRoutes } from './routes/connections.js';
 import { approvalRoutes } from './routes/approvals.js';
 import { memoryRoutes } from './routes/memory.js';
+import { setupRoutes } from './routes/setup.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 function serverVersion(): string {
@@ -43,7 +44,7 @@ export const metaRoutes: Route[] = [
       body: {
         api: API_VERSION, server: VERSION, minClient: MIN_CLIENT,
         secure: secureContext(req),
-        features: ['jobs', 'calendar', 'mail', 'projects', 'important', 'ask', 'today', 'settings', 'files', 'push', 'plugins', 'assistant', 'connections', 'approvals', 'memory', 'activity'] as string[],
+        features: ['jobs', 'calendar', 'mail', 'projects', 'important', 'ask', 'today', 'settings', 'files', 'push', 'plugins', 'assistant', 'connections', 'approvals', 'memory', 'activity', 'setup'] as string[],
         // A5: while older conversations are being imported into General (bytes done of total)
         importing: importingNow(),
       },
@@ -53,7 +54,7 @@ export const metaRoutes: Route[] = [
 
 /** Every v1 route. Slices append their own arrays here. */
 export function v1Routes(): Route[] {
-  return [...metaRoutes, ...deviceRoutes, ...jobRoutes, ...streamRoutes, ...calendarRoutes, ...mailRoutes, ...projectRoutes, ...importantRoutes, ...askRoutes, ...todayRoutes, ...settingsRoutes, ...fileRoutes, ...pushRoutes, ...pluginRoutes, ...assistantRoutes, ...connectionRoutes, ...approvalRoutes, ...memoryRoutes];
+  return [...metaRoutes, ...deviceRoutes, ...jobRoutes, ...streamRoutes, ...calendarRoutes, ...mailRoutes, ...projectRoutes, ...importantRoutes, ...askRoutes, ...todayRoutes, ...settingsRoutes, ...fileRoutes, ...pushRoutes, ...pluginRoutes, ...assistantRoutes, ...connectionRoutes, ...approvalRoutes, ...memoryRoutes, ...setupRoutes];
 }
 
 export function createV1Handler(deps: RouterDeps) {

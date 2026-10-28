@@ -33,7 +33,7 @@ export interface StreamMessage { event: string; data: unknown; id?: number }
 type Entity = 'job' | 'calendar' | 'project' | 'turn' | 'mail' | 'item' | 'ask' | 'approval';
 interface Ev { seq: number; entity: Entity; id: string; op: 'upsert' | 'delete' }
 
-export const FIXTURE_SCENARIOS = ['N00', 'N06', 'states', 'old-client', 'sorting', 'thread-long', ...TODAY_SCENARIOS, 'signed-out', 'unpaired', 'phone', 'first-run', 'npm-off', 'model-fixed', 'hosted', 'conn-setup', 'approvals', 'memory-empty'] as const;
+export const FIXTURE_SCENARIOS = ['N00', 'N06', 'states', 'old-client', 'sorting', 'thread-long', ...TODAY_SCENARIOS, 'signed-out', 'unpaired', 'phone', 'first-run', 'npm-off', 'model-fixed', 'hosted', 'conn-setup', 'approvals', 'memory-empty', 'fresh', 'no-brain', 'setup-card', 'phone-card'] as const;
 export type FixtureScenario = (typeof FIXTURE_SCENARIOS)[number];
 export const FIXTURE_SERVER_VERSION = 'fixtures';
 
@@ -189,7 +189,7 @@ export class FixtureServer {
     const w5 = this.settings.read(path, q);
     if (w5) return w5;
     if (path === '/meta') {
-      const meta: Meta = { api: 'v1', server: FIXTURE_SERVER_VERSION, minClient: this.minClient, secure: true, features: ['jobs', 'calendar', 'mail', 'projects', 'important', 'ask', 'today', 'settings', 'files', 'approvals'], importing: null };
+      const meta: Meta = { api: 'v1', server: FIXTURE_SERVER_VERSION, minClient: this.minClient, secure: true, features: ['jobs', 'calendar', 'mail', 'projects', 'important', 'ask', 'today', 'settings', 'files', 'approvals', 'setup'], importing: null };
       return { status: 200, body: meta };
     }
     const w4 = w4Read(this, path, q);

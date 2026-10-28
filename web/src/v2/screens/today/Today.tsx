@@ -29,6 +29,9 @@ import { AskAbout } from '../ask/AskAbout';
 import { useNotNow } from '../calendar/notnow';
 import { openConnectionsAt, providerOfAccount } from '../settings/useConnections';
 import { openApproval } from '../approvals/open';
+import { openSetupCard } from '../setup/SetupCardSheet';
+import { cardsWaitingLine } from '../setup/words';
+import { useSetupCards } from '../../store/react';
 import './today.css';
 
 const Check = () => (
@@ -80,6 +83,7 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
   const needsH = useRef<HTMLHeadingElement>(null);
   // "Not now" is for the person's day (the Today's date), with the Calendar's ids for a double-booking
   const notNow = useNotNow(view?.doc.date ?? dayKey(now));
+  const setup = useSetupCards();
   const note = useDraftNote();
   const [askFor, setAskFor] = useState<string | null>(null);
 
@@ -100,7 +104,8 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
       // S4: approvals are reviewed and decided here, in the approval sheet
       case 'approval': openApproval(o.id ?? null); return;
       case 'approvals': openApproval(null); return;
-      default: say('That is in your helper’s activity list in the classic app.');
+      // S6: anything else is in Activity, in this app
+      default: go('activity');
     }
   };
   const runNeed = async (n: TodayNeed) => {
@@ -161,9 +166,18 @@ export function Today({ desk, wide, go, ask, openWork }: ScreenProps) {
   );
   const banner = (text: string | null) => text && <p className="donebanner" role="status" style={{ marginTop: 8 }}><Check />{text}</p>;
 
-  const needsSection = needs.length > 0 && (
+  // S6: a password or key the helper asked for mid-task (setup cards): one card for all of them
+  const cardNeed = setup.waiting.length > 0 && (
+    <div className="card needcard" id="need-setup">
+      <h3><button type="button" className="needtitle" onClick={() => openSetupCard(setup.waiting.length === 1 ? setup.waiting[0].id : null)}>{cardsWaitingLine(setup.waiting.length)}</button></h3>
+      <p>{setup.waiting.map((c) => c.name).join(', ')} · asked in {setup.waiting[0].where}</p>
+      <div className="acts"><button type="button" className="vbtn vbtn-primary" onClick={() => openSetupCard(setup.waiting.length === 1 ? setup.waiting[0].id : null)}>{setup.canSubmit ? 'Fill it in' : 'Look at it'}</button></div>
+    </div>
+  );
+  const needsSection = (needs.length > 0 || !!cardNeed) && (
     <section aria-labelledby="sh-needs">
       <h2 className="sh" id="sh-needs" tabIndex={-1} ref={needsH}>Needs you</h2>
+      {cardNeed}
       {needs.map((n) => (
         <div key={n.id} className="card needcard" data-trust={n.trust}>
           <h3><button type="button" className="needtitle" onClick={() => open(n.open)}><Said text={n.title} parts={n.titleParts} trust={n.trust} /></button></h3>

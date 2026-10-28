@@ -76,8 +76,9 @@ function Brain({ a, data, go }: { a: AssistantSettings; data: Data; go: ScreenPr
   );
 }
 
-/** Pick a provider, give a key (write-only), load the models, pick one and save. `kind` image: the image model. */
-function ModelForm({ kind, a, data, onDone, onCancel }: { kind: 'chat' | 'image'; a: AssistantSettings; data: Data; onDone: (n: Said) => void; onCancel: () => void }) {
+/** Pick a provider, give a key (write-only), load the models, pick one and save. `kind` image: the image model.
+ *  S6: first run uses it too (`cancelLabel` "Set it up later"). */
+export function ModelForm({ kind, a, data, onDone, onCancel, cancelLabel = 'Cancel' }: { kind: 'chat' | 'image'; a: AssistantSettings; data: Data; onDone: (n: Said) => void; onCancel: () => void; cancelLabel?: string }) {
   const choices = kind === 'image' ? a.providers.filter((p) => p.images) : a.providers;
   const current = kind === 'image' ? a.image : a.brain;
   const start = choices.some((p) => p.id === current.provider) ? current.provider : choices[0]?.id ?? 'openrouter';
@@ -144,7 +145,7 @@ function ModelForm({ kind, a, data, onDone, onCancel }: { kind: 'chat' | 'image'
       {!models && <span className="s">Load the models to pick one.</span>}
       <div className="acts">
         <button type="submit" className="vbtn vbtn-primary" disabled={!!busy || !model.trim()}>{busy === 'save' ? (kind === 'chat' ? 'Checking…' : 'Saving…') : kind === 'chat' ? 'Check and save' : 'Save'}</button>
-        <button type="button" className="vbtn vbtn-quiet" disabled={busy === 'save'} onClick={onCancel}>Cancel</button>
+        <button type="button" className="vbtn vbtn-quiet" disabled={busy === 'save'} onClick={onCancel}>{cancelLabel}</button>
       </div>
       <Note said={note} />
     </form>
@@ -181,7 +182,8 @@ function Images({ a, data }: { a: AssistantSettings; data: Data }) {
 
 // ---------- what it can touch ----------
 
-function Access({ a, data }: { a: AssistantSettings; data: Data }) {
+/** S6: first run uses it too. */
+export function Access({ a, data }: { a: AssistantSettings; data: Data }) {
   const [confirm, setConfirm] = useState<AccessPreset | null>(null);
   const [pending, setPending] = useState<AccessPreset | null>(null); // shown as chosen while it saves
   const [busy, setBusy] = useState(false);

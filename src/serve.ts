@@ -17,43 +17,17 @@
  * Docker/Tauri can set MWA_SERVE_HOST=0.0.0.0 and map the port host-localhost-only.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { readFileSync, existsSync, statSync, writeFileSync, appendFileSync, mkdirSync, rmSync, createReadStream } from 'node:fs';
+import { readFileSync, existsSync, statSync, writeFileSync, appendFileSync, mkdirSync, createReadStream } from 'node:fs';
 import { resolve, join, extname, normalize, dirname, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes, timingSafeEqual, createHmac } from 'node:crypto';
-import { tmpdir } from 'node:os';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { timingSafeEqual, createHmac } from 'node:crypto';
 
-const execFileP = promisify(execFile);
-
-/** Copy the current SQLite memory into a Postgres target before switching backends, using AWM's
- *  backend-agnostic export/import CLI (embeddings included). Best-effort: returns ok:false (and the
- *  caller then does NOT switch) on error, so a failed copy never strands you on an empty store. */
-async function migrateMemoryToPostgres(sqliteDbPath: string, url: string): Promise<{ ok: boolean; message: string }> {
-  let cli: string;
-  try { cli = awmCliPath(); }
-  catch { return { ok: false, message: 'the migration tool is not available in this build' }; }
-  if (!existsSync(sqliteDbPath)) return { ok: true, message: 'no existing memory to copy' };
-  const tmp = join(tmpdir(), `mwa-migrate-${randomBytes(6).toString('hex')}.json`);
-  // export the CURRENT store with a clean env so `--db` selects SQLite (not the postgres target).
-  const exportEnv = { ...process.env };
-  delete exportEnv.AWM_STORE_BACKEND; delete exportEnv.AWM_DB_PATH; delete exportEnv.AWM_DATABASE_URL;
-  try {
-    await execFileP(process.execPath, [cli, 'export', '--db', sqliteDbPath, '--agent', SERVE_AGENT, '--all-stages', '--output', tmp], { env: exportEnv, timeout: 120_000 });
-    const { stdout } = await execFileP(process.execPath, [cli, 'import', tmp, '--remap-agent', SERVE_AGENT, '--dedupe'],
-      { env: { ...process.env, AWM_STORE_BACKEND: 'postgres', AWM_DATABASE_URL: url }, timeout: 180_000 });
-    return { ok: true, message: (stdout || '').trim() || 'memory copied' };
-  } catch (e) {
-    return { ok: false, message: `couldn't copy memory: ${(e as Error).message.slice(0, 200)}` };
-  } finally { try { rmSync(tmp); } catch { /* */ } }
-}
+// v2 S6: copying memory to Postgres moved to src/setup-flow.ts (shared with /api/v1/setup/storage)
 import { getProvider, listModels, PROVIDERS, backgroundCalls, type Provider } from './provider.js';
 import { RoutedProvider } from './model-router.js';
 import { MwaMemory } from './awm.js';
 import { recordReceipt, readReceipts, setReceiptProducer } from './receipts.js';
 import { setTranscriptProducer, stopHeartbeat } from './transcript.js';
-import { scanSources } from './onboard.js';
 import { buildRegistry } from './tools/build.js';
 import { AGENT_BROWSER_HEADER } from './tools/browser.js';
 import { goalsMentioned, WORK_NOTE_HEAD } from './work-note.js';
@@ -68,6 +42,7 @@ import { hostAllowed, relayedMode, detectTailscaleServe, captureTailscaleAtStart
 import { setSettingsRouteDeps } from './api/routes/settings.js';
 import { handleLegacyFiles, signedOutPageAllowed, legacyApiScope } from './api/legacy.js';
 import { applyStoredSettings } from './v2/settings.js';
+import { recordEvent } from './v2/db.js';
 import { pwaFileOnly, pwaPublic, uiCacheControl } from './pwa.js';
 import { setJobRouteDeps, capFor, setCap } from './api/routes/jobs.js';
 import { setStreamDeps } from './api/routes/stream.js';
@@ -86,7 +61,7 @@ import { preparePersonTurn, learnFromTurn } from './person-turn.js';
 import { INTAKE_FIELDS } from './person-intake.js';
 import { hasVerifiedFactor } from './person-identity.js';
 import { issueStepUp, verifyStepUp } from './step-up.js';
-import { runIngest, ingestAvailable } from './ingest.js';
+import { ingestAvailable } from './ingest.js';
 import { runScheduler } from './scheduler.js';
 // configPath(), not the bare CONFIG_PATH constant: MWA_CONFIG_PATH is how a container points
 // config at its /data volume, and loadConfig() already honors it. setFetchModel/setImageModel
@@ -106,9 +81,9 @@ import { reviewConnector } from './installer/review.js';
 import { accessPolicy, setAccess, grantedFolders } from './tools/access.js';
 import { legacySave, LEGACY_WHICH } from './assistant-settings.js';
 import { legacyConnectionAction, legacyConnectionSave, LEGACY_ACTIONS, LEGACY_CONNECTION_WHICH } from './connection-settings.js';
-import { status, testAnthropic, testAzure, testTelegram, upsertEnv, removeEnv } from './wizard.js';
-import { setSetupDeps, listSetupRequests, submitSetupRequest, cancelSetupRequest } from './connect/setup.js';
-import { awmCliPath, loadEmbeddings, loadPostgresStore } from './awm-api.js';
+import { status, testAnthropic, testAzure, testTelegram, upsertEnv } from './wizard.js';
+import { setSetupDeps, listSetupRequests, setSetupChangeListener } from './connect/setup.js';
+import { setSetupFlowDeps, setInboxScanListener, warmMemory, legacyScan, legacySaveNotes, startInboxScan, followInboxScan, inboxScanView, submitCard, cancelCard, saveStorage, scrubUrl } from './setup-flow.js';
 import { MEMORY_OFF, agentMemory } from './memory-off.js';
 import { fileHeaders, sessionFolder, uploadsIn, shareFor } from './files.js';
 import { offersBackground, OFFER_TEXT, startBackgroundWork, continueGoal, resumeInstruction } from './handoff.js';
@@ -321,24 +296,25 @@ async function classifyContinuity(brain: Provider, recent: { instruction: string
  *  account is connected (Gmail OAuth / app-password / Outlook), extracts durable facts about
  *  the user's world into memory. Reads only; nothing leaves the machine. */
 async function ingestScan(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  // v2 S6: the scan itself is src/setup-flow.ts — one at a time, whichever app started it, and it can be stopped from
+  // the new app. This page follows its lines as before.
   const days = Math.min(Math.max(Number(url.searchParams.get('days') ?? 30), 1), 730);
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-  const send = (type: string, data: Record<string, unknown>) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
-  if (!ingestAvailable()) { send('error', { message: 'Connect Gmail or Outlook first, then I can learn from your email.' }); res.end(); return; }
-  if (activeRuns >= MAX_CONCURRENT) { send('error', { message: "I'm busy right now — try again in a moment." }); res.end(); return; }
+  const send = (type: string, data: Record<string, unknown>) => { try { res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* gone */ } };
+  const started = startInboxScan({ days: Math.round(days) || 30 });
+  if (!started.ok) { send('error', { message: started.message }); res.end(); return; }
   const hb = setInterval(() => { try { res.write(': keepalive\n\n'); } catch { /* */ } }, 15_000);
-  req.on('close', () => clearInterval(hb));
-  const dbPath = dbFile();
-  try {
-    activeRuns++;
-    const r = await runIngest({ days, dbPath, onLog: (m) => send('log', { message: m }) });
-    send('result', { unique: r.unique, learned: r.learned });
-  } catch (e) {
-    logger.error('ingest', 'scan failed', { error: (e as Error).message.slice(0, 200) });
-    send('error', { message: (e as Error).message.slice(0, 200) });
-  } finally {
-    activeRuns--; clearInterval(hb); res.end();
-  }
+  const id = inboxScanView().id;
+  const stop = followInboxScan((e) => {
+    if (e.scan.id !== id) return;
+    if (e.type === 'log' && e.line) { send('log', { message: e.line }); return; }
+    if (e.type === 'end') {
+      if (e.scan.state === 'failed') send('error', { message: e.scan.message });
+      else send('result', { unique: e.scan.emails ?? 0, learned: e.scan.learnedCount });
+      clearInterval(hb); stop(); res.end();
+    }
+  });
+  req.on('close', () => { clearInterval(hb); stop(); });
 }
 
 /** Deliver a step-up code OUT-OF-BAND to a person's validated connection. Today only Telegram-
@@ -670,6 +646,11 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
     telegramConnected: () => !!process.env.TELEGRAM_BOT_TOKEN,
     checkTelegram: testTelegram,
   });
+  // v2 S6: a setup card opening or changing, and the inbox scan starting or ending, are app.db events, so the new app's
+  // stream says so; the scan counts as a run (the classic MAX_CONCURRENT)
+  setSetupChangeListener((id) => { try { recordEvent({ entity: 'setup', id }); } catch { /* app.db not open yet */ } });
+  setInboxScanListener((sc) => { try { recordEvent({ entity: 'inbox_scan', id: sc.id ?? 'inbox' }); } catch { /* */ } });
+  setSetupFlowDeps({ busy: () => activeRuns >= MAX_CONCURRENT, begin: () => { activeRuns++; }, end: () => { activeRuns--; } });
   setInterval(() => {
     void runApproved().then((done) => {
       for (const r of done) appendNotification({ ts: Date.now(), instruction: `Approved in Telegram: ${r.tool}`, summary: r.result.slice(0, 2000), reason: 'done', outcome: r.ok ? 'changed' : 'could-not' });
@@ -929,14 +910,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       // (onboarding shows a "preparing…" screen) instead of letting the first chat hang.
       // Returns quickly when the models are already cached. Best-effort.
       if (p === '/api/setup/warm' && req.method === 'POST') {
-        let ready = false; let message = '';
-        try {
-          const emb = await loadEmbeddings();
-          await emb.embed('warm up');
-          ready = true;
-        } catch (e) { message = (e as Error).message.slice(0, 160); }
+        const r = await warmMemory(); // v2 S6: src/setup-flow.ts (also POST /api/v1/setup/warm)
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ready, message }));
+        res.end(JSON.stringify(r.ready ? { ready: true, message: '' } : { ready: false, message: r.message }));
         return;
       }
       if (p === '/api/suggestions') {
@@ -1056,43 +1032,25 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         res.end(JSON.stringify(o.ok ? { ok: true, id: o.id } : { ok: false, id: null, code: o.code, message: o.message }));
         return;
       }
-      // Onboarding wizard — scan the folders/files the user points at into candidate memories.
-      // Pointing MWA at a folder in the setup wizard is explicit consent to read it, so we grant
-      // read access to those folders first (same-origin only). Nothing is saved here.
+      // Onboarding wizard — scan the folders/files the user points at into candidate memories. v2 S6: src/setup-flow.ts
+      // (also /api/v1/setup/folder/*): each folder must pass Your assistant's folder rules, it is read once and no
+      // longer granted to the assistant, and nothing is saved here.
       if (p === '/api/onboard/scan' && req.method === 'POST') {
         if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
-        const paths: string[] = Array.isArray(b.paths) ? b.paths.map(String).filter(Boolean) : [];
-        try {
-          const pol = accessPolicy();
-          const dirs = paths.map((p2) => { const abs = resolve(p2); try { return statSync(abs).isDirectory() ? abs : dirname(abs); } catch { return null; } }).filter((x): x is string => !!x);
-          if (dirs.length) setAccess(pol.preset, [...new Set([...pol.grantedRoots, ...dirs])]);
-        } catch { /* grant is best-effort */ }
-        let result: { candidates: unknown[]; filesScanned: number; truncated: boolean } = { candidates: [], filesScanned: 0, truncated: false };
-        try { result = await scanSources(resolve('.'), paths); } catch (e) { logger.error('onboard', 'scan failed', { error: (e as Error).message.slice(0, 200) }); }
+        let result: Awaited<ReturnType<typeof legacyScan>> = { candidates: [], filesScanned: 0, truncated: false, refused: [] };
+        try { result = await legacyScan(b.paths); } catch (e) { logger.error('onboard', 'scan failed', { error: (e as Error).message.slice(0, 200) }); }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: true, ...result }));
         return;
       }
-      // Onboarding wizard — save the memories the user confirmed. Owner-provided → trusted + canonical.
+      // Onboarding wizard — save the memories the user confirmed. The interview answers are the owner's own words
+      // (trusted); a note whose text came from a scanned file stays a note from that file (v2 S6: untrusted).
       if (p === '/api/onboard/save' && req.method === 'POST') {
         if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
-        const items: { concept?: string; content?: string; tags?: string[] }[] = Array.isArray(b.memories) ? b.memories : [];
-        const dbPath = dbFile();
         let saved = 0;
-        try {
-          const m = new MwaMemory(SERVE_AGENT, dbPath);
-          for (const it of items) {
-            const concept = String(it.concept ?? '').trim().slice(0, 120);
-            const content = String(it.content ?? '').trim();
-            if (!concept || content.length < 4) continue;
-            const tags = Array.isArray(it.tags) ? it.tags.map(String) : [];
-            const id = await m.write(concept, content, [...tags, 'src=onboarding', 'intent=context'], { provenance: 'user', ownName: true, canonical: true, origin: 'onboarding' });
-            if (id) saved++;
-          }
-          m.close();
-        } catch (e) { logger.error('onboard', 'save failed', { error: (e as Error).message.slice(0, 200) }); }
+        try { saved = await legacySaveNotes(b.memories); } catch (e) { logger.error('onboard', 'save failed', { error: (e as Error).message.slice(0, 200) }); }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: true, saved }));
         return;
@@ -1367,9 +1325,9 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
       if ((p === '/api/setup/submit' || p === '/api/setup/cancel') && req.method === 'POST') {
         if (!sameOriginOk(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'cross-origin request blocked' })); return; }
         const b = await readBody(req);
-        const out = p.endsWith('cancel')
-          ? { ok: cancelSetupRequest(String(b.id ?? '')), message: 'Closed.' }
-          : await submitSetupRequest(String(b.id ?? ''), (b.values && typeof b.values === 'object') ? b.values as Record<string, unknown> : {});
+        // v2 S6: src/setup-flow.ts (also /api/v1/setup/cards/*): what was typed never comes back in the message
+        const r = p.endsWith('cancel') ? cancelCard(String(b.id ?? '')) : await submitCard(String(b.id ?? ''), (b.values && typeof b.values === 'object') ? b.values : {});
+        const out = { ok: r.ok, message: r.ok && p.endsWith('cancel') ? 'Closed.' : r.message };
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify(out));
         return;
@@ -1594,48 +1552,11 @@ export async function runServe(port = Number(process.env.MWA_SERVE_PORT ?? proce
         // v2 slice S3: Telegram, the Google and Microsoft sign-in apps and Tailscale: src/connection-settings.ts (as above).
         else if (LEGACY_CONNECTION_WHICH.has(b.which)) result = await legacyConnectionSave(b);
         else if (b.which === 'backend') {
-          // Choose where memory lives: "this computer" (SQLite, the default) or a Postgres
-          // server (cloud / multi-instance / always-on). Postgres is validated by actually
-          // connecting (which also provisions the schema). Takes effect on the next restart.
-          const kind = String(b.kind ?? 'sqlite').toLowerCase();
-          if (kind === 'sqlite') {
-            removeEnv(['AWM_STORE_BACKEND', 'AWM_DATABASE_URL']);
-            result = { ok: true, message: isHosted() ? `Memory will be kept in a file on this ${hostName()} deploy (SQLite) after the next restart.` : 'Memory will be stored privately on this computer (SQLite) after the next restart.' };
-          } else if (kind === 'postgres') {
-            const url = String(b.url ?? '').trim();
-            if (!/^postgres(ql)?:\/\//i.test(url)) {
-              result = { ok: false, message: 'Enter a Postgres connection URL (postgres://user:pass@host:5432/db).' };
-            } else {
-              try {
-                // Connect for real — this validates creds + that pgvector is available, and
-                // provisions the AWM schema on the target.
-                const PostgresEngramStore = await loadPostgresStore();
-                const s: any = new PostgresEngramStore(url);
-                await s.ready();
-                await s.close();
-                // Optionally copy the current memory over FIRST (so a failed copy doesn't strand
-                // you on an empty store). If the copy fails, do NOT switch.
-                const lead = 'Connected ✓ — your database server becomes the memory store on the next restart.';
-                if (b.migrate) {
-                  const sqlitePath = dbFile();
-                  const m = await migrateMemoryToPostgres(sqlitePath, url);
-                  if (!m.ok) {
-                    result = { ok: false, message: `Connected, but ${m.message} — staying on this computer so nothing is lost.` };
-                  } else {
-                    upsertEnv({ AWM_STORE_BACKEND: 'postgres', AWM_DATABASE_URL: url });
-                    result = { ok: true, message: `${lead} Copied your memory over (${m.message}).` };
-                  }
-                } else {
-                  upsertEnv({ AWM_STORE_BACKEND: 'postgres', AWM_DATABASE_URL: url });
-                  result = { ok: true, message: `${lead} Your current on-computer memory stays put — turn on "bring my memory" to copy it.` };
-                }
-              } catch (e) {
-                result = { ok: false, message: `Couldn't connect to that database: ${(e as Error).message}. Check the URL/credentials and that the pgvector extension is available.` };
-              }
-            }
-          } else {
-            result = { ok: false, message: 'Unknown storage option.' };
-          }
+          // Where memory lives: this computer (SQLite, the default) or a Postgres server. v2 S6: src/setup-flow.ts (also
+          // PUT /api/v1/setup/storage): the .env only, so the switch happens at the restart as this page says; the
+          // address is checked by connecting and never comes back in a message.
+          const r = await saveStorage({ kind: String(b.kind ?? 'sqlite'), url: b.url, bringMemory: !!b.migrate });
+          result = { ok: r.ok, message: scrubUrl(r.message, String(b.url ?? '')) };
         }
         else result = { ok: false, message: 'unknown field' };
         res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(result));

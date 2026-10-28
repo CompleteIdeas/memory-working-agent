@@ -141,9 +141,13 @@ export interface SetupRequest {
 
 const TTL_MS = 30 * 60_000;
 const requests = new Map<string, SetupRequest>();
+/** v2 S6: told when a card opens or changes (serve.ts records it as an app.db event, so the new app's stream says so). */
+let onChange: (id: string) => void = () => {};
+export function setSetupChangeListener(fn: ((id: string) => void) | null): void { onChange = fn ?? (() => {}); }
+const changed = (id: string) => { try { onChange(id); } catch { /* best effort */ } };
 
 function sweep(now = Date.now()): void {
-  for (const r of requests.values()) if (r.status === 'waiting' && r.expiresAt <= now) { r.status = 'expired'; r.message = 'The setup card expired before it was filled in.'; }
+  for (const r of requests.values()) if (r.status === 'waiting' && r.expiresAt <= now) { r.status = 'expired'; r.message = 'The setup card expired before it was filled in.'; changed(r.id); }
 }
 
 /** Opens a setup card for a service (one waiting card per service: asking again shows the same card). */
@@ -154,6 +158,7 @@ export function openSetupRequest(svc: SetupService, session?: string): SetupRequ
   const now = Date.now();
   const r: SetupRequest = { id: `setup_${randomBytes(6).toString('hex')}`, service: svc.id, name: svc.name, howTo: svc.howTo, fields: svc.fields, status: 'waiting', message: '', session, createdAt: now, expiresAt: now + TTL_MS };
   requests.set(r.id, r);
+  changed(r.id);
   return r;
 }
 
@@ -174,6 +179,7 @@ export function openVaultRequest(name: string, site: string | undefined, fieldLa
   const where = site ? ` for ${site}` : '';
   const r: SetupRequest = { id: `setup_${randomBytes(6).toString('hex')}`, service: `vault:${n}`, name: `Vault · ${n}`, howTo: `Saved encrypted on this computer as "${n}"${where}. I can use it without seeing it, and only on that site.`, fields, status: 'waiting', message: '', session, createdAt: now, expiresAt: now + TTL_MS, vault: { name: n, site } };
   requests.set(r.id, r);
+  changed(r.id);
   return r;
 }
 
@@ -188,6 +194,7 @@ export function cancelSetupRequest(id: string): boolean {
   const r = requests.get(id);
   if (!r || r.status !== 'waiting') return false;
   r.status = 'cancelled'; r.message = 'You closed the setup card.';
+  changed(r.id);
   return true;
 }
 
@@ -207,7 +214,7 @@ export async function submitSetupRequest(id: string, values: Record<string, unkn
     if (val) v[f.env] = val;
   }
   if (r.vault) {
-    try { const n = vaultSave(r.vault.name, r.vault.site, v); r.status = 'done'; r.message = `Saved to the vault as "${n}"${r.vault.site ? ` for ${r.vault.site}` : ''}.`; }
+    try { const n = vaultSave(r.vault.name, r.vault.site, v); r.status = 'done'; r.message = `Saved to the vault as "${n}"${r.vault.site ? ` for ${r.vault.site}` : ''}.`; changed(r.id); }
     catch (e) { return { ok: false, message: `Couldn't save it: ${(e as Error).message.slice(0, 120)}` }; }
     return { ok: true, message: r.message };
   }
@@ -226,6 +233,7 @@ export async function submitSetupRequest(id: string, values: Record<string, unkn
   }
   r.status = out.ok ? 'done' : 'failed';
   r.message = out.message;
+  changed(r.id);
   return out;
 }
 

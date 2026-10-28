@@ -1680,6 +1680,128 @@ components:
           required: [provider, label, remainingUsd, at]
           additionalProperties: false
           properties: { provider: { type: string }, label: { type: string }, remainingUsd: { type: number }, at: { type: integer } }
+    BrainState:
+      type: object
+      description: 'S6: whether your helper can think at all: the AI brain chosen has what it needs (a key, or Ollama).'
+      required: [ready, provider, model, missing]
+      additionalProperties: false
+      properties:
+        ready: { type: boolean }
+        provider: { type: string, description: 'Empty when none is chosen.' }
+        model: { type: string }
+        missing: { type: ['string', 'null'], description: 'What is missing, in plain words; null when it works.' }
+    StorageView:
+      type: object
+      description: 'S6: where memory is kept. Never the database address: only its server name, and only for admin.'
+      required: [running, next, restartNeeded, fixed, hosted, host, server, nextServer]
+      additionalProperties: false
+      properties:
+        running: { type: string, enum: [sqlite, postgres, pglite], description: 'What this run of your helper uses.' }
+        next: { type: string, enum: [sqlite, postgres, pglite], description: 'What it uses after the next restart.' }
+        restartNeeded: { type: boolean }
+        fixed: { type: boolean, description: 'The server''s AWM_STORE_BACKEND / AWM_DATABASE_URL settings choose it; it can''t be changed here.' }
+        hosted: { type: boolean }
+        host: { type: string }
+        server: { type: ['string', 'null'], description: 'The database server''s name (host only), for admin.' }
+        nextServer: { type: ['string', 'null'] }
+    InboxEstimate:
+      type: object
+      required: [days, maxEmails, rounds, usd, ms, text]
+      additionalProperties: false
+      properties:
+        days: { type: integer }
+        maxEmails: { type: integer }
+        rounds: { type: integer }
+        usd: { type: number, description: 'At most this much.' }
+        ms: { type: integer }
+        text: { type: string }
+    InboxScan:
+      type: object
+      description: 'S6: "Get to know me": learning from the inbox. What it learned is listed by name; every fact it writes is a note from your email (untrusted).'
+      required: [id, state, days, startedAt, endedAt, log, learned, learnedCount, emails, message, available, estimate]
+      additionalProperties: false
+      properties:
+        id: { type: ['string', 'null'] }
+        state: { type: string, enum: [idle, running, stopping, done, stopped, failed] }
+        days: { type: integer }
+        startedAt: { type: ['integer', 'null'] }
+        endedAt: { type: ['integer', 'null'] }
+        log: { type: array, items: { type: string }, description: 'How it is going, in your helper''s words (the last 60 lines).' }
+        learned: { type: array, items: { type: string }, description: 'The names of the facts learned (the first 60). They come from email: show them as outside content.' }
+        learnedCount: { type: integer }
+        emails: { type: ['integer', 'null'], description: 'Emails read, once it ends.' }
+        message: { type: string }
+        available: { type: boolean, description: 'An email account is connected.' }
+        estimate: { $ref: '#/components/schemas/InboxEstimate' }
+    SetupCardField:
+      type: object
+      required: [name, label, help, secret, optional]
+      additionalProperties: false
+      properties:
+        name: { type: string, description: 'The key to send its value under.' }
+        label: { type: string }
+        help: { type: ['string', 'null'] }
+        secret: { type: boolean, description: 'Typed into a password field.' }
+        optional: { type: boolean }
+    SetupCard:
+      type: object
+      description: 'S6: a password or key your helper asked for mid-task. Never holds a value.'
+      required: [id, name, howTo, where, fields, state, message, expiresInSec, vault]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        name: { type: string }
+        howTo: { type: string, description: 'The steps, in plain words.' }
+        where: { type: string, description: 'The conversation or job that asked.' }
+        fields: { type: array, items: { $ref: '#/components/schemas/SetupCardField' } }
+        state: { type: string, enum: [waiting, done, failed, cancelled, expired] }
+        message: { type: string }
+        expiresInSec: { type: integer }
+        vault: { oneOf: [{ type: 'null' }, { type: object, required: [site], additionalProperties: false, properties: { site: { type: ['string', 'null'] } } }], description: 'A login for the vault (and the one site it is used on), not a connection.' }
+    SetupState:
+      type: object
+      required: [brain, storage, inbox, folderNote, cardsWaiting]
+      additionalProperties: false
+      properties:
+        brain: { $ref: '#/components/schemas/BrainState' }
+        storage: { $ref: '#/components/schemas/StorageView' }
+        inbox: { $ref: '#/components/schemas/InboxScan' }
+        folderNote: { type: string, description: 'What reading a folder costs and takes.' }
+        cardsWaiting: { type: integer }
+    FolderNote:
+      type: object
+      required: [id, name, text, source]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        name: { type: string }
+        text: { type: string }
+        source: { type: string, description: 'The file it came from.' }
+    FolderScan:
+      type: object
+      required: [scanId, folder, filesScanned, truncated, message, notes]
+      additionalProperties: false
+      properties:
+        scanId: { type: string, description: 'Send it back with the notes to keep (it lasts 30 minutes).' }
+        folder: { type: string }
+        filesScanned: { type: integer }
+        truncated: { type: boolean }
+        message: { type: string }
+        notes: { type: array, items: { $ref: '#/components/schemas/FolderNote' } }
+    InboxChange:
+      type: object
+      required: [scan, message]
+      additionalProperties: false
+      properties:
+        scan: { $ref: '#/components/schemas/InboxScan' }
+        message: { type: string }
+    SetupCardChange:
+      type: object
+      required: [card, message]
+      additionalProperties: false
+      properties:
+        card: { oneOf: [{ $ref: '#/components/schemas/SetupCard' }, { type: 'null' }] }
+        message: { type: string }
   responses:
     Error:
       description: An error.
@@ -4019,4 +4141,170 @@ paths:
         '200':
           description: The runs.
           content: { application/json: { schema: { $ref: '#/components/schemas/ActivityView' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /setup:
+    get:
+      operationId: getSetup
+      summary: 'S6: whether the AI brain works (and what is missing when it doesn''t), where memory is kept, the inbox scan, how many setup cards wait (read).'
+      responses:
+        '200':
+          description: The state.
+          content: { application/json: { schema: { $ref: '#/components/schemas/SetupState' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /setup/warm:
+    post:
+      operationId: warmMemory
+      summary: 'S6: get the local memory models ready; the first time downloads them (about 500 MB, a few minutes) (admin). 503 unavailable when they can''t be loaded.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Ready.
+          content:
+            application/json:
+              schema: { type: object, required: [ready, message], additionalProperties: false, properties: { ready: { type: boolean }, message: { type: string } } }
+        default: { $ref: '#/components/responses/Error' }
+  /setup/folder/scan:
+    post:
+      operationId: scanFolder
+      summary: 'S6: read one folder into notes to look over (admin). It must pass Your assistant''s folder rules (400 bad_folder, not_found or refused). No AI is used; nothing is saved or granted.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [path], additionalProperties: false, properties: { path: { type: string, maxLength: 1024 } } }
+      responses:
+        '200':
+          description: The notes.
+          content: { application/json: { schema: { $ref: '#/components/schemas/FolderScan' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /setup/folder/save:
+    post:
+      operationId: saveFolderNotes
+      summary: 'S6: keep some notes from a folder scan, edited or not (admin). They are kept as notes from your files (outside content, never trusted as instructions). 409 scan_expired after 30 minutes.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scanId, keep]
+              additionalProperties: false
+              properties:
+                scanId: { type: string }
+                keep:
+                  type: array
+                  maxItems: 150
+                  items: { type: object, required: [id], additionalProperties: false, properties: { id: { type: string }, name: { type: string, maxLength: 120 }, text: { type: string, maxLength: 4000 } } }
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema: { type: object, required: [saved, message], additionalProperties: false, properties: { saved: { type: integer }, message: { type: string } } }
+        default: { $ref: '#/components/responses/Error' }
+  /setup/inbox:
+    get:
+      operationId: getInboxScan
+      summary: 'S6: "Get to know me": how the inbox scan is going and what it learned (read).'
+      responses:
+        '200':
+          description: The scan.
+          content: { application/json: { schema: { $ref: '#/components/schemas/InboxScan' } } }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      operationId: startInboxScan
+      summary: 'S6: start learning from the inbox (admin). It uses the AI brain, so it asks first: without confirmed: true the answer is 409 confirm_needed with what it may cost and take. 409 already_running, no_email or busy.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, properties: { days: { type: integer, minimum: 1, maximum: 730 }, confirmed: { type: boolean } } }
+      responses:
+        '202':
+          description: Started; follow it with GET /setup/inbox (the stream sends an inbox_scan notice when it starts and ends).
+          content: { application/json: { schema: { $ref: '#/components/schemas/InboxChange' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /setup/inbox/stop:
+    post:
+      operationId: stopInboxScan
+      summary: 'S6: stop the inbox scan after the round it is on; what it learned is kept (admin). 409 not_running.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Stopping.
+          content: { application/json: { schema: { $ref: '#/components/schemas/InboxChange' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /setup/cards:
+    get:
+      operationId: listSetupCards
+      summary: 'S6: setup cards: a password or key your helper asked for mid-task, waiting or recent (read). Never a value. canSubmit: this device may fill them (admin).'
+      responses:
+        '200':
+          description: The cards.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cards, canSubmit]
+                additionalProperties: false
+                properties:
+                  cards: { type: array, items: { $ref: '#/components/schemas/SetupCard' } }
+                  canSubmit: { type: boolean }
+        default: { $ref: '#/components/responses/Error' }
+  /setup/cards/{id}/submit:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: submitSetupCard
+      summary: 'S6: fill a setup card (admin): only its own fields are taken, checked against the service, then saved; what was typed never comes back, not even in a refusal. 400 check_failed (the card stays open), 409 not_waiting, 404.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [values], additionalProperties: false, properties: { values: { type: object, additionalProperties: { type: string, maxLength: 4096 } } } }
+      responses:
+        '200':
+          description: Saved.
+          content: { application/json: { schema: { $ref: '#/components/schemas/SetupCardChange' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /setup/cards/{id}/cancel:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: cancelSetupCard
+      summary: 'S6: close a setup card without filling it (approve). 409 not_waiting, 404.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Closed.
+          content: { application/json: { schema: { $ref: '#/components/schemas/SetupCardChange' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /setup/storage:
+    put:
+      operationId: saveStorage
+      summary: 'S6: where memory is kept: this computer (sqlite) or a Postgres server (admin). It asks first (confirmed: true, else 409 confirm_needed) and takes effect at the restart. A Postgres address is checked by connecting (400 bad_url or check_failed) and never comes back; bringMemory copies this computer''s memory there first (400 copy_failed: nothing switched). 409 fixed when the server''s settings choose it.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              additionalProperties: false
+              properties:
+                kind: { type: string, enum: [sqlite, postgres] }
+                url: { type: string, maxLength: 2000 }
+                bringMemory: { type: boolean }
+                confirmed: { type: boolean }
+      responses:
+        '200':
+          description: Saved for the next restart.
+          content:
+            application/json:
+              schema: { type: object, required: [storage, message], additionalProperties: false, properties: { storage: { $ref: '#/components/schemas/StorageView' }, message: { type: string } } }
         default: { $ref: '#/components/responses/Error' }

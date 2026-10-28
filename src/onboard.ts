@@ -90,7 +90,7 @@ function chunk(text: string, source: string): Candidate[] {
   return out;
 }
 
-function collectFiles(sandboxDir: string, paths: string[]): string[] {
+function collectFiles(sandboxDir: string, paths: string[], roots?: string[]): string[] {
   const files: string[] = [];
   const walk = (abs: string) => {
     if (files.length >= MAX_FILES) return;
@@ -103,7 +103,8 @@ function collectFiles(sandboxDir: string, paths: string[]): string[] {
     }
   };
   for (const p of paths) {
-    const full = resolveAllowed(sandboxDir, p); // confine to granted folders
+    // confine to granted folders, or (S6) to the folders the owner pointed at just now, after the folder rules
+    const full = roots ? resolveAllowed(sandboxDir, p, roots) : resolveAllowed(sandboxDir, p);
     if (full) walk(full);
   }
   return files.slice(0, MAX_FILES);
@@ -115,9 +116,10 @@ export interface ScanResult {
   truncated: boolean;
 }
 
-/** Read the pointed-at folders/files and return candidate memories to refine. */
-export async function scanSources(sandboxDir: string, paths: string[]): Promise<ScanResult> {
-  const files = collectFiles(sandboxDir, paths);
+/** Read the pointed-at folders/files and return candidate memories to refine. `roots` (S6): read only inside these
+ *  folders (already checked against the folder rules) instead of the granted ones. */
+export async function scanSources(sandboxDir: string, paths: string[], roots?: string[]): Promise<ScanResult> {
+  const files = collectFiles(sandboxDir, paths, roots);
   const candidates: Candidate[] = [];
   for (const f of files) {
     if (candidates.length >= MAX_CANDIDATES) break;

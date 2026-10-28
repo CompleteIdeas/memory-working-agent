@@ -12,7 +12,7 @@ import { Back, Chev, ProjectIcon, Spark } from './icons';
 export { Important };
 import type { AskAbout } from './sheets';
 
-export type View = 'today' | 'calendar' | 'inbox' | 'projects' | 'settings' | 'plugins' | 'assistant' | 'connections' | 'memory' | 'activity' | 'spending';
+export type View = 'today' | 'calendar' | 'inbox' | 'projects' | 'settings' | 'plugins' | 'assistant' | 'connections' | 'memory' | 'activity' | 'spending' | 'learn' | 'storage';
 export interface ScreenProps {
   desk: boolean; wide: boolean; go: (v: View) => void; ask: (a?: AskAbout) => void;
   /** W2: open the working sheet (a waiting job's card on Today) */
@@ -87,3 +87,6 @@ export { Connections } from '../screens/settings/Connections';
 export { Memory } from '../screens/settings/Memory';
 export { Activity } from '../screens/settings/Activity';
 export { Spending } from '../screens/settings/Spending';
+// S6: Help me learn about you (a folder, the inbox) and Where memory is kept (?view=learn|storage)
+export { Learn } from '../screens/setup/Learn';
+export { Storage } from '../screens/setup/Storage';

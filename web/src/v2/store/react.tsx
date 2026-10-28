@@ -54,6 +54,19 @@ export function useNow(tickMs = 30_000): number {
   return now;
 }
 
+/** S6: the setup cards (waiting first), whether this device may fill them, and the inbox scan's change counter. */
+export function useSetupCards() {
+  const store = useStore();
+  const cards = useSlice((s) => s.setupCards);
+  const canSubmit = useSlice((s) => s.setupCanSubmit);
+  const loaded = useSlice((s) => s.setupLoaded);
+  const ready = useSlice((s) => s.ready);
+  const meta = useSlice((s) => s.meta);
+  useEffect(() => { if (ready && meta) store.ensureSetupCards(); }, [ready, meta, store]);
+  return useMemo(() => ({ cards, waiting: cards.filter((c) => c.state === 'waiting'), canSubmit, loaded, reload: () => store.loadSetupCards() }), [cards, canSubmit, loaded, store]);
+}
+export function useInboxSeq(): number { return useSlice((s) => s.inboxSeq); }
+
 /** S4: the approvals the store holds (waiting, and decided in the last day). */
 export function useApprovals() {
   const all = useSlice((s) => s.approvals);
