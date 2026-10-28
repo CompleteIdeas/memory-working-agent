@@ -90,7 +90,26 @@ export function Settings({ go }: ScreenProps) {
               </button>
             </div>
           </Section>
-          <SpendingSection data={data} admin={admin} />
+          {/* S5: what it remembers and what it has been doing have their own screens */}
+          <Section id="memory" title="Memory and activity">
+            <div className="card setcard">
+              <button type="button" className="plugentry" id="open-memory" onClick={() => go('memory')}>
+                <span className="grow">
+                  <span className="rowtitle">What I remember</span>
+                  <span className="s">{admin ? 'What I’ve learned about you and your work, your standing preferences and routines. Search, correct, forget or download it.' : 'What I’ve learned about you and your work, your standing preferences and routines.'}</span>
+                </span>
+                <Chev />
+              </button>
+              <button type="button" className="plugentry" id="open-activity" onClick={() => go('activity')}>
+                <span className="grow">
+                  <span className="rowtitle">Activity</span>
+                  <span className="s">Everything I did lately: what you asked, how it went, and what it cost.</span>
+                </span>
+                <Chev />
+              </button>
+            </div>
+          </Section>
+          <SpendingSection data={data} admin={admin} go={go} />
           <Devices data={data} admin={admin} />
           {/* P1: install on this phone (the browser's Install, iPhone's Add to Home Screen, or the secure address) */}
           <Section id="this-device" title="This device"><InstallCard publicUrl={data.settings?.publicUrl ?? null} /></Section>
@@ -246,7 +265,7 @@ function DollarField({ id, label, value, onSave, help, allowNone, noneLabel }: {
   );
 }
 
-function SpendingSection({ data, admin }: { data: ReturnType<typeof useSettingsData>; admin: boolean }) {
+function SpendingSection({ data, admin, go }: { data: ReturnType<typeof useSettingsData>; admin: boolean; go: ScreenProps['go'] }) {
   const s = data.spending;
   if (!s) return <Section id="spending" title="This month"><div className="card"><p className="soft">I couldn’t read the spending just now.</p></div></Section>;
   const pct = s.limit.usd ? Math.min(100, Math.round((s.month.usd / s.limit.usd) * 100)) : null;
@@ -265,6 +284,14 @@ function SpendingSection({ data, admin }: { data: ReturnType<typeof useSettingsD
             onSave={(v) => data.updateSpending({ monthlyUsd: v })} />
         )}
         {s.limit.fixed && <p className="soft">The monthly limit was set when your helper was installed.</p>}
+        {/* S5: the 30-day chart, by model, the costliest, tokens, the balance and the CSV */}
+        <button type="button" className="plugentry" id="open-spending" onClick={() => go('spending')}>
+          <span className="grow">
+            <span className="rowtitle">See details</span>
+            <span className="s">The last 30 days, by model, the costliest conversations and jobs{admin ? ', and a spreadsheet for an expense claim' : ''}.</span>
+          </span>
+          <Chev />
+        </button>
       </div>
       <h3 className="subhead">Limits for each kind of job</h3>
       <div className="card setcard">

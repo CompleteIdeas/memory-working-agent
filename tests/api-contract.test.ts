@@ -42,6 +42,7 @@ import { loadConfig } from '../src/config.js';
 import { setAssistantDeps } from '../src/assistant-settings.js';
 import { setConnectionDeps } from '../src/connection-settings.js';
 import { stageAction, registerExecutor } from '../src/tools/approval.js';
+import { MwaMemory } from '../src/awm.js';
 
 const spec = parse(readFileSync(new URL('../api/openapi.yaml', import.meta.url), 'utf8'));
 const METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
@@ -199,6 +200,16 @@ beforeAll(async () => {
   registerExecutor('contract_exec', async () => 'ok');
   ids.apOk = stageAction({ tool: 'write_file', executor: 'contract_exec', summary: 'Create the file /w/plan.md (4 bytes) in a folder you granted.', args: { path: '/w/plan.md', content: 'plan' }, ctx: { sandboxDir: '/w', tainted: true } });
   ids.apNo = stageAction({ tool: 'run_command', executor: 'contract_exec', summary: 'Run this command in /w:\n  rm /w/old.txt\n(Needs approval because it changes files.)', args: { command: 'rm /w/old.txt' }, ctx: { sandboxDir: '/w' } });
+  // S5: a scratch memory store with two facts, a standing preference and a proposed routine; a run log with one run
+  const s5 = mkdtempSync(join(tmpdir(), 'mwa-s5-contract-'));
+  Object.assign(process.env, { MWA_DB: join(s5, 'agent.db'), MWA_AGENT_ID: 'contract-s5', MWA_RUNLOG: join(s5, 'runs.jsonl') });
+  const mem = new MwaMemory('contract-s5', join(s5, 'agent.db'));
+  ids.memFact = (await mem.write('farrier visits', 'The farrier comes every eight weeks.', ['topic=t'], { canonical: true, provenance: 'user' }))!;
+  ids.memFact2 = (await mem.write('barn code', 'The barn gate code changed in October.', ['topic=t'], { canonical: true, provenance: 'inferred' }))!;
+  await mem.savePolicy('Always sign emails as Rob');
+  ids.routine = (await mem.saveRoutine('Weekly entries check', '1. Open the entries page.\n2. List what closes this week.')).id!;
+  mem.close();
+  writeFileSync(join(s5, 'runs.jsonl'), JSON.stringify({ ts: Date.now() - 60_000, session: '', instruction: 'Check the entries', reason: 'done', steps: 3, toolCalls: 2, actions: ['web_fetch'], costUsd: 0.012, summary: 'Two close Friday.' }) + '\n');
   // P3: a password (so a session cookie names its subscriptions' owner) and a push service that always accepts
   configureSessions({ password: 'contract-push-pw' });
   setPushDeps({ transport: async () => ({ status: 201 }) });
@@ -207,7 +218,7 @@ beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
-afterAll(() => { server?.close(); setSettingsRouteDeps(null); setPluginRouteDeps(null); delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN; delete process.env.TAVILY_API_KEY; configureSessions({ password: '' }); setPushDeps(null); for (const k of ['MWA_CONFIG_PATH', 'MWA_TOKEN_LOG', 'MWA_VAULT_PATH']) delete process.env[k]; setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); setTodayDeps(null); setAssistantDeps(null); setConnectionDeps(null); });
+afterAll(() => { server?.close(); setSettingsRouteDeps(null); setPluginRouteDeps(null); delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN; delete process.env.TAVILY_API_KEY; configureSessions({ password: '' }); setPushDeps(null); for (const k of ['MWA_CONFIG_PATH', 'MWA_TOKEN_LOG', 'MWA_VAULT_PATH', 'MWA_DB', 'MWA_AGENT_ID', 'MWA_RUNLOG']) delete process.env[k]; setCalendarSyncDeps(null); setMailProviders(null); setProjectRouteDeps(null); setEmbedder(null); setTriageDeps(null); setImportantRouteDeps(null); setAskRouteDeps(null); setTodayDeps(null); setAssistantDeps(null); setConnectionDeps(null); });
 
 /** One request per operation (and a few error cases). Slices append theirs. */
 const ids: Record<string, string> = {};
@@ -450,6 +461,29 @@ const CASES: { op: string; path: string | (() => string); init?: RequestInit | (
   { op: 'POST /approvals/{id}/deny', path: () => `/approvals/${ids.apNo}/deny`, init: () => ({ ...post(), body: JSON.stringify({ note: 'Keep it' }) }), status: 200 },
   { op: 'POST /approvals/{id}/deny', path: () => `/approvals/${ids.apNo}/deny`, init: post, status: 409 },
   { op: 'POST /approvals/{id}/deny', path: '/approvals/act_nope/deny', init: post, status: 404 },
+  // S5: memory, activity, spending detail
+  { op: 'GET /memory', path: '/memory', status: 200 },
+  { op: 'GET /memory', path: '/memory?q=farrier&limit=5', status: 200 },
+  { op: 'GET /memory', path: '/memory?limit=0', status: 400 },
+  { op: 'POST /memory/{id}/correct', path: () => `/memory/${ids.memFact}/correct`, init: () => ({ ...post(), body: JSON.stringify({ text: '' }) }), status: 400 },
+  { op: 'POST /memory/{id}/correct', path: () => `/memory/${ids.memFact}/correct`, init: () => ({ ...post(), body: JSON.stringify({ text: 'The farrier comes every six weeks.' }) }), status: 200 },
+  { op: 'POST /memory/{id}/correct', path: '/memory/mem_nope/correct', init: () => ({ ...post(), body: JSON.stringify({ text: 'x' }) }), status: 404 },
+  { op: 'POST /memory/{id}/forget', path: () => `/memory/${ids.memFact2}/forget`, init: post, status: 409 },
+  { op: 'POST /memory/{id}/forget', path: () => `/memory/${ids.memFact2}/forget`, init: () => ({ ...post(), body: JSON.stringify({ confirmed: true }) }), status: 200 },
+  { op: 'POST /memory/{id}/forget', path: () => `/memory/${ids.memFact2}/forget`, init: () => ({ ...post(), body: JSON.stringify({ confirmed: true }) }), status: 404 },
+  { op: 'GET /memory/export', path: '/memory/export', status: 200 },
+  { op: 'POST /memory/preferences/remove', path: '/memory/preferences/remove', init: () => ({ ...post(), body: JSON.stringify({ rule: 'Always sign emails as Rob' }) }), status: 409 },
+  { op: 'POST /memory/preferences/remove', path: '/memory/preferences/remove', init: () => ({ ...post(), body: JSON.stringify({ rule: 'Always sign emails as Rob', confirmed: true }) }), status: 200 },
+  { op: 'POST /memory/preferences/remove', path: '/memory/preferences/remove', init: () => ({ ...post(), body: JSON.stringify({ rule: 'Always sign emails as Rob', confirmed: true }) }), status: 404 },
+  { op: 'POST /memory/routines/{id}/promote', path: () => `/memory/routines/${ids.routine}/promote`, init: post, status: 409 },
+  { op: 'POST /memory/routines/{id}/promote', path: () => `/memory/routines/${ids.routine}/promote`, init: () => ({ ...post(), body: JSON.stringify({ confirmed: true }) }), status: 200 },
+  { op: 'POST /memory/routines/{id}/retire', path: () => `/memory/routines/${ids.routine}/retire`, init: post, status: 200 },
+  { op: 'POST /memory/routines/{id}/retire', path: '/memory/routines/rt_nope/retire', init: post, status: 404 },
+  { op: 'GET /activity', path: '/activity', status: 200 },
+  { op: 'GET /activity', path: '/activity?limit=999', status: 400 },
+  { op: 'GET /spending/detail', path: '/spending/detail', status: 200 },
+  { op: 'GET /spending/calls.csv', path: '/spending/calls.csv?days=7', status: 200 },
+  { op: 'GET /spending/calls.csv', path: '/spending/calls.csv?days=0', status: 400 },
   { op: 'POST /files', path: () => `/files?projectId=${ids.eventing}&name=notes.txt`, init: () => ({ method: 'POST', headers: { 'idempotency-key': `contract-key-${++keyN}`, 'content-type': 'text/plain' }, body: 'Entries close Friday.' }), status: 201 },
   { op: 'POST /files', path: '/files?projectId=pr_nope&name=notes.txt', init: () => ({ method: 'POST', headers: { 'idempotency-key': `contract-key-${++keyN}`, 'content-type': 'text/plain' }, body: 'x' }), status: 404 },
   { op: 'GET /files', path: () => `/files?projectId=${ids.eventing}`, status: 200 },
@@ -488,6 +522,13 @@ describe('responses match the contract', () => {
       if (/text\/event-stream/.test(r.headers.get('content-type') ?? '')) { // a stream: the spec must say so; don't read it
         expect(op.responses[String(r.status)]?.content?.['text/event-stream']).toBeTruthy();
         await r.body?.cancel();
+        return;
+      }
+      const file = /^text\/(markdown|csv)/.exec(r.headers.get('content-type') ?? ''); // S5: the memory export, the spending CSV
+      if (file) {
+        expect(op.responses[String(r.status)]?.content?.[`text/${file[1]}`]).toBeTruthy();
+        expect(r.headers.get('content-disposition')).toMatch(/^attachment; filename="[\w.-]+"$/);
+        expect(await r.text()).toMatch(file[1] === 'csv' ? /^time,session,job,model/ : /^# What MWA knows about you/);
         return;
       }
       if (/text\/calendar/.test(r.headers.get('content-type') ?? '')) { // a file: the spec must say so

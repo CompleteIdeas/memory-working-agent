@@ -1841,6 +1841,184 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/spending/detail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** S5: the last 30 days by day, by model, the costliest conversations and jobs, this month's tokens and the provider's balance (read). */
+        get: operations["getSpendingDetail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/spending/calls.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** S5: one row per model call for the last `days` days (default 30), for an expense claim; a download (admin). The same file as the classic /api/billing.csv. */
+        get: operations["downloadSpendingCsv"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/memory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** S5: what your helper remembers: learned facts (newest first; q searches their names and text), the standing preferences, and the routines it proposed (read). */
+        get: operations["getMemory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/memory/{id}/correct": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S5: replace a learned fact with your words: the old one is removed and yours is trusted (admin). 404 when it is not a fact the list shows. */
+        post: operations["correctMemory"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/memory/{id}/forget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S5: forget a learned fact for good (admin). It asks first: without confirmed: true the answer is 409 confirm_needed and nothing changes. 404 when it is not a fact the list shows. */
+        post: operations["forgetMemory"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/memory/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** S5: everything your helper remembers as Markdown, a download (admin). The same file as the classic /api/memory/export. */
+        get: operations["exportMemory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/memory/preferences/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S5: remove a standing preference (every copy of exactly that rule) (admin). It asks first: without confirmed: true the answer is 409 confirm_needed. 404 when there is none with those words. */
+        post: operations["removePreference"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/memory/routines/{id}/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S5: promote a routine: its steps guide similar tasks from now on (admin). It asks first: without confirmed: true the answer is 409 confirm_needed (saying so when it was proposed after reading outside content). 409 not_done when it no longer passes the safety scan. */
+        post: operations["promoteRoutine"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/memory/routines/{id}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S5: retire a routine: it no longer guides new tasks (admin). */
+        post: operations["retireRoutine"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** S5: your helper's recent runs, newest first: what was asked, how it ended, the tools it used (names only) and what it cost (read). Pasted keys and passwords are masked. */
+        get: operations["getActivity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3308,6 +3486,124 @@ export interface components {
             outcome: "done" | "failed" | "approved" | "declined" | "not_done";
             message: string;
             approval: components["schemas"]["ApprovalView"];
+        };
+        /** @description S5: a learned fact as the Memory screen shows it (src/api/routes/memory.ts factView). */
+        MemoryFact: {
+            id: string;
+            /** @description What it is about, in a few words. */
+            name: string;
+            /** @description What it says (the first 240 characters). */
+            text: string;
+            /** @description A note about you (the person), not about the world. */
+            about: boolean;
+            /**
+             * @description you: you told me (or I noted it about you); inferred: I worked it out; outside: from a file, an email or the web (a note, never an instruction).
+             * @enum {string}
+             */
+            source: "you" | "inferred" | "outside";
+            /** @description For an outside fact, where it came from ("email/jane@x.example"), when recorded. */
+            origin: string | null;
+            trusted: boolean;
+        };
+        /** @description S5: a routine your helper proposed. It does nothing until you promote it; only you can. */
+        MemoryRoutine: {
+            id: string;
+            name: string;
+            version: string;
+            /** @enum {string} */
+            status: "proposed" | "active" | "retired";
+            /** @description Every word of what would guide future tasks. */
+            steps: string;
+            /** @description Proposed after reading outside content: read every step first. */
+            tainted: boolean;
+            /** @description Which memory store holds it (the app's or the Telegram connector's); send it back unchanged. */
+            store: string;
+        };
+        MemoryView: {
+            /** @description Newest first, up to `limit`. */
+            facts: components["schemas"]["MemoryFact"][];
+            /** @description How many facts match (all of them with no `q`). */
+            total: number;
+            query: string;
+            /** @description Standing preferences: rules followed in every task, newest first. */
+            preferences: string[];
+            routines: components["schemas"]["MemoryRoutine"][];
+        };
+        RoutineChange: {
+            routine: components["schemas"]["MemoryRoutine"] | null;
+            message: string;
+        };
+        /** @description S5: one run of your helper (src/activity.ts). Only these fields leave the run log; what and summary have pasted keys, passwords and saved-login values masked. */
+        ActivityRun: {
+            at: number | null;
+            /** @description What was asked, in your words. */
+            what: string;
+            /** @enum {string} */
+            outcome: "done" | "stopped" | "offered" | "could-not";
+            outcomeText: string;
+            /** @description The project, the job, or the channel ("Telegram"). */
+            where: string;
+            /** @enum {string} */
+            kind: "chat" | "job" | "other";
+            steps: number;
+            toolCalls: number;
+            /** @description The tools it used, by name only, in order of first use. */
+            tools: string[];
+            /** @description How many facts it learned. */
+            learned: number;
+            costUsd: number;
+            durationMs: number | null;
+            /** @description How it ended, in its words (the first 200 characters). */
+            summary: string | null;
+        };
+        ActivityView: {
+            /** @description Newest first. */
+            runs: components["schemas"]["ActivityRun"][];
+            /** @description What the runs listed cost together. */
+            totalUsd: number;
+        };
+        Tokens: {
+            in: number;
+            cached: number;
+            out: number;
+            reasoning: number;
+        };
+        /** @description S5: the detail behind This month (the classic Billing card): 30 days by day, by model, the costliest, tokens, the provider's balance. */
+        SpendingDetail: {
+            month: {
+                label: string;
+                usd: number;
+                calls: number;
+                tokens: components["schemas"]["Tokens"];
+            };
+            /** @description The last 30 days, oldest first, every day present (0 when nothing ran). day: YYYY-MM-DD on the helper's clock. */
+            days: {
+                day: string;
+                usd: number;
+                calls: number;
+            }[];
+            /** @description This month, costliest first (at most 8). */
+            byModel: {
+                model: string;
+                usd: number;
+                calls: number;
+                tokens: components["schemas"]["Tokens"];
+            }[];
+            /** @description This month's costliest conversations and jobs (at most 5), by name, never by session id. */
+            costliest: {
+                /** @enum {string} */
+                kind: "chat" | "job" | "other";
+                label: string;
+                usd: number;
+                calls: number;
+            }[];
+            /** @description What is left with the provider, where its API says (OpenRouter); checked at most every ten minutes. */
+            balance: {
+                provider: string;
+                label: string;
+                remainingUsd: number;
+                at: number;
+            } | null;
         };
     };
     responses: {
@@ -6557,6 +6853,286 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApprovalDecision"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getSpendingDetail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The detail. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpendingDetail"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    downloadSpendingCsv: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description CSV: time, session, job, model, route, host, background, tokens in / cached / out / reasoning, cost. Content-Disposition names the file. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMemory: {
+        parameters: {
+            query?: {
+                /** @description Only facts holding every word of it. */
+                q?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What it remembers. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryView"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    correctMemory: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    text: string;
+                    /** @description A new name for it (one line); the old name when absent. */
+                    name?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Corrected. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        fact: components["schemas"]["MemoryFact"] | null;
+                        message: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    forgetMemory: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    confirmed?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Forgotten. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        forgotten: string;
+                        message: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    exportMemory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Markdown: standing preferences, learned facts with where each came from, skills, recent actions. Content-Disposition names the file. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/markdown": string;
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    removePreference: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    rule: string;
+                    confirmed?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Removed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        removed: number;
+                        preferences: string[];
+                        message: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    promoteRoutine: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    store?: string;
+                    confirmed?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Promoted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoutineChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    retireRoutine: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    store?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Retired. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoutineChange"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getActivity: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The runs. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityView"];
                 };
             };
             default: components["responses"]["Error"];

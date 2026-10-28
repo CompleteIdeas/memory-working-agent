@@ -1555,6 +1555,129 @@ components:
         outcome: { type: string, enum: [done, failed, approved, declined, not_done], description: 'not_done: approved, but the action''s own check refused when it ran; nothing happened (the message says why).' }
         message: { type: string }
         approval: { $ref: '#/components/schemas/ApprovalView' }
+    MemoryFact:
+      type: object
+      description: 'S5: a learned fact as the Memory screen shows it (src/api/routes/memory.ts factView).'
+      required: [id, name, text, about, source, origin, trusted]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        name: { type: string, description: 'What it is about, in a few words.' }
+        text: { type: string, description: 'What it says (the first 240 characters).' }
+        about: { type: boolean, description: 'A note about you (the person), not about the world.' }
+        source: { type: string, enum: [you, inferred, outside], description: 'you: you told me (or I noted it about you); inferred: I worked it out; outside: from a file, an email or the web (a note, never an instruction).' }
+        origin: { type: ['string', 'null'], description: 'For an outside fact, where it came from ("email/jane@x.example"), when recorded.' }
+        trusted: { type: boolean }
+    MemoryRoutine:
+      type: object
+      description: 'S5: a routine your helper proposed. It does nothing until you promote it; only you can.'
+      required: [id, name, version, status, steps, tainted, store]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        name: { type: string }
+        version: { type: string }
+        status: { type: string, enum: [proposed, active, retired] }
+        steps: { type: string, description: 'Every word of what would guide future tasks.' }
+        tainted: { type: boolean, description: 'Proposed after reading outside content: read every step first.' }
+        store: { type: string, description: 'Which memory store holds it (the app''s or the Telegram connector''s); send it back unchanged.' }
+    MemoryView:
+      type: object
+      required: [facts, total, query, preferences, routines]
+      additionalProperties: false
+      properties:
+        facts: { type: array, items: { $ref: '#/components/schemas/MemoryFact' }, description: 'Newest first, up to `limit`.' }
+        total: { type: integer, description: 'How many facts match (all of them with no `q`).' }
+        query: { type: string }
+        preferences: { type: array, items: { type: string }, description: 'Standing preferences: rules followed in every task, newest first.' }
+        routines: { type: array, items: { $ref: '#/components/schemas/MemoryRoutine' } }
+    RoutineChange:
+      type: object
+      required: [routine, message]
+      additionalProperties: false
+      properties:
+        routine: { oneOf: [{ $ref: '#/components/schemas/MemoryRoutine' }, { type: 'null' }] }
+        message: { type: string }
+    ActivityRun:
+      type: object
+      description: 'S5: one run of your helper (src/activity.ts). Only these fields leave the run log; what and summary have pasted keys, passwords and saved-login values masked.'
+      required: [at, what, outcome, outcomeText, where, kind, steps, toolCalls, tools, learned, costUsd, durationMs, summary]
+      additionalProperties: false
+      properties:
+        at: { type: ['integer', 'null'] }
+        what: { type: string, description: 'What was asked, in your words.' }
+        outcome: { type: string, enum: [done, stopped, offered, could-not] }
+        outcomeText: { type: string }
+        where: { type: string, description: 'The project, the job, or the channel ("Telegram").' }
+        kind: { type: string, enum: [chat, job, other] }
+        steps: { type: integer }
+        toolCalls: { type: integer }
+        tools: { type: array, items: { type: string }, description: 'The tools it used, by name only, in order of first use.' }
+        learned: { type: integer, description: 'How many facts it learned.' }
+        costUsd: { type: number }
+        durationMs: { type: ['integer', 'null'] }
+        summary: { type: ['string', 'null'], description: 'How it ended, in its words (the first 200 characters).' }
+    ActivityView:
+      type: object
+      required: [runs, totalUsd]
+      additionalProperties: false
+      properties:
+        runs: { type: array, items: { $ref: '#/components/schemas/ActivityRun' }, description: 'Newest first.' }
+        totalUsd: { type: number, description: 'What the runs listed cost together.' }
+    Tokens:
+      type: object
+      required: [in, cached, out, reasoning]
+      additionalProperties: false
+      properties:
+        in: { type: integer }
+        cached: { type: integer }
+        out: { type: integer }
+        reasoning: { type: integer }
+    SpendingDetail:
+      type: object
+      description: 'S5: the detail behind This month (the classic Billing card): 30 days by day, by model, the costliest, tokens, the provider''s balance.'
+      required: [month, days, byModel, costliest, balance]
+      additionalProperties: false
+      properties:
+        month:
+          type: object
+          required: [label, usd, calls, tokens]
+          additionalProperties: false
+          properties:
+            label: { type: string }
+            usd: { type: number }
+            calls: { type: integer }
+            tokens: { $ref: '#/components/schemas/Tokens' }
+        days:
+          type: array
+          description: 'The last 30 days, oldest first, every day present (0 when nothing ran). day: YYYY-MM-DD on the helper''s clock.'
+          items:
+            type: object
+            required: [day, usd, calls]
+            additionalProperties: false
+            properties: { day: { type: string }, usd: { type: number }, calls: { type: integer } }
+        byModel:
+          type: array
+          description: 'This month, costliest first (at most 8).'
+          items:
+            type: object
+            required: [model, usd, calls, tokens]
+            additionalProperties: false
+            properties: { model: { type: string }, usd: { type: number }, calls: { type: integer }, tokens: { $ref: '#/components/schemas/Tokens' } }
+        costliest:
+          type: array
+          description: 'This month''s costliest conversations and jobs (at most 5), by name, never by session id.'
+          items:
+            type: object
+            required: [kind, label, usd, calls]
+            additionalProperties: false
+            properties: { kind: { type: string, enum: [chat, job, other] }, label: { type: string }, usd: { type: number }, calls: { type: integer } }
+        balance:
+          type: ['object', 'null']
+          description: 'What is left with the provider, where its API says (OpenRouter); checked at most every ten minutes.'
+          required: [provider, label, remainingUsd, at]
+          additionalProperties: false
+          properties: { provider: { type: string }, label: { type: string }, remainingUsd: { type: number }, at: { type: integer } }
   responses:
     Error:
       description: An error.
@@ -3708,4 +3831,189 @@ paths:
         '200':
           description: Declined.
           content: { application/json: { schema: { $ref: '#/components/schemas/ApprovalDecision' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /spending/detail:
+    get:
+      operationId: getSpendingDetail
+      summary: 'S5: the last 30 days by day, by model, the costliest conversations and jobs, this month''s tokens and the provider''s balance (read).'
+      responses:
+        '200':
+          description: The detail.
+          content: { application/json: { schema: { $ref: '#/components/schemas/SpendingDetail' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /spending/calls.csv:
+    get:
+      operationId: downloadSpendingCsv
+      summary: 'S5: one row per model call for the last `days` days (default 30), for an expense claim; a download (admin). The same file as the classic /api/billing.csv.'
+      parameters:
+        - { name: days, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 366 } }
+      responses:
+        '200':
+          description: 'CSV: time, session, job, model, route, host, background, tokens in / cached / out / reasoning, cost. Content-Disposition names the file.'
+          content: { text/csv: { schema: { type: string } } }
+        default: { $ref: '#/components/responses/Error' }
+  /memory:
+    get:
+      operationId: getMemory
+      summary: 'S5: what your helper remembers: learned facts (newest first; q searches their names and text), the standing preferences, and the routines it proposed (read).'
+      parameters:
+        - { name: q, in: query, required: false, schema: { type: string, maxLength: 200 }, description: 'Only facts holding every word of it.' }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 500 } }
+      responses:
+        '200':
+          description: What it remembers.
+          content: { application/json: { schema: { $ref: '#/components/schemas/MemoryView' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /memory/{id}/correct:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: correctMemory
+      summary: 'S5: replace a learned fact with your words: the old one is removed and yours is trusted (admin). 404 when it is not a fact the list shows.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              additionalProperties: false
+              properties:
+                text: { type: string, maxLength: 2000 }
+                name: { type: string, description: 'A new name for it (one line); the old name when absent.' }
+      responses:
+        '200':
+          description: Corrected.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [fact, message]
+                additionalProperties: false
+                properties:
+                  fact: { oneOf: [{ $ref: '#/components/schemas/MemoryFact' }, { type: 'null' }] }
+                  message: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /memory/{id}/forget:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: forgetMemory
+      summary: 'S5: forget a learned fact for good (admin). It asks first: without confirmed: true the answer is 409 confirm_needed and nothing changes. 404 when it is not a fact the list shows.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                confirmed: { type: boolean }
+      responses:
+        '200':
+          description: Forgotten.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [forgotten, message]
+                additionalProperties: false
+                properties:
+                  forgotten: { type: string }
+                  message: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /memory/export:
+    get:
+      operationId: exportMemory
+      summary: 'S5: everything your helper remembers as Markdown, a download (admin). The same file as the classic /api/memory/export.'
+      responses:
+        '200':
+          description: 'Markdown: standing preferences, learned facts with where each came from, skills, recent actions. Content-Disposition names the file.'
+          content: { text/markdown: { schema: { type: string } } }
+        default: { $ref: '#/components/responses/Error' }
+  /memory/preferences/remove:
+    post:
+      operationId: removePreference
+      summary: 'S5: remove a standing preference (every copy of exactly that rule) (admin). It asks first: without confirmed: true the answer is 409 confirm_needed. 404 when there is none with those words.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rule]
+              additionalProperties: false
+              properties:
+                rule: { type: string, maxLength: 600 }
+                confirmed: { type: boolean }
+      responses:
+        '200':
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [removed, preferences, message]
+                additionalProperties: false
+                properties:
+                  removed: { type: integer }
+                  preferences: { type: array, items: { type: string } }
+                  message: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+  /memory/routines/{id}/promote:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: promoteRoutine
+      summary: 'S5: promote a routine: its steps guide similar tasks from now on (admin). It asks first: without confirmed: true the answer is 409 confirm_needed (saying so when it was proposed after reading outside content). 409 not_done when it no longer passes the safety scan.'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                store: { type: string }
+                confirmed: { type: boolean }
+      responses:
+        '200':
+          description: Promoted.
+          content: { application/json: { schema: { $ref: '#/components/schemas/RoutineChange' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /memory/routines/{id}/retire:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: retireRoutine
+      summary: 'S5: retire a routine: it no longer guides new tasks (admin).'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                store: { type: string }
+      responses:
+        '200':
+          description: Retired.
+          content: { application/json: { schema: { $ref: '#/components/schemas/RoutineChange' } } }
+        default: { $ref: '#/components/responses/Error' }
+  /activity:
+    get:
+      operationId: getActivity
+      summary: 'S5: your helper''s recent runs, newest first: what was asked, how it ended, the tools it used (names only) and what it cost (read). Pasted keys and passwords are masked.'
+      parameters:
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200 } }
+      responses:
+        '200':
+          description: The runs.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ActivityView' } } }
         default: { $ref: '#/components/responses/Error' }

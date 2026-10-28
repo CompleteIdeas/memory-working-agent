@@ -54,6 +54,8 @@ async function serve(fx: FixtureServer, url: URL, req: IncomingMessage, res: Ser
     if (raw) { try { body = JSON.parse(raw); } catch { send(res, 400, { error: { code: 'bad_json', message: 'The request body is not valid JSON.' } }); return; } }
   }
   const r = fx.handle({ method: req.method ?? 'GET', path, query: url.searchParams, headers, body });
+  // S5: a file (the memory export, the spending CSV) goes as it is, with its own content type
+  if (r.text !== undefined) { res.writeHead(r.status, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', ...(r.headers ?? {}) }); res.end(r.text); return; }
   send(res, r.status, r.body, r.headers);
 }
 function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {

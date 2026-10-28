@@ -146,12 +146,23 @@ const CALLS: Record<string, (c: MwaClient) => unknown> = {
   getApproval: (c) => c.getApproval('act_1'),
   approve: (c) => c.approve('act_1'),
   deny: (c) => c.deny('act_1', 'not now'),
+  // S5: memory, activity, spending detail (the two downloads are fetched with the app's headers, then saved)
+  getMemory: (c) => c.getMemory({ q: 'barn', limit: 20 }),
+  correctMemory: (c) => c.correctMemory('mem_1', 'The farrier comes every six weeks.'),
+  forgetMemory: (c) => c.forgetMemory('mem_1', { confirmed: true }),
+  exportMemory: (c) => c.exportMemory(),
+  removePreference: (c) => c.removePreference('Always sign emails as Rob', { confirmed: true }),
+  promoteRoutine: (c) => c.promoteRoutine('rt_1', 'mwa-serve', { confirmed: true }),
+  retireRoutine: (c) => c.retireRoutine('rt_1', 'mwa-serve'),
+  getActivity: (c) => c.getActivity({ limit: 30 }),
+  getSpendingDetail: (c) => c.getSpendingDetail(),
+  downloadSpendingCsv: (c) => c.downloadSpendingCsv(30),
 };
 const URL_ONLY = new Set(['streamUrl', 'calendarDraftIcsUrl', 'projectLiveUrl']); // GET links opened by EventSource or a download
 
 describe('the v2 web client and the contract', () => {
   it('the table above calls every public method of the client', () => {
-    const methods = Object.getOwnPropertyNames(MwaClient.prototype).filter((m) => !['constructor', 'call', 'get', 'post', 'url'].includes(m));
+    const methods = Object.getOwnPropertyNames(MwaClient.prototype).filter((m) => !['constructor', 'call', 'get', 'post', 'url', 'file'].includes(m));
     expect(methods.sort()).toEqual(Object.keys(CALLS).sort());
   });
 

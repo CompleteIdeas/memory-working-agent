@@ -8,6 +8,9 @@
  *   PATCH  /devices/{id}                rename a paired device (admin)
  *   GET    /settings  · PATCH /settings the helper's name, the greeting name, the time zone, first run, switches
  *   GET    /spending  · PATCH /spending this month, the limit, the background line, the default limits per kind
+ *   GET    /spending/detail             S5: the last 30 days by day, by model, the costliest conversations and jobs (by
+ *                                        name), this month's tokens, and the provider's balance (read)
+ *   GET    /spending/calls.csv          S5: one row per model call for the last `days` days, a download (admin)
  *   GET    /accounts                    Google / Outlook: connected, needs reconnecting, how Connect works here
  *   POST   /accounts/{provider}/connect start the existing sign-in flow (admin): a page to open, a code, or a setup note
  *   POST   /accounts/{provider}/cancel  stop waiting for a sign-in that was started (S3 review) (admin)
@@ -24,7 +27,8 @@ import { deviceName, renameDevice, type Caller } from '../auth.js';
 import { signInWithPassword, sessionCookie } from '../signin.js';
 import { revokeSessionOf, revokeAllSessions } from '../sessions.js';
 import { readSettings, updateSettings, setFireCap, fireCapFixed, SettingsError } from '../../v2/settings.js';
-import { billingSummary, readCalls, monthStart, monthlyBudget, setMonthlyBudget } from '../../billing.js';
+import { billingSummary, readCalls, monthStart, monthlyBudget, setMonthlyBudget, providerBalance, callsCsvFor } from '../../billing.js';
+import { whereOf } from '../../activity.js';
 import { fireCapUsd, HANDOFF_CAP_MAX_USD, CAP_MAX_USD } from '../../v2/estimate.js';
 import { calendarAccounts } from '../../sync/calendar.js';
 import { mailAccounts } from '../../sync/mail.js';
@@ -76,6 +80,25 @@ export function spendingView(now = Date.now()) {
       handoffMaxUsd: HANDOFF_CAP_MAX_USD, continueMaxUsd: CAP_MAX_USD,
       perFireUsd: fire ?? null, perFireFixed: fireCapFixed(),
     },
+  };
+}
+
+/** S5: the detail behind "This month" (the classic Billing card's chart, models, costliest, tokens and balance). The
+ *  costliest are named the way the activity log names them (a project, a job), never by their session ids. */
+export async function spendingDetail(now = Date.now(), balance?: Awaited<ReturnType<typeof providerBalance>>) {
+  const s = billingSummary(readCalls(undefined, Math.min(monthStart(now), now - 30 * 86_400_000)), now, monthlyBudget().usd, monthlyBudget().fixed,
+    balance === undefined ? await providerBalance() : balance);
+  const PROVIDER: Record<string, string> = { openrouter: 'OpenRouter' };
+  return {
+    month: { label: s.month.label, usd: usd(s.month.cost), calls: s.month.calls, tokens: s.month.tokens },
+    days: s.days.map((d) => ({ day: d.day, usd: usd(d.cost), calls: d.calls })),
+    byModel: s.byModel.slice(0, 8).map((m) => ({ model: m.model, usd: usd(m.cost), calls: m.calls, tokens: m.tokens })),
+    costliest: s.bySession.slice(0, 5).map((x) => {
+      const job = x.session.startsWith('job_') ? x.session.slice(4) : undefined;
+      const w = x.session === '(no session)' ? { kind: 'other' as const, where: 'In the background' } : whereOf({ session: x.session, job });
+      return { kind: x.kind === 'job' ? 'job' as const : w.kind, label: w.where, usd: usd(x.cost), calls: x.calls };
+    }),
+    balance: s.balance ? { provider: s.balance.provider, label: PROVIDER[s.balance.provider] ?? s.balance.provider, remainingUsd: s.balance.remainingUsd, at: s.balance.at } : null,
   };
 }
 
@@ -208,6 +231,16 @@ export const settingsRoutes: Route[] = [
     },
   },
   { method: 'GET', path: '/spending', scope: 'read', handler: () => ({ body: spendingView() }) },
+  { method: 'GET', path: '/spending/detail', scope: 'read', handler: async () => ({ body: await spendingDetail() }) },
+  {
+    method: 'GET', path: '/spending/calls.csv', scope: 'admin',
+    handler: ({ url }) => {
+      const raw = url.searchParams.get('days');
+      if (raw !== null && (!/^\d{1,3}$/.test(raw) || +raw < 1 || +raw > 366)) throw new ApiError(400, 'bad_days', '`days` is a whole number from 1 to 366.');
+      const f = callsCsvFor(raw ?? 30);
+      return { raw: { contentType: 'text/csv; charset=utf-8', body: f.body }, headers: { 'content-disposition': `attachment; filename="${f.filename}"` } };
+    },
+  },
   {
     method: 'PATCH', path: '/spending', scope: 'admin',
     handler: ({ body }) => {

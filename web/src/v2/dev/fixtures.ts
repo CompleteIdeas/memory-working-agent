@@ -27,12 +27,13 @@ import { scenarioClock } from './fixture-clock';
 import { ApprovalFixtures } from './fixtures-approvals';
 
 export interface FixtureRequest { method: string; path: string; query: URLSearchParams; headers: Record<string, string | undefined>; body: unknown }
-export interface FixtureResponse { status: number; body: unknown; headers?: Record<string, string> }
+/** `text`: a file (S5: the memory export, the spending CSV), sent as it is with its own content type instead of JSON */
+export interface FixtureResponse { status: number; body: unknown; headers?: Record<string, string>; text?: string }
 export interface StreamMessage { event: string; data: unknown; id?: number }
 type Entity = 'job' | 'calendar' | 'project' | 'turn' | 'mail' | 'item' | 'ask' | 'approval';
 interface Ev { seq: number; entity: Entity; id: string; op: 'upsert' | 'delete' }
 
-export const FIXTURE_SCENARIOS = ['N00', 'N06', 'states', 'old-client', 'sorting', 'thread-long', ...TODAY_SCENARIOS, 'signed-out', 'unpaired', 'phone', 'first-run', 'npm-off', 'model-fixed', 'hosted', 'conn-setup', 'approvals'] as const;
+export const FIXTURE_SCENARIOS = ['N00', 'N06', 'states', 'old-client', 'sorting', 'thread-long', ...TODAY_SCENARIOS, 'signed-out', 'unpaired', 'phone', 'first-run', 'npm-off', 'model-fixed', 'hosted', 'conn-setup', 'approvals', 'memory-empty'] as const;
 export type FixtureScenario = (typeof FIXTURE_SCENARIOS)[number];
 export const FIXTURE_SERVER_VERSION = 'fixtures';
 
@@ -411,6 +412,7 @@ export function fixtureFetch(server: FixtureServer, base = '/api/v1'): typeof fe
     if (typeof init?.body === 'string' && init.body) { try { body = JSON.parse(init.body); } catch { return new Response(JSON.stringify({ error: { code: 'bad_json', message: 'The request body is not valid JSON.' } }), { status: 400 }); } }
     await new Promise((r) => setTimeout(r, 30)); // a little latency, like a network
     const r = server.handle({ method: init?.method ?? 'GET', path: url.pathname.slice(base.length), query: url.searchParams, headers, body });
+    if (r.text !== undefined) return new Response(r.text, { status: r.status, headers: { 'content-type': 'text/plain', ...(r.headers ?? {}) } });
     return new Response(JSON.stringify(r.body), { status: r.status, headers: { 'content-type': 'application/json', ...(r.headers ?? {}) } });
   };
 }
