@@ -151,8 +151,8 @@ export function sameOriginOk(req: IncomingMessage): boolean {
 
 // --- Access gate. When MWA_ACCESS_PASSWORD is set (recommended for any networked /
 // NAS deployment), the UI + API are locked behind a single shared password until the
-// browser holds a valid session cookie. Unset (the localhost default) = no gate, so the
-// existing one-machine flow is unchanged. Cookie-based on purpose: EventSource (the SSE
+// browser holds a valid session cookie. Unset (the localhost default), only this machine is
+// let in (see the per-route caller checks below); inside Docker nobody counts as this machine. Cookie-based on purpose: EventSource (the SSE
 // chat) can't send custom headers but does send same-origin cookies automatically.
 const ACCESS_PW = process.env.MWA_ACCESS_PASSWORD || '';
 // BL-71: a session survives a restart or a deploy (signed with a key from the password and a salt beside the data).

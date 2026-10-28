@@ -38,7 +38,7 @@ memory.close();
 | `MwaMemory` | the AWM substrate (in-process). Pass a `workspace` for cross-agent shared recall. `NullMemory` disables it. |
 | `getProvider(role)` + `RoutedProvider` | provider resolution from config + the cheap→strong tier router (escalates on struggle). |
 | `buildRegistry(cfg)` | the tool registry: built-ins + MCP servers + the runtime tool-management tools. Register your own `RegisteredTool`s too. |
-| `requireApproval(tool)` | wrap a write/irreversible tool so it previews then runs only after `confirm_action` (chat), `POST /api/v1/approvals/{id}/approve` (the new app or a paired phone) or `/api/approvals/confirm` (the classic app). Not re-exported from the package root: import it from `memory-working-agent/dist/tools/approval.js`. |
+| `requireApproval(tool)` | wrap a write/irreversible tool so it previews then runs only after `confirm_action` (chat), `POST /api/v1/approvals/{id}/approve` (the new app or a paired phone) or `/api/approvals/confirm` (the classic app). |
 
 ## Plugging in a domain (the "new agent")
 

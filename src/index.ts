@@ -10,6 +10,7 @@ export { RoutedProvider, classifyIntent, type Tier } from './model-router.js';
 export { ToolRegistry, type RegisteredTool, type ToolContext } from './tools/registry.js';
 export { BUILTIN_TOOLS, builtinTools } from './tools/builtins.js';
 export { buildRegistry } from './tools/build.js';
+export { requireApproval } from './tools/approval.js';
 export { loadMcpServers, type McpServerSpec, type McpHandle } from './tools/mcp.js';
 export { processInbox, watchInbox, mailboxDirs, type MailboxDirs } from './mailbox.js';
 export { runTelegram, handleInstruction } from './connectors/telegram.js';

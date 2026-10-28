@@ -4,7 +4,7 @@
  * line in serve.ts and testable on its own server.
  *
  * Every route declares its scope. In one place, for every route:
- *   - access: the caller must be signed in (deps.authed — the password session today; device tokens come next);
+ *   - access: the caller must be signed in (deps.authed — a password session or a paired device token);
  *   - same-origin: a cookie-authenticated write from another site is refused (CSRF), as sameOriginOk does for /api;
  *   - idempotency: a write must carry an Idempotency-Key; a retry with the same key gets the first answer back;
  *   - client version: a client older than MIN_CLIENT gets 426 and must reload;

@@ -103,6 +103,8 @@ select.setinput { appearance: auto; }
 .plugtrust input { width: 20px; height: 20px; flex: none; }
 .plugentry { width: 100%; text-align: left; background: none; border: 0; color: inherit; font: inherit; padding: 0; display: flex; align-items: center; gap: 12px; min-height: 56px; }
 .plugentry .grow { flex: 1; min-width: 0; }
+.plugentry .rowtitle { display: block; font-weight: 600; overflow-wrap: anywhere; }
+.plugentry .s { display: block; color: var(--dim); font-size: 15px; overflow-wrap: anywhere; }
 .plugclear { display: flex; }
 
 /* S2: Settings › Your assistant */
