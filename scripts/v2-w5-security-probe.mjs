@@ -32,7 +32,8 @@ const check = (n, ok, d = '') => { results.push({ n, ok: !!ok, d: ok ? '' : d })
 
 function req(method, port, path, headers = {}, body, host = '127.0.0.1') {
   return new Promise((res, rej) => {
-    const r = http.request({ host, port, path, method, headers, setHost: !('Host' in headers || 'host' in headers) }, (x) => {
+    // a fresh connection each time: a reused keep-alive socket the server closed while the probe built a big file reads as a reset
+    const r = http.request({ host, port, path, method, headers, agent: false, setHost: !('Host' in headers || 'host' in headers) }, (x) => {
       const c = []; x.on('data', (d) => c.push(d)); x.on('end', () => res({ status: x.statusCode, headers: x.headers, body: Buffer.concat(c).toString('utf8') }));
     });
     r.on('error', rej); if (body !== undefined) r.write(body); r.end();
