@@ -23,6 +23,9 @@ describe('namesFolder', () => {
       'Go through /Users/robert/Desktop/invoices every Monday',
       'Check my files for anything about the regatta every day',
       'Look at the finance folder every month end',
+      'Go through /data/notes every Friday', // Linux paths beyond /Users and /home (the hosted app runs on Linux)
+      'Each Monday tidy /tmp/mwa-run/notes and report',
+      'Read "/srv/shared/minutes" every week',
     ]) expect([s, namesFolder(s)]).toEqual([s, true]);
     for (const s of [
       'Every morning, write the weather to weather.md',
@@ -34,6 +37,8 @@ describe('namesFolder', () => {
       'Put the report in the output folder each morning',
       'Check the Spam folder in my inbox every morning',
       'Clear my desktop notifications at 6',
+      'Row Mon /Wed /Fri at 6 and write the plan to plan.md', // a lone /word is not a path
+      'Check https://example.com/prices/today every morning and save it as prices.md', // a link's path is not one
     ]) expect([s, namesFolder(s)]).toEqual([s, false]);
     // the regex keeps no state between calls (a global one did, and skipped matches at random)
     for (let i = 0; i < 4; i++) expect(namesFolder('Weekly: tidy C:\\Users\\robert\\Downloads and report, every single week of the year without fail')).toBe(true);
@@ -50,6 +55,13 @@ describe('pathInsideRun', () => {
       expect(pathInsideRun('Go through C:\\Users\\someone\\Secret every Friday', dir)).toBe(false);
       expect(pathInsideRun(`Go through ${join(dir, 'notes')} and C:\\Users\\someone\\Secret`, dir)).toBe(false); // one it cannot reach
       expect(pathInsideRun('Go through my notes folder every Friday', dir)).toBe(false); // names no path
+      // Unreachable on every OS: a path outside the run (written either OS's way), a share, and the person's home.
+      // On Linux, resolve() read `C:\…` and `~/…` as file names inside the run's folder and passed them.
+      expect(pathInsideRun('Go through /Users/someone/Secret every Friday', dir)).toBe(false);
+      expect(pathInsideRun('Go through /srv/someone/Secret every Friday', dir)).toBe(false);
+      expect(pathInsideRun('Go through \\\\server\\share\\Secret every Friday', dir)).toBe(false);
+      expect(pathInsideRun('Go through ~/Secret every Friday', dir)).toBe(false);
+      expect(pathInsideRun(`Go through ${join(dir, 'notes', 'a.md').replace(/\\/g, '/')} and ${join(dir, 'notes')}`, dir)).toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
@@ -104,10 +116,19 @@ describe('the schedule action and the person\'s folders', () => {
         const words = { action: 'schedule', instruction: 'Go through my notes folder and summarise what changed', daily_at: '17:00', days: 'fri' };
         const r1 = await run(dir, mem, [words, { action: 'done', summary: 'set' }]);
         expect(r1.history.join('\n')).not.toMatch(/schedule held once: the job reads/);
-        const path = { action: 'schedule', instruction: 'Go through C:\\Users\\someone\\Secret and summarise what changed', daily_at: '17:00', days: 'fri' };
-        const r2 = await run(dir, mem, [path, path, { action: 'done', summary: 'set' }]);
-        expect(r2.history.join('\n')).toMatch(/schedule held once: the job reads the person's files and no folder is granted/);
-        expect(await mem.pendingScheduled()).toHaveLength(2);
+        // A path the job cannot reach is held: one written this OS's way outside every granted folder, and one written
+        // the other OS's way (on the Linux host, `C:\…` names a machine the job is not on; it was read as a file name
+        // inside the run's folder and passed).
+        const unreachable = process.platform === 'win32'
+          ? ['C:\\Users\\someone\\Secret', '/srv/someone/Secret']
+          : ['/srv/someone/Secret', 'C:\\Users\\someone\\Secret'];
+        const asks = [(p: string) => `Go through ${p} and summarise what changed`, (p: string) => `List the new invoices filed under ${p}`];
+        for (const [i, p] of unreachable.entries()) { // different words each: the same job twice is "already scheduled"
+          const path = { action: 'schedule', instruction: asks[i](p), daily_at: '17:00', days: 'fri' };
+          const r2 = await run(dir, mem, [path, path, { action: 'done', summary: 'set' }]);
+          expect([p, /schedule held once: the job reads the person's files and no folder is granted/.test(r2.history.join('\n'))]).toEqual([p, true]);
+        }
+        expect(await mem.pendingScheduled()).toHaveLength(3);
       }, [grantedDir]);
     } finally { rmSync(grantedDir, { recursive: true, force: true }); }
   }, 60_000);

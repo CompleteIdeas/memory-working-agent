@@ -373,10 +373,13 @@ export function namesFolder(text: string): boolean {
   return /\b(?:my|our|the person's)\s+(?:[\w-]+\s+){0,2}(?:folder|directory|files|notes|documents|downloads|desktop)\b(?!\s+(?:tab|app|list|in the chat|notifications?|alerts?))|\b(?:the|that|this)\s+(?!(?:working|output|same|chat's|chat|run's|job's|current|spam|junk|inbox|sent|drafts|archive)\b)[\w-]+\s+(?:folder|directory)\b/i.test(text);
 }
 
-/** An absolute path on the person's machine: `C:\…` or `C:/…`, `/Users/…`, `/home/…`, `~/…`, `\\server\share`.
+/** An absolute path on the person's machine: `C:\…` or `C:/…`, `~/…`, `\\server\share`, or a POSIX path of two or
+ *  more parts: `/Users/…`, `/home/…`, and also `/data/…`, `/tmp/…`, `/srv/…`. The hosted app runs on Linux, and when
+ *  only `/Users` and `/home` counted, a path in the run's own `/tmp/…` or `/data/…` folder was not seen as a path at
+ *  all (CI, 0.9.0 to 0.10.0). A lone `/word` is not one ("Mon /Wed"), nor is a link's path (it follows `:` or a host).
  *  Not global: use `new RegExp(ABSOLUTE_PATH.source, 'g')` to find every one (audit 2026-10-26: a global regex's
  *  .test() keeps lastIndex between calls and skipped matches at random). */
-export const ABSOLUTE_PATH = /(?:^|[\s"'(])((?:[A-Za-z]:[\\/]|\/(?:Users|home)\/|~[\\/]|\\\\[^\s\\]+\\)[^\s"')]*)/;
+export const ABSOLUTE_PATH = /(?:^|[\s"'(])((?:[A-Za-z]:[\\/]|\/[\w.-]+\/(?=[^\s/"')])|~[\\/]|\\\\[^\s\\]+\\)[^\s"')]*)/;
 
 /**
  * A WATCH: a job that tracks one thing's value — set to report only changes, to finish when something becomes true,

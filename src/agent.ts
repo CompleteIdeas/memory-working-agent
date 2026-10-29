@@ -17,7 +17,8 @@ import { readFileSync, statSync, appendFileSync, mkdirSync, existsSync } from 'n
 import { redactVault, vaultList, hasVaultRef } from './vault/vault.js';
 import { stripOneTimeSecrets, stripCodesOn } from './tools/one-time.js';
 import { randomUUID } from 'node:crypto';
-import { resolve, sep, dirname, join, basename } from 'node:path';
+import { resolve, sep, dirname, join, basename, isAbsolute } from 'node:path';
+import { homedir } from 'node:os';
 import type { Provider } from './provider.js';
 import { backgroundCalls, callTags, backgroundWorker } from './provider.js';
 import { isCalendarList, calendarCheck } from './calendar-check.js';
@@ -54,7 +55,14 @@ import { sourcesLine, resolveAllowed } from './tools/access.js';
  *  names only reachable paths does not need a further grant. False when it names none, or one it cannot reach. */
 export function pathInsideRun(instruction: string, dir: string): boolean {
   const paths = namedPaths(instruction);
-  return paths.length > 0 && paths.every((p) => resolveAllowed(dir, p) !== null);
+  return paths.length > 0 && paths.every((p) => reachableFrom(dir, p));
+}
+/** One named path is reachable from this run. `~/…` is the person's home, not a folder named "~" in the run's own
+ *  folder. A path that is not absolute on THIS machine (`C:\…` or `\\server\…` on Linux, where the hosted app runs)
+ *  names a machine the run is not on: resolve() would read it as a file name inside the run's folder and pass it. */
+function reachableFrom(dir: string, p: string): boolean {
+  const full = /^~[\\/]/.test(p) ? join(homedir(), p.slice(2)) : p;
+  return isAbsolute(full) && resolveAllowed(dir, full) !== null;
 }
 /** The absolute paths an instruction names, trailing punctuation dropped. */
 export function namedPaths(instruction: string): string[] {
