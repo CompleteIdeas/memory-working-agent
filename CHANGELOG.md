@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.10.1 (2026-10-29) — fixes found by running the suite on Linux
+
+The hosted app runs on Linux; 0.10.0's suite had only passed on Windows. Running it on Linux (CI on ubuntu-24.04,
+and a local node:22 container) found these:
+
+- **Scheduled jobs recognise Linux paths.** Only `/Users/…` and `/home/…` counted as paths, so a job naming
+  `/data/…` or `/srv/…` skipped the "this job reads your files and no folder is granted" hold, and a path inside
+  the job's own folder could be held. Any POSIX path of two or more parts now counts, `~/…` means the home folder,
+  and a path that is not absolute on the machine running the job (`C:\…` on Linux) is held as unreachable. The
+  hold is advisory; file access was always enforced separately.
+- **A second Google or Microsoft sign-in right after the first works.** The loopback listener left the finished
+  sign-in's keep-alive connection open, so a browser reusing it reached the finished listener and got a 400. Every
+  response now closes its connection. Desktop installs only (hosted installs have no browser sign-in).
+- **Browser site lists saved milliseconds apart are both read.** The config cache trusted a file's modified time
+  even when it was written within the clock's resolution of the read.
+- Tests: the inbox scan test holds its stub scan until the second start arrives; the security probe opens a fresh
+  connection per request; CI runs on ubuntu-24.04 (ubuntu-latest moved to 26.04, where playwright-core 1.52 has no
+  Chromium shell).
+- Package description and keywords brought in line with the 0.10 README.
+
 ## 0.10.0 (2026-10-28) — the new app
 
 About 100 commits since 0.9.1, built in slices (A0–A10 server, W1–W6 web, P1–P4 phone, S1–S6 settings) from the

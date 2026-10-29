@@ -1,7 +1,7 @@
 {
   "name": "memory-working-agent",
-  "version": "0.10.0",
-  "description": "MWA — Memory Working Agent. A turnkey TS agent runtime built on AWM as an always-on cognitive substrate, so a cheap model conducts, resumes, builds on prior reasoning, and runs long without re-onboarding or context rot.",
+  "version": "0.10.1",
+  "description": "MWA — Memory Working Agent. A personal AI assistant that remembers: it checks in, sorts your mail, keeps your calendar, notifies your phone and works through jobs in the background on cheap models, built on AWM memory with provenance, trust and approvals. Runs locally, in Docker or hosted.",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {
@@ -12,13 +12,21 @@
   "bugs": "https://github.com/CompleteIdeas/memory-working-agent/issues",
   "keywords": [
     "agent",
+    "ai-assistant",
+    "personal-assistant",
     "memory",
     "awm",
     "agent-working-memory",
+    "cognitive-memory",
     "llm",
-    "orchestrator",
     "mcp",
-    "cognitive-memory"
+    "pwa",
+    "web-push",
+    "email-triage",
+    "calendar",
+    "self-hosted",
+    "approvals",
+    "prompt-injection"
   ],
   "bin": {
     "mwa": "dist/cli.js"
