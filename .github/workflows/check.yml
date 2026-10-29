@@ -10,7 +10,7 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # ubuntu-latest became 26.04 (2026-10), where playwright-core 1.52 has no Chromium shell
     steps:
       - uses: actions/checkout@v4
         with:
