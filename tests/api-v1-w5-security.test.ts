@@ -5,7 +5,7 @@
 // (1) the sign-in throttle, (2) sessions and (4) the per-run limit are in tests/api-v1-w5.test.ts and
 // tests/api-v1-pairing.test.ts; the live probes in scripts/v2-w5-security-probe.mjs run them against a real server.
 import { describe, it, expect, beforeEach, afterAll, beforeAll, vi } from 'vitest';
-import { createServer, type Server, type IncomingMessage } from 'node:http';
+import { createServer, get as httpGet, Agent, type Server, type IncomingMessage } from 'node:http';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -278,6 +278,26 @@ describe('(7) OAuth: state and PKCE on the loopback listener', () => {
     await b.ready;
     expect((await hit('code=c2&state=second')).status).toBe(200);
     expect(await b.code).toBe('c2');
+  });
+  it('a finished sign-in leaves no open connection behind: the next sign-in on the port gets its own code', async () => {
+    // CI on Linux (0.10.0): the finished listener stopped listening but kept the browser's keep-alive connection, and
+    // the next request on that connection reached the OLD listener, which answered 400 and the new sign-in never got
+    // its code. One socket at most, kept alive, so a reused connection is certain on every OS.
+    const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+    const via = (q: string) => new Promise<{ status: number; connection?: string }>((res, rej) => {
+      httpGet({ host: '127.0.0.1', port, path: `/oauth?${q}`, agent }, (r) => { r.resume(); r.on('end', () => res({ status: r.statusCode ?? 0, connection: r.headers.connection })); }).on('error', rej);
+    });
+    try {
+      const one = catchOAuthCode({ port, state: 'keep-alive-one', label: 'Google' });
+      await one.ready;
+      expect(await via('code=x&state=wrong')).toEqual({ status: 400, connection: 'close' }); // a refused request is not kept either
+      expect(await via('code=k1&state=keep-alive-one')).toEqual({ status: 200, connection: 'close' });
+      expect(await one.code).toBe('k1');
+      const two = catchOAuthCode({ port, state: 'keep-alive-two', label: 'Google' });
+      await two.ready;
+      expect((await via('code=k2&state=keep-alive-two')).status).toBe(200);
+      expect(await two.code).toBe('k2');
+    } finally { agent.destroy(); }
   });
   it('Google: the consent URL carries state and an S256 challenge; the code is exchanged with its verifier (fake Google)', async () => {
     const seen: Record<string, string>[] = [];

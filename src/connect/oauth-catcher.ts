@@ -40,6 +40,11 @@ export function catchOAuthCode(o: { port: number; state: string; label: string; 
   code.catch(() => { /* handled by the caller; avoid an unhandled rejection when nobody awaits */ });
   let finished = false;
   const server = createServer((req, res) => {
+    // No keep-alive: a one-shot listener has nothing to keep a connection for, and a kept one outlived the listener.
+    // server.close() stops listening but leaves an open connection open, so the browser's next request on it (the
+    // next sign-in on this port) reached the FINISHED listener, which answered 400, and the new sign-in never got its
+    // code (CI on Linux, 0.10.0; the same on every OS once a client reuses the connection).
+    res.setHeader('connection', 'close');
     let u: URL;
     try { u = new URL(req.url ?? '/', `http://localhost:${o.port}`); } catch { res.statusCode = 400; res.end(); return; }
     if (u.pathname !== '/oauth') { res.statusCode = 404; res.end(); return; }
@@ -65,6 +70,7 @@ export function catchOAuthCode(o: { port: number; state: string; label: string; 
     clearTimeout(timer);
     if (active.get(o.port)?.server === server) active.delete(o.port);
     server.close();
+    server.closeIdleConnections(); // and any connection between requests (a response in flight ends with its own close)
     if (e) rejectCode(e); else resolveCode(c!);
   }
   const ready = new Promise<void>((res, rej) => {
