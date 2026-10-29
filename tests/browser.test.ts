@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CONSEQUENTIAL, GO_AHEAD, AGENT_BROWSER_HEADER, BROWSING_GUIDE, browserTools, closeBrowsers } from '../src/tools/browser.js';
@@ -61,6 +61,25 @@ describe('what counts as a consequential click, and as going ahead', () => {
     expect(siteRefusal('https://tracker.example/pixel', false, rules)).toMatch(/on the browser's deny list/);
     expect(siteRefusal('https://a.tracker.example/pixel', true, rules)).toMatch(/deny list/);
     expect(siteRefusal('https://anything.example/', true, { allow: [], deny: [] })).toBeNull(); // no lists: no site rule
+  });
+  it('a config change is read even when the file kept its mtime (Linux stamps writes with a coarse clock)', async () => {
+    const { siteRules } = await import('../src/tools/browser.js');
+    const d = mkdtempSync(join(tmpdir(), 'mwa-site-rules-'));
+    const cfg = join(d, 'mwa.config.json');
+    const env = { MWA_CONFIG_PATH: cfg } as NodeJS.ProcessEnv;
+    vi.stubEnv('MWA_CONFIG_PATH', cfg); // loadConfig reads the process's own
+    try {
+      // two writes with one mtime, as two writes a few ms apart get on Linux; on Windows only utimes can do it
+      const stamp = new Date(Date.now() + 1000);
+      writeFileSync(cfg, JSON.stringify({ tools: { browser: { deny: ['one.example'] } } })); utimesSync(cfg, stamp, stamp);
+      expect(siteRules(env).deny).toEqual(['one.example']);
+      writeFileSync(cfg, JSON.stringify({ tools: { browser: { deny: ['two.example'] } } })); utimesSync(cfg, stamp, stamp);
+      expect(siteRules(env).deny).toEqual(['two.example']);
+      // a file written well before it was read stays cached (no read per request)
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(cfg, old, old);
+      expect(siteRules(env).deny).toEqual(['two.example']);
+    } finally { vi.unstubAllEnvs(); rmSync(d, { recursive: true, force: true }); }
   });
   it('finding words and going back read the page: not outward actions against an unattended run\'s three (4e)', async () => {
     const { countsAsReach, effectOf } = await import('../src/tools/governance.js');

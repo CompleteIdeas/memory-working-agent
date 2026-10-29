@@ -168,13 +168,17 @@ export function siteEntry(raw: string): string | null {
   } catch { return null; }
 }
 let rulesCache: { at: number; key: string; rules: { allow: string[]; deny: string[] } } | null = null;
+const RACY_MS = 100;
 export function siteRules(env: NodeJS.ProcessEnv = process.env): { allow: string[]; deny: string[] } {
   // read again only when the config file or the environment changed, not on every request the page makes (audit
   // 2026-10-26: a config read and parse per request); a stat per call is cheap
   let stamp = 0;
   try { stamp = statSync(configPath()).mtimeMs; } catch { /* no config file */ }
   const key = `${env.MWA_BROWSER_ALLOW ?? ''}|${env.MWA_BROWSER_DENY ?? ''}|${env.MWA_CONFIG_PATH ?? ''}|${stamp}`;
-  if (rulesCache && rulesCache.key === key) return rulesCache.rules;
+  // Trusted only when the file was written well before it was read: Linux stamps a write with a coarse clock (a few
+  // ms), so a second write that soon after the first kept the same mtime and its lists were never read (a Linux run
+  // of tests/browser.test.ts, 2026-10-29). A cache taken within that window reads the file again (git's "racily clean").
+  if (rulesCache && rulesCache.key === key && rulesCache.at - stamp > RACY_MS) return rulesCache.rules;
   const list = (v: unknown) => (Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : []).map(siteEntry).filter((s): s is string => !!s);
   let cfg: { allow?: unknown; deny?: unknown } = {};
   try { cfg = (loadConfig().tools as { browser?: { allow?: unknown; deny?: unknown } }).browser ?? {}; } catch { /* no config: no lists */ }
