@@ -511,7 +511,7 @@ describe('low-severity fixes', () => {
       process.env.MWA_BACKGROUND_MODEL = 'openrouter:openai/gpt-6-luna';
       process.env.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || 'test-key-not-used';
       const m = T.defaultTriageModel();
-      expect(m?.price).toEqual([0.25, 2]);
+      expect(m?.price).toEqual([0.1, 0.5]);
     } finally { Object.assign(process.env, env); process.env.VITEST = env.VITEST; if (env.MWA_BACKGROUND_MODEL === undefined) delete process.env.MWA_BACKGROUND_MODEL; if (env.OPENROUTER_API_KEY === undefined) delete process.env.OPENROUTER_API_KEY; }
   });
 });
